@@ -1,0 +1,54 @@
+[gd_scene load_steps=2 format=3 uid="uid://b0skynetsndview00"]
+
+[ext_resource type="Script" path="res://scripts/sound_viewer.gd" id="1_snd"]
+
+[node name="SoundViewer" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("1_snd")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(0.08, 0.08, 0.09, 1)
+
+[node name="V" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = 32.0
+offset_left = 8.0
+offset_right = -8.0
+offset_bottom = -8.0
+
+[node name="Split" type="HSplitContainer" parent="V"]
+layout_mode = 2
+size_flags_vertical = 3
+split_offset = 360
+
+[node name="List" type="ItemList" parent="V/Split"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="Right" type="VBoxContainer" parent="V/Split"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="Info" type="Label" parent="V/Split/Right"]
+layout_mode = 2
+size_flags_vertical = 3
+text = "Select a sound on the left.
+Double-click or press Enter to play."
+
+[node name="Status" type="Label" parent="V"]
+layout_mode = 2
+text = "loading..."
+
+[node name="Player" type="AudioStreamPlayer" parent="."]

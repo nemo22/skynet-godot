@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://b0skynetstress00"]
+
+[ext_resource type="Script" path="res://scripts/object_viewer_stress.gd" id="1_stress"]
+
+[node name="Stress" type="Node"]
+script = ExtResource("1_stress")

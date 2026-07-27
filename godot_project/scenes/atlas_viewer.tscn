@@ -1,0 +1,39 @@
+[gd_scene load_steps=2 format=3 uid="uid://b0skynetatlas00"]
+
+[ext_resource type="Script" path="res://scripts/atlas_viewer.gd" id="1_atlas"]
+
+[node name="AtlasViewer" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("1_atlas")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(0.08, 0.08, 0.09, 1)
+
+[node name="StatusBar" type="Label" parent="."]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+offset_top = 32.0
+offset_bottom = 56.0
+text = "loading..."
+horizontal_alignment = 1
+
+[node name="Scroll" type="ScrollContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = 60.0
+horizontal_scroll_mode = 0
+
+[node name="Flow" type="HFlowContainer" parent="Scroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3

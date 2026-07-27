@@ -1,0 +1,329 @@
+## TEXTURE.NNN loader for SKYNET / FutureShock.
+##
+## Each file is a container of N sub-records (frames or variations)
+## sharing one name. Records are 8-bit palette-indexed pixel arrays.
+##
+## File layout:
+##   0..1     u16 tag                 (== record count; 0=invalid)
+##   2..17    char name[16]           (space-padded ASCII)
+##   18..27   padding
+##   28..     tag × 20-byte outer records, each starts with a u32
+##            offset to a 28-byte sub-texture descriptor:
+##              +0  u32 hash/id
+##              +4  u16 width
+##              +6  u16 height
+##              +8  u16 mode flag
+##              +14 u32 pix_data_offset (relative to descriptor)
+##              +18 u16 row_gap
+##              +20 u16 depth
+##
+## Pixel data has TWO on-disk layouts, selected by `row_gap`:
+##
+##   row_gap != 0 (wall / terrain textures, e.g. TEXTURE.044) —
+##       stride = W + row_gap. Up to four records share one interleaved
+##       buffer; row N of record R starts at `pix_off + N * stride`.
+##       Verified against SKYNET.EXE.c sub_1345C2.
+##
+##   row_gap == 0 (sprite / billboard textures, e.g. TEXTURE.200/206) —
+##       pix_off points to a `depth`-entry u32 frame offset table:
+##           u32 frame_off[depth]
+##       Frame k starts at `pix_off + frame_off[k]`; each frame begins
+##       with u16 W, u16 H, then the pixel data in ONE of two forms:
+##
+##         * Uncompressed — byte size == H*(W+2): each row is a 2-byte
+##           X-range prefix followed by W pixel bytes.
+##
+##         * Compressed (transparency-run) — the common sprite form:
+##           each of the H rows is a sequence of (transparent_run,
+##           opaque_run) byte pairs; after every pair `opaque_run`
+##           literal pixel bytes follow. Transparent pixels stay palette
+##           index 0. The row ends once W columns are covered. Verified
+##           against TEXTURE.200-242 — every row consumes its bytes
+##           exactly. (See `_decode_sparse_rows`.)
+##
+## Face encoding (matches Daggerfall Xngine):
+##   archive_id = face.type >> 7   -> selects TEXTURE.NNN file
+##   record_id  = face.type & 0x7F -> selects sub-record within
+
+extends RefCounted
+
+## Cap for sanity-check on tag count. TEXTURE.000 / TEXTURE.001 (Solid
+## Colors) each store 128 records, so this must be at least 128.
+const MAX_RECORDS: int = 256
+
+class Record:
+	var width: int = 0
+	var height: int = 0
+	var pixels: PackedByteArray   # width*height palette indices
+
+class TexFile:
+	var name: String = ""
+	var records: Array[Record] = []
+
+static func _u16(bytes: PackedByteArray, off: int) -> int:
+	return bytes[off] | (bytes[off + 1] << 8)
+
+static func _u32(bytes: PackedByteArray, off: int) -> int:
+	return bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)
+
+## Parse a TEXTURE.NNN file. Returns TexFile or null.
+static func parse(bytes: PackedByteArray) -> TexFile:
+	if bytes == null or bytes.size() < 28 + 20 + 28:
+		return null
+	var tag: int = _u16(bytes, 0)
+	if tag == 0 or tag > MAX_RECORDS:
+		return null
+
+	var t := TexFile.new()
+	# Name: 16 bytes starting at offset 2, space-trimmed.
+	var name_bytes := bytes.slice(2, 18)
+	t.name = name_bytes.get_string_from_ascii().strip_edges()
+
+	for r in tag:
+		var ro: int = 28 + r * 20
+		if ro + 20 > bytes.size():
+			break                              # outer record table truncated
+		var rec := _parse_record(bytes, ro)
+		# A failed record still occupies its slot — append an empty
+		# placeholder so later records keep their correct index. One bad
+		# record must not truncate the rest of the bank.
+		t.records.append(rec if rec != null else Record.new())
+	return t
+
+## Parse one outer record at table offset `ro`. Returns a Record, or
+## null when the record is malformed.
+static func _parse_record(bytes: PackedByteArray, ro: int) -> Record:
+	var desc_off: int = _u32(bytes, ro)
+	# Solid-Colors archives (TEXTURE.000 / TEXTURE.001) store no
+	# descriptor — desc_off == 0 and the outer record's byte +19 holds a
+	# palette index. Synthesize a 1×1 record so the mesh path renders the
+	# face as that solid colour.
+	if desc_off == 0:
+		var rec_sc := Record.new()
+		rec_sc.width = 1
+		rec_sc.height = 1
+		var px := PackedByteArray()
+		px.resize(1)
+		px[0] = bytes[ro + 19]
+		rec_sc.pixels = px
+		return rec_sc
+	if desc_off + 28 > bytes.size():
+		return null
+	var w: int = _u16(bytes, desc_off + 4)
+	var h: int = _u16(bytes, desc_off + 6)
+	var pix_rel: int = _u32(bytes, desc_off + 14)
+	var row_gap: int = _u16(bytes, desc_off + 18)
+	var depth: int = _u16(bytes, desc_off + 20)
+	if w == 0 or h == 0 or w > 1024 or h > 1024:
+		return null
+	var pix_off: int = desc_off + pix_rel
+	var rec_pixels: PackedByteArray
+
+	if row_gap != 0:
+		# Layout A — wall/terrain, row-interleaved at stride W+row_gap.
+		var stride: int = w + row_gap
+		var span: int = (h - 1) * stride + w
+		if pix_off + span > bytes.size():
+			stride = w
+			span = w * h
+			if pix_off + span > bytes.size():
+				return null
+		rec_pixels = PackedByteArray()
+		if stride == w:
+			rec_pixels = bytes.slice(pix_off, pix_off + w * h)
+		else:
+			for y in h:
+				var so: int = pix_off + y * stride
+				rec_pixels.append_array(bytes.slice(so, so + w))
+	else:
+		# Layout B — sprite. Parse the frame offset table, take frame 0.
+		if depth < 1 or pix_off + depth * 4 + 4 > bytes.size():
+			return null
+		var f0_off: int = _u32(bytes, pix_off)
+		var f1_off: int
+		if depth >= 2:
+			f1_off = _u32(bytes, pix_off + 4)
+		else:
+			# Single frame — span the rest of the reachable area.
+			f1_off = bytes.size() - pix_off
+		if f0_off < depth * 4 or f1_off <= f0_off:
+			return null
+		if pix_off + f1_off > bytes.size():
+			return null
+
+		var frame_start: int = pix_off + f0_off
+		var fw: int = _u16(bytes, frame_start)
+		var fh: int = _u16(bytes, frame_start + 2)
+		if fw == 0 or fh == 0 or fw > 1024 or fh > 1024:
+			return null
+		w = fw
+		h = fh
+		var data_off: int = frame_start + 4
+		var data_size: int = (pix_off + f1_off) - data_off
+		if data_off + data_size > bytes.size() or data_size <= 0:
+			return null
+
+		if data_size == h * (w + 2):
+			# Uncompressed: each row is a 2-byte X-range prefix + W pixels.
+			rec_pixels = PackedByteArray()
+			for y in h:
+				var so: int = data_off + y * (w + 2) + 2
+				rec_pixels.append_array(bytes.slice(so, so + w))
+		else:
+			# Compressed sprite — per-row transparency-run encoding.
+			rec_pixels = _decode_sparse_rows(bytes, data_off, data_size, w, h)
+			if rec_pixels.is_empty():
+				return null
+
+	var rec := Record.new()
+	rec.width = w
+	rec.height = h
+	rec.pixels = rec_pixels
+	return rec
+
+## Decode EVERY frame of a sprite-layout record (row_gap == 0) — the
+## explosion banks TEXTURE.358 / TEXTURE.367 store the whole cel-animation
+## as multiple frames inside record 0. Returns an Array of Record (each
+## with its own width / height / pixels), or [] on parse failure.
+##
+## DOS pool: skynet_gh.c FUN_00123e3a:26654 advances frame index per tick
+## and despawns at frame_count via FUN_00123e19:26642.
+static func parse_record_frames(bytes: PackedByteArray,
+		record_id: int) -> Array:
+	if bytes == null or bytes.size() < 28 + 20 + 28:
+		return []
+	var tag: int = _u16(bytes, 0)
+	if record_id < 0 or record_id >= tag:
+		return []
+	var ro: int = 28 + record_id * 20
+	if ro + 20 > bytes.size():
+		return []
+	var desc_off: int = _u32(bytes, ro)
+	if desc_off == 0 or desc_off + 28 > bytes.size():
+		return []
+	var pix_rel: int = _u32(bytes, desc_off + 14)
+	var row_gap: int = _u16(bytes, desc_off + 18)
+	var depth: int = _u16(bytes, desc_off + 20)
+	var pix_off: int = desc_off + pix_rel
+	if row_gap != 0:
+		# Wall layout, not a multi-frame sprite — return the single record.
+		var single := _parse_record(bytes, ro)
+		return [single] if single != null else []
+	if depth < 1 or pix_off + depth * 4 > bytes.size():
+		return []
+
+	var frames: Array = []
+	for k in depth:
+		var f_off: int = _u32(bytes, pix_off + k * 4)
+		var f_next: int
+		if k + 1 < depth:
+			f_next = _u32(bytes, pix_off + (k + 1) * 4)
+		else:
+			f_next = bytes.size() - pix_off
+		if f_off < depth * 4 or f_next <= f_off:
+			continue
+		if pix_off + f_next > bytes.size():
+			continue
+		var frame_start: int = pix_off + f_off
+		if frame_start + 4 > bytes.size():
+			continue
+		var fw: int = _u16(bytes, frame_start)
+		var fh: int = _u16(bytes, frame_start + 2)
+		if fw == 0 or fh == 0 or fw > 1024 or fh > 1024:
+			continue
+		var data_off: int = frame_start + 4
+		var data_size: int = (pix_off + f_next) - data_off
+		if data_off + data_size > bytes.size() or data_size <= 0:
+			continue
+		var rec_pixels: PackedByteArray
+		if data_size == fh * (fw + 2):
+			rec_pixels = PackedByteArray()
+			for y in fh:
+				var so: int = data_off + y * (fw + 2) + 2
+				rec_pixels.append_array(bytes.slice(so, so + fw))
+		else:
+			rec_pixels = _decode_sparse_rows(bytes, data_off, data_size, fw, fh)
+			if rec_pixels.is_empty():
+				continue
+		var rec := Record.new()
+		rec.width = fw
+		rec.height = fh
+		rec.pixels = rec_pixels
+		frames.append(rec)
+	return frames
+
+## Decode a compressed sprite frame. Each of the H rows is a sequence of
+## (transparent_run, opaque_run) byte pairs; after every pair `opaque_run`
+## literal pixel bytes follow. Transparent pixels are left as palette
+## index 0. A row ends once W columns are covered. Returns a W×H index
+## buffer, or an empty array on a source under-run.
+static func _decode_sparse_rows(src: PackedByteArray, off: int,
+		size: int, w: int, h: int) -> PackedByteArray:
+	var dst := PackedByteArray()
+	dst.resize(w * h)
+	var s: int = off
+	var end: int = off + size
+	for y in h:
+		var x: int = 0
+		var row: int = y * w
+		while x < w:
+			if s + 2 > end:
+				return PackedByteArray()
+			var trans: int = src[s]
+			var opaque: int = src[s + 1]
+			s += 2
+			x += trans
+			for k in opaque:
+				if s >= end:
+					return PackedByteArray()
+				if x >= 0 and x < w:
+					dst[row + x] = src[s]
+				s += 1
+				x += 1
+	return dst
+
+## Convert a palette-indexed record to a Godot ImageTexture (RGBA8) using
+## the supplied palette (PackedColorArray length 256). Index 0 is
+## rendered transparent if `transparent_index_0` is true.
+static func to_image_texture(rec: Record, palette: PackedColorArray,
+		transparent_index_0: bool = false) -> ImageTexture:
+	if rec == null or rec.pixels.is_empty() or palette.size() < 256:
+		return null
+	var n: int = rec.width * rec.height
+	# Build a 256-entry RGBA8 lookup once.
+	var lut := PackedByteArray()
+	lut.resize(256 * 4)
+	for i in 256:
+		var c: Color = palette[i]
+		lut[i * 4 + 0] = int(c.r * 255.0)
+		lut[i * 4 + 1] = int(c.g * 255.0)
+		lut[i * 4 + 2] = int(c.b * 255.0)
+		lut[i * 4 + 3] = 0 if (transparent_index_0 and i == 0) else 255
+	var rgba := PackedByteArray()
+	rgba.resize(n * 4)
+	for i in n:
+		var idx: int = rec.pixels[i]
+		var lo: int = idx * 4
+		var po: int = i * 4
+		rgba[po + 0] = lut[lo + 0]
+		rgba[po + 1] = lut[lo + 1]
+		rgba[po + 2] = lut[lo + 2]
+		rgba[po + 3] = lut[lo + 3]
+	var img := Image.create_from_data(rec.width, rec.height, false,
+		Image.FORMAT_RGBA8, rgba)
+	return ImageTexture.create_from_image(img)
+
+## Convenience: open a TEXTURE.NNN file by archive id and return a
+## specific record's ImageTexture. `gamedata_root` defaults to the
+## SkynetPaths autoload's path.
+static func load_record_texture(archive_id: int, record_id: int,
+		palette: PackedColorArray, gamedata_root: String = "") -> ImageTexture:
+	if gamedata_root.is_empty():
+		gamedata_root = SkynetPaths.gamedata_dir
+	var path: String = "%s/TEXTURE.%03d" % [gamedata_root, archive_id]
+	var bytes: PackedByteArray = SkynetPaths.read_bytes(path)
+	if bytes.is_empty(): return null
+	var t := parse(bytes)
+	if t == null or t.records.is_empty(): return null
+	var ri: int = clamp(record_id, 0, t.records.size() - 1)
+	return to_image_texture(t.records[ri], palette)

@@ -1,0 +1,17 @@
+[gd_resource type="Environment" format=3 uid="uid://b0skynetenv00"]
+
+[sub_resource type="ProceduralSkyMaterial" id="SkyMat_skyne"]
+sky_top_color = Color(0.02, 0.03, 0.1, 1)
+sky_horizon_color = Color(0.08, 0.1, 0.18, 1)
+ground_bottom_color = Color(0.05, 0.05, 0.08, 1)
+ground_horizon_color = Color(0.08, 0.1, 0.18, 1)
+
+[sub_resource type="Sky" id="Sky_skyne"]
+sky_material = SubResource("SkyMat_skyne")
+
+[resource]
+background_mode = 2
+sky = SubResource("Sky_skyne")
+ambient_light_source = 3
+ambient_light_color = Color(0.55, 0.55, 0.65, 1)
+ambient_light_energy = 0.9
