@@ -1,39 +1,66 @@
-## Enemy actor — animation, combat AI and event-driven sound.
+## Enemy actor — DOS-data-driven animation, movement, combat and sound.
 ##
-## States: IDLE → CHASE (player spotted) → ATTACK (in range, firing)
-## → DEAD. Sounds fire on events: alert when first spotting the player,
-## a weapon shot on firing, an impact when hit, an explosion on death.
-## A hitscan Area3D hitbox lets the player's shots register on this
-## actor.
+## Every enemy type's behaviour comes from the Skynet.exe enemy table
+## (VA 0x44d00 → enemy_ai_data.gd): its AI state id selects the
+## behaviour family, the parameter block gives speed / turn rate / stop
+## distance / turret axis + limits / fire parameters (muzzle offset,
+## ammo type, rate, range) / frame-event sounds / engine loop / wreck
+## parts, and the AIS script (run by enemy_ai.gd) drives the animation
+## blocks and the tactical decisions exactly as the DOS interpreter.
 ##
-## Stationary actors (gun towers) never move or turn their body, but
-## still fire once the player is in range.
+## Behaviour families (state id):
+##   7  walkers (T800 family, raptor, spidbot, T-rex legs): script-driven
+##      animation; move while the walk loop plays; fire only during a
+##      firing pose (anim flag 0x100) — DOS walker handler 0x13be00.
+##   6  hover/ground chasers (globe, drone, scout, flencer, hover tank).
+##   9  flyers (HK): script sets the altitude target (var 56).
+##   13 tanks: script sets speed (var 48) and heading (var 44).
+##   2/8 turret segments: aim one axis (0 pitch, 1 yaw) within limits at
+##      the turn rate while the player is inside the engage range; fire
+##      from the segment's muzzle. Child segments (guns on a rotating
+##      head) are separate types on the same actor.
+##   0/10/11 static bases, machines, transports: animate only.
+##   1  wreck parts flung on death (ballistic).
+## Combat death is instant in DOS (EnemyKill): explosion + parts.
+## Actors placed with a trigger distance (marker sub+2) are dormant
+## traps that detonate when the player comes close (state 12).
 ##
-## Animation — frame ranges
-## ------------------------
-## DOS drives enemy meshes through a per-state handler table at virtual
-## `0x59900` (`PTR_LAB_00059900`, 13 entries — skynet_gh.c:30128). Each
-## state handler writes the entity's current frame index (link+0x16) via
-## `AIS_SetFrameNo` (skynet_gh.c:42077). The walk cycle and the death
-## sequence draw from DISJOINT frame ranges baked into each .3D — DOS
-## never mixes them.
-##
-## We don't run the AIS handlers (they're un-decompiled raw bytes in the
-## EXE), but we replicate the *split*: the `.3D` frame strip is divided
-## into a walk range [0 .. walk_end] cycled while moving/firing, and a
-## death range [walk_end+1 .. last] played once when the actor dies. The
-## split point comes from `death_anim_frames` (auto-derived from total
-## frame count when -1; override per enemy in level_loader if needed).
+## Types without table data fall back to the older heuristic FSM
+## (IDLE → CHASE → ATTACK) with the fan-port animation tables.
 
 extends MeshInstance3D
 
-const Tracer := preload("res://scripts/tracer.gd")
 const Explosion := preload("res://scripts/explosion.gd")
 const Debris := preload("res://scripts/debris.gd")
 const EnemyAnim := preload("res://scripts/enemy_anim.gd")
+const Projectile := preload("res://scripts/projectile.gd")
+const Tracer := preload("res://scripts/tracer.gd")
+const MuzzleFlash := preload("res://scripts/muzzle_flash.gd")
+const EnemyAI := preload("res://scripts/enemy_ai.gd")
+const AIData := preload("res://scripts/enemy_ai_data.gd")
 
 enum State { IDLE, CHASE, ATTACK, DEAD }
 
+# --- tunables --------------------------------------------------------
+## DOS movement speeds (u/s) are used as-is; raise if the player feels
+## too fast relative to the machines.
+const SPEED_SCALE: float = 1.0
+## DOS projectile "speed" field → world units/s.
+const BOLT_SPEED_SCALE: float = 5.0
+## Shots per second = fire rate field / FIRE_RATE_DIV (pistol 250 →
+## ~2/s, small turret 200 → 1.6/s, missile pod 30 → 0.23/s).
+const FIRE_RATE_DIV: float = 128.0
+## Aim cone before a shot is released — DOS 0x8c of 2048 (24.6°).
+const AIM_CONE: float = 140.0 / 2048.0 * TAU
+## DOS perception cutoff (FUN_0013bcda: 0x7d1).
+const PERCEPTION_RANGE: float = 2000.0
+## Flyer altitude above the player when the script has not set var 56.
+const FLYER_ALT_DEFAULT: float = 300.0
+## Wander leg length / interval when the player is not perceived.
+const WANDER_RADIUS: float = 1200.0
+const DEATH_SOUND_ID: int = 38            # dormant-trap detonation (0x26)
+
+# Legacy exports (fallback FSM and level_loader compatibility).
 @export var detect_range: float = 7000.0
 @export var attack_range: float = 2600.0
 @export var move_speed: float = 480.0
@@ -44,15 +71,13 @@ enum State { IDLE, CHASE, ATTACK, DEAD }
 @export var shot_damage: float = 9.0
 @export var aim_spread: float = 0.055          # miss cone, fraction of range
 @export var big_model_size: float = 360.0      # AABB extent above which death flings debris
-## Number of trailing `.3D` frames reserved for the death sequence. The
-## walk cycle uses everything before this range. -1 = auto: a third of
-## the strip (capped at DEATH_FRAME_BUDGET, min 1). Meshes with fewer
-## than 3 frames are treated as single-pose — no separation, no death
-## anim, just an instant explosion.
 @export var death_anim_frames: int = -1
 @export var death_anim_time: float = 0.5
 
 const DEATH_FRAME_BUDGET: int = 8
+
+## Wreck parts resolved by level_loader: [[Mesh, Vector3 offset], …].
+var death_parts: Array = []
 
 var _frames: Array = []
 var _anim_t: float = 0.0
@@ -61,32 +86,56 @@ var _player: Node3D = null
 var _foot_offset: float = 0.0
 var _stationary: bool = false
 var _flying: bool = false
-var _passive: bool = false                     # transports — animate, no AI
+var _passive: bool = false
 var _init_done: bool = false
 var _state: State = State.IDLE
 var _health: float = 60.0
 var _fire_cd: float = 0.0
-var _body_size: float = 0.0                    # largest mesh AABB extent
-var _body_height: float = 0.0                  # mesh AABB height
-var _snd: AudioStreamPlayer3D = null           # alert voice
-## Child segment that yaws toward the player while the base stays still.
-## Set for multi-segment stationary actors (turrets): the rotating gun
-## or turret head, not the body. Null means rotate the whole mesh.
-var _aim_node: Node3D = null
-## Per-state frame ranges (`{state: [start, end, fps, loops]}`) sourced
-## from EnemyAnim. Empty for meshes without a fan-port AnimRecord entry
-## — falls back to the full-strip heuristic.
+var _body_size: float = 0.0
+var _body_height: float = 0.0
+var _snd: AudioStreamPlayer3D = null           # alert voice (legacy)
+var _engine: AudioStreamPlayer3D = null        # DOS engine loop
+var _aim_node: Node3D = null                   # legacy aim mount
 var _anim_table: Dictionary = {}
-## Name of the current animation clip ("idle"/"walk"/"attack"/"death"
-## /…). Drives which range _physics_process cycles. Empty when no
-## table is loaded; the heuristic path runs instead.
 var _clip: String = ""
+
+# --- DOS data-driven state ---
+var _type_id: int = -1
+var _t: Dictionary = {}                        # AIData.TYPES entry
+var _brain: EnemyAI = null                     # AIS interpreter
+var _segs: Array = []                          # turret segments (see _build_segments)
+var _segs_built: bool = false
+var _cds: Dictionary = {}                      # shooter node → cooldown
+var _wander_target: Vector3 = Vector3.ZERO
+var _wander_t: float = 0.0
+var _blocked: bool = false
+var _seen: bool = false
+var _dormant_dist: float = 0.0                 # > 0: trap, explode when near
+var _rest_yaw: float = 0.0
+
+## Bind the DOS type data. Call before setup() (level_loader does).
+func configure(type_id: int) -> void:
+	_type_id = type_id
+	if type_id >= 0 and type_id < AIData.TYPES.size():
+		_t = AIData.TYPES[type_id]
+		_brain = EnemyAI.new(type_id)
+		if int(_t.get("hp", 0)) > 0:
+			max_health = float(_t["hp"])
+		if int(_t.get("speed", 0)) > 0:
+			move_speed = float(_t["speed"]) * SPEED_SCALE
+		if int(_t.get("turn", 0)) > 0:
+			turn_speed = float(_t["turn"]) / 2048.0 * TAU
 
 func setup(frame_meshes: Array, aabb: AABB, stationary: bool = false,
 		flying: bool = false, sound_name: String = "",
 		passive: bool = false) -> void:
 	_frames = frame_meshes
+	# Feet = the lowest vertex across EVERY frame, not just frame 0.
 	_foot_offset = aabb.position.y
+	for fm in _frames:
+		if fm is ArrayMesh:
+			_foot_offset = minf(_foot_offset,
+				(fm as ArrayMesh).get_aabb().position.y)
 	_stationary = stationary
 	_flying = flying
 	_passive = passive
@@ -95,7 +144,6 @@ func setup(frame_meshes: Array, aabb: AABB, stationary: bool = false,
 	_body_size = maxf(aabb.size.x, maxf(aabb.size.y, aabb.size.z))
 	if not _frames.is_empty():
 		mesh = _frames[0]
-	# Passive transports are not hostiles — they don't count as objectives.
 	if not _passive:
 		add_to_group("enemy")
 
@@ -109,7 +157,7 @@ func setup(frame_meshes: Array, aabb: AABB, stationary: bool = false,
 	area.add_child(shape)
 	add_child(area)
 
-	if sound_name != "":
+	if sound_name != "" and not _t.has("engine"):
 		_snd = AudioStreamPlayer3D.new()
 		_snd.stream = Audio.stream(sound_name)
 		_snd.unit_size = 2000.0
@@ -117,18 +165,457 @@ func setup(frame_meshes: Array, aabb: AABB, stationary: bool = false,
 		_snd.volume_db = -8.0
 		_snd.max_db = 0.0
 		add_child(_snd)
+	# DOS engine loop (tanks, HKs): the {5, sound} block in the params.
+	if _t.has("engine"):
+		var nm: String = Audio.sound_name(int(_t["engine"]))
+		if not nm.is_empty():
+			_engine = AudioStreamPlayer3D.new()
+			_engine.stream = Audio.stream(nm)
+			_engine.unit_size = 1500.0
+			_engine.max_distance = 16000.0
+			_engine.volume_db = -10.0
+			_engine.max_db = -2.0
+			_engine.finished.connect(func() -> void:
+				if is_inside_tree() and _state != State.DEAD:
+					_engine.play())
+			add_child(_engine)
+	# The DOS actor starts with its script's first animation.
+	if _brain != null and _brain.has_script():
+		_brain.tick(0.0, {})
+		_show_frame(_brain.frame)
 
-## Install a fan-port AnimRecord table (`{state: [start, end, fps,
-## loops]}`). Called from level_loader at spawn time. An empty table
-## means "no per-state ranges — use the heuristic walk/death split".
+func _ready() -> void:
+	# Audio players can only start once inside the tree.
+	if _engine != null and _dormant_dist <= 0.0:
+		_engine.play()
+
+## Fan-port AnimRecord table — only used by the fallback FSM.
 func set_anim_table(table: Dictionary) -> void:
 	_anim_table = table
 
-## Advance the current AnimRecord clip by `delta`. Resets the frame
-## cursor whenever the AI state changes the chosen clip. Clips with
-## `loops` true cycle inside [start..end]; one-shot clips hold the
-## final frame so a still-firing CHASE actor doesn't snap back to its
-## rest pose between shots.
+## Legacy aim mount — used only when the type has no turret data.
+func set_aim_node(n: Node3D) -> void:
+	_aim_node = n
+
+## A dormant trap (marker sub+2 = trigger distance): no AI, not a
+## mission hostile, detonates when the player comes within `dist`.
+func make_dormant(dist: float) -> void:
+	_dormant_dist = maxf(dist, 1.0)
+	remove_from_group("enemy")
+	if _engine != null:
+		_engine.stop()
+
+## True once the actor is dying/dead.
+func is_dead() -> bool:
+	return _state == State.DEAD
+
+func _show_frame(f: int) -> void:
+	if _frames.is_empty():
+		return
+	var i: int = clampi(f, 0, _frames.size() - 1)
+	if i != _anim_i or mesh != _frames[i]:
+		_anim_i = i
+		mesh = _frames[i]
+
+# ---------------------------------------------------------------------
+# Per-tick update
+# ---------------------------------------------------------------------
+func _physics_process(delta: float) -> void:
+	if _state == State.DEAD:
+		return
+	if not _init_done:
+		if _flying or _stationary:
+			_init_done = true
+		elif _snap_to_ground():
+			_init_done = true
+	if _player == null or not is_instance_valid(_player):
+		_player = get_tree().get_first_node_in_group("player")
+	if _dormant_dist > 0.0:
+		if _player != null and global_position.distance_to(_player.global_position) < _dormant_dist:
+			_detonate_trap()
+		return
+	if _brain != null:
+		_tick_data(delta)
+	else:
+		_tick_legacy(delta)
+
+# ---------------------------------------------------------------------
+# DOS data-driven path
+# ---------------------------------------------------------------------
+func _tick_data(delta: float) -> void:
+	if not _segs_built:
+		_build_segments()
+	var st: int = _brain.state
+	var sense: Dictionary = _sense()
+	_brain.tick(delta, sense)
+	if _brain.frame_changed:
+		_show_frame(_brain.frame)
+	elif _brain.anim_frames.is_empty() and _frames.size() > 1 \
+			and (_flying or _passive or st == 6 or st == 9):
+		_cycle_full_strip(delta)          # rotor/engine strips without a block
+	for sid in _brain.sounds:
+		Audio.play_id_3d(int(sid), global_position + Vector3(0.0, 40.0, 0.0), -6.0)
+	if _passive or _player == null:
+		return
+	# Legacy alert voice on first perception.
+	if _seen and not sense.get("see", false):
+		pass
+	if bool(sense.get("see", false)) and not _seen:
+		_seen = true
+		if _snd != null and _snd.stream != null and not _snd.playing:
+			_snd.play()
+	match st:
+		7, 6, 9, 13:
+			_move_data(delta, sense)
+	for seg in _segs:
+		_aim_segment(seg, delta)
+	# Root shooter.
+	var fp: Array = _brain.fire_params()
+	if not fp.is_empty() and not _has_segment_node(self):
+		var gate: bool = _brain.firing_pose() if (st == 7 and _brain.has_script()) else true
+		if gate:
+			_try_fire(self, fp, delta, _t)
+
+## What the DOS handler perceives this tick.
+func _sense() -> Dictionary:
+	if _player == null:
+		return {"see": false, "dist": 1.0e9, "bearing": 0, "angle": 0, "blocked": _blocked}
+	var to: Vector3 = _player.global_position - global_position
+	var flat := Vector3(to.x, 0.0, to.z)
+	var dist: float = flat.length()
+	var angle: int = _dos_angle(flat)
+	var facing: int = int(round(global_rotation.y / TAU * 2048.0)) & 0x7FF
+	var see: bool = dist < PERCEPTION_RANGE and _has_los()
+	return {"see": see, "dist": dist, "bearing": (angle - facing) & 0x7FF,
+		"angle": angle, "blocked": _blocked}
+
+## Direction → DOS 11-bit yaw (matches the actor's rotation.y frame).
+static func _dos_angle(dir: Vector3) -> int:
+	if dir.length_squared() < 1.0:
+		return 0
+	return int(round(atan2(-dir.x, -dir.z) / TAU * 2048.0)) & 0x7FF
+
+## Movement for walkers / hovers / flyers / tanks.
+func _move_data(delta: float, sense: Dictionary) -> void:
+	var st: int = _brain.state
+	var see: bool = bool(sense.get("see", false))
+	var target: Vector3
+	if see:
+		target = _player.global_position
+		_wander_t = 0.0
+	else:
+		target = _wander(delta)
+	var to: Vector3 = target - global_position
+	to.y = 0.0
+	var dist: float = to.length()
+	var speed: float = move_speed
+	var want_yaw: float = atan2(-to.x, -to.z) if dist > 1.0 else rotation.y
+	if st == 13:
+		# Tank script: heading (var 44, absolute DOS angle) and speed (var 48).
+		if _brain.vars.has(44):
+			want_yaw = float(_brain.var_or(44, 0)) / 2048.0 * TAU
+		speed = float(_brain.var_or(48, int(_t.get("speed", 0)))) * SPEED_SCALE
+	rotation.y = _approach_angle(rotation.y, want_yaw, turn_speed * delta)
+	var moving: bool = true
+	if st == 7:
+		# Walkers only travel while a looping (walk) block plays.
+		moving = (_brain.anim_flags & EnemyAI.ANIM_LOOP) != 0 \
+			and not _brain.freeze_anim
+	var near: float = float(_t.get("near", 100))
+	if st == 13 and speed < 0.0:
+		moving = true
+	elif dist <= near:
+		moving = false
+	_blocked = false
+	if moving and absf(speed) > 0.5:
+		var fwd: Vector3 = -global_transform.basis.z
+		var step: Vector3 = fwd * speed * delta
+		if _path_blocked(step):
+			_blocked = true
+		else:
+			global_position += step
+	if st == 9:
+		# Flyers hold an altitude above the player (script var 56).
+		var alt: float = float(_brain.var_or(56, int(FLYER_ALT_DEFAULT)))
+		var want_y: float = _player.global_position.y + maxf(alt, 60.0)
+		global_position.y = lerpf(global_position.y, want_y, minf(1.0, delta * 1.5))
+	elif not _flying:
+		_snap_to_ground()
+
+## Solid geometry ahead along `step` (bodies only, not the player).
+func _path_blocked(step: Vector3) -> bool:
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return false
+	var from: Vector3 = global_position + Vector3(0.0, 60.0, 0.0)
+	var q := PhysicsRayQueryParameters3D.create(from, from + step.normalized() * (step.length() + 40.0))
+	q.collide_with_areas = false
+	var hit := space.intersect_ray(q)
+	if not hit.has("collider"):
+		return false
+	return not (hit["collider"] as Object).has_method("take_damage")
+
+## Random patrol leg when the player is not perceived.
+func _wander(delta: float) -> Vector3:
+	_wander_t -= delta
+	if _wander_t <= 0.0 or _wander_target == Vector3.ZERO:
+		_wander_t = randf_range(4.0, 9.0)
+		var a: float = randf() * TAU
+		_wander_target = global_position + Vector3(cos(a), 0.0, sin(a)) * randf_range(300.0, WANDER_RADIUS)
+	return _wander_target
+
+## Rotor/engine strips of types without an animation block.
+func _cycle_full_strip(delta: float) -> void:
+	_anim_t += delta
+	var step: float = 1.0 / anim_fps
+	while _anim_t >= step:
+		_anim_t -= step
+		_anim_i = (_anim_i + 1) % _frames.size()
+	mesh = _frames[_anim_i]
+
+# --- turret segments -------------------------------------------------
+## Collect every aiming segment: the root when its own type is a
+## turret (state 2/8), plus child meshes tagged with "seg_type" by
+## level_loader whose type is a turret.
+func _build_segments() -> void:
+	_segs_built = true
+	_rest_yaw = rotation.y
+	var st: int = int(_t.get("st", 0))
+	if st == 2 or st == 8:
+		_segs.append(_make_seg(self, _t, _type_id))
+	_collect_segs(self)
+
+func _collect_segs(n: Node) -> void:
+	for c in n.get_children():
+		if c is Node3D and c.has_meta("seg_type"):
+			var ty: int = int(c.get_meta("seg_type"))
+			if ty >= 0 and ty < AIData.TYPES.size():
+				var td: Dictionary = AIData.TYPES[ty]
+				var sst: int = int(td.get("st", 0))
+				if sst == 2 or sst == 8:
+					_segs.append(_make_seg(c as Node3D, td, ty))
+		_collect_segs(c)
+
+func _make_seg(node: Node3D, td: Dictionary, ty: int) -> Dictionary:
+	return {"node": node, "t": td, "type": ty,
+		"axis": int(td.get("axis", 1)),
+		"amin": float(td.get("amin", -2048)) / 2048.0 * TAU,
+		"amax": float(td.get("amax", 2048)) / 2048.0 * TAU,
+		"rate": float(td.get("turn", 512)) / 2048.0 * TAU,
+		"range": float(td.get("range", 800)),
+		"rest_yaw": node.rotation.y, "rest_pitch": node.rotation.x,
+		"hp": float(td.get("hp", 0))}
+
+func _has_segment_node(n: Node3D) -> bool:
+	for s in _segs:
+		if s["node"] == n:
+			return true
+	return false
+
+## DOS turret state 2: track the player on the segment's axis within
+## its limits while inside the engage range, then fire from it.
+func _aim_segment(seg: Dictionary, delta: float) -> void:
+	var node: Node3D = seg["node"]
+	if not is_instance_valid(node) or _player == null:
+		return
+	var to_g: Vector3 = _player.global_position + Vector3(0.0, 60.0, 0.0) - node.global_position
+	if to_g.length() > seg["range"]:
+		return
+	var parent: Node3D = node.get_parent() as Node3D
+	var pbasis: Basis = parent.global_transform.basis if parent != null else Basis()
+	var d: Vector3 = pbasis.inverse() * to_g
+	var rate: float = seg["rate"] * delta
+	if seg["axis"] == 1:
+		var want: float = atan2(-d.x, -d.z)
+		var rest: float = seg["rest_yaw"]
+		var rel: float = wrapf(want - rest, -PI, PI)
+		if seg["amax"] - seg["amin"] < TAU - 0.01:
+			rel = clampf(rel, seg["amin"], seg["amax"])
+		node.rotation.y = _approach_angle(node.rotation.y, rest + rel, rate)
+	else:
+		# DOS pitch is positive downward; Godot +X rotation raises the nose.
+		var want: float = atan2(d.y, Vector2(d.x, d.z).length())
+		var lo: float = -seg["amax"]
+		var hi: float = -seg["amin"]
+		want = clampf(want, minf(lo, hi), maxf(lo, hi))
+		node.rotation.x = _approach_angle(node.rotation.x, want, rate)
+	var fp: Array = seg["t"].get("fire", [])
+	if not fp.is_empty():
+		_try_fire(node, fp, delta, seg["t"])
+
+# --- firing ----------------------------------------------------------
+## Fire from `node` with the DOS fire params [mx,my,mz, ammo, speed,
+## rate, range] when the player is in range, visible and inside the
+## aim cone. Rate-limited per shooter.
+func _try_fire(node: Node3D, fp: Array, delta: float, _td: Dictionary) -> void:
+	var cd: float = float(_cds.get(node, 0.0)) - delta
+	_cds[node] = cd
+	if cd > 0.0 or _player == null:
+		return
+	var aim: Vector3 = _player.global_position + Vector3(0.0, 60.0, 0.0)
+	var muzzle: Vector3 = node.global_transform * Vector3(float(fp[0]), -float(fp[1]), -float(fp[2]))
+	var to: Vector3 = aim - muzzle
+	var dist: float = to.length()
+	if dist > float(fp[6]) or dist < 1.0:
+		return
+	var fwd: Vector3 = -node.global_transform.basis.z
+	if fwd.angle_to(to) > AIM_CONE:
+		return
+	if not _has_los():
+		return
+	var rate: float = maxf(float(fp[5]), 1.0)
+	_cds[node] = (FIRE_RATE_DIV / rate) * randf_range(0.8, 1.3)
+	_shoot(muzzle, to.normalized(), int(fp[3]), absf(float(fp[4])))
+
+## Spawn the shot for DOS ammo type `ammo` (table 0x40728).
+func _shoot(muzzle: Vector3, dir: Vector3, ammo: int, dos_speed: float) -> void:
+	var a: Array = AIData.AMMO[ammo] if ammo >= 0 and ammo < AIData.AMMO.size() else []
+	var fam: int = int(a[0]) if not a.is_empty() else 2
+	var model: String = String(a[1]) if not a.is_empty() else "LASER3.3D"
+	var bank: int = int(a[2]) if not a.is_empty() else 364
+	var dmg: int = int(a[3]) if not a.is_empty() else 25
+	var blast: float = float(a[4]) if not a.is_empty() else 0.0
+	var life: float = float(a[5]) / 35.0 if not a.is_empty() else 1.5
+	var fsnd: int = int(a[6]) if not a.is_empty() else 15
+	var isnd: int = int(a[7]) if not a.is_empty() else -1
+	# Inaccuracy: aim somewhere in a cone — wider at range.
+	var spread: float = aim_spread * 0.6
+	dir = (dir + Vector3(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0),
+		randf_range(-1.0, 1.0)) * spread).normalized()
+	if fsnd >= 0:
+		Audio.play_id_3d(fsnd, muzzle, -7.0)
+	var scene := get_tree().current_scene
+	if scene == null:
+		return
+	var tint: Color = _ammo_color(model)
+	var mf := MuzzleFlash.new()
+	scene.add_child(mf)
+	mf.setup(muzzle, tint, 90.0)
+	if fam == 0:
+		# Hitscan bullets: tracer + instant damage (DOS type 0/1/16).
+		var space := get_world_3d().direct_space_state
+		var endpoint: Vector3 = muzzle + dir * 20000.0
+		var q := PhysicsRayQueryParameters3D.create(muzzle, endpoint)
+		q.collide_with_areas = false
+		var hit := space.intersect_ray(q)
+		if hit.has("position"):
+			endpoint = hit["position"]
+		var tr: MeshInstance3D = Tracer.new()
+		scene.add_child(tr)
+		tr.setup(muzzle, endpoint, tint)
+		if hit.has("collider"):
+			var n: Node = hit["collider"] as Node
+			while n != null and not n.has_method("take_damage"):
+				n = n.get_parent()
+			if n != null and n.is_in_group("player"):
+				n.take_damage(float(absi(dmg)))
+			elif bank > 0:
+				var puff := Explosion.new()
+				scene.add_child(puff)
+				puff.setup(endpoint, 40.0, bank)
+		return
+	var proj := Projectile.new()
+	scene.add_child(proj)
+	var cfg: Dictionary = {
+		"model": model if not model.is_empty() else "LASER3.3D",
+		"color": tint,
+		"speed": maxf(dos_speed, 200.0) * BOLT_SPEED_SCALE,
+		"life": maxf(life, 0.8),
+		"splash": blast if dmg < 0 else 0.0,
+		"light": true, "impact_bank": bank, "hits": "player",
+		"trail": model.begins_with("ROCKET"),
+	}
+	if isnd >= 0:
+		cfg["impact_sound"] = Audio.sound_name(isnd)
+	proj.setup(muzzle, dir, float(absi(dmg)), cfg, self)
+
+static func _ammo_color(model: String) -> Color:
+	match model:
+		"LASER1.3D": return Color(1.0, 0.32, 0.22)
+		"LASER2.3D": return Color(0.45, 0.7, 1.0)
+		"ROCKET.3D": return Color(1.0, 0.75, 0.4)
+	return Color(1.0, 0.45, 0.22)
+
+# ---------------------------------------------------------------------
+# Legacy heuristic FSM (types without table data)
+# ---------------------------------------------------------------------
+func _tick_legacy(delta: float) -> void:
+	if _frames.size() > 1:
+		if not _anim_table.is_empty():
+			_step_clip(delta)
+		else:
+			var animate: bool = _flying or _passive \
+				or _state == State.CHASE or _state == State.ATTACK
+			if animate:
+				_anim_t += delta
+				var step := 1.0 / anim_fps
+				var walk_end: int = _walk_frame_end()
+				var walk_len: int = walk_end + 1
+				while _anim_t >= step:
+					_anim_t -= step
+					_anim_i = (_anim_i + 1) % walk_len
+				if _anim_i > walk_end:
+					_anim_i = 0
+				mesh = _frames[_anim_i]
+			elif _anim_i != 0:
+				_anim_i = 0
+				_anim_t = 0.0
+				mesh = _frames[0]
+	if _passive or _player == null:
+		return
+	var to := _player.global_position - global_position
+	to.y = 0.0
+	var dist := to.length()
+	if dist < 1.0:
+		return
+	var los := false
+	if _state == State.CHASE or _state == State.ATTACK:
+		los = _has_los()
+	match _state:
+		State.IDLE:
+			if dist < detect_range:
+				_set_chase()
+		State.CHASE:
+			if dist > detect_range * 1.25:
+				_state = State.IDLE
+			elif dist < attack_range and los:
+				_state = State.ATTACK
+		State.ATTACK:
+			if dist > attack_range * 1.2 or not los:
+				_state = State.CHASE
+	if _state == State.IDLE:
+		return
+	var want_yaw := atan2(-to.x, -to.z)
+	if _aim_node != null:
+		var local_want: float = wrapf(want_yaw - global_rotation.y, -PI, PI)
+		_aim_node.rotation.y = _approach_angle(_aim_node.rotation.y,
+			local_want, turn_speed * delta)
+		var aim_target_y: float = _player.global_position.y + 60.0
+		var dy: float = aim_target_y - global_position.y
+		var want_pitch: float = atan2(dy, maxf(dist, 1.0))
+		_aim_node.rotation.x = _approach_angle(_aim_node.rotation.x,
+			want_pitch, turn_speed * delta)
+	else:
+		rotation.y = _approach_angle(rotation.y, want_yaw, turn_speed * delta)
+	if _state == State.CHASE and not _stationary:
+		global_position += to.normalized() * move_speed * delta
+		_snap_to_ground()
+	elif _state == State.ATTACK:
+		var aim_yaw: float
+		var target_yaw: float
+		if _aim_node != null:
+			aim_yaw = _aim_node.rotation.y
+			target_yaw = wrapf(want_yaw - global_rotation.y, -PI, PI)
+		else:
+			aim_yaw = rotation.y
+			target_yaw = want_yaw
+		var aimed: bool = not _stationary \
+			or absf(wrapf(target_yaw - aim_yaw, -PI, PI)) < 0.35
+		_fire_cd -= delta
+		if _fire_cd <= 0.0 and aimed:
+			_fire_cd = fire_interval * randf_range(0.8, 1.3)
+			_fire_at_player()
+
 func _step_clip(delta: float) -> void:
 	var clip: String = _clip_for_state(_state)
 	if clip.is_empty():
@@ -159,9 +646,6 @@ func _step_clip(delta: float) -> void:
 				_anim_i = start if loops else end
 	mesh = _frames[_anim_i]
 
-## Pick the clip name that matches the current AI state. Falls back
-## through related clips when a specific one isn't in the table (e.g.
-## meshes with only "walk" treat ATTACK / CHASE the same).
 func _clip_for_state(s: State) -> String:
 	if _anim_table.is_empty():
 		return ""
@@ -181,14 +665,6 @@ func _clip_for_state(s: State) -> String:
 			if _anim_table.has("fall"):  return "fall"
 	return ""
 
-## How many trailing frames are reserved for the death sequence. -1
-## explicit override means "auto" — split off a third of the strip,
-## capped at DEATH_FRAME_BUDGET, with a floor of 1. A mesh with fewer
-## than 3 frames returns 0 (no separation, instant explosion). Passive
-## transports keep their full cycle (the strip is engines/rotors, not
-## walk-then-die), so they get 0 too. Only consulted when the mesh has
-## no fan-port AnimRecord entry; otherwise the table's "death" anim
-## supplies its own range.
 func _death_frame_count() -> int:
 	var fc: int = _frames.size()
 	if fc < 3 or _passive:
@@ -197,159 +673,34 @@ func _death_frame_count() -> int:
 		return mini(death_anim_frames, fc - 1)
 	return mini(DEATH_FRAME_BUDGET, maxi(1, fc / 3))
 
-## Last frame index of the walking-cycle range (inclusive). Only used
-## by the heuristic path — table-driven enemies use clip ranges.
 func _walk_frame_end() -> int:
 	var fc: int = _frames.size()
 	if fc <= 1:
 		return 0
 	return maxi(0, fc - 1 - _death_frame_count())
 
-func _physics_process(delta: float) -> void:
-	# A killed robot is destroyed instantly in an explosion (see _die),
-	# which frees this node — this guard only catches a late physics tick
-	# before the deferred free runs.
-	if _state == State.DEAD:
-		return
-
-	# --- animation: state-driven ---
-	# Two paths. (a) If the mesh has a fan-port AnimRecord table, pick
-	# a clip for the current AI state and cycle its range at the clip's
-	# fps. (b) Heuristic fallback for meshes without an entry — turrets,
-	# vehicles, drones — uses the full strip with a trailing death
-	# reserve (see _walk_frame_end / _death_frame_count).
-	if _frames.size() > 1:
-		if not _anim_table.is_empty():
-			_step_clip(delta)
-		else:
-			var animate: bool = _flying or _passive \
-				or _state == State.CHASE or _state == State.ATTACK
-			if animate:
-				_anim_t += delta
-				var step := 1.0 / anim_fps
-				var walk_end: int = _walk_frame_end()
-				var walk_len: int = walk_end + 1
-				while _anim_t >= step:
-					_anim_t -= step
-					_anim_i = (_anim_i + 1) % walk_len
-				if _anim_i > walk_end:
-					_anim_i = 0
-				mesh = _frames[_anim_i]
-			elif _anim_i != 0:
-				_anim_i = 0
-				_anim_t = 0.0
-				mesh = _frames[0]
-
-	if not _init_done:
-		_init_done = true
-		# Walking actors settle onto the floor; turrets and fliers keep
-		# their authored placement Y (DOS does not ground-snap them — a
-		# turret on a pillar must stay on the pillar).
-		if not _flying and not _stationary:
-			_snap_to_ground()
-
-	if _passive:
-		return                                 # transports: animate only
-
-	if _player == null or not is_instance_valid(_player):
-		_player = get_tree().get_first_node_in_group("player")
-		if _player == null:
-			return
-
-	var to := _player.global_position - global_position
-	to.y = 0.0
-	var dist := to.length()
-	if dist < 1.0:
-		return
-
-	# --- line of sight + state transitions ---
-	# An actor only enters/holds ATTACK when it can actually see the
-	# player — no shooting through terrain or buildings.
-	var los := false
-	if _state == State.CHASE or _state == State.ATTACK:
-		los = _has_los()
-	match _state:
-		State.IDLE:
-			if dist < detect_range:
-				_set_chase()
-		State.CHASE:
-			if dist > detect_range * 1.25:
-				_state = State.IDLE
-			elif dist < attack_range and los:
-				_state = State.ATTACK
-		State.ATTACK:
-			if dist > attack_range * 1.2 or not los:
-				_state = State.CHASE
-
-	if _state == State.IDLE:
-		return
-
-	# Track the player. Walking actors turn the whole body. Turrets are
-	# bolted down but rotate their gun/head — when a child aim segment is
-	# wired up (multi-segment stationary actor), only that segment yaws
-	# while the base stays still; otherwise the whole authored mesh yaws.
-	# DOS turrets are multi-segment (fixed base + rotating head), see
-	# skynet_gh.c FUN_00150284 entity render + segment table at +0x0C.
-	#
-	# `want_yaw` is the GLOBAL yaw pointing from this enemy at the player.
-	# The aim node is a child of `self`, so its local rotation.y must be
-	# `want_yaw − self.global_rotation.y` for its world facing to land on
-	# the target — otherwise the authored base yaw (eyaw from the marker)
-	# offsets the gun the wrong way and the turret aims off-target.
-	var want_yaw := atan2(-to.x, -to.z)
-	if _aim_node != null:
-		var local_want: float = wrapf(want_yaw - global_rotation.y, -PI, PI)
-		_aim_node.rotation.y = _approach_angle(_aim_node.rotation.y,
-			local_want, turn_speed * delta)
-		# Elevation tracking — DOS turret barrels pitch up/down to keep
-		# the player in their sights. With YXZ Euler ordering and the
-		# enemy body holding rotation.x = 0, the mount's local pitch
-		# equals the global pitch to the player. Aim a bit above feet
-		# (chest height) so prone players are still targetable.
-		var aim_target_y: float = _player.global_position.y + 60.0
-		var dy: float = aim_target_y - global_position.y
-		var want_pitch: float = atan2(dy, maxf(dist, 1.0))
-		_aim_node.rotation.x = _approach_angle(_aim_node.rotation.x,
-			want_pitch, turn_speed * delta)
-	else:
-		rotation.y = _approach_angle(rotation.y, want_yaw, turn_speed * delta)
-
-	if _state == State.CHASE and not _stationary:
-		global_position += to.normalized() * move_speed * delta
-		_snap_to_ground()
-	elif _state == State.ATTACK:
-		# A turret holds fire until its mount has swung onto the target,
-		# so it visibly tracks before shooting; walking actors fire freely.
-		# Compare yaws in matching frames: aim-node yaw is local to self,
-		# self.rotation.y is local to the world.
-		var aim_yaw: float
-		var target_yaw: float
-		if _aim_node != null:
-			aim_yaw = _aim_node.rotation.y
-			target_yaw = wrapf(want_yaw - global_rotation.y, -PI, PI)
-		else:
-			aim_yaw = rotation.y
-			target_yaw = want_yaw
-		var aimed: bool = not _stationary \
-			or absf(wrapf(target_yaw - aim_yaw, -PI, PI)) < 0.35
-		_fire_cd -= delta
-		if _fire_cd <= 0.0 and aimed:
-			_fire_cd = fire_interval * randf_range(0.8, 1.3)
-			_fire_at_player()
-
-## Designate a child node as the aim segment — only that node yaws to
-## track the player, the base stays still. Called by level_loader after
-## attaching segments to a multi-segment stationary actor (turrets).
-func set_aim_node(n: Node3D) -> void:
-	_aim_node = n
-
 func _set_chase() -> void:
 	_state = State.CHASE
 	if _snd != null and _snd.stream != null and not _snd.playing:
-		_snd.play()                            # alert sound
+		_snd.play()
 
-## True when an unobstructed line runs to the player — the first solid
-## body hit must be the player, not terrain or a building.
+## Legacy bolt (fallback FSM): LASER3.3D at the player.
+func _fire_at_player() -> void:
+	if _clip == "attack" and _anim_table.has("attack"):
+		_anim_i = clampi(int(_anim_table["attack"][0]), 0, _frames.size() - 1)
+		_anim_t = 0.0
+		if not _frames.is_empty():
+			mesh = _frames[_anim_i]
+	var origin := global_position + Vector3(0.0, 60.0, 0.0)
+	var aim := _player.global_position + Vector3(0.0, 60.0, 0.0)
+	var dir := (aim - origin).normalized()
+	var muzzle := origin + dir * (_body_size * 0.5 + 80.0)
+	_shoot(muzzle, dir, 15, 800.0)
+
+# ---------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------
+## True when an unobstructed line runs to the player.
 func _has_los() -> bool:
 	if _player == null:
 		return false
@@ -359,35 +710,11 @@ func _has_los() -> bool:
 	var q := PhysicsRayQueryParameters3D.create(
 		global_position + Vector3(0.0, 60.0, 0.0),
 		_player.global_position + Vector3(0.0, 60.0, 0.0))
-	q.collide_with_areas = false               # bodies only
+	q.collide_with_areas = false
 	var hit := space.intersect_ray(q)
 	if not hit.has("collider"):
 		return true
 	return (hit["collider"] as Object).has_method("take_damage")
-
-## Hitscan a shot at the player; terrain and walls block the shot.
-func _fire_at_player() -> void:
-	var muzzle := global_position + Vector3(0.0, 60.0, 0.0)
-	var aim := _player.global_position + Vector3(0.0, 60.0, 0.0)
-	# Inaccuracy: the shot lands somewhere in a cone — wider at range.
-	var spread := muzzle.distance_to(aim) * aim_spread
-	var target := aim + Vector3(randf_range(-1.0, 1.0),
-		randf_range(-1.0, 1.0), randf_range(-1.0, 1.0)) * spread
-	Audio.play_sfx_3d("LASER3.RAW", muzzle, -8.0)
-	var space := get_world_3d().direct_space_state
-	var q := PhysicsRayQueryParameters3D.create(muzzle, target)
-	q.collide_with_areas = false               # bodies only (player, walls)
-	var hit := space.intersect_ray(q)
-	var endpoint := target
-	if hit.has("position"):
-		endpoint = hit["position"]
-	var tr: MeshInstance3D = Tracer.new()
-	get_tree().current_scene.add_child(tr)
-	tr.setup(muzzle, endpoint, Color(1.0, 0.5, 0.25))
-	if hit.has("collider"):
-		var c = hit["collider"]
-		if c != null and c.has_method("take_damage"):
-			c.take_damage(shot_damage)
 
 ## Receive damage from a player shot.
 func take_damage(amount: float) -> void:
@@ -395,66 +722,56 @@ func take_damage(amount: float) -> void:
 		return
 	_health -= amount
 	Audio.play_sfx_3d("HIT2.RAW", global_position + Vector3(0.0, 40.0, 0.0), -4.0)
+	if _dormant_dist > 0.0:
+		if _health <= 0.0:
+			_detonate_trap()
+		return
+	_seen = true                            # being shot alerts it (DOS 0x8000)
 	if _health <= 0.0:
 		_die()
-	elif _state == State.IDLE:
-		_set_chase()                           # being shot wakes it up
+	elif _state == State.IDLE and _brain == null:
+		_set_chase()
 
-## Destroy the robot: every enemy is a machine, so death is an explosion,
-## not a ragdoll. Large chassis additionally fling burning debris chunks
-## that detonate when they hit the ground.
-##
-## When the mesh has a fan-port AnimRecord table, use its "death" clip
-## (frame range + fps) verbatim — these come from `fshock_ida.c`'s
-## per-mesh processor (e.g. T800 family death = 46..60 @ 10 fps,
-## `sub_428140`). Without a table, fall back to the trailing-frames
-## heuristic. Either way, play the sequence then explode + queue_free.
+## Dormant trap: detonate (DOS state 12 — effect + sound 0x26).
+func _detonate_trap() -> void:
+	if _state == State.DEAD:
+		return
+	_state = State.DEAD
+	var centre := global_position + Vector3(0.0, _body_height * 0.5, 0.0)
+	Audio.play_id_3d(DEATH_SOUND_ID, centre, -2.0)
+	Audio.play_sfx_3d("EXPLO1.RAW", centre, -2.0)
+	_spawn_explosion(centre, _body_size * 0.55)
+	_fling_parts(centre)
+	queue_free()
+
+## Destroy the machine: DOS EnemyKill — instant explosion plus the
+## type's wreck parts flung ballistically.
 func _die() -> void:
 	if _state == State.DEAD:
 		return
 	_state = State.DEAD
-	if _anim_table.has("death"):
-		await _play_clip_once("death")
-	else:
-		var death_count: int = _death_frame_count()
-		if death_count > 0:
-			var start: int = _frames.size() - death_count
-			var step: float = death_anim_time / float(death_count)
-			for i in death_count:
-				if not is_inside_tree():
-					return
-				_anim_i = start + i
-				mesh = _frames[_anim_i]
-				await get_tree().create_timer(step).timeout
-	if not is_inside_tree():
-		return
+	if _engine != null:
+		_engine.stop()
 	var centre := global_position + Vector3(0.0, _body_height * 0.5, 0.0)
 	Audio.play_sfx_3d("EXPLO1.RAW", centre, -2.0)
 	_spawn_explosion(centre, _body_size * 0.55)
-	if _body_size >= big_model_size:
+	if not _fling_parts(centre) and _body_size >= big_model_size:
 		for _i in 4 + (randi() % 4):
-			_spawn_debris(centre)
+			_spawn_debris(centre, null)
 	queue_free()
 
-## Play a named clip from `_anim_table` once, frame-by-frame, awaiting
-## between frames. Returns when the end frame is shown; bails out
-## early if the node leaves the tree.
-func _play_clip_once(clip: String) -> void:
-	if not _anim_table.has(clip):
-		return
-	var rec: Array = _anim_table[clip]
-	var start: int = clampi(int(rec[0]), 0, _frames.size() - 1)
-	var end: int = clampi(int(rec[1]), start, _frames.size() - 1)
-	var fps: float = float(rec[2])
-	if fps <= 0.0:
-		fps = EnemyAnim.DEFAULT_FPS
-	var step: float = 1.0 / fps
-	for f in range(start, end + 1):
-		if not is_inside_tree():
-			return
-		_anim_i = f
-		mesh = _frames[_anim_i]
-		await get_tree().create_timer(step).timeout
+## Fling the DOS wreck parts. Returns false when the type has none.
+func _fling_parts(centre: Vector3) -> bool:
+	if death_parts.is_empty():
+		return false
+	var scene := get_tree().current_scene
+	if scene == null:
+		return false
+	for p in death_parts:
+		var m: Mesh = p[0]
+		var off: Vector3 = global_transform.basis * (p[1] as Vector3)
+		_spawn_debris(global_position + off, m)
+	return true
 
 func _spawn_explosion(at: Vector3, radius: float) -> void:
 	var scene := get_tree().current_scene
@@ -464,7 +781,7 @@ func _spawn_explosion(at: Vector3, radius: float) -> void:
 	scene.add_child(ex)
 	ex.setup(at, radius)
 
-func _spawn_debris(at: Vector3) -> void:
+func _spawn_debris(at: Vector3, part: Mesh) -> void:
 	var scene := get_tree().current_scene
 	if scene == null:
 		return
@@ -472,19 +789,23 @@ func _spawn_debris(at: Vector3) -> void:
 	scene.add_child(d)
 	var dir := Vector3(randf_range(-1.0, 1.0), randf_range(1.5, 2.8),
 		randf_range(-1.0, 1.0)).normalized()
-	d.setup(at, dir * randf_range(950.0, 1750.0))
+	d.setup(at, dir * randf_range(950.0, 1750.0), part)
 
 ## Drop the actor onto the surface directly below it.
-func _snap_to_ground() -> void:
+func _snap_to_ground() -> bool:
 	var space := get_world_3d().direct_space_state
 	if space == null:
-		return
-	var q := PhysicsRayQueryParameters3D.create(
-		global_position + Vector3(0.0, 4000.0, 0.0),
-		global_position + Vector3(0.0, -20000.0, 0.0))
-	var hit := space.intersect_ray(q)
-	if hit.has("position"):
-		global_position.y = (hit["position"] as Vector3).y - _foot_offset
+		return false
+	for start_h in [120.0, 4000.0]:
+		var q := PhysicsRayQueryParameters3D.create(
+			global_position + Vector3(0.0, start_h, 0.0),
+			global_position + Vector3(0.0, -20000.0, 0.0))
+		q.collide_with_areas = false
+		var hit := space.intersect_ray(q)
+		if hit.has("position"):
+			global_position.y = (hit["position"] as Vector3).y - _foot_offset
+			return true
+	return false
 
 ## Step `cur` toward `target` (radians) by at most `max_step`.
 static func _approach_angle(cur: float, target: float, max_step: float) -> float:

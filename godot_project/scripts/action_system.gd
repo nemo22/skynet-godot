@@ -106,6 +106,17 @@ const SWING_SPEED_FAST: float = 306.0    # 11-bit units/s, |limit| >= 0x800
 const ROT_SPEED: float = 153.0           # continuous rotators
 const SLIDE_SPEED_SCALE: float = 2.2     # slide speed = p4 * this (units/s)
 const PROX_GATE_RADIUS: float = 60.0     # 0xEF (Skynet.exe 0x137e2e)
+## The DOS 60-unit gate test is against the player's body, so the player
+## capsule radius is added — MAP data places gates 32..79 units from the
+## doorway sprite they guard, which a centre-point test would walk past.
+const PLAYER_RADIUS: float = 26.0
+## A 0xF0 doorway sprite is also armed by the player touching it directly
+## (handler 0x137881: "player touch arms state bit 0"); interior return
+## exits rely on this as much as on their chained 0xEF gate.
+const TELEPORT_TOUCH_RADIUS: float = 90.0
+## Vertical window for every proximity test — stacked interior floors put
+## gates directly above/below each other.
+const PROX_VERTICAL_WINDOW: float = 512.0
 const DESTRUCT_DAMAGE_PER_STAGE: float = 16.0  # handler 0x120433 stage step
 
 var _map: MapFile.MapFile = null
@@ -118,6 +129,8 @@ var _destr: Dictionary = {}       # file_off → destructible runtime state
 var _hp: Dictionary = {}          # file_off → remaining HP
 var _spent: Dictionary = {}       # file_off → true (HP-depleted, inert)
 var _prox_latched: Dictionary = {} # file_off → true while player inside
+var _touch_latched: Dictionary = {} # teleport file_off → player touching
+var _teleport_fired: bool = false   # one map change per level instance
 var _unhandled_logged: Dictionary = {}
 
 func setup(map: MapFile.MapFile) -> void:
@@ -267,33 +280,138 @@ func tick(delta: float, player_pos: Vector3) -> void:
 	for e in _prox:
 		if (e.state_byte & 1) == 0 or _spent.has(e.file_off):
 			continue
-		var radius: float = PROX_GATE_RADIUS
-		if e.link_act_type == ACT_PROX_CHAIN_A:
-			radius = 256.0
-		elif e.link_act_type == ACT_PROX_CHAIN_B:
-			radius = 1024.0
 		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
-		var d2 := Vector2(player_pos.x - epos.x, player_pos.z - epos.z)
-		var inside: bool = d2.length() <= radius
+		var inside: bool = _within(epos, player_pos, _prox_radius(e))
 		var latched: bool = _prox_latched.get(e.file_off, false)
 		if inside and not latched:
 			_prox_latched[e.file_off] = true
 			_flip_link(e)
 		elif not inside and latched:
 			_prox_latched[e.file_off] = false
-	# Sound one-shots (0xdb..0xeb) — self-disable; the actual sound
-	# playback needs the phase-4 sound-id table extraction.
+	# Sound one-shots (0xdb..0xeb, handler 0x137dbd): play the slot's
+	# sound id (Audio.SOUND_IDS, the 0x4ff00 table) at the node, then
+	# self-disable. Door/button chains route through these for their
+	# sounds; a node armed in the MAP data plays once at level start.
 	for e in _sound_nodes:
 		if (e.state_byte & 1) != 0:
 			e.state_byte &= ~1
+			Audio.play_id_3d(int(SOUND_ONESHOT.get(e.link_act_type, -1)),
+				Vector3(float(e.x), -float(e.y), -float(e.z)), -4.0)
 	# Teleports ---------------------------------------------------
+	# Armed by a chain (0xEF gate → sound node → 0xF0) or by the player
+	# touching the doorway sprite itself. One map change per level
+	# instance — the level is torn down once the signal fires.
+	if _teleport_fired:
+		return
 	for e in _teleports:
-		if (e.state_byte & 1) == 0:
+		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
+		var touching: bool = _within(epos, player_pos, TELEPORT_TOUCH_RADIUS)
+		var armed: bool = (e.state_byte & 1) != 0
+		if touching and not _touch_latched.get(e.file_off, false):
+			armed = true
+		_touch_latched[e.file_off] = touching
+		if not armed:
 			continue
 		e.state_byte &= ~1                       # one-shot (0x137881)
+		_teleport_fired = true
 		print("[action] teleport → map %d, marker set %d"
 			% [e.exit_map, e.exit_marker_id])
 		teleport_requested.emit(e.exit_map, e.exit_marker_id)
+		return
+
+## Called right after the player is placed: latch every gate and doorway
+## the spawn point already lies inside, so a return exit that drops the
+## player beside the gate it came through (MAP.210 marker 27 is 64 units
+## from the bunker gate; MAP.211's start sits inside its DOOR gate) waits
+## for the player to step out and back in instead of bouncing straight
+## back.
+func arm_proximity(player_pos: Vector3) -> void:
+	for e in _prox:
+		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
+		if _within(epos, player_pos, _prox_radius(e)):
+			_prox_latched[e.file_off] = true
+	for e in _teleports:
+		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
+		if _within(epos, player_pos, TELEPORT_TOUCH_RADIUS):
+			_touch_latched[e.file_off] = true
+
+func _prox_radius(e: MapFile.Entity) -> float:
+	if e.link_act_type == ACT_PROX_CHAIN_A:
+		return 256.0
+	if e.link_act_type == ACT_PROX_CHAIN_B:
+		return 1024.0
+	return PROX_GATE_RADIUS + PLAYER_RADIUS
+
+## Horizontal distance test with a vertical window.
+static func _within(epos: Vector3, player_pos: Vector3, radius: float) -> bool:
+	if absf(player_pos.y - epos.y) > PROX_VERTICAL_WINDOW:
+		return false
+	return Vector2(player_pos.x - epos.x, player_pos.z - epos.z).length() <= radius
+
+## --- Per-map state overlay ------------------------------------------
+## DOS "Mst": MstSave (FUN_0012e0f4) on leaving a map, MstLoad
+## (FUN_0012e094) after MapStart. Maps are always re-parsed from disk on
+## entry, so everything the player changed — toggled trigger bits, mover
+## travel, damage stages, spent switches, remaining HP — is captured here
+## and re-applied on return.
+func save_state() -> Dictionary:
+	var states: Dictionary = {}
+	if _map != null:
+		for e in _map.entities:
+			states[e.file_off] = e.state_byte
+	var movers: Dictionary = {}
+	for off in _movers:
+		var m: Dictionary = _movers[off]
+		movers[off] = [m["progress"], m["dir"]]
+	var destr: Dictionary = {}
+	for off in _destr:
+		var d: Dictionary = _destr[off]
+		destr[off] = [d["stage"], d["accum"]]
+	return {
+		"states": states, "movers": movers, "destr": destr,
+		"hp": _hp.duplicate(), "spent": _spent.duplicate(),
+	}
+
+## Re-apply a save_state() snapshot. Call after every node is registered
+## (register_node / register_destructible) so the visuals refresh too.
+func restore_state(snap: Dictionary) -> void:
+	if _map == null or snap.is_empty():
+		return
+	var states: Dictionary = snap.get("states", {})
+	for off in states:
+		var e: MapFile.Entity = _map.entities_by_off.get(off)
+		if e != null:
+			e.state_byte = int(states[off])
+	_hp = (snap.get("hp", {}) as Dictionary).duplicate()
+	_spent = (snap.get("spent", {}) as Dictionary).duplicate()
+	var movers: Dictionary = snap.get("movers", {})
+	for off in movers:
+		if not _movers.has(off):
+			continue
+		var m: Dictionary = _movers[off]
+		m["progress"] = float(movers[off][0])
+		m["dir"] = float(movers[off][1])
+		var mnode: Node3D = _nodes.get(off)
+		if mnode != null and is_instance_valid(mnode):
+			_apply_mover_transform(mnode, m)
+	var destr: Dictionary = snap.get("destr", {})
+	for off in destr:
+		if not _destr.has(off):
+			continue
+		var d: Dictionary = _destr[off]
+		d["stage"] = int(destr[off][0])
+		d["accum"] = float(destr[off][1])
+		var node: Node3D = _nodes.get(off)
+		if node == null or not is_instance_valid(node):
+			continue
+		var meshes: Array = d["meshes"]
+		if meshes.size() > 1:
+			if node is MeshInstance3D and d["stage"] < meshes.size() \
+					and meshes[d["stage"]] != null:
+				(node as MeshInstance3D).mesh = meshes[d["stage"]]
+		elif _spent.has(off):
+			node.visible = false
+			_disable_collision(node)
 
 ## Advance one mover while its enable bit is set. On reaching either
 ## end of its travel the DOS handler clears the enable bit and flips

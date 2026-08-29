@@ -13,7 +13,7 @@ config_version=5
 config/name="SkyNET Godot Port"
 config/description="Port of The Terminator: SkyNET (1996, Bethesda Xngine) to Godot 4. C loaders ported to GDScript; renderer uses Godot 4."
 run/main_scene="res://scenes/menu.tscn"
-config/features=PackedStringArray("4.6", "Forward Plus")
+config/features=PackedStringArray("4.7", "Forward Plus")
 
 [audio]
 

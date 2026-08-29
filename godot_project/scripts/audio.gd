@@ -176,3 +176,57 @@ func set_master_volume(v: float) -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("audio", "master", master_volume)
 	cfg.save(AUDIO_CFG)
+
+## --- DOS sound-id table ---------------------------------------------
+## Skynet.exe VA 0x4ff00: 126 × 20-byte records, field 0 = pointer
+## (+0x30000) to the 8.3 filename. Every id-based sound reference in the
+## engine indexes this table: weapon records (+0x48 fire / +0x54 select /
+## +0x58 dry-fire), ammo types (+0x1c fire, +0x20 impact), the action
+## table's one-shot sound nodes (0xdb..0xec) and AI frame events.
+const SOUND_IDS: PackedStringArray = [
+	"pipehit1.raw", "shots5.raw", "shots2.raw", "shots3.raw", "shtgun.raw",
+	"sgcock1.raw", "sgcock2.raw", "grnlaun2.raw", "rocket2.raw", "uzicock3.raw",
+	"click.raw", "laser1.raw", "laser2.raw", "laser8.raw", "laser6.raw",
+	"laser3.raw", "fizzle1.raw", "ppcload.raw", "grunt1.raw", "geiger1.raw",
+	"geiger2.raw", "heart1.raw", "heart2.raw", "jmpcon.raw", "jmpmet.raw",
+	"jmpwod.raw", "rocket1.raw", "collide1.raw", "hit2.raw", "skid2.raw",
+	"carcoll2.raw", "richo5.raw", "richo8.raw", "explo1.raw", "explo2.raw",
+	"explo3.raw", "explo4.raw", "explo5.raw", "gauss1.raw", "ppc100.raw",
+	"doora.raw", "doorb.raw", "doorc.raw", "doord.raw", "doorw.raw",
+	"button1.raw", "button2.raw", "lever1.raw", "hk2.raw", "hk2.raw",
+	"hk2.raw", "hk2.raw", "hk2.raw", "hk2.raw", "hk2.raw",
+	"tank1.raw", "tank1.raw", "tank1.raw", "hvyft5.raw", "hydra2.raw",
+	"hydra5.raw", "hvyft4.raw", "press1.raw", "fire.raw", "amtech1.raw",
+	"amtech2.raw", "amtech3.raw", "amtech4.raw", "hk2.raw", "careng1.raw",
+	"lfwgrv.raw", "rfwgrv.raw", "lfwwod.raw", "rfwwod.raw", "lfwmet.raw",
+	"rfwmet.raw", "explo6.raw", "elevat1.raw", "fastgun2.raw", "fastgun2.raw",
+	"hydra3.raw", "comm1.raw", "swish1.raw", "fire.raw", "lfwsew.raw",
+	"rfwsew.raw", "jmpsew.raw", "wind.raw", "windmet.raw", "windwod.raw",
+	"bubbles.raw", "drips.raw", "water.raw", "metdoor.raw", "miltkill.raw",
+	"miltdies.raw", "motfind1.raw", "motloop2.raw", "head1.raw", "head2.raw",
+	"hitbycar.raw", "grunt2.raw", "grunt3.raw", "grunt4.raw", "grunt5.raw",
+	"grunt6.raw", "grunt7.raw", "grunt8.raw", "grunt9.raw", "movedoor.wav",
+	"ibeam.wav", "power1.wav", "watmove.wav", "subdoor.wav", "rap.wav",
+	"splash.wav", "drown.wav", "getair.wav", "bubbles2.wav", "pings.wav",
+	"subalarm.wav", "carstart.wav", "getair2.wav", "leftwatr.wav", "rightwtr.wav",
+	"torpedo.wav",
+]
+
+## Archive filename for a DOS sound id, or "" when the id is out of range
+## (-1 = "no sound" in every DOS table).
+func sound_name(id: int) -> String:
+	if id < 0 or id >= SOUND_IDS.size():
+		return ""
+	return SOUND_IDS[id]
+
+## Play a DOS sound id at a world position (no-op for -1 / bad ids).
+func play_id_3d(id: int, world_pos: Vector3, volume_db: float = -6.0) -> void:
+	var n := sound_name(id)
+	if not n.is_empty():
+		play_sfx_3d(n, world_pos, volume_db)
+
+## Play a DOS sound id non-positionally (player-side sounds).
+func play_id(id: int, volume_db: float = 0.0) -> void:
+	var n := sound_name(id)
+	if not n.is_empty():
+		play_sfx(n, volume_db)

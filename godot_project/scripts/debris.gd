@@ -15,20 +15,26 @@ var _spin: Vector3 = Vector3.ZERO
 var _mi: MeshInstance3D = null
 
 ## Launch a chunk from `at` with initial velocity `vel` (units/sec).
-func setup(at: Vector3, vel: Vector3) -> void:
+## `part` is the DOS wreck-part mesh (enemy table death list — engine,
+## fin, gun, limb …) flung off a destroyed actor; without one a generic
+## scorched-metal chunk is used.
+func setup(at: Vector3, vel: Vector3, part: Mesh = null) -> void:
 	global_position = at
 	_vel = vel
 	_spin = Vector3(randf_range(-8.0, 8.0), randf_range(-8.0, 8.0),
 		randf_range(-8.0, 8.0))
 	_mi = MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	var s := randf_range(28.0, 64.0)
-	bm.size = Vector3(s, s * randf_range(0.4, 1.0), s * randf_range(0.4, 1.0))
-	_mi.mesh = bm
-	var mat := StandardMaterial3D.new()
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.albedo_color = Color(0.32, 0.30, 0.34)      # scorched metal
-	_mi.material_override = mat
+	if part != null:
+		_mi.mesh = part
+	else:
+		var bm := BoxMesh.new()
+		var s := randf_range(28.0, 64.0)
+		bm.size = Vector3(s, s * randf_range(0.4, 1.0), s * randf_range(0.4, 1.0))
+		_mi.mesh = bm
+		var mat := StandardMaterial3D.new()
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.albedo_color = Color(0.32, 0.30, 0.34)      # scorched metal
+		_mi.material_override = mat
 	add_child(_mi)
 
 func _physics_process(delta: float) -> void:

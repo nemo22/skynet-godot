@@ -12,6 +12,8 @@ extends Node
 
 const LevelLoader := preload("res://scripts/level_loader.gd")
 const ActionSystem := preload("res://scripts/action_system.gd")
+const EnemyAI := preload("res://scripts/enemy_ai.gd")
+const AIData := preload("res://scripts/enemy_ai_data.gd")
 
 const CAMPAIGN: Array = [
 	"MAP.210", "MAP.220", "MAP.230", "MAP.240",
@@ -43,6 +45,8 @@ func _ready() -> void:
 			level210 = level
 	if level210 != null:
 		_run_map210_checks(level210)
+		_run_transition_checks(level210)
+	_run_ai_checks()
 	print("[smoke] %s (%d failures)"
 		% ["ALL PASS" if _fails == 0 else "FAILED", _fails])
 	get_tree().quit(1 if _fails > 0 else 0)
@@ -185,6 +189,114 @@ func _run_map210_checks(level: LevelLoader.Level) -> void:
 
 func _on_teleport(target_map: int, marker_set: int) -> void:
 	_teleport_seen.append([target_map, marker_set])
+
+## Phase 2 — map transitions: marker sets on both ends of an exit, the
+## per-map state overlay round trip, doorway touch arming and the
+## spawn-inside-the-gate latch.
+func _run_transition_checks(level210: LevelLoader.Level) -> void:
+	# Sound-id table sanity (0x4ff00): the door chains' one-shot nodes.
+	_check(Audio.sound_name(40) == "doora.raw" and Audio.sound_name(45) == "button1.raw"
+		and Audio.sound_name(125) == "torpedo.wav",
+		"DOS sound-id table resolves door/button/last ids")
+
+	# MAP.218 (bunker interior): spawn set 0, return exit → previous map
+	# marker 27; MAP.210 must carry markers 27 + 28 for that return.
+	var l218: LevelLoader.Level = LevelLoader.new().load_level("MAP.218")
+	_check(l218 != null and l218.markers.has(0) and l218.markers.has(1),
+		"MAP.218 has spawn marker 0 + facing marker 1")
+	if l218 != null:
+		var ret: Array = []
+		for t in l218.action._teleports:
+			ret.append([t.exit_map, t.exit_marker_id])
+		_check(ret == [[0, 27]], "MAP.218 return exit → previous map, marker 27 (%s)" % str(ret))
+	_check(level210.markers.has(27) and level210.markers.has(28),
+		"MAP.210 carries the return markers 27 + 28")
+
+	# State overlay: the GENER0 spent in the map-210 checks survives a
+	# save → fresh parse → restore round trip.
+	var snap: Dictionary = level210.action.save_state()
+	var spent_offs: Array = snap["spent"].keys()
+	_check(not spent_offs.is_empty(), "save_state captures spent entities")
+	var l210b: LevelLoader.Level = LevelLoader.new().load_level("MAP.210")
+	if l210b != null and not spent_offs.is_empty():
+		var off: int = spent_offs[0]
+		_check(not l210b.action._spent.has(off), "fresh MAP.210 parse starts unspent")
+		l210b.action.restore_state(snap)
+		_check(l210b.action._spent.has(off), "restore_state re-applies the spent flag")
+		var e = l210b.map.entities_by_off.get(off)
+		_check(e != null and e.state_byte == int(snap["states"][off]),
+			"restore_state re-applies entity state bytes")
+
+	# Doorway touch: standing on a 0xF0 exit sprite arms it directly.
+	var l210c: LevelLoader.Level = LevelLoader.new().load_level("MAP.210")
+	if l210c != null:
+		var seen: Array = []
+		l210c.action.teleport_requested.connect(
+			func(m: int, s: int) -> void: seen.append([m, s]))
+		var ex = l210c.action._teleports[0]
+		var epos := Vector3(float(ex.x), -float(ex.y), -float(ex.z))
+		l210c.action.tick(0.016, epos)
+		_check(seen.size() == 1 and seen[0][0] == ex.exit_map,
+			"touching a doorway sprite fires its teleport once (%s)" % str(seen))
+		l210c.action.tick(0.016, epos)
+		_check(seen.size() == 1, "a fired level never teleports twice")
+
+	# Spawn-inside latch: arm_proximity at the doorway → no fire until the
+	# player steps out and back in.
+	var l210d: LevelLoader.Level = LevelLoader.new().load_level("MAP.210")
+	if l210d != null:
+		var seen2: Array = []
+		l210d.action.teleport_requested.connect(
+			func(m: int, s: int) -> void: seen2.append([m, s]))
+		var ex2 = l210d.action._teleports[0]
+		var epos2 := Vector3(float(ex2.x), -float(ex2.y), -float(ex2.z))
+		l210d.action.arm_proximity(epos2)
+		l210d.action.tick(0.016, epos2)
+		_check(seen2.is_empty(), "spawning on a doorway does not fire it")
+		l210d.action.tick(0.016, epos2 + Vector3(2000.0, 0.0, 0.0))
+		l210d.action.tick(0.016, epos2)
+		_check(seen2.size() == 1, "stepping out and back in fires the doorway")
+
+## Phase 3 — DOS enemy AI data + the AIS interpreter, headless.
+func _run_ai_checks() -> void:
+	_check(AIData.TYPES.size() >= 100 and String(AIData.TYPES[33]["n"]) == "endoskel"
+		and int(AIData.TYPES[33]["st"]) == 7 and int(AIData.TYPES[33]["hp"]) == 400,
+		"enemy table: endoskel = state 7, 400 HP")
+	_check(int(AIData.TYPES[7]["axis"]) == 1 and int(AIData.TYPES[58]["axis"]) == 0
+		and AIData.TYPES[61]["fire"][3] == 23 and AIData.AMMO[23][1] == "ROCKET.3D",
+		"turret data: smltrrt yaws, smlcanon pitches, missile pod fires rockets")
+	var b := EnemyAI.new(33)
+	_check(b.has_script() and b.state == 7, "endoskel carries an AIS script")
+	# Not perceiving the player: the walk loop (frames 5..20) plays and
+	# the hydraulic footstep (sound 60) fires on frame 8.
+	var frames: Dictionary = {}
+	var sounds: Dictionary = {}
+	for i in 210:                               # 3 s at 70 Hz
+		b.tick(EnemyAI.TICK, {"see": false, "dist": 3000.0, "bearing": 0, "angle": 0, "rand": 1000})
+		frames[b.frame] = true
+		for sid in b.sounds:
+			sounds[sid] = true
+	_check(frames.has(8) and frames.has(20), "T800 walk cycle reaches frames 8 and 20")
+	_check(sounds.has(60), "footstep frame event plays sound 60 (hydra5)")
+	# Player seen 300 units ahead: the script engages and reaches a
+	# firing pose (anim flag 0x100) within a few seconds.
+	var fired := false
+	for i in 700:
+		b.tick(EnemyAI.TICK, {"see": true, "dist": 300.0, "bearing": 0, "angle": 0, "rand": 1000})
+		if b.firing_pose():
+			fired = true
+			break
+	_check(fired, "T800 enters a firing pose when the player is close and seen")
+	# Tank script: perceived player at 1000 u → SET speed 300 (var 48).
+	var tank := EnemyAI.new(30)
+	for i in 300:
+		tank.tick(EnemyAI.TICK, {"see": true, "dist": 1000.0, "bearing": 0, "angle": 512})
+	_check(tank.var_or(48, -1) == 300, "hvytnk script drives forward (var 48 = 300) toward a seen player")
+	# HK flyer: seen player far away → altitude var 56 written.
+	var hk := EnemyAI.new(4)
+	for i in 300:
+		hk.tick(EnemyAI.TICK, {"see": true, "dist": 3000.0, "bearing": 0, "angle": 0})
+	_check(hk.vars.has(56), "hk_ftr script sets its altitude target (var 56)")
 
 ## Walk a chain with ObjFlipLink's rules (follow link_next, stop at an
 ## actor flag or chain end) and return the first mover entity, or null.

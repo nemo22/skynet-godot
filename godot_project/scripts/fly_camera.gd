@@ -27,6 +27,7 @@ const SmokePuff := preload("res://scripts/smoke_puff.gd")
 const CFAFile := preload("res://scripts/loaders/cfa_file.gd")
 const BSAReader := preload("res://scripts/loaders/bsa_reader.gd")
 const Palette := preload("res://scripts/loaders/palette.gd")
+const Explosion := preload("res://scripts/explosion.gd")
 
 @onready var _cam: Camera3D = $Camera3D
 
@@ -62,38 +63,71 @@ var _spawn_yaw: float = 0.0
 # shifted one slot against their viewmodels for slots 2..10. DOS
 # record-keyed fields (vx = record +0x00) stay per slot.
 #
-# `kind` drives _shoot() dispatch:
-#   "melee"    — short-range hitscan, no sound/flash/tracer
-#   "bullet"   — hitscan + yellow-white tracer + small muzzle flash
-#   "shotgun"  — bullet + lingering smoke puff at the muzzle
-#   "laser"    — hitscan + red beam + red flash
-#   "plasma"   — hitscan + blue beam + blue flash
-#   "grenade"  — ballistic projectile, gravity-arced, fuse-explodes
-#   "rocket"   — straight projectile, instant explosion on impact
-#
-# Sounds match the DOS sound-name table (skynet_gh.c:28270-71, field
-# `+0x48` of each weapon record). Verified present in MDMDSFXS.BSA.
-# JEEP PLASMA is NOT in the on-foot cycle — it is DOS record 13+
-# (vehicle/MP territory); slot 10 is the PLASMA RIFLE.
+# Per-record fields, all read straight from the two DOS tables
+# (weapon record at 0x4361c + stride 0x60; its ammo type at 0x40728 +
+# stride 0x32, record +0x14):
+#   kind   ammo-type flight family (ammo +0x00 callback): 0 = instant
+#          "bullet"; 0x000f3414 = gravity "grenade"; 0x000f344d =
+#          straight bolt flying a .3D model — "rocket"/"laser"/"plasma"
+#          by the model named at ammo +0x04 (rocket/laser1/laser2.3d).
+#          MINI ROCKET is a bullet-family type (t21) in DOS.
+#   dmg    |ammo +0x0c| (negative = blast damage), splash = ammo +0x10
+#   rate   weapon +0x24; DOS countdown = 0x10000 / rate, so the shot
+#          delay is FIRE_RATE_SCALE / rate — the scale pins the UZI to
+#          0.10 s and everything else follows the table's ratios.
+#   pool   weapon +0x4c shared ammo pool, cost = +0x50 rounds per shot
+#   snd    fire sound: weapon +0x48, or the ammo type's +0x1c when -1
+#   sel    select sound id (+0x54), dry = empty-pool sound id (+0x58)
+#   vx     viewmodel screen X (+0x00); cfa = WEAPON%02d.CFA
+# Slot identities follow STRINGS.PRS + the CFA art (confirmed in-game
+# 2026-07-27). JEEP PLASMA is record 13+ (vehicle/MP), not in the cycle.
 var _weapons: Array = [
-	{"name": "PIPE",             "kind": "melee",   "dmg": 25.0, "cd": 0.45, "snd": "",             "ammo": 99,  "max": 99,   "cfa": "WEAPON00.CFA", "animspd": 18, "vx": 62},
-	{"name": "UZI",              "kind": "bullet",  "dmg": 11.0, "cd": 0.10, "snd": "FASTGUN2.RAW", "ammo": 500, "max": 750,  "cfa": "WEAPON01.CFA", "animspd": 16, "vx": 156},
-	{"name": "ASSAULT RIFLE",    "kind": "bullet",  "dmg": 14.0, "cd": 0.14, "snd": "FASTGUN2.RAW", "ammo": 500, "max": 750,  "cfa": "WEAPON02.CFA", "animspd": 16, "vx": 154},
-	{"name": "MACHINE GUN",      "kind": "bullet",  "dmg": 16.0, "cd": 0.10, "snd": "FASTGUN2.RAW", "ammo": 500, "max": 750,  "cfa": "WEAPON03.CFA", "animspd": 16, "vx": 154},
-	{"name": "SHOTGUN",          "kind": "shotgun", "dmg": 60.0, "cd": 0.85, "snd": "SHTGUN.RAW",   "ammo": 50,  "max": 200,  "cfa": "WEAPON04.CFA", "animspd": 12, "vx": 64},
-	{"name": "GRENADE LAUNCHER", "kind": "grenade", "dmg": 80.0, "cd": 0.90, "snd": "GRNLAUN2.RAW", "ammo": 40,  "max": 99,   "cfa": "WEAPON05.CFA", "animspd": 8,  "vx": 156},
-	{"name": "ROCKET LAUNCHER",  "kind": "rocket",  "dmg": 95.0, "cd": 0.75, "snd": "ROCKET1.RAW",  "ammo": 24,  "max": 99,   "cfa": "WEAPON06.CFA", "animspd": 12, "vx": 175},
-	{"name": "LASER RIFLE",      "kind": "laser",   "dmg": 26.0, "cd": 0.40, "snd": "LASER1.RAW",   "ammo": 200, "max": 800,  "cfa": "WEAPON07.CFA", "animspd": 13, "vx": 168},
-	{"name": "LASER CANNON",     "kind": "laser",   "dmg": 50.0, "cd": 0.70, "snd": "LASER2.RAW",   "ammo": 200, "max": 800,  "cfa": "WEAPON08.CFA", "animspd": 16, "vx": 160},
-	{"name": "PLASMA PISTOL",    "kind": "plasma",  "dmg": 30.0, "cd": 0.55, "snd": "PPC100.RAW",   "ammo": 200, "max": 800,  "cfa": "WEAPON09.CFA", "animspd": 16, "vx": 152},
-	{"name": "PLASMA RIFLE",     "kind": "plasma",  "dmg": 40.0, "cd": 0.30, "snd": "PPCRIFLE.RAW", "ammo": 200, "max": 800,  "cfa": "WEAPON10.CFA", "animspd": 16, "vx": 160},
-	{"name": "PLASMA CANNON",    "kind": "plasma",  "dmg": 58.0, "cd": 0.60, "snd": "GAUSS1.RAW",   "ammo": 200, "max": 800,  "cfa": "WEAPON11.CFA", "animspd": 16, "vx": 128},
-	{"name": "MINI ROCKET",      "kind": "rocket",  "dmg": 65.0, "cd": 0.30, "snd": "ROCKET1.RAW",  "ammo": 60,  "max": 99,   "cfa": "WEAPON12.CFA", "animspd": 16, "vx": 156},
+	{"name": "PIPE",             "kind": "melee",   "dmg": 50.0,  "rate": 2,  "pool": -1, "cost": 0,  "snd": "SWISH1.RAW",   "sel": -1, "dry": -1, "cfa": "WEAPON00.CFA", "animspd": 18, "vx": 62},
+	{"name": "UZI",              "kind": "bullet",  "dmg": 10.0,  "rate": 5,  "pool": 0,  "cost": 1,  "snd": "SHOTS5.RAW",   "sel": 9,  "dry": 10, "cfa": "WEAPON01.CFA", "animspd": 16, "vx": 156},
+	{"name": "ASSAULT RIFLE",    "kind": "bullet",  "dmg": 20.0,  "rate": 4,  "pool": 0,  "cost": 3,  "snd": "SHOTS2.RAW",   "sel": 9,  "dry": 10, "cfa": "WEAPON02.CFA", "animspd": 16, "vx": 154},
+	{"name": "MACHINE GUN",      "kind": "bullet",  "dmg": 20.0,  "rate": 8,  "pool": 0,  "cost": 4,  "snd": "FASTGUN2.RAW", "sel": 9,  "dry": 10, "cfa": "WEAPON03.CFA", "animspd": 16, "vx": 154},
+	{"name": "SHOTGUN",          "kind": "shotgun", "dmg": 50.0,  "rate": 1,  "pool": 1,  "cost": 1,  "snd": "SHTGUN.RAW",   "sel": 9,  "dry": 10, "cfa": "WEAPON04.CFA", "animspd": 12, "vx": 64},
+	{"name": "GRENADE LAUNCHER", "kind": "grenade", "dmg": 200.0, "rate": 1,  "pool": 2,  "cost": 1,  "snd": "GRNLAUN2.RAW", "sel": 9,  "dry": 10, "cfa": "WEAPON05.CFA", "animspd": 8,  "vx": 156, "splash": 256.0},
+	{"name": "ROCKET LAUNCHER",  "kind": "rocket",  "dmg": 400.0, "rate": 1,  "pool": 3,  "cost": 1,  "snd": "ROCKET2.RAW",  "sel": 9,  "dry": 10, "cfa": "WEAPON06.CFA", "animspd": 12, "vx": 175, "splash": 512.0},
+	{"name": "LASER RIFLE",      "kind": "laser",   "dmg": 25.0,  "rate": 6,  "pool": 4,  "cost": 2,  "snd": "LASER1.RAW",   "sel": 17, "dry": 16, "cfa": "WEAPON07.CFA", "animspd": 13, "vx": 168},
+	{"name": "LASER CANNON",     "kind": "laser",   "dmg": 50.0,  "rate": 6,  "pool": 4,  "cost": 5,  "snd": "LASER2.RAW",   "sel": 17, "dry": 16, "cfa": "WEAPON08.CFA", "animspd": 16, "vx": 160},
+	{"name": "PLASMA PISTOL",    "kind": "plasma",  "dmg": 25.0,  "rate": 3,  "pool": 4,  "cost": 1,  "snd": "LASER8.RAW",   "sel": 17, "dry": 16, "cfa": "WEAPON09.CFA", "animspd": 16, "vx": 152},
+	{"name": "PLASMA RIFLE",     "kind": "plasma",  "dmg": 50.0,  "rate": 3,  "pool": 4,  "cost": 2,  "snd": "LASER6.RAW",   "sel": 17, "dry": 16, "cfa": "WEAPON10.CFA", "animspd": 16, "vx": 160},
+	{"name": "PLASMA CANNON",    "kind": "plasma",  "dmg": 100.0, "rate": 3,  "pool": 4,  "cost": 10, "snd": "LASER3.RAW",   "sel": 17, "dry": 16, "cfa": "WEAPON11.CFA", "animspd": 16, "vx": 128},
+	{"name": "MINI ROCKET",      "kind": "bullet",  "dmg": 50.0,  "rate": 20, "pool": 12, "cost": 1,  "snd": "SHOTS2.RAW",   "sel": 9,  "dry": 10, "cfa": "WEAPON12.CFA", "animspd": 16, "vx": 156},
 ]
 var _weapon_idx: int = 0
 # HUD mirrors of the active weapon (read by the level controller).
 var weapon_name: String = "UZI"
 var ammo: int = 500
+
+## Shot delay = FIRE_RATE_SCALE / rate (see the table notes above).
+const FIRE_RATE_SCALE: float = 0.5
+const DRY_FIRE_DELAY: float = 0.25
+## TEXTURE.365 — the bullet ammo types' impact effect (ammo +0x08 =
+## sprite index 0xB680 → bank 365), puffed where a shot strikes geometry.
+const IMPACT_BANK_BULLET: int = 365
+
+# Shared ammo pools — Skynet.exe 0x43ff4, 13 × {0, initial, max}. A
+# weapon's record +0x4c names its pool; +0x50 is the cost per shot:
+#   0  bullets   500/750  UZI ×1 · ASSAULT RIFLE ×3 · MACHINE GUN ×4
+#   1  shells     50/200  SHOTGUN ×1
+#   2  grenades    0/99   GRENADE LAUNCHER ×1
+#   3  rockets     0/99   ROCKET LAUNCHER ×1
+#   4  energy    500/800  LASER RIFLE ×2 · LASER CANNON ×5 · PLASMA
+#                         PISTOL ×1 · PLASMA RIFLE ×2 · PLASMA CANNON ×10
+#   12 mini-rkt 9999/9999 MINI ROCKET ×1 (the only unlimited one)
+# DOS starts grenades and rockets at 0 — they come only from pickups,
+# whose weapon/ammo types (TEXTURE.200/201 records) are not decoded
+# yet — so a handful is seeded here to keep the launchers usable.
+const POOL_TABLE: Dictionary = {
+	0: [500, 750], 1: [50, 200], 2: [10, 99], 3: [5, 99],
+	4: [500, 800], 12: [9999, 9999],
+}
+## Rounds a generic ammo pickup adds per pool (placeholder until the
+## pickup sprite records are decoded into specific ammo types).
+const PICKUP_AMMO: Dictionary = {0: 50, 1: 10, 2: 5, 3: 2, 4: 50}
+var _pools: Dictionary = {}          # pool id → rounds left
 
 # --- weapon viewmodel (the gun drawn at the bottom of the screen) -------
 var _vm_layer: CanvasLayer = null
@@ -119,11 +153,14 @@ func _ready() -> void:
 	_yaw = rotation.y
 	if _cam != null:
 		_pitch = _cam.rotation.x
+	_reset_pools()
 	_build_viewmodel()
 
 ## Place the player at a spawn point facing `yaw` (radians). Called by
-## the level controller once the map is loaded.
-func set_spawn(pos: Vector3, yaw: float) -> void:
+## the level controller once the map is loaded. `reset_state` restores
+## full health and the DOS starting ammo (a fresh mission or a respawn);
+## map exits pass false so HP/ammo carry into the interior and back.
+func set_spawn(pos: Vector3, yaw: float, reset_state: bool = true) -> void:
 	global_position = pos
 	_yaw = yaw
 	_pitch = 0.0
@@ -133,17 +170,29 @@ func set_spawn(pos: Vector3, yaw: float) -> void:
 		_cam.rotation = Vector3.ZERO
 	_spawn_pos = pos
 	_spawn_yaw = yaw
-	health = max_health
-	for w in _weapons:
-		w["ammo"] = w["max"]
+	if reset_state:
+		health = max_health
+		_reset_pools()
 	_sync_hud()
+
+func _reset_pools() -> void:
+	for p in POOL_TABLE:
+		_pools[p] = int(POOL_TABLE[p][0])
+
+## Rounds left for weapon `idx` — its pool's count, or 99 for the pipe.
+func _ammo_for(idx: int) -> int:
+	var pool: int = int(_weapons[idx].get("pool", -1))
+	if pool < 0:
+		return 99
+	return int(_pools.get(pool, 0))
 
 ## Mirror the active weapon's name/ammo into the HUD-facing fields.
 func _sync_hud() -> void:
 	weapon_name = String(_weapons[_weapon_idx]["name"])
-	ammo = int(_weapons[_weapon_idx]["ammo"])
+	ammo = _ammo_for(_weapon_idx)
 
-## Switch to weapon `idx` (clamped).
+## Switch to weapon `idx` (clamped). Plays the record's select sound
+## (+0x54: uzicock3 for ballistic, ppcload for energy weapons).
 func _select_weapon(idx: int) -> void:
 	idx = clampi(idx, 0, _weapons.size() - 1)
 	if idx == _weapon_idx:
@@ -153,7 +202,7 @@ func _select_weapon(idx: int) -> void:
 	_vm_idx = 0
 	_vm_firing = false
 	_sync_hud()
-	Audio.play_sfx("CLICK.RAW", -8.0)
+	Audio.play_id(int(_weapons[idx].get("sel", -1)), -8.0)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo \
@@ -209,6 +258,9 @@ func _physics_process(delta: float) -> void:
 	if ui_fire:
 		ui_fire = false
 		_shoot()
+	elif _captured and not _mobile \
+			and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		_shoot()                          # held trigger — DOS auto-fire
 
 	# --- movement input (horizontal intent) ---------------------------
 	var fwd_in: float = 0.0
@@ -278,27 +330,34 @@ const _KIND_COLOR: Dictionary = {
 const MELEE_RANGE: float = 180.0           # close-quarters pipe reach
 
 ## Fire the current weapon. Dispatches on `kind`:
-##   bullet/shotgun/laser/plasma → hitscan ray + family-coloured tracer
-##                                 + small muzzle flash. Shotgun also
-##                                 spawns a smoke puff at the muzzle.
-##   grenade                     → ballistic projectile under gravity.
-##   rocket                      → straight Projectile with splash.
+##   bullet/shotgun        → hitscan ray + tracer + muzzle flash, and the
+##                           bullet impact puff (TEXTURE.365) where the
+##                           shot strikes geometry. Shotgun adds muzzle
+##                           smoke.
+##   laser/plasma/rocket   → visible Projectile flying the ammo type's
+##                           .3D model (laser1 / laser2 / rocket).
+##   grenade               → ballistic Grenade (TEXTURE.217 sprite).
+##   melee                 → short-range swing.
 ##
-## DOS spawns the same projectile for every weapon (FUN_00122a64,
-## skynet_gh.c:25675); the ammo-type record drives gravity / homing /
-## ricochet flags. We collapse hitscan-like kinds to an instant ray for
-## responsiveness — flying tracers don't add gameplay here.
+## DOS (FUN_00125caf, skynet_gh.c:28221-28273): once the countdown hits
+## zero and the pool holds a shot's cost, spawn the projectile
+## (FUN_00122a64), reset the countdown to 0x10000/rate and play the fire
+## sound; with too little ammo play the dry-fire sound (+0x58) instead.
 func _shoot() -> void:
-	var w: Dictionary = _weapons[_weapon_idx]
-	# Melee is infinite-ammo; everything else honours the ammo counter.
-	var kind: String = String(w.get("kind", "bullet"))
-	var ammo_check: bool = (kind == "melee") or int(w["ammo"]) > 0
-	if _fire_cd > 0.0 or health <= 0.0 or not ammo_check or _cam == null:
+	if _fire_cd > 0.0 or health <= 0.0 or _cam == null:
 		return
-	_fire_cd = float(w["cd"])
-	if kind != "melee":
-		w["ammo"] = int(w["ammo"]) - 1
-		ammo = int(w["ammo"])
+	var w: Dictionary = _weapons[_weapon_idx]
+	var kind: String = String(w.get("kind", "bullet"))
+	var pool: int = int(w.get("pool", -1))
+	var cost: int = int(w.get("cost", 0))
+	if pool >= 0 and int(_pools.get(pool, 0)) < cost:
+		_fire_cd = DRY_FIRE_DELAY
+		Audio.play_id(int(w.get("dry", -1)), -6.0)
+		return
+	_fire_cd = maxf(FIRE_RATE_SCALE / float(w.get("rate", 4)), 0.05)
+	if pool >= 0:
+		_pools[pool] = int(_pools[pool]) - cost
+		ammo = int(_pools[pool])
 	var snd: String = String(w.get("snd", ""))
 	if not snd.is_empty():
 		Audio.play_sfx(snd, -5.0)
@@ -310,11 +369,12 @@ func _shoot() -> void:
 	var fwd: Vector3 = -_cam.global_transform.basis.z
 	var muzzle: Vector3 = _cam.global_position + fwd * 90.0 \
 		- _cam.global_transform.basis.y * 26.0
+	var dmg: float = float(w["dmg"])
 
 	# Melee: short-range hitscan, no tracer, no muzzle flash. The
 	# viewmodel swing animation (CFA frames) is the only visible cue.
 	if kind == "melee":
-		_melee_hit(muzzle, fwd, float(w["dmg"]))
+		_melee_hit(muzzle, fwd, dmg)
 		return
 
 	var tint: Color = _KIND_COLOR.get(kind, Color.WHITE)
@@ -331,15 +391,15 @@ func _shoot() -> void:
 	if kind == "grenade":
 		var g := Grenade.new()
 		get_tree().current_scene.add_child(g)
-		g.setup(muzzle, fwd, float(w["dmg"]), 700.0, self)
+		g.setup(muzzle, fwd, dmg, float(w.get("splash", 256.0)), self)
 		return
-	if kind == "rocket":
+	if kind == "rocket" or kind == "laser" or kind == "plasma":
 		var proj: Node3D = Projectile.new()
 		get_tree().current_scene.add_child(proj)
-		proj.setup(muzzle, fwd, float(w["dmg"]), 750.0, self)
+		proj.setup(muzzle, fwd, dmg, _projectile_cfg(kind, w), self)
 		return
 
-	# Hitscan ray for bullet / shotgun / laser / plasma.
+	# Hitscan ray for bullet / shotgun.
 	var from: Vector3 = _cam.global_position
 	var to: Vector3 = from + fwd * 60000.0
 	var space := get_world_3d().direct_space_state
@@ -363,33 +423,54 @@ func _shoot() -> void:
 		while n != null and not n.has_method("take_damage"):
 			n = n.get_parent()
 		if n != null and n != self:
-			n.take_damage(float(w["dmg"]))
+			n.take_damage(dmg)
+		else:
+			var puff := Explosion.new()
+			get_tree().current_scene.add_child(puff)
+			puff.setup(endpoint, 40.0, IMPACT_BANK_BULLET)
+
+## Look and payload of the straight-flying projectile families, from the
+## DOS ammo records: the .3D model at +0x04, the impact effect bank at
+## +0x08 (sprite index 0xB580 → TEXTURE.363 for rockets, 0xB600 → 364
+## for laser/plasma bolts), the impact sound at +0x20 (rocket: explo3;
+## lasers none) and the lifetime at +0x18 (~35 Hz ticks: 120 → 3.4 s,
+## 40 → 1.1 s). Flight speed is not stored in the table.
+func _projectile_cfg(kind: String, w: Dictionary) -> Dictionary:
+	match kind:
+		"rocket":
+			return {"model": "ROCKET.3D", "color": Color(1.0, 0.75, 0.4),
+				"speed": 3000.0, "life": 3.4,
+				"splash": float(w.get("splash", 512.0)),
+				"trail": true, "light": true, "impact_bank": 363,
+				"impact_sound": "EXPLO3.RAW", "hits": "enemy"}
+		"laser":
+			return {"model": "LASER1.3D", "color": Color(1.0, 0.32, 0.22),
+				"speed": 9000.0, "life": 1.2, "splash": 0.0, "light": true,
+				"impact_bank": 364, "hits": "enemy"}
+		"plasma":
+			return {"model": "LASER2.3D", "color": Color(0.45, 0.7, 1.0),
+				"speed": 4000.0, "life": 1.2, "splash": 0.0, "light": true,
+				"impact_bank": 364, "hits": "enemy"}
+	return {"speed": 4000.0, "hits": "enemy"}
 
 ## Quick hand-grenade throw (right mouse button). Consumes one round
-## from the GRENADE LAUNCHER pool and lobs a Grenade projectile in an
-## upward arc without switching weapons. No dedicated viewmodel
-## animation yet — the throw is silent hands-off, like a quick-use key.
+## from the grenade pool and lobs a Grenade projectile in an upward arc
+## without switching weapons. No dedicated viewmodel animation yet — the
+## throw is silent hands-off, like a quick-use key.
 func _throw_grenade() -> void:
 	if health <= 0.0 or _cam == null or _fire_cd > 0.0:
 		return
-	var gl: Dictionary = {}
-	for w in _weapons:
-		if String(w.get("name", "")) == "GRENADE LAUNCHER":
-			gl = w
-			break
-	if gl.is_empty() or int(gl["ammo"]) <= 0:
+	if int(_pools.get(2, 0)) <= 0:
 		return
-	gl["ammo"] = int(gl["ammo"]) - 1
-	if _weapon_idx < _weapons.size() \
-			and _weapons[_weapon_idx].get("name") == "GRENADE LAUNCHER":
-		ammo = int(gl["ammo"])              # keep the HUD in sync
+	_pools[2] = int(_pools[2]) - 1
+	_sync_hud()
 	_fire_cd = 0.6
 	var fwd: Vector3 = -_cam.global_transform.basis.z
 	var muzzle: Vector3 = _cam.global_position + fwd * 60.0
 	var arc: Vector3 = (fwd + Vector3.UP * 0.35).normalized()
 	var g := Grenade.new()
 	get_tree().current_scene.add_child(g)
-	g.setup(muzzle, arc, 70.0, 700.0, self)
+	g.setup(muzzle, arc, 200.0, 256.0, self)
 
 ## Short-range melee swing (the pipe). One ray cast forward from the
 ## camera up to MELEE_RANGE; if it lands on a damageable node we apply
@@ -454,17 +535,16 @@ func take_damage(amount: float) -> void:
 func respawn() -> void:
 	set_spawn(_spawn_pos, _spawn_yaw)
 
-## Pickup: top up ammo on every finite-ammo weapon. Returns true when at
-## least one weapon could take more (so the pickup is consumed).
-func add_ammo(rounds: int) -> bool:
+## Pickup: top up the shared ammo pools (PICKUP_AMMO rounds each, capped
+## at the pool maximum). Returns true when at least one pool could take
+## more, so the pickup is consumed.
+func add_ammo(_rounds: int) -> bool:
 	var took := false
-	for w in _weapons:
-		var mx := int(w["max"])
-		if mx >= 999:
-			continue                         # pistol — effectively infinite
-		var cur := int(w["ammo"])
+	for p in PICKUP_AMMO:
+		var mx: int = int(POOL_TABLE[p][1])
+		var cur: int = int(_pools.get(p, 0))
 		if cur < mx:
-			w["ammo"] = mini(cur + rounds, mx)
+			_pools[p] = mini(cur + int(PICKUP_AMMO[p]), mx)
 			took = true
 	if took:
 		_sync_hud()
@@ -533,7 +613,8 @@ func _process(delta: float) -> void:
 	_viewmodel.visible = true
 	if _vm_firing:
 		_vm_t += delta
-		# Per-weapon playback speed (DOS weapon record +0x2c).
+		# Per-weapon playback speed. Hand-tuned: DOS record +0x2c is the
+		# recoil kick (skynet_gh.c:28236), not a frame rate.
 		var fps: float = maxf(1.0,
 			float(_weapons[_weapon_idx].get("animspd", 16)))
 		var step := 1.0 / fps

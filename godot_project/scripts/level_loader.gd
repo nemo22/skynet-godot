@@ -25,6 +25,7 @@ const ActionSystem := preload("res://scripts/action_system.gd")
 const ActionTarget := preload("res://scripts/action_target.gd")
 const TransfrmPRS  := preload("res://scripts/loaders/transfrm_prs.gd")
 const EnemyAnim    := preload("res://scripts/enemy_anim.gd")
+const AIData       := preload("res://scripts/enemy_ai_data.gd")
 const Pickup       := preload("res://scripts/pickup.gd")
 
 ## Variant-3 billboard sprite banks (sprite_index >> 7) → TEXTURE.NNN file.
@@ -87,6 +88,25 @@ const ENEMY_STATS: Dictionary = {
 	"hvytnk":   [240.0, 20.0, 1.5, 320.0],
 	"hvrtnk":   [160.0, 15.0, 1.5, 520.0],
 }
+
+## Per-type hit points from the Skynet.exe enemy table at VA 0x44d00:
+## record +0x14 (+0x30000) points at the type's parameter block, whose
+## first dword is copied into the actor's HP field (instance +0x0e,
+## clamped to 0x7fff — FUN_0012959d, skynet_gh.c:29961-29968). Indexed
+## by enemy type like ENEMY_MESH. 0 = no HP in the table (scripted /
+## transport actors) — those fall back to ENEMY_STATS.
+const ENEMY_HP: PackedInt32Array = [
+	125, 50, 50, 150, 300, 300, 150, 50, 50, 50,
+	50, 50, 50, 400, 400, 400, 400, 400, 400, 400,
+	400, 200, 200, 200, 200, 200, 200, 200, 50, 50,
+	700, 200, 200, 400, 400, 450, 450, 500, 500, 150,
+	400, 450, 10000, 150, 150, 100, 800, 800, 400, 700,
+	0, 0, 10000, 0, 50, 50, 50, 50, 35, 35,
+	35, 35, 35, 35, 35, 35, 35, 35, 35, 125,
+	125, 125, 200, 200, 200, 125, 125, 300, 100, 100,
+	10000, 10000, 6000, 6000, 100, 75, 0, 0, 10, 10,
+	10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+]
 
 ## Airborne actors — keep their authored altitude (no ground snap).
 const FLYING_ENEMIES: Array = [
@@ -206,6 +226,15 @@ class Level:
 	## Entity action/link system (doors, movers, destructibles,
 	## proximity triggers, teleports). The level controller ticks it.
 	var action: ActionSystem = null
+	## Every placement marker by id → Array of world positions (a map may
+	## carry several markers with one id, e.g. two facing markers). Map
+	## exits spawn the player at marker N facing marker N+1
+	## (PlrSetPosMarker FUN_00121f72, skynet_gh.c:25074-25087).
+	var markers: Dictionary = {}
+	## MAP file offsets of the enemy markers / pickups that were spawned —
+	## the per-map state overlay records which of them are gone.
+	var enemy_marker_offs: Array = []
+	var pickup_offs: Array = []
 
 ## Load a level by its MAP basename (e.g. "MAP.210").
 func load_level(map_name: String) -> Level:
@@ -447,9 +476,21 @@ func load_level(map_name: String) -> Level:
 			# Per-type combat stats (must be set before setup()).
 			var st: Array = ENEMY_STATS.get(ebase, ENEMY_STATS_DEFAULT)
 			emi.max_health = st[0]
+			# DOS hit points win over the hand-tuned estimate when the
+			# type table carries them.
+			if e.enemy_type < ENEMY_HP.size() and ENEMY_HP[e.enemy_type] > 0:
+				emi.max_health = float(ENEMY_HP[e.enemy_type])
+			emi.set_meta("marker_off", e.file_off)
+			level.enemy_marker_offs.append(e.file_off)
 			emi.shot_damage = st[1]
 			emi.fire_interval = st[2]
 			emi.move_speed = st[3]
+			# DOS type data (state id, speed, turn, fire params, script,
+			# frame-event sounds …) — overrides the hand-tuned numbers.
+			emi.configure(e.enemy_type)
+			# Wreck parts flung on death (enemy table +0x10 death list).
+			emi.death_parts = _death_parts_for(e.enemy_type, enms, objs,
+				enemy_frame_cache, provider)
 			emi.setup(eframes, eaabb,
 				STATIONARY_ENEMIES.has(ebase), FLYING_ENEMIES.has(ebase),
 				ENEMY_SOUND.get(ebase, ""), PASSIVE_ENEMIES.has(ebase))
@@ -480,6 +521,12 @@ func load_level(map_name: String) -> Level:
 				enemy_frame_cache, provider)
 			if aim_seg != null and STATIONARY_ENEMIES.has(ebase):
 				emi.set_aim_node(aim_seg)
+			# Marker sub+2 = trigger distance: a dormant trap that
+			# detonates when the player comes close (EnemiesStartMarked
+			# FUN_00129f39 → FUN_00142800, death state 0x14285e).
+			var trig: int = (e.off_x >> 16) & 0xFFFF
+			if trig > 0:
+				emi.make_dormant(float(trig))
 			en += 1
 	level.enemy_count = en
 	print("[level] placed %d enemies (variant-3 markers)" % en)
@@ -505,6 +552,11 @@ func load_level(map_name: String) -> Level:
 	var dir_candidates: Array[Vector3] = []
 	for e in level.map.entities:
 		if (e.flags & 3) != 3: continue
+		if e.marker_type >= 0:
+			if not level.markers.has(e.marker_type):
+				level.markers[e.marker_type] = []
+			level.markers[e.marker_type].append(Vector3(
+				float(e.x), -float(e.y + 0x10), -float(e.z)))
 		if e.marker_type == 0:
 			# DOS player position: marker X / (Y + 0x10) / Z used verbatim
 			# (FUN_00121f72 / FUN_0011c519). The DOS camera sits at this Y
@@ -615,12 +667,33 @@ func load_level(map_name: String) -> Level:
 ## (MDMDOBJS.BSA fallback). Returns an Array of ArrayMesh — one per .3D
 ## vertex frame (animated actors) or a single element (static). Cached
 ## per .3D filename so repeated enemy types share the frame meshes.
+## Resolve the wreck-part meshes of a type's death list into
+## [[Mesh, Vector3 local offset], …] (DOS Y-down → Godot).
+static func _death_parts_for(enemy_type: int, enms: BSAReader,
+		objs: BSAReader, frame_cache: Dictionary, provider: Callable) -> Array:
+	var out: Array = []
+	if enemy_type < 0 or enemy_type >= AIData.TYPES.size():
+		return out
+	for p in AIData.TYPES[enemy_type].get("death", []):
+		var frames := _enemy_frames_for(int(p[0]), enms, objs, frame_cache, provider)
+		if frames.is_empty():
+			continue
+		out.append([frames[0], Vector3(float(p[1]), -float(p[2]), -float(p[3]))])
+	return out
+
 static func _enemy_frames_for(enemy_type: int, enms: BSAReader,
 		objs: BSAReader, frame_cache: Dictionary,
 		provider: Callable) -> Array:
-	if enemy_type < 0 or enemy_type >= ENEMY_MESH.size():
+	if enemy_type < 0:
 		return []
-	var base: String = ENEMY_MESH[enemy_type]
+	var base: String = ""
+	if enemy_type < ENEMY_MESH.size():
+		base = ENEMY_MESH[enemy_type]
+	# Wreck parts (types 100+) exist only in the DOS table.
+	if base.is_empty() and enemy_type < AIData.TYPES.size():
+		base = String(AIData.TYPES[enemy_type].get("n", ""))
+	if base.is_empty():
+		return []
 	if base.is_empty():
 		return []
 	var lookup := base.to_upper() + ".3D"
@@ -699,6 +772,9 @@ static func _attach_segments(parent: Node3D, enemy_type: int,
 			continue
 		var smi := MeshInstance3D.new()
 		smi.mesh = frames[0]
+		# The segment's own DOS type — enemy.gd builds its turret AI
+		# (aim axis / limits / fire params) from it.
+		smi.set_meta("seg_type", child_type)
 		# DOS Y-down → Godot Y-up: negate Y and Z, as for meshes/entities.
 		smi.position = Vector3(
 			float(seg[1]), -float(seg[2]), -float(seg[3]))
@@ -775,11 +851,15 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 		if SPRITE_AMMO_BANKS.has(bank):
 			var p := Pickup.new()
 			p.setup_pickup(Pickup.Kind.AMMO, 25)
+			p.set_meta("pickup_off", e.file_off)
+			level.pickup_offs.append(e.file_off)
 			spr = p
 			pickups += 1
 		elif SPRITE_HEALTH_BANKS.has(bank):
 			var p := Pickup.new()
 			p.setup_pickup(Pickup.Kind.HEALTH, 25)
+			p.set_meta("pickup_off", e.file_off)
+			level.pickup_offs.append(e.file_off)
 			spr = p
 			pickups += 1
 		else:

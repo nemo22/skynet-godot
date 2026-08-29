@@ -48,6 +48,17 @@ var _game_over: CanvasLayer = null
 var _mission_hostiles: int = 0
 var _mission_done: bool = false
 var _campaign_maps: Array[String] = []   # ordered mission "main" maps
+# --- Map transitions (DOS session loop FUN_001216df, skynet_gh.c:24720) --
+# `_prev_map_name` mirrors DAT_00038b18 (the map we came from — an exit
+# whose target is 0 returns there); `_pending_marker_set` mirrors
+# DAT_00038b1c (the marker set the next load spawns at). `_map_state`
+# is the per-map "Mst" overlay: what the player changed on each map,
+# re-applied when the map is entered again (maps always reload from
+# disk, as in DOS).
+var _prev_map_name: String = ""
+var _pending_marker_set: int = -1
+var _map_state: Dictionary = {}
+var _fade: ColorRect = null
 # --- DOS mission-briefing screen (320x200) -------------------------------
 # The original briefing screen (FUN_0012c300) is three stacked .IMG bands:
 # the top button bar, the BRIEF<map>.IMG scene picture, and the MENU000
@@ -177,11 +188,18 @@ func _begin_level(name: String) -> void:
 	if level.sky:
 		add_child(level.sky)
 		level.sky.position = player.global_position
+	# Re-apply this map's state overlay when we have been here before.
+	_apply_map_state(level, name)
 
 	# Let the freshly-added trimesh collision register in the physics
 	# space before the spawn-clearance query runs.
 	await get_tree().physics_frame
 	_frame_camera(level)
+	# Gates/doorways the spawn already sits in must be left before they
+	# can fire again — return exits drop the player right beside the
+	# gate they came through.
+	if level.action != null and is_instance_valid(player):
+		level.action.arm_proximity(player.global_position)
 
 	# Ambient bed — wind for outdoor maps.
 	if level.is_outdoor:
@@ -193,9 +211,13 @@ func _begin_level(name: String) -> void:
 		   "outdoor" if level.is_outdoor else "indoor",
 		   level.entity_count, level.enemy_count])
 
-	# Mission objective: eliminate every hostile on the map.
+	# Mission objective: eliminate every hostile on the map. Only the
+	# mission's main map ends the mission — the interiors reached
+	# through exits are side areas of the same mission.
 	_mission_done = false
-	_mission_hostiles = get_tree().get_nodes_in_group("enemy").size()
+	_mission_hostiles = 0
+	if _is_campaign_main(name):
+		_mission_hostiles = get_tree().get_nodes_in_group("enemy").size()
 
 ## Place the camera at the DOS player-start marker (marker_type 0), facing
 ## the direction marker (marker_type 1) — read by LevelLoader. Falls back
@@ -203,7 +225,17 @@ func _begin_level(name: String) -> void:
 func _frame_camera(level: LevelLoader.Level) -> void:
 	var spawn: Vector3
 	var look_target: Vector3
-	if level.has_player_start:
+	# Arriving through a map exit: marker set N = position marker N,
+	# facing marker N+1 (PlrSetPosMarker FUN_00121f72, skynet_gh.c:
+	# 25074-25087). HP/ammo carry across — only a fresh mission resets.
+	var set_id: int = _pending_marker_set
+	_pending_marker_set = -1
+	var keep_state: bool = set_id >= 0
+	if set_id >= 0 and level.markers.has(set_id):
+		spawn = (level.markers[set_id] as Array)[0]
+		look_target = _nearest_marker(level.markers.get(set_id + 1, []), spawn)
+		look_target.y = spawn.y
+	elif level.has_player_start:
 		spawn = level.player_start
 		look_target = level.player_dir
 	elif level.entity_count > 0:
@@ -226,7 +258,7 @@ func _frame_camera(level: LevelLoader.Level) -> void:
 	# Some MAP start markers sit inside a parked vehicle/prop — step the
 	# spawn out to the nearest capsule-sized free spot so the player
 	# starts beside it, not embedded in it.
-	player.set_spawn(_find_clear_spawn(spawn), yaw)
+	player.set_spawn(_find_clear_spawn(spawn), yaw, not keep_state)
 
 	# Sun above and slightly behind the camera.
 	sun.position = spawn + Vector3(0, 8000, -2000)
@@ -292,12 +324,124 @@ func _process(delta: float) -> void:
 		_mission_done = true
 		_show_mission_complete()
 
-## Interior-teleport trigger (act 0xF0 — Skynet.exe 0x137881). Actual
-## map switching with player/map state carry-over is phase 2; until
-## then the trigger is surfaced in the status line.
+## Of several markers sharing an id, the one nearest `to` (a map may hold
+## two facing markers; DOS pairs the closest). `to` itself when empty.
+static func _nearest_marker(list: Array, to: Vector3) -> Vector3:
+	var best: Vector3 = to
+	var best_d: float = -1.0
+	for p in list:
+		var d: float = (p as Vector3).distance_to(to)
+		if best_d < 0.0 or d < best_d:
+			best_d = d
+			best = p
+	return best
+
+## Mission "main" maps end in 0 (mission = (map - 200) / 10).
+static func _is_campaign_main(map_name: String) -> bool:
+	var sfx: int = _suffix(map_name)
+	return sfx >= 200 and sfx % 10 == 0
+
+## Name of the map currently loaded ("" when none).
+func _level_name() -> String:
+	if _current_level == null:
+		return ""
+	return "MAP." + _current_level.map_suffix
+
+## Interior-teleport trigger (act 0xF0 — Skynet.exe 0x137881). The
+## handler writes the target map into the pending-map register and the
+## spawn-marker set into DAT_00038b1c; the session loop then reloads.
+## Target 0 = the map we came from (DAT_00038b18), e.g. MAP.218's hatch
+## returns to MAP.210 at marker 27.
 func _on_teleport_requested(target_map: int, marker_set: int) -> void:
-	_set_status("Teleport → MAP.%03d (marker set %d) — transitions come in phase 2"
-		% [target_map, marker_set])
+	var cur: String = _level_name()
+	var target: String
+	if target_map <= 0:
+		if _prev_map_name.is_empty():
+			_set_status("Exit leads back, but there is no previous map")
+			return
+		target = _prev_map_name
+	else:
+		target = "MAP.%03d" % target_map
+	var t_idx: int = _maps.find(target)
+	if t_idx < 0:
+		_set_status("Exit target %s is not in MDMDMAP2.BSA" % target)
+		return
+	print("[skynet] exit %s → %s (marker set %d)" % [cur, target, marker_set])
+	_prev_map_name = cur
+	_pending_marker_set = marker_set
+	_map_idx = t_idx
+	_transition(target)
+
+## Fade out, swap the level, fade back in. Exits bypass the briefing —
+## this is an in-mission move.
+func _transition(target: String) -> void:
+	await _fade_to(1.0, 0.25)
+	_clear_level()
+	await _begin_level(target)
+	await _fade_to(0.0, 0.35)
+
+func _fade_to(alpha: float, dur: float) -> void:
+	if _fade == null:
+		var cl := CanvasLayer.new()
+		cl.layer = 70
+		add_child(cl)
+		_fade = ColorRect.new()
+		_fade.color = Color(0, 0, 0, 0)
+		_fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_fade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		cl.add_child(_fade)
+	var tw := create_tween()
+	tw.tween_property(_fade, "color:a", alpha, dur)
+	await tw.finished
+
+## Snapshot the current map before it is torn down (DOS MstSave): which
+## enemy markers are dead, which pickups were taken, and the action
+## system's trigger/mover/destructible state.
+func _save_map_state() -> void:
+	var lvl := _current_level
+	if lvl == null:
+		return
+	var dead: Dictionary = {}
+	for off in lvl.enemy_marker_offs:
+		dead[off] = true
+	if lvl.enemies and is_instance_valid(lvl.enemies):
+		for c in lvl.enemies.get_children():
+			if c.has_meta("marker_off") \
+					and not (c.has_method("is_dead") and c.is_dead()):
+				dead.erase(c.get_meta("marker_off"))
+	var taken: Dictionary = {}
+	for off in lvl.pickup_offs:
+		taken[off] = true
+	if lvl.sprites and is_instance_valid(lvl.sprites):
+		for c in lvl.sprites.get_children():
+			if c.has_meta("pickup_off"):
+				taken.erase(c.get_meta("pickup_off"))
+	_map_state[_level_name()] = {
+		"dead": dead, "taken": taken,
+		"action": lvl.action.save_state() if lvl.action != null else {},
+	}
+
+## Re-apply a saved snapshot to a freshly loaded map (DOS MstLoad).
+func _apply_map_state(level: LevelLoader.Level, name: String) -> void:
+	var snap: Dictionary = _map_state.get(name, {})
+	if snap.is_empty():
+		return
+	var dead: Dictionary = snap.get("dead", {})
+	if level.enemies:
+		for c in level.enemies.get_children():
+			if c.has_meta("marker_off") and dead.has(c.get_meta("marker_off")):
+				level.enemies.remove_child(c)
+				c.queue_free()
+	var taken: Dictionary = snap.get("taken", {})
+	if level.sprites:
+		for c in level.sprites.get_children():
+			if c.has_meta("pickup_off") and taken.has(c.get_meta("pickup_off")):
+				level.sprites.remove_child(c)
+				c.queue_free()
+	if level.action != null:
+		level.action.restore_state(snap.get("action", {}))
+	print("[skynet] %s: restored state (%d dead, %d pickups taken)"
+		% [name, dead.size(), taken.size()])
 
 func _show_game_over() -> void:
 	_show_end_screen("MISSION FAILED", Color(0.9, 0.22, 0.16), true)
@@ -763,7 +907,18 @@ func _game_over_menu() -> void:
 	_return_to_menu()
 
 func _clear_level() -> void:
+	# Mission-complete watcher off while the level is torn down and the
+	# next one streams in: _begin_level awaits between freeing the old
+	# enemies and adding the new ones, and a stale hostile count with an
+	# empty "enemy" group would fire a false MISSION COMPLETE — exactly
+	# what walking into an interior exit used to do.
+	_mission_hostiles = 0
+	_mission_done = true
 	if _current_level == null: return
+	_save_map_state()
+	# In-flight shots and grenades belong to the map being torn down.
+	for p in get_tree().get_nodes_in_group("projectile"):
+		p.queue_free()
 	if _current_level.terrain and is_instance_valid(_current_level.terrain):
 		_current_level.terrain.queue_free()
 	if _current_level.entities and is_instance_valid(_current_level.entities):
