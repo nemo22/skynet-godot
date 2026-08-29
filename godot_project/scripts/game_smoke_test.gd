@@ -111,12 +111,13 @@ func _run() -> void:
 	_check(live > 0, "shots spawned %d effect/projectile nodes" % live)
 	for f in 300:                                    # 5 s of physics: rocket life 3.4 s, grenade fuse 2.5 s
 		await get_tree().physics_frame
+	# Only the player's own shots count — the DOS-driven enemies keep
+	# firing bolts at the player throughout the test.
 	var left: int = 0
 	for c in get_children():
-		if c != _main and c.get_script() != null \
-				and String(c.get_script().resource_path).ends_with("projectile.gd"):
+		if c != _main and c.get_script() != null 				and String(c.get_script().resource_path).ends_with("projectile.gd") 				and c.get("_owner") == player:
 			left += 1
-	_check(left == 0, "all projectiles expired or hit after 5 s of physics (%d left)" % left)
+	_check(left == 0, "all player projectiles expired or hit after 5 s of physics (%d left)" % left)
 
 	# --- 3. Enemy bolt at the player ---
 	var en = get_tree().get_first_node_in_group("enemy")

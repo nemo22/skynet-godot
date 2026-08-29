@@ -304,26 +304,16 @@ func load_level(map_name: String) -> Level:
 	# (verified: 62× 64×64 "lndscps" records). Each cell binds one tile by
 	# (layer2 & 0x3F); build_terrain_mesh tiles it world-planar so roads
 	# flow unbroken across cells.
-	var tile_textures: Array = []
 	if level.is_outdoor:
 		var tex302_bytes := SkynetPaths.read_bytes(
 			SkynetPaths.gamedata_path("TEXTURE.302"))
 		if not tex302_bytes.is_empty():
-			var tex302 := TextureNNN.parse(tex302_bytes)
-			if tex302:
-				level.terrain_tex = tex302
-				for rec in tex302.records:
-					if rec != null and not rec.pixels.is_empty():
-						tile_textures.append(
-							TextureNNN.to_image_texture(rec, palette, false))
-					else:
-						tile_textures.append(null)
-				print("[level] terrain: %d TEXTURE.302 tiles" % tile_textures.size())
+			level.terrain_tex = TextureNNN.parse(tex302_bytes)
 
-	# Terrain mesh -------------------------------------------------
+	# Terrain mesh — built once and served from the asset cache
+	# (converted/terrain/WLD.NNN.res); the tiles come from TEXTURE.302.
 	if level.wld:
-		var terrain_mesh := WldTerrain.build_terrain_mesh(
-			level.wld, tile_textures)
+		var terrain_mesh := Assets.terrain(level.map_suffix, level.wld)
 		if terrain_mesh:
 			level.terrain = MeshInstance3D.new()
 			level.terrain.name = "Terrain"
@@ -372,15 +362,15 @@ func load_level(map_name: String) -> Level:
 				mesh_cache[lookup] = false
 				failed_reads[lookup] = true
 				continue
-			var parsed: Mesh3D.Mesh3D = Mesh3D.parse(bytes, name)
-			if parsed == null:
+			# Parsed + textured once, then served from converted/mesh/.
+			am = Assets.mesh(lookup, bytes)
+			if am == null:
 				mesh_cache[lookup] = false
 				var ver_str := ""
 				if bytes.size() >= 4:
 					ver_str = "%c%c%c%c" % [bytes[0], bytes[1], bytes[2], bytes[3]]
 				failed_parses[lookup] = ver_str
 				continue
-			am = Mesh3D.build_textured_array_mesh(parsed, provider)
 			mesh_cache[lookup] = am
 		elif typeof(cached) == TYPE_BOOL:
 			continue
@@ -706,15 +696,12 @@ static func _enemy_frames_for(enemy_type: int, enms: BSAReader,
 	if bytes.is_empty():
 		frame_cache[lookup] = false
 		return []
-	var parsed: Mesh3D.Mesh3D = Mesh3D.parse(bytes, base)
-	if parsed == null:
-		frame_cache[lookup] = false
-		return []
-	var frames := Mesh3D.build_frame_meshes(parsed, provider)
+	# Every frame built once, then served from converted/frames/.
+	var frames: Array = Assets.mesh_frames(lookup, bytes)
 	if frames.is_empty():
 		frame_cache[lookup] = false
 		return []
-	if parsed.frame_count > 1:
+	if frames.size() > 1:
 		print("[enemy] %s — %d animation frames" % [lookup, frames.size()])
 	frame_cache[lookup] = frames
 	return frames
@@ -738,11 +725,10 @@ static func _destruct_stage_meshes(mesh_name: String, transfrm: Dictionary,
 		if bytes.is_empty():
 			out.append(null)
 			continue
-		var parsed: Mesh3D.Mesh3D = Mesh3D.parse(bytes, f)
-		if parsed == null:
+		var am: ArrayMesh = Assets.mesh(lookup, bytes)
+		if am == null:
 			out.append(null)
 			continue
-		var am := Mesh3D.build_textured_array_mesh(parsed, provider)
 		mesh_cache[lookup] = am
 		out.append(am)
 	if out.size() > 1:
@@ -808,8 +794,7 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 	level.sprites.name = "Sprites"
 	if level.map == null:
 		return
-	var tex_cache: Dictionary = {}        # bank → TexFile (or false)
-	var img_cache: Dictionary = {}        # sprite_index → ImageTexture
+	var img_cache: Dictionary = {}        # sprite_index → Texture2D
 	var bank_hist: Dictionary = {}
 	var placed: int = 0
 	var pickups: int = 0
@@ -821,20 +806,10 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 		var rec_id: int = e.sprite_index & 0x7F
 		bank_hist[bank] = bank_hist.get(bank, 0) + 1
 
-		# Resolve (and cache) the sprite image.
+		# Resolve (and cache) the sprite image — index 0 transparent.
 		if not img_cache.has(e.sprite_index):
-			var tf = tex_cache.get(bank, null)
-			if tf == null and not tex_cache.has(bank):
-				var path := SkynetPaths.gamedata_path("TEXTURE.%03d" % bank)
-				var raw := SkynetPaths.read_bytes(path)
-				tf = TextureNNN.parse(raw) if not raw.is_empty() else false
-				tex_cache[bank] = tf
-			var made: ImageTexture = null
-			if tf is TextureNNN.TexFile and rec_id < tf.records.size():
-				made = TextureNNN.to_image_texture(
-					tf.records[rec_id], palette, true)
-			img_cache[e.sprite_index] = made
-		var tex: ImageTexture = img_cache[e.sprite_index]
+			img_cache[e.sprite_index] = Assets.texture(bank, rec_id, true)
+		var tex: Texture2D = img_cache[e.sprite_index]
 		if tex == null:
 			continue
 

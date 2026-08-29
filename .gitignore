@@ -17,3 +17,6 @@ godot_project/android/
 
 # Stray logs
 godot_project/*.log
+
+# Converted-asset cache (rebuilt from gamedata/ on first start)
+godot_project/converted/

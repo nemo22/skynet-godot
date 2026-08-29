@@ -578,29 +578,14 @@ func _build_viewmodel() -> void:
 ## Load the .CFA viewmodel frames for every weapon that names one
 ## (WEAPON*.CFA in MDMDIMGS.BSA).
 func _load_viewmodels() -> void:
-	var imgs := BSAReader.new()
-	if not imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"),
-			SkynetPaths.variant):
-		return
-	var pal_bytes := imgs.read("SKYNET.COL")
-	if pal_bytes.is_empty():
-		pal_bytes = imgs.read("BRIEF.COL")
-	var palette := Palette.parse(pal_bytes)
-	if palette.is_empty():
-		imgs.close()
-		return
 	for i in _weapons.size():
 		var cfa: String = String(_weapons[i].get("cfa", ""))
 		if cfa.is_empty():
 			continue
-		var bytes := imgs.read(cfa)
-		if bytes.is_empty():
-			continue
-		var frames := CFAFile.parse(bytes, palette)
+		var frames: Array = Assets.cfa_frames(cfa)
 		if not frames.is_empty():
 			_vm_cache[i] = frames
 			print("[weapon] %s — %d viewmodel frames" % [cfa, frames.size()])
-	imgs.close()
 
 ## Advance the viewmodel animation and keep it pinned bottom-centre.
 func _process(delta: float) -> void:

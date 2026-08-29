@@ -43,13 +43,21 @@ func _ready() -> void:
 	_ambient = AudioStreamPlayer.new()
 	add_child(_ambient)
 
-## Decode a .RAW / .WAV clip into an AudioStreamWAV (cached).
+## Decode a .RAW / .WAV clip into an AudioStreamWAV (cached in memory
+## and, through the asset cache, on disk).
 func _load(name: String, loop: bool) -> AudioStreamWAV:
 	var key := name.to_upper() + ("#L" if loop else "")
 	if _cache.has(key):
 		return _cache[key]
 	if _bsa == null:
 		return null
+	var s: AudioStreamWAV = Assets.sound(name, loop,
+		func() -> Resource: return _decode(name, loop))
+	if s != null:
+		_cache[key] = s
+	return s
+
+func _decode(name: String, loop: bool) -> AudioStreamWAV:
 	var bytes: PackedByteArray = _bsa.read(name)
 	if bytes.is_empty():
 		return null
@@ -71,8 +79,6 @@ func _load(name: String, loop: bool) -> AudioStreamWAV:
 			s.loop_mode = AudioStreamWAV.LOOP_FORWARD
 			s.loop_begin = 0
 			s.loop_end = signed.size()        # 8-bit mono: 1 byte == 1 frame
-	if s != null:
-		_cache[key] = s
 	return s
 
 ## Minimal RIFF/WAVE (PCM) parser.

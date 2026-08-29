@@ -35,8 +35,13 @@ func _archive(archive_id: int) -> TextureNNN.TexFile:
 	_files[archive_id] = t
 	return t
 
-## Provider callable for Mesh3D.build_textured_array_mesh.
+## Provider callable for Mesh3D.build_textured_array_mesh. Served from
+## the converted-asset cache when it is enabled (decoded once, stored
+## as a compressed texture resource); the in-memory decode is the
+## fallback.
 func provide(archive_id: int, record_id: int) -> Dictionary:
+	if Assets.enabled:
+		return Assets.provide(archive_id, record_id)
 	var t := _archive(archive_id)
 	if t == null or t.records.is_empty():
 		return {}
