@@ -141,6 +141,68 @@ func _ready() -> void:
 		SkynetPaths.selected_map = "MAP.210" if _maps.has("MAP.210") else _maps[0]
 	_apply_display_settings()
 	_build()
+	_maybe_import()
+
+## First start (or `--import` on the command line): convert the game
+## data into the asset cache behind a progress overlay. `--import`
+## quits afterwards so the conversion can run from a script.
+func _maybe_import() -> void:
+	if not Assets.enabled:
+		return
+	var args: PackedStringArray = OS.get_cmdline_args()
+	args.append_array(OS.get_cmdline_user_args())
+	var forced: bool = "--import" in args
+	# `--map-scene=MAP.210`: build one editor map scene and quit.
+	for a in args:
+		if a.begins_with("--map-scene="):
+			var p: String = Assets.map_scene(a.substr(12).strip_edges())
+			print("[menu] map scene: %s" % (p if not p.is_empty() else "FAILED"))
+			get_tree().quit(0 if not p.is_empty() else 1)
+			return
+	if not forced and DirAccess.dir_exists_absolute(Assets.root + "/mesh"):
+		return
+	# No original data found (exported build without a bundled copy):
+	# ask for the game's directory and remember it.
+	if not SkynetPaths._has_data(SkynetPaths.gamedata_dir):
+		if DisplayServer.get_name() == "headless":
+			push_error("[menu] original game data not found — pass --gamedata=<dir>")
+			if forced:
+				get_tree().quit(1)
+			return
+		var dlg := FileDialog.new()
+		dlg.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+		dlg.access = FileDialog.ACCESS_FILESYSTEM
+		dlg.title = "Select the SkyNET game directory (contains MDMDMAP2.BSA)"
+		dlg.size = Vector2i(720, 480)
+		add_child(dlg)
+		dlg.popup_centered()
+		var dir: String = await dlg.dir_selected
+		dlg.queue_free()
+		if not SkynetPaths.set_gamedata_dir(dir):
+			push_error("[menu] %s has no game data" % dir)
+			return
+	var layer := CanvasLayer.new()
+	layer.layer = 100
+	add_child(layer)
+	var bg := ColorRect.new()
+	bg.color = Color(0.0, 0.0, 0.0, 0.88)
+	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(bg)
+	var lbl := Label.new()
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lbl.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	lbl.add_theme_font_size_override("font_size", 28)
+	lbl.text = "Converting game data for first use..."
+	layer.add_child(lbl)
+	await get_tree().process_frame
+	await Assets.import_all(func(done: int, total: int, item: String) -> void:
+		lbl.text = "Converting game data for first use...
+%d / %d
+%s" % [done, total, item])
+	layer.queue_free()
+	if forced:
+		get_tree().quit()
 
 func _scan_maps() -> void:
 	var bsa := BSAReader.new()

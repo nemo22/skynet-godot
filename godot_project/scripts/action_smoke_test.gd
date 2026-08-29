@@ -14,6 +14,7 @@ const LevelLoader := preload("res://scripts/level_loader.gd")
 const ActionSystem := preload("res://scripts/action_system.gd")
 const EnemyAI := preload("res://scripts/enemy_ai.gd")
 const AIData := preload("res://scripts/enemy_ai_data.gd")
+const MapScene := preload("res://scripts/editor/map_scene.gd")
 
 const CAMPAIGN: Array = [
 	"MAP.210", "MAP.220", "MAP.230", "MAP.240",
@@ -47,6 +48,7 @@ func _ready() -> void:
 		_run_map210_checks(level210)
 		_run_transition_checks(level210)
 	_run_ai_checks()
+	_run_map_scene_checks()
 	print("[smoke] %s (%d failures)"
 		% ["ALL PASS" if _fails == 0 else "FAILED", _fails])
 	get_tree().quit(1 if _fails > 0 else 0)
@@ -297,6 +299,37 @@ func _run_ai_checks() -> void:
 	for i in 300:
 		hk.tick(EnemyAI.TICK, {"see": true, "dist": 3000.0, "bearing": 0, "angle": 0})
 	_check(hk.vars.has(56), "hk_ftr script sets its altitude target (var 56)")
+
+## Editor map scenes: MAP.210 builds, packs, saves and reloads with
+## every entity family present.
+func _run_map_scene_checks() -> void:
+	var p: String = MapScene.save("MAP.210")
+	_check(not p.is_empty() and ResourceLoader.exists(p), "MAP.210 editor scene saved (%s)" % p)
+	if p.is_empty():
+		return
+	var ps: PackedScene = ResourceLoader.load(p, "", ResourceLoader.CACHE_MODE_IGNORE)
+	_check(ps != null, "MAP.210 scene loads back as a PackedScene")
+	if ps == null:
+		return
+	var root: Node = ps.instantiate()
+	var ents: int = root.get_node("Entities").get_child_count()
+	var enemies: int = root.get_node("Enemies").get_child_count()
+	var sprites: int = root.get_node("Sprites").get_child_count()
+	var markers: int = root.get_node("Markers").get_child_count()
+	_check(ents == 176 and enemies == 19 and sprites == 235 and markers > 20,
+		"scene holds 176 meshes, 19 enemies, 235 sprites, %d markers (got %d/%d/%d)" % [markers, ents, enemies, sprites])
+	var first: Node = root.get_node("Entities").get_child(0)
+	_check(first is MeshInstance3D and (first as MeshInstance3D).mesh != null
+		and first.get("rec") != null and int(first.get("rec").get("file_off")) > 0,
+		"entity nodes carry a mesh from the cache and their MAP record")
+	_check(root.get_node("Terrain") != null and (root.get_node("Terrain") as MeshInstance3D).mesh != null,
+		"scene carries the cached terrain mesh")
+	var f := FileAccess.open(p, FileAccess.READ)
+	var sz: int = f.get_length() if f != null else 0
+	if f != null:
+		f.close()
+	_check(sz > 0 and sz < 2_000_000, "scene file references cache resources instead of embedding them (%d bytes)" % sz)
+	root.free()
 
 ## Walk a chain with ObjFlipLink's rules (follow link_next, stop at an
 ## actor flag or chain end) and return the first mover entity, or null.
