@@ -24,6 +24,8 @@ extends Resource
 @export var link_next: int = 0
 @export var link_act_type: int = 0
 @export var hp: int = 0
+## hp / state / link resolved from the map's per-name default list.
+@export var uses_defaults: bool = false
 @export var sprite_index: int = -1
 @export var marker_type: int = -1
 @export var enemy_type: int = -1

@@ -130,7 +130,8 @@ func _run_map210_checks(level: LevelLoader.Level) -> void:
 	if gener != null:
 		var next_e = map.entities_by_off.get(gener.link_next)
 		var st_before: int = next_e.state_byte if next_e != null else -1
-		_check(not action.on_player_hit(gener.file_off, 50.0),
+		action.on_player_hit(gener.file_off, 50.0)
+		_check(next_e == null or next_e.state_byte == st_before,
 			"GENER0 survives a 50-damage hit (no chain fire)")
 		_check(action.on_player_hit(gener.file_off, 500.0),
 			"GENER0 dies to the big hit and fires its chain")
@@ -257,8 +258,10 @@ func _run_transition_checks(level210: LevelLoader.Level) -> void:
 		l210c.action.activate_teleport(epos)
 		_check(seen.size() == 1, "a fired level never teleports twice")
 
-	# Spawn-inside latch: arm_proximity at the doorway → no fire until the
-	# player steps out and back in.
+	# Spawn-inside latch: arm_proximity at the doorway keeps the chain
+	# unflipped (no door sound, no auto-arm) — but the use key still goes
+	# through the gate the player stands in (the truck interiors spawn
+	# beside their DOOR gate, and "press use at the door" must work).
 	var l210d: LevelLoader.Level = LevelLoader.new().load_level("MAP.210")
 	if l210d != null:
 		var seen2: Array = []
@@ -268,12 +271,13 @@ func _run_transition_checks(level210: LevelLoader.Level) -> void:
 		var epos2 := Vector3(float(ex2.x), -float(ex2.y), -float(ex2.z))
 		l210d.action.arm_proximity(epos2)
 		l210d.action.tick(0.016, epos2)
+		_check((ex2.state_byte & 1) == 0, "spawning on a doorway does not arm it by itself")
 		l210d.action.activate_teleport(epos2)
-		_check(seen2.is_empty(), "spawning on a doorway does not arm it")
+		_check(seen2.size() == 1, "use at the doorway fires it even when the spawn pre-latched its gate")
 		l210d.action.tick(0.016, epos2 + Vector3(2000.0, 0.0, 0.0))
 		l210d.action.tick(0.016, epos2)
 		l210d.action.activate_teleport(epos2)
-		_check(seen2.size() == 1, "stepping out, back in and pressing use fires the doorway")
+		_check(seen2.size() == 1, "a fired doorway never fires again in the same level")
 
 ## Phase 3 — DOS enemy AI data + the AIS interpreter, headless.
 func _run_ai_checks() -> void:

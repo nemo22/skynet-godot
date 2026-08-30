@@ -27,6 +27,7 @@ const TransfrmPRS  := preload("res://scripts/loaders/transfrm_prs.gd")
 const EnemyAnim    := preload("res://scripts/enemy_anim.gd")
 const AIData       := preload("res://scripts/enemy_ai_data.gd")
 const Pickup       := preload("res://scripts/pickup.gd")
+const PickupData   := preload("res://scripts/pickup_data.gd")
 
 ## Variant-3 billboard sprite banks (sprite_index >> 7) → TEXTURE.NNN file.
 ## "weapons flat" banks are weapon/ammo pickups, "equipment" is gear; the
@@ -400,9 +401,12 @@ func load_level(map_name: String) -> Level:
 		# keys templates on the mesh name) — cars carry state bit1 +
 		# HP but act 0x00 in the MAP data.
 		var has_transfrm: bool = transfrm.has(name.to_lower())
-		var wants_action: bool = ActionSystem.is_mover(act) \
-			or ActionSystem.is_destructible(act) or has_transfrm \
-			or (e.state_byte & 6) != 0
+		# Anything with HP is a hit target too (ObjHit drains it whatever
+		# the state bits say — crates, buses, the dish take their HP from
+		# the map's per-name defaults).
+		var wants_action: bool = (ActionSystem.is_mover(act)
+			or ActionSystem.is_destructible(act) or has_transfrm
+			or (e.state_byte & 6) != 0 or e.hp > 0)
 		var mi: MeshInstance3D
 		if wants_action:
 			var at := ActionTarget.new()
@@ -441,7 +445,10 @@ func load_level(map_name: String) -> Level:
 			# Register after the transform is final — the mover base
 			# transform is captured here.
 			level.action.register_node(e, mi)
-			if ActionSystem.is_destructible(act) or has_transfrm:
+			# Staged wrecks need a TRANSFRM.PRS template for the name; a
+			# 0x19 act without one (CARHIP2C via the defaults) just runs
+			# the plain HP path.
+			if has_transfrm:
 				level.action.register_destructible(e,
 					_destruct_stage_meshes(name, transfrm, objs,
 						mesh_cache, provider))
@@ -833,38 +840,81 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 			base_y = WldTerrain.height_at_world(
 				level.wld, float(e.x), float(e.z))
 
-		# Pickup banks become collectible nodes; the rest are scenery.
+		# Sprites listed in the DOS item table become collectible nodes
+		# (FUN_0011d600 gives them act 0xFD at map start); the rest are
+		# scenery — including the weapon-bank records the table omits.
 		var spr: Sprite3D
-		if SPRITE_AMMO_BANKS.has(bank):
+		if PickupData.ITEMS.has(e.sprite_index):
 			var p := Pickup.new()
-			p.setup_pickup(Pickup.Kind.AMMO, 25)
-			p.set_meta("pickup_off", e.file_off)
-			level.pickup_offs.append(e.file_off)
-			spr = p
-			pickups += 1
-		elif SPRITE_HEALTH_BANKS.has(bank):
-			var p := Pickup.new()
-			p.setup_pickup(Pickup.Kind.HEALTH, 25)
+			p.setup_item(e.sprite_index)
 			p.set_meta("pickup_off", e.file_off)
 			level.pickup_offs.append(e.file_off)
 			spr = p
 			pickups += 1
 		else:
 			spr = Sprite3D.new()
-		spr.texture = tex
-		spr.pixel_size = SPRITE_PIXEL_SIZE
-		spr.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
-		spr.shaded = false
-		spr.double_sided = true
-		spr.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
-		spr.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+		_style_sprite(spr, tex)
 		spr.position = Vector3(
 			float(e.x), base_y + world_h * 0.5, -float(e.z))
 		level.sprites.add_child(spr)
 		placed += 1
+		# Looping ambient sound: the 0x4cc00 sprite→sound table (fires,
+		# barrels — FUN_0012a400 gives them act 0xEE) or an explicit 0xEE
+		# node whose sound id sits at sub+2 (exit_map holds that u16).
+		var amb: int = -1
+		if e.link_act_type == 0xEE:
+			amb = e.exit_map
+		elif e.link_act_type == 0 and PickupData.AMBIENT.has(e.sprite_index):
+			amb = int(PickupData.AMBIENT[e.sprite_index])
+		if amb >= 0:
+			Audio.attach_loop_3d(amb, spr, -10.0)
 	print("[level] placed %d billboard sprites (%d pickups)"
 		% [placed, pickups])
 	var keys := bank_hist.keys()
 	keys.sort()
 	for b in keys:
 		print("[sprite] bank %d x%d" % [b, bank_hist[b]])
+
+static func _style_sprite(spr: Sprite3D, tex: Texture2D) -> void:
+	spr.texture = tex
+	spr.pixel_size = SPRITE_PIXEL_SIZE
+	spr.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
+	spr.shaded = false
+	spr.double_sided = true
+	spr.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
+	spr.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+
+## Spawn a destruction drop (FUN_00124119): one of the drop type's
+## sprites at random (0 = nothing), placed on the ground under `pos`
+## (Godot coordinates); a pickup when the item table lists it.
+static func spawn_drop(level: Level, pos: Vector3, drop_type: int) -> Sprite3D:
+	if level == null or level.sprites == null:
+		return null
+	if drop_type < 0 or drop_type >= PickupData.DROPS.size():
+		return null
+	var choices: Array = PickupData.DROPS[drop_type]
+	if choices.is_empty():
+		return null
+	var si: int = int(choices[randi() % choices.size()])
+	if si <= 0:
+		return null
+	var tex: Texture2D = Assets.texture(si >> 7, si & 0x7F, true)
+	if tex == null:
+		return null
+	var spr: Sprite3D
+	if PickupData.ITEMS.has(si):
+		var p := Pickup.new()
+		p.setup_item(si)
+		spr = p
+	else:
+		spr = Sprite3D.new()
+	_style_sprite(spr, tex)
+	var ground: float = pos.y
+	if level.is_outdoor and level.wld != null:
+		ground = WldTerrain.height_at_world(level.wld, pos.x, -pos.z)
+	var world_h: float = float(tex.get_height()) * SPRITE_PIXEL_SIZE
+	spr.position = Vector3(pos.x, ground + world_h * 0.5, pos.z)
+	level.sprites.add_child(spr)
+	if PickupData.AMBIENT.has(si):
+		Audio.attach_loop_3d(int(PickupData.AMBIENT[si]), spr, -10.0)
+	return spr

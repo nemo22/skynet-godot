@@ -9,6 +9,7 @@
 extends Node
 
 const MainScene := preload("res://scenes/main.tscn")
+const LevelLoader := preload("res://scripts/level_loader.gd")
 
 var _fails: int = 0
 var _main: Node = null
@@ -136,7 +137,8 @@ func _run() -> void:
 	var car: Node3D = null
 	var action = _main.get("_current_level").action
 	for h in get_tree().get_nodes_in_group("hittable"):
-		if action._destr.has(int(h.call("file_off"))) 				and (String(h.name).begins_with("CARHIP") or String(h.name).begins_with("COPCAR")):
+		var hoff: int = int(h.call("file_off"))
+		if action._destr.has(hoff) and int(action._destr[hoff]["stage"]) == 0 and not action._spent.has(hoff) and (String(h.name).begins_with("CARHIP") or String(h.name).begins_with("COPCAR")):
 			car = h
 			break
 	_check(car != null, "a staged destructible car is in the hittable group")
@@ -145,9 +147,10 @@ func _run() -> void:
 		var stage0: int = int(action._destr[off]["stage"]) if action._destr.has(off) else -1
 		var rocket := preload("res://scripts/projectile.gd").new()
 		add_child(rocket)
-		rocket.setup(car.global_position + Vector3(0, 60, -200), Vector3(0, 0, 1), 400.0,
+		# Straight down onto the roof — nothing but the car in the way.
+		rocket.setup(car.global_position + Vector3(0, 400, 0), Vector3(0, -1, 0), 400.0,
 			{"speed": 3000.0, "life": 1.0, "splash": 512.0, "hits": "enemy"}, player)
-		for f in 30:
+		for f in 45:
 			await get_tree().physics_frame
 		var stage1: int = int(action._destr[off]["stage"]) if action._destr.has(off) else -1
 		_check(stage1 > stage0, "rocket blast advanced the car's damage stage (%d → %d)" % [stage0, stage1])
@@ -217,6 +220,81 @@ func _run() -> void:
 	_check(killed_off >= 0 and not still_there, "killed enemy stays dead after the round trip")
 	_check(int(_main.get("_mission_hostiles")) > 0 and not bool(_main.get("_mission_done")),
 		"mission watcher re-armed on the main map (%d hostiles)" % int(_main.get("_mission_hostiles")))
+	# --- 5. Pickups: walking onto an item-table sprite collects it ---
+	var pick: Node3D = null
+	var pick_item: Array = []
+	for n in get_tree().get_nodes_in_group("pickup"):
+		var it: Array = n.call("item")
+		if it.size() >= 6 and int(it[0]) >= 0 and int(it[1]) > 0:
+			pick = n
+			pick_item = it
+			break
+	_check(pick != null, "MAP.210 has an item-table pickup with an ammo pool")
+	if pick != null:
+		var pool: int = int(pick_item[0])
+		var before_cnt: int = int(player.call("pool_count", pool))
+		player.set("noclip", true)
+		player.velocity = Vector3.ZERO
+		player.global_position = pick.global_position + Vector3(0.0, 20.0, 0.0)
+		for f in 10:
+			await get_tree().physics_frame
+		_check(not is_instance_valid(pick), "pickup is consumed when the player stands on it")
+		_check(int(player.call("pool_count", pool)) > before_cnt,
+			"pickup topped up pool %d (%d → %d)" % [pool, before_cnt, int(player.call("pool_count", pool))])
+
+	# --- 6. MAP.212 (truck interior): spawn, crate breaks + drops, DOOR + use → MAP.216/12 ---
+	_main.call("_on_teleport_requested", 212, 0)
+	ok = await _wait(func() -> bool: return _level_is("212") and _settled(), 180.0)
+	_check(ok, "truck exit loads MAP.212")
+	if ok:
+		lvl = _main.get("_current_level")
+		_check(lvl.map.entities.size() == 19, "MAP.212 parses all 19 entities (both cells)")
+		var m0b: Vector3 = (lvl.markers[0] as Array)[0] if lvl.markers.has(0) else Vector3.INF
+		_check(player.global_position.distance_to(m0b) < 300.0,
+			"player spawned at MAP.212 marker 0 (d=%.0f)" % player.global_position.distance_to(m0b))
+		var crate = null
+		for e in lvl.map.entities:
+			if (e.flags & 3) == 1 and LevelLoader.MapFile.entity_name(lvl.map, e).begins_with("CRAT"):
+				crate = e
+				break
+		_check(crate != null and crate.hp == 50 and crate.uses_defaults,
+			"crates take 50 HP from the map's per-name defaults")
+		var drops: Array = []
+		lvl.action.drop_requested.connect(func(at: Vector3, t: int) -> void: drops.append(t))
+		if crate != null:
+			lvl.action.on_player_hit(crate.file_off, 60.0)
+			_check(lvl.action._spent.has(crate.file_off), "a 60-damage hit destroys the crate")
+			_check(drops == [3], "the crate's destruction rolls an ammo drop (type 3)")
+		for f in 5:
+			await get_tree().physics_frame
+		_main.call("_on_use_pressed", player.global_position)
+		ok = await _wait(func() -> bool: return _level_is("216") and _settled(), 180.0)
+		_check(ok, "use at the truck DOOR leads to MAP.216")
+		if ok:
+			lvl = _main.get("_current_level")
+			var m12: Vector3 = (lvl.markers[12] as Array)[0] if lvl.markers.has(12) else Vector3.INF
+			_check(player.global_position.distance_to(m12) < 700.0,
+				"player spawned at MAP.216 marker 12 (d=%.0f)" % player.global_position.distance_to(m12))
+
+	# --- 7. MAP.211 (canyon truck): all entities, return exit → previous map marker 11 ---
+	_main.call("_on_teleport_requested", 211, 0)
+	ok = await _wait(func() -> bool: return _level_is("211") and _settled(), 180.0)
+	_check(ok, "MAP.211 loads")
+	if ok:
+		lvl = _main.get("_current_level")
+		_check(lvl.map.entities.size() == 18, "MAP.211 parses all 18 entities")
+		var m0c: Vector3 = (lvl.markers[0] as Array)[0] if lvl.markers.has(0) else Vector3.INF
+		_check(player.global_position.distance_to(m0c) < 300.0,
+			"player spawned at MAP.211 marker 0 (d=%.0f)" % player.global_position.distance_to(m0c))
+		_main.call("_on_use_pressed", player.global_position)
+		ok = await _wait(func() -> bool: return _level_is("216") and _settled(), 180.0)
+		_check(ok, "use at the MAP.211 DOOR returns to the previous map")
+		if ok:
+			lvl = _main.get("_current_level")
+			var m11: Vector3 = (lvl.markers[11] as Array)[0] if lvl.markers.has(11) else Vector3.INF
+			_check(player.global_position.distance_to(m11) < 700.0,
+				"return spawn at marker 11 (d=%.0f)" % player.global_position.distance_to(m11))
+
 	for f in 60:
 		await get_tree().physics_frame
 	_check(_main.get("_game_over") == null, "no MISSION COMPLETE / game over after the round trip")

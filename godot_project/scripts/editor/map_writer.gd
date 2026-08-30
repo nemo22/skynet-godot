@@ -28,6 +28,8 @@ extends RefCounted
 const MapEntityRec := preload("res://scripts/editor/map_entity_rec.gd")
 
 const PAYLOAD_OFFSET: int = 0x253C
+## Shortest entity block (variant 2) — chain walks stop before it would overrun.
+const BLOCK_MIN: int = 35
 const CELL_UNITS: int = 1024
 const END_A: int = 0xFFFFFFFF
 const END_B: int = 0xFFFFFFFE
@@ -72,7 +74,7 @@ static func _chain_map(b: PackedByteArray, gw: int, gh: int) -> Dictionary:
 	for ci in gw * gh:
 		var e := _u32(b, PAYLOAD_OFFSET + ci * 4)
 		var guard := 0
-		while not _is_end(e) and e + 48 <= b.size() and guard < 4096:
+		while not _is_end(e) and e + BLOCK_MIN <= b.size() and guard < 4096:
 			guard += 1
 			if out.has(e):
 				break
@@ -88,7 +90,7 @@ static func _unlink(b: PackedByteArray, ci: int, off: int) -> bool:
 		_put32(b, head_at, _u32(b, off))
 		return true
 	var guard := 0
-	while not _is_end(e) and e + 48 <= b.size() and guard < 4096:
+	while not _is_end(e) and e + BLOCK_MIN <= b.size() and guard < 4096:
 		guard += 1
 		var nxt := _u32(b, e)
 		if nxt == off:
@@ -213,8 +215,8 @@ static func _new_block(rec: Resource, root: Node) -> PackedByteArray:
 		_put16(blk, 25 + 12, idx)
 	return blk
 
-## Readers (ours included) only walk blocks with 48 bytes in bounds, so
-## a 35/36-byte block appended at the very end needs zero padding.
+## Older readers walked only blocks with 48 bytes in bounds; pad an
+## appended 35/36-byte block so any such tool still sees it.
 static func _pad_block(b: PackedByteArray, off: int) -> void:
 	while b.size() < off + 48:
 		b.append(0)
@@ -313,8 +315,11 @@ static func write(root: Node, log: Array = []) -> PackedByteArray:
 		var before := b.slice(sub, mini(sub + 24, b.size()))
 		match v:
 			1:
-				_put16(b, sub + 0x0e, int(rec.get("hp")))
-				b[sub + 0x12] = int(rec.get("state_byte")) & 0xFF
+				# hp / state resolved from the per-name default list are not
+				# the entity's own bytes (MapFile.uses_defaults) — leave them.
+				if not bool(rec.get("uses_defaults")):
+					_put16(b, sub + 0x0e, int(rec.get("hp")))
+					b[sub + 0x12] = int(rec.get("state_byte")) & 0xFF
 				var link_off := _s32(b, sub + 0x13)
 				if link_off > 0 and link_off + 10 <= b.size():
 					b[link_off + 9] = int(rec.get("link_act_type")) & 0xFF

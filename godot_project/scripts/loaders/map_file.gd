@@ -50,6 +50,19 @@ const PAYLOAD_OFFSET: int = 0x253C
 const DICT_OFFSET: int = 20
 const HEADER_SENTINEL: int = 0xFFFFFFFF
 const NAME_LEN: int = 8
+## Head pointer of the per-name default list (Map_SetDefault): nodes of
+## {i32 next, i16 name index, u32 link record, u16 hp, u8 state}.
+const DEFAULTS_HEAD: int = 0x233C
+## Shortest valid entity block (variant 2: 25 + 10 bytes).
+const BLOCK_MIN: int = 35
+
+## On-disk length of an entity block for its flags byte (variant in
+## bits 0-1): 48 / 35 / 36 bytes for variants 1 / 2 / 3.
+static func block_length(flags: int) -> int:
+	match flags & 3:
+		1: return 48
+		2: return 35
+	return 36
 
 class Entity:
 	var cell_x: int = 0
@@ -114,8 +127,23 @@ class Entity:
 	## the target map (facing marker = id + 1).
 	var exit_map: int = 0
 	var exit_marker_id: int = 0
+	## Variant 1: file offset of the 10-byte link record in effect (the
+	## entity's own, or the per-name default from the 0x233C list) and
+	## the destruction data it carries: byte 0 = destruction type into
+	## the Skynet.exe 0x423d6 table (effect sprites, drop, sound), i16
+	## at +1 = blast parameter for type 0 (FUN_00124293).
+	var link_off: int = 0
+	var destroy_type: int = 0
+	var destroy_param: int = 0
+	## True when hp / state_byte / link came from the map's per-name
+	## default list (Map_SetDefault, skynet_gh.c:37960): on disk the
+	## entity holds hp 0 / link -2, so an editor export must not write
+	## the resolved values back into the sub-record.
+	var uses_defaults: bool = false
 
 class MapFile:
+	## Per-name defaults from the 0x233C list: name index -> {hp, state, link}.
+	var defaults: Dictionary = {}
 	var cell_count: int = 0
 	var grid_width: int = 0
 	var grid_height: int = 0
@@ -127,6 +155,13 @@ class MapFile:
 
 static func _u32(bytes: PackedByteArray, off: int) -> int:
 	return bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)
+
+static func _u16(bytes: PackedByteArray, off: int) -> int:
+	return bytes[off] | (bytes[off + 1] << 8)
+
+static func _s16(bytes: PackedByteArray, off: int) -> int:
+	var v: int = bytes[off] | (bytes[off + 1] << 8)
+	return v - 0x10000 if v >= 0x8000 else v
 
 static func _s32(bytes: PackedByteArray, off: int) -> int:
 	var v: int = _u32(bytes, off)
@@ -181,6 +216,20 @@ static func parse(bytes: PackedByteArray) -> MapFile:
 		m.names.append(name_bytes.slice(0, nul_at).get_string_from_ascii())
 		off += NAME_LEN
 
+	# Per-name defaults (Map_SetDefault, skynet_gh.c:37960): every
+	# variant-1 entity WITHOUT a link record of its own (sub+0x13 < 1)
+	# takes hp / state byte / link record from the node for its mesh
+	# name. That is where crates get their 50 HP and ammo drop, cars
+	# 150-350 HP, the DISH its rotator action, buttons their 0xEF gate.
+	var dnode: int = _s32(bytes, DEFAULTS_HEAD)
+	var dguard: int = 0
+	while dnode > 0 and dnode + 13 <= bytes.size() and dguard < 4096:
+		dguard += 1
+		m.defaults[_s16(bytes, dnode + 4)] = {
+			"hp": _u16(bytes, dnode + 10), "state": bytes[dnode + 12],
+			"link": _s32(bytes, dnode + 6)}
+		dnode = _s32(bytes, dnode)
+
 	# Entity grid at 0x253C.
 	var cgrid: int = PAYLOAD_OFFSET
 	if cgrid + gw * gh * 4 > bytes.size():
@@ -192,10 +241,19 @@ static func parse(bytes: PackedByteArray) -> MapFile:
 			var e_off: int = _u32(bytes, cgrid + ci * 4)
 			var safety: int = 0
 			while e_off != 0 and e_off != 0xFFFFFFFF and e_off != 0xFFFFFFFE \
-					and e_off + 48 <= bytes.size() and safety < 1024:
+					and e_off + BLOCK_MIN <= bytes.size() and safety < 1024:
 				safety += 1
 				var nxt_for_continue: int = _u32(bytes, e_off)
 				var flags_byte: int = bytes[e_off + 20]
+				# Block length depends on the variant: 25-byte head + sub-
+				# record of 23 (variant 1, incl. the link pointer), 10
+				# (variant 2) or 11 (variant 3) bytes. The LAST block of a
+				# file is often a 36-byte variant-3 record and may be the
+				# HEAD of its cell chain (MAP.211 cell 2,2 / MAP.212 cell
+				# 1,2 hold the truck interiors' start marker, door and exit);
+				# a flat 48-byte bound silently dropped those whole cells.
+				if e_off + block_length(flags_byte) > bytes.size():
+					break
 				# flags & 0x08 → DOS engine skips this entity entirely
 				# (SKYNET.EXE.c:65936). We honour the same skip here.
 				if (flags_byte & 0x08) != 0:
@@ -240,9 +298,18 @@ static func parse(bytes: PackedByteArray) -> MapFile:
 								| (bytes[sub_ptr + 0x0f] << 8)
 							e.state_byte = bytes[sub_ptr + 0x12]
 							var link_off: int = _s32(bytes, sub_ptr + 0x13)
+							if link_off < 1 and (e.flags & 0x40) == 0 and m.defaults.has(e.name_index):
+								var d: Dictionary = m.defaults[e.name_index]
+								e.hp = int(d["hp"])
+								e.state_byte = int(d["state"])
+								link_off = int(d["link"])
+								e.uses_defaults = true
+							e.link_off = link_off
 							if link_off > 0 and link_off + 10 <= bytes.size():
 								e.link_act_type = bytes[link_off + 9]
 								e.link_next = _s32(bytes, link_off + 5)
+								e.destroy_type = bytes[link_off]
+								e.destroy_param = _s16(bytes, link_off + 1)
 					2:
 						# Dynamic light source (FUN_0011b733 = AddLightSafe).
 						# u16 intensity at sub+0, i16 enable gate at sub+8.

@@ -28,4 +28,6 @@ func take_damage(amount: float) -> void:
 
 func activate() -> void:
 	if _action != null:
-		_action.on_player_activate(_file_off)
+		var pl := get_tree().get_first_node_in_group("player")
+		var at: Vector3 = (pl as Node3D).global_position if pl is Node3D else Vector3.INF
+		_action.on_player_activate(_file_off, at)

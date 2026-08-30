@@ -169,6 +169,7 @@ static func _rec_for(m: MapFile.MapFile, e: MapFile.Entity) -> Resource:
 	r.link_next = e.link_next
 	r.link_act_type = e.link_act_type
 	r.hp = e.hp
+	r.uses_defaults = e.uses_defaults
 	r.sprite_index = e.sprite_index
 	r.marker_type = e.marker_type
 	r.enemy_type = e.enemy_type

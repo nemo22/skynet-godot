@@ -35,8 +35,11 @@ extends RefCounted
 const Explosion := preload("res://scripts/explosion.gd")
 
 signal teleport_requested(target_map: int, marker_set: int)
+## A destroyed object drops an item (FUN_00124293 → FUN_00124119).
+signal drop_requested(pos: Vector3, drop_type: int)
 
 const MapFile := preload("res://scripts/loaders/map_file.gd")
+const PickupData := preload("res://scripts/pickup_data.gd")
 
 ## Mover ids → [family, p4, p6] from the 0x59b00 table's per-slot
 ## config dword (+4 low u16, +6 high u16). Families by handler body
@@ -94,6 +97,7 @@ const ACT_PROX_GATE: int = 0xEF     # 60-unit player-proximity gate
 const ACT_PROX_CHAIN_A: int = 0xF1  # radius 256 (table +4)
 const ACT_PROX_CHAIN_B: int = 0xF2  # radius 1024 (table +4)
 const ACT_TELEPORT: int = 0xF0
+const ACT_VOICE: int = 0xED         # voice line (VOICE.PRS id at sub+2, 0x137dfd)
 
 ## One-shot play-sound-and-disable nodes (handler 0x137dbd) — chains
 ## route through these to give doors/gates their sounds. The table's
@@ -135,6 +139,7 @@ var _movers: Dictionary = {}      # file_off → mover runtime state
 var _prox: Array = []             # entities with a proximity act type
 var _teleports: Array = []        # entities with act 0xF0
 var _sound_nodes: Array = []      # entities with a SOUND_ONESHOT act
+var _voice_nodes: Array = []      # entities with act 0xED
 var _destr: Dictionary = {}       # file_off → destructible runtime state
 var _hp: Dictionary = {}          # file_off → remaining HP
 var _spent: Dictionary = {}       # file_off → true (HP-depleted, inert)
@@ -154,6 +159,8 @@ func setup(map: MapFile.MapFile) -> void:
 			_teleports.append(e)
 		elif SOUND_ONESHOT.has(act):
 			_sound_nodes.append(e)
+		elif act == ACT_VOICE:
+			_voice_nodes.append(e)
 		if (e.flags & 3) == 1 and e.hp > 0:
 			_hp[e.file_off] = float(e.hp)
 
@@ -204,41 +211,38 @@ func register_destructible(e: MapFile.Entity, stage_meshes: Array) -> void:
 func on_player_hit(file_off: int, damage: float) -> bool:
 	var e: MapFile.Entity = _map.entities_by_off.get(file_off) \
 		if _map != null else null
-	if e == null or _spent.has(file_off):
+	if e == null:
 		return false
-	if (e.state_byte & 6) == 0:
-		return false
-	var depleted: bool = false
-	if _hp.has(file_off):
+	# ObjHit FUN_00139019: bit1 = act on every hit (before the HP test,
+	# so a wreck keeps staging after its HP is gone), bit2 = act once
+	# the HP is gone; the HP itself drains independently of those bits,
+	# so a crate with state 0 still breaks (and drops its ammo).
+	var spent: bool = _spent.has(file_off)
+	var has_hp: bool = _hp.has(file_off) and (e.flags & 3) == 1 and not spent
+	var depleted: bool = has_hp and _hp[file_off] - damage <= 0.0
+	var acted: bool = false
+	if (e.state_byte & 6) != 0:
+		# Destructible damage accumulates every qualifying hit. Membership
+		# comes from registration (act 0x18/0x19 OR a TRANSFRM.PRS name
+		# match — cars carry bit1 + HP but act 0x00 in the MAP data).
+		if _destr.has(file_off):
+			acted = _advance_destructible(e, damage)
+		elif not spent and ((e.state_byte & 2) != 0 or ((e.state_byte & 4) != 0 and depleted)):
+			_trigger(e)
+			acted = true
+	if has_hp:
 		_hp[file_off] -= damage
-		if _hp[file_off] <= 0.0:
-			depleted = true
-	# Destructible damage accumulates every qualifying hit. Membership
-	# comes from registration (act 0x18/0x19 OR a TRANSFRM.PRS name
-	# match — cars carry bit1 + HP but act 0x00 in the MAP data).
-	if _destr.has(file_off):
-		_advance_destructible(e, damage)
-		return true
-	if (e.state_byte & 2) != 0 or ((e.state_byte & 4) != 0 and depleted):
+		acted = true
 		if depleted:
 			_spent[file_off] = true
-		_trigger(e)
-		if depleted:
-			# DOS ObjHit: HP gone → the object is destroyed (FUN_00124293):
-			# explosion, then it is removed from the world.
-			var node: Node3D = _nodes.get(file_off)
-			if node != null and is_instance_valid(node):
-				_blast(node, true)
-				node.visible = false
-				_disable_collision(node)
-		return true
-	return false
+			_destroy(e)
+	return acted
 
 ## Activate-key port. The DOS use-key path is untraced; we honour the
 ## same bit1 ("act on hit") gate without applying damage, which covers
 ## shoot-or-use switches while leaving HP-gated objects (generators,
 ## bit2) to real damage.
-func on_player_activate(file_off: int) -> bool:
+func on_player_activate(file_off: int, player_pos: Vector3 = Vector3.INF) -> bool:
 	var e: MapFile.Entity = _map.entities_by_off.get(file_off) \
 		if _map != null else null
 	if e == null or _spent.has(file_off):
@@ -249,10 +253,49 @@ func on_player_activate(file_off: int) -> bool:
 	var usable: bool = (e.state_byte & 2) != 0 		or e.link_act_type == ACT_PROX_GATE or e.link_act_type == 0xF1 		or e.link_act_type == 0xF2
 	if not usable:
 		return false
+	# A gate whose chain ends in an exit (the truck DOOR in MAP.211/212,
+	# the bunker doorway gates) is the use-key way through: arm the exit
+	# if the chain has not flipped yet and go, wherever its sprite sits.
+	if e.link_act_type == ACT_PROX_GATE:
+		var t: MapFile.Entity = _chain_teleport(e)
+		if t != null:
+			return _use_exit(e, t)
 	if (e.state_byte & 2) != 0:
 		_trigger(e)
 	else:
 		_flip_link(e)
+	return true
+
+## First 0xF0 node reachable down the chain from `start`, or null.
+func _chain_teleport(start: MapFile.Entity) -> MapFile.Entity:
+	var cur: MapFile.Entity = start
+	var visited: Dictionary = {}
+	while cur != null and not visited.has(cur.file_off):
+		visited[cur.file_off] = true
+		if cur.link_act_type == ACT_TELEPORT:
+			return cur
+		if cur.link_next < 1:
+			return null
+		cur = _map.entities_by_off.get(cur.link_next)
+	return null
+
+## Use-key on an exit gate: flip the chain once so the exit (and the
+## door sound on the way) arms, then fire it.
+func _use_exit(gate: MapFile.Entity, t: MapFile.Entity) -> bool:
+	if _teleport_fired:
+		return false
+	if (t.state_byte & 1) == 0:
+		_flip_link(gate)
+		_prox_latched[gate.file_off] = true
+	return _fire_teleport(t)
+
+func _fire_teleport(t: MapFile.Entity) -> bool:
+	if _teleport_fired or (t.state_byte & 1) == 0:
+		return false
+	t.state_byte &= ~1                       # one-shot (0x137881)
+	_teleport_fired = true
+	print("[action] teleport → map %d, marker set %d" % [t.exit_map, t.exit_marker_id])
+	teleport_requested.emit(t.exit_map, t.exit_marker_id)
 	return true
 
 ## ObjFlipLink + immediate ObjDoAction, DOS order: flip the chain from
@@ -330,6 +373,12 @@ func tick(delta: float, player_pos: Vector3) -> void:
 			e.state_byte &= ~1
 			Audio.play_id_3d(int(SOUND_ONESHOT.get(e.link_act_type, -1)),
 				Vector3(float(e.x), -float(e.y), -float(e.z)), -4.0)
+	# Voice lines (0xED, handler 0x137dfd): play the VOICE.PRS sample
+	# whose id sits at sub+2, then self-disable.
+	for e in _voice_nodes:
+		if (e.state_byte & 1) != 0:
+			e.state_byte &= ~1
+			Audio.play_voice(e.exit_map)
 	# Teleports ---------------------------------------------------
 	# A chain (0xEF gate → sound node → 0xF0) or touching the doorway
 	# sprite ARMS the exit (state bit 0); the map change itself needs
@@ -353,12 +402,19 @@ func activate_teleport(player_pos: Vector3) -> bool:
 		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
 		if not _within(epos, player_pos, TELEPORT_TOUCH_RADIUS + PROX_GATE_RADIUS):
 			continue
-		e.state_byte &= ~1                       # one-shot (0x137881)
-		_teleport_fired = true
-		print("[action] teleport → map %d, marker set %d"
-			% [e.exit_map, e.exit_marker_id])
-		teleport_requested.emit(e.exit_map, e.exit_marker_id)
-		return true
+		return _fire_teleport(e)
+	# Standing in an exit gate whose chain has not flipped (the spawn
+	# pre-latched it, e.g. the truck interiors start beside their DOOR):
+	# the use key goes through anyway.
+	for g in _prox:
+		if g.link_act_type != ACT_PROX_GATE or _spent.has(g.file_off):
+			continue
+		var gpos := Vector3(float(g.x), -float(g.y), -float(g.z))
+		if not _within(gpos, player_pos, _prox_radius(g)):
+			continue
+		var t: MapFile.Entity = _chain_teleport(g)
+		if t != null:
+			return _use_exit(g, t)
 	return false
 
 ## Called right after the player is placed: latch every gate and doorway
@@ -535,10 +591,12 @@ func _apply_mover_transform(node: Node3D, m: Dictionary) -> void:
 ## counter steps one TRANSFRM.PRS stage per DESTRUCT_DAMAGE_PER_STAGE
 ## points; past the last stage the object is a spent wreck (or, with no
 ## stage meshes, vanishes).
-func _advance_destructible(e: MapFile.Entity, damage: float) -> void:
+func _advance_destructible(e: MapFile.Entity, damage: float) -> bool:
 	var d: Dictionary = _destr[e.file_off]
-	d["accum"] += damage
 	var meshes: Array = d["meshes"]
+	if d["stage"] >= meshes.size() - 1 and (meshes.size() > 1 or _spent.has(e.file_off)):
+		return false                          # final wreck / already gone
+	d["accum"] += damage
 	var want: int = int(d["accum"] / DESTRUCT_DAMAGE_PER_STAGE)
 	var node: Node3D = _nodes.get(e.file_off)
 	if meshes.size() > 1:
@@ -558,6 +616,66 @@ func _advance_destructible(e: MapFile.Entity, damage: float) -> void:
 			_blast(node, true)
 			node.visible = false
 			_disable_collision(node)
+	return true
+
+## DOS FUN_00124293 — HP gone. The link record's byte 0 picks the
+## destruction type (Skynet.exe 0x423d6): effect sprites scattered
+## within `spread`, a random drop from the type's list (crates → ammo,
+## lockers → medkits) and a sound (-2 = one of 33..36); type 0 is a
+## plain blast (effect 358) sized by the i16 parameter, no drop. Staged
+## destructibles (0x18/0x19 wrecks) keep their final mesh; everything
+## else leaves the world.
+func _destroy(e: MapFile.Entity) -> void:
+	var node: Node3D = _nodes.get(e.file_off)
+	var origin := Vector3(float(e.x), -float(e.y), -float(e.z))
+	var centre: Vector3 = origin
+	var radius: float = 120.0
+	var alive: bool = node != null and is_instance_valid(node)
+	if alive and node is MeshInstance3D:
+		var aabb: AABB = (node as MeshInstance3D).get_aabb()
+		centre = node.global_transform * (aabb.position + aabb.size * 0.5)
+		radius = maxf(aabb.size.length() * 0.35, 120.0)
+	var fx: Array = [0xB300]
+	var spread: int = maxi(absi(e.destroy_param), 128)
+	var drop: int = -1
+	var snd: int = -2
+	var t: int = e.destroy_type
+	if t > 0 and t < PickupData.DESTRUCT.size():
+		var d: Array = PickupData.DESTRUCT[t]
+		fx = d[0]
+		spread = int(d[1])
+		drop = int(d[2])
+		snd = int(d[3])
+	if snd == -2:
+		var pool: Array = PickupData.DESTRUCT_RANDOM_SOUNDS
+		snd = int(pool[randi() % pool.size()])
+	if snd >= 0 and not Audio.sound_name(snd).is_empty():
+		Audio.play_id_3d(snd, centre, -3.0)
+	else:
+		Audio.play_sfx_3d("EXPLO3.RAW", centre, -3.0)
+	if alive and node.is_inside_tree():
+		var scene := node.get_tree().current_scene
+		if scene != null:
+			var k: int = 0
+			for s in fx:
+				var ex := Explosion.new()
+				scene.add_child(ex)
+				var at: Vector3 = centre
+				if k > 0:
+					at += Vector3(randf_range(-0.5, 0.5) * spread, 0.0, randf_range(-0.5, 0.5) * spread)
+				ex.setup(at, radius * 1.6, int(s) >> 7)
+				k += 1
+		var pl := node.get_tree().get_first_node_in_group("player")
+		if pl is Node3D and pl.has_method("take_damage"):
+			var dist: float = (pl as Node3D).global_position.distance_to(centre)
+			var reach: float = radius * 2.5
+			if dist < reach:
+				pl.take_damage(45.0 * (1.0 - dist / reach))
+		if not _destr.has(e.file_off):
+			node.visible = false
+			_disable_collision(node)
+	if drop >= 0:
+		drop_requested.emit(Vector3(centre.x, origin.y, centre.z), drop)
 
 ## Explosion at a destructible's centre; the final stage also hurts
 ## the player nearby (DOS cars and generators blow up in your face).

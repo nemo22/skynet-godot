@@ -11,6 +11,8 @@ const RAW_RATE: int = 11025
 const SFX_VOICES: int = 6
 const AUDIO_CFG: String = "user://audio.cfg"
 
+const PrsFile := preload("res://scripts/loaders/prs_file.gd")
+
 var _bsa = null                       # BSAReader, kept open for the session
 var _cache: Dictionary = {}           # key -> AudioStreamWAV
 var _voices: Array[AudioStreamPlayer] = []
@@ -236,3 +238,28 @@ func play_id(id: int, volume_db: float = 0.0) -> void:
 	var n := sound_name(id)
 	if not n.is_empty():
 		play_sfx(n, volume_db)
+
+## Looping positional sound parented to `parent` (ambient fires and
+## barrels from the 0x4cc00 table, 0xEE nodes). Returns the player.
+func attach_loop_3d(id: int, parent: Node, volume_db: float = -10.0) -> AudioStreamPlayer3D:
+	var n := sound_name(id)
+	if n.is_empty() or parent == null:
+		return null
+	var s := _load(n, true)
+	if s == null:
+		return null
+	var p := AudioStreamPlayer3D.new()
+	p.stream = s
+	p.unit_size = 600.0
+	p.max_distance = 6000.0
+	p.max_db = 0.0
+	p.volume_db = volume_db
+	p.autoplay = true
+	parent.add_child(p)
+	return p
+
+## Voice line by VOICE.PRS id (0xED nodes: "no.21032 = 210g5.wav").
+func play_voice(id: int, volume_db: float = 0.0) -> void:
+	var f := PrsFile.text("VOICE.PRS", "no.%d" % id)
+	if not f.is_empty():
+		play_sfx(f.to_upper(), volume_db)

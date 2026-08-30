@@ -318,6 +318,9 @@ func _begin_level(name: String) -> void:
 		add_child(level.entities)
 	if level.action != null:
 		level.action.teleport_requested.connect(_on_teleport_requested)
+		level.action.drop_requested.connect(_on_drop_requested)
+		if not player.pickup_message.is_connected(_set_status):
+			player.pickup_message.connect(_set_status)
 		if not player.use_pressed.is_connected(_on_use_pressed):
 			player.use_pressed.connect(_on_use_pressed)
 	if level.enemies:  add_child(level.enemies)
@@ -598,6 +601,11 @@ func _process(delta: float) -> void:
 func _on_use_pressed(pos: Vector3) -> void:
 	if _current_level != null and _current_level.action != null:
 		_current_level.action.activate_teleport(pos)
+
+## A destroyed object's drop (crate → ammo, locker → medkit).
+func _on_drop_requested(pos: Vector3, drop_type: int) -> void:
+	if _current_level != null:
+		LevelLoader.spawn_drop(_current_level, pos, drop_type)
 
 ## Of several markers sharing an id, the one nearest `to` (a map may hold
 ## two facing markers; DOS pairs the closest). `to` itself when empty.

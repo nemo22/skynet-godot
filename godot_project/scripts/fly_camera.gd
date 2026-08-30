@@ -583,6 +583,10 @@ func take_damage(amount: float) -> void:
 		return
 	if god_mode:
 		return                                   # debug invincibility
+	if armor > 0.0:
+		var soak: float = minf(amount * 0.5, armor * max_health)
+		armor = maxf(armor - soak / max_health, 0.0)
+		amount -= soak
 	health -= amount
 	Audio.play_sfx("HIT2.RAW", -3.0)
 	if health <= 0.0:
@@ -616,6 +620,40 @@ func add_health(amount: int) -> bool:
 		return false
 	health = minf(health + float(amount), max_health)
 	return true
+
+## --- DOS pickup effects (handler 0x11d670, item table 0x35800) --------
+
+## Emitted with the STRINGS.PRS "PICKED UP ..." line for the HUD.
+signal pickup_message(text: String)
+
+## Armor 0..1 (DOS 16.16 at 0x38cc8, capped at 1.0): soaks half of each
+## hit until it is used up.
+var armor: float = 0.0
+
+## Top up one ammo pool by `amount`, clamped to the pool maximum. Pools
+## 5-9 (thrown items) have no weapon slot yet but are tracked anyway.
+func add_pool(pool: int, amount: int) -> void:
+	if pool < 0 or amount <= 0:
+		return
+	var mx: int = int(POOL_TABLE[pool][1]) if POOL_TABLE.has(pool) else 99
+	_pools[pool] = mini(int(_pools.get(pool, 0)) + amount, mx)
+	_sync_hud()
+
+## Heal by a percentage of max health (medkits: 5 / 10 / 25 / 50 %).
+func heal_percent(pct: int) -> void:
+	health = minf(health + max_health * float(pct) / 100.0, max_health)
+
+func add_armor(frac: float) -> void:
+	armor = clampf(armor + frac, 0.0, 1.0)
+
+## A weapon pickup also selects that weapon (0x11d670 → 0x1254c6).
+func give_weapon(idx: int) -> void:
+	if idx >= 0 and idx < _weapons.size():
+		_select_weapon(idx)
+
+## Rounds in pool `pool` (tests / HUD).
+func pool_count(pool: int) -> int:
+	return int(_pools.get(pool, 0))
 
 func _capture(on: bool) -> void:
 	_captured = on
