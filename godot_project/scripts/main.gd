@@ -650,7 +650,9 @@ func _process(delta: float) -> void:
 ## Use key with nothing under the crosshair: fire an armed exit here.
 func _on_use_pressed(pos: Vector3) -> void:
 	if _current_level != null and _current_level.action != null:
-		_current_level.action.activate_teleport(pos)
+		var a = _current_level.action
+		if not a.activate_teleport(pos):
+			a.use_nearby(pos)
 
 ## A destroyed object's drop (crate → ammo, locker → medkit).
 func _on_drop_requested(pos: Vector3, drop_type: int) -> void:

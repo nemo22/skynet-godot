@@ -120,6 +120,8 @@ const SLIDE_SPEED_FAST: float = 140.0    # units/s when p6 >= 0x800
 const ROT_SPEED: float = 153.0           # continuous rotators
 const SLIDE_SPEED_SCALE: float = 2.2     # 0x5f slide speed = p4 * this (units/s)
 const PROX_GATE_RADIUS: float = 60.0     # 0xEF (Skynet.exe 0x137e2e)
+## Use key reach for wall buttons / levers the crosshair is not on.
+const USE_REACH: float = 130.0
 ## The DOS 60-unit gate test is against the player's body, so the player
 ## capsule radius is added — MAP data places gates 32..79 units from the
 ## doorway sprite they guard, which a centre-point test would walk past.
@@ -460,6 +462,27 @@ func _reachable(from: Vector3, target: Vector3) -> bool:
 	if not hit.has("position"):
 		return true
 	return (hit["position"] as Vector3).distance_to(to) < 48.0
+
+## Use key with nothing activatable under the crosshair: operate the
+## nearest wall button / lever the player stands at. DOS fires these by
+## proximity (0xEF/0xF1/0xF2); the port keeps them on the key but does
+## not demand precise aim at a small panel.
+func use_nearby(player_pos: Vector3) -> bool:
+	var best: MapFile.Entity = null
+	var best_d: float = USE_REACH
+	for e in _prox:
+		if (e.flags & 3) != 1 or _spent.has(e.file_off):
+			continue
+		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
+		if not _within(epos, player_pos, USE_REACH):
+			continue
+		var d: float = epos.distance_to(player_pos)
+		if d < best_d:
+			best_d = d
+			best = e
+	if best == null:
+		return false
+	return on_player_activate(best.file_off, player_pos)
 
 ## Called right after the player is placed: latch every gate and doorway
 ## the spawn point already lies inside, so a return exit that drops the

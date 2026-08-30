@@ -120,6 +120,32 @@ func _run_map210_checks(level: LevelLoader.Level) -> void:
 			_check(slid > 1.0 and node.transform.basis.is_equal_approx(before.basis),
 				"BIGDOOR gate slides without rotating (%.1f u)" % slid)
 
+	# --- 1c. Use key beside a wall button (MAP.216 tower panel): no aim
+	# needed, the nearest button within reach fires its chain ---
+	var l216: LevelLoader.Level = LevelLoader.new().load_level("MAP.216")
+	if l216 != null:
+		var btn = null
+		for e in l216.map.entities:
+			if (e.flags & 3) == 1 and LevelLoader.MapFile.entity_name(l216.map, e) == "BUTTON01" and e.link_act_type == 0xEF:
+				btn = e
+				break
+		_check(btn != null, "MAP.216 has a BUTTON01 with the 0xEF act")
+		if btn != null:
+			var near := Vector3(float(btn.x), -float(btn.y), -float(btn.z)) + Vector3(60.0, 0.0, 40.0)
+			var gate = null
+			var cur = btn
+			for hop in 8:
+				if cur == null or cur.link_next < 1:
+					break
+				cur = l216.map.entities_by_off.get(cur.link_next)
+				if cur != null and ActionSystem.is_mover(cur.link_act_type):
+					gate = cur
+					break
+			_check(gate != null and (gate.state_byte & 1) == 0, "the tower button's gate starts disabled")
+			_check(l216.action.use_nearby(near), "use beside the button operates it without aiming")
+			_check(gate != null and (gate.state_byte & 1) != 0, "the button's chain enabled the gate")
+			_check(not l216.action.use_nearby(near + Vector3(600.0, 0.0, 0.0)), "use 600 u away does nothing")
+
 	# --- 2. GENER0: HP-gated (state bit2, hp 200) chain on destruction ---
 	var gener: LevelLoader.MapFile.Entity = null
 	for e in by_name.get("GENER0", []):
