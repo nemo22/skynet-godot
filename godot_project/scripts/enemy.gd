@@ -62,6 +62,9 @@ const FLYER_SINK_SPEED: float = 250.0
 const FLYER_CLIMB_SPEED: float = 300.0
 const FLYER_MIN_ALT: float = 250.0
 const FLYER_LOOKAHEAD: float = 400.0
+## How far above the feet a floor plate may sit for a sunk actor to pop
+## back out onto it (corridor ceilings are 128+ above the floor).
+const SINK_RECOVER: float = 110.0
 ## Wander leg length / interval when the player is not perceived.
 const WANDER_RADIUS: float = 1200.0
 ## Max uphill slope a walker takes (radians). Only the terminator family
@@ -915,15 +918,47 @@ func _snap_to_ground(init: bool = false) -> bool:
 	var feet_y: float = global_position.y + _foot_offset
 	var up: float = 60.0 if init else (STEP_TERMINATOR if term else STEP_OTHER)
 	var down: float = 400.0 if init else (MAX_DROP_TERMINATOR if term else MAX_DROP_OTHER)
+	var hit := _floor_ray(space, global_position, feet_y + up, feet_y - down)
+	if hit.is_empty() and init:
+		# A marker on a seam between floor pieces has nothing under it.
+		# The DOS spawn query (FUN_00138500) scans the neighbouring cells
+		# for the floor; step to the nearest floor plate around us.
+		for r in [40.0, 80.0]:
+			for i in 8:
+				var a: float = TAU * float(i) / 8.0
+				var off := Vector3(cos(a) * r, 0.0, sin(a) * r)
+				hit = _floor_ray(space, global_position + off, feet_y + up, feet_y - down)
+				if not hit.is_empty():
+					global_position.x += off.x
+					global_position.z += off.z
+					break
+			if not hit.is_empty():
+				break
+	if hit.is_empty():
+		# Nothing to stand on below — are we UNDER a floor plate (spawned
+		# at a seam, or pushed beneath a raised walkway)? A surface with
+		# an upward normal within SINK_RECOVER above the feet is a floor,
+		# not a ceiling (those face down): pop out onto it.
+		var pop := _floor_ray(space, global_position, feet_y + SINK_RECOVER, feet_y + up, true)
+		if not pop.is_empty():
+			global_position.y = (pop["position"] as Vector3).y - _foot_offset
+			return true
+		return init
+	global_position.y = (hit["position"] as Vector3).y - _foot_offset
+	return true
+
+## Vertical ray at `at`'s x/z from `y_top` down to `y_bottom`; with
+## `floor_only` a hit must face upward (a floor's top, not a ceiling).
+func _floor_ray(space: PhysicsDirectSpaceState3D, at: Vector3, y_top: float, y_bottom: float, floor_only: bool = false) -> Dictionary:
 	var q := PhysicsRayQueryParameters3D.create(
-		Vector3(global_position.x, feet_y + up, global_position.z),
-		Vector3(global_position.x, feet_y - down, global_position.z))
+		Vector3(at.x, y_top, at.z), Vector3(at.x, y_bottom, at.z))
 	q.collide_with_areas = false
 	var hit := space.intersect_ray(q)
-	if hit.has("position"):
-		global_position.y = (hit["position"] as Vector3).y - _foot_offset
-		return true
-	return init
+	if hit.is_empty():
+		return {}
+	if floor_only and (hit["normal"] as Vector3).y < 0.5:
+		return {}
+	return hit
 
 ## Step `cur` toward `target` (radians) by at most `max_step`.
 static func _approach_angle(cur: float, target: float, max_step: float) -> float:

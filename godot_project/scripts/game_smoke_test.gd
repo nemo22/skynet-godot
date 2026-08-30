@@ -345,7 +345,43 @@ func _run() -> void:
 			_check(player.global_position.distance_to(m12) < 700.0,
 				"player spawned at MAP.216 marker 12 (d=%.0f)" % player.global_position.distance_to(m12))
 
+	# --- 6b. Interior ↔ interior state overlay: kill a robot and take a
+	# pickup in MAP.214, walk to MAP.215 and back — both must stay gone ---
+	_main.call("_on_teleport_requested", 214, 0)
+	ok = await _wait(func() -> bool: return _level_is("214") and _settled(), 180.0)
+	_check(ok, "MAP.214 loads for the state round trip")
+	if ok:
+		var victim = get_tree().get_first_node_in_group("enemy")
+		var victim_off: int = int(victim.get_meta("marker_off")) if victim != null and victim.has_meta("marker_off") else -1
+		if victim != null:
+			victim.call("take_damage", 1.0e6)
+		var pk: Node = get_tree().get_first_node_in_group("pickup")
+		var pk_off: int = int(pk.get_meta("pickup_off")) if pk != null and pk.has_meta("pickup_off") else -1
+		if pk != null:
+			pk.call("collect", player)
+		for f in 5:
+			await get_tree().physics_frame
+		_main.call("_on_teleport_requested", 215, 0)
+		ok = await _wait(func() -> bool: return _level_is("215") and _settled(), 180.0)
+		_check(ok, "MAP.214 → MAP.215")
+		if ok:
+			_main.call("_on_teleport_requested", 214, 10)
+			ok = await _wait(func() -> bool: return _level_is("214") and _settled(), 180.0)
+			_check(ok, "MAP.215 → MAP.214 (marker 10)")
+			if ok:
+				var back: bool = false
+				for e in get_tree().get_nodes_in_group("enemy"):
+					if e.has_meta("marker_off") and int(e.get_meta("marker_off")) == victim_off:
+						back = true
+				_check(victim_off >= 0 and not back, "robot killed in MAP.214 stays dead after visiting MAP.215")
+				var pk_back: bool = false
+				for s in get_tree().get_nodes_in_group("pickup"):
+					if s.has_meta("pickup_off") and int(s.get_meta("pickup_off")) == pk_off:
+						pk_back = true
+				_check(pk_off >= 0 and not pk_back, "pickup taken in MAP.214 stays taken after the round trip")
+
 	# --- 7. MAP.211 (canyon truck): all entities, return exit → previous map marker 11 ---
+	var prev_sfx: String = String(_main.get("_current_level").map_suffix)
 	_main.call("_on_teleport_requested", 211, 0)
 	ok = await _wait(func() -> bool: return _level_is("211") and _settled(), 180.0)
 	_check(ok, "MAP.211 loads")
@@ -356,7 +392,7 @@ func _run() -> void:
 		_check(player.global_position.distance_to(m0c) < 300.0,
 			"player spawned at MAP.211 marker 0 (d=%.0f)" % player.global_position.distance_to(m0c))
 		_main.call("_on_use_pressed", player.global_position)
-		ok = await _wait(func() -> bool: return _level_is("216") and _settled(), 180.0)
+		ok = await _wait(func() -> bool: return _level_is(prev_sfx) and _settled(), 180.0)
 		_check(ok, "use at the MAP.211 DOOR returns to the previous map")
 		if ok:
 			lvl = _main.get("_current_level")

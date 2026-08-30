@@ -371,6 +371,11 @@ func tick(delta: float, player_pos: Vector3) -> void:
 	for e in _prox:
 		if e.link_act_type != ACT_PROX_GATE:
 			continue
+		# Wall buttons, levers and doors are variant-1 meshes wired with
+		# the same 0xEF act — those wait for the use key too; only the
+		# invisible doorway gate sprites (variant 3) watch the player.
+		if (e.flags & 3) != 3:
+			continue
 		if (e.state_byte & 1) == 0 or _spent.has(e.file_off):
 			continue
 		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))

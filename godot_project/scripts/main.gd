@@ -246,6 +246,38 @@ func _cli_after_level() -> void:
 			player.global_position, rad_to_deg(player.rotation.y), rad_to_deg(player.get("_pitch"))])
 		if _cli.has("quit-after-shot"):
 			get_tree().quit()
+	elif _cli.has("dump-enemies"):
+		# Agent diagnostics: settle, then print every enemy's placement
+		# against the surface under it (sunken / floating actors).
+		await get_tree().create_timer(float(_cli.get("shot-delay", 3.0))).timeout
+		_dump_enemies()
+		if _cli.has("quit-after-shot"):
+			get_tree().quit()
+
+func _dump_enemies() -> void:
+	var space := get_world_3d().direct_space_state
+	for e in get_tree().get_nodes_in_group("enemy"):
+		if not (e is Node3D) or not is_instance_valid(e):
+			continue
+		var p: Vector3 = (e as Node3D).global_position
+		var foot: float = p.y + float(e.get("_foot_offset"))
+		# Floor right under the feet (from 40 u above them) and the first
+		# surface above the head — sunk actors show a negative clearance.
+		var q := PhysicsRayQueryParameters3D.create(Vector3(p.x, foot + 40.0, p.z), Vector3(p.x, foot - 300.0, p.z))
+		q.collide_with_areas = false
+		var hit := space.intersect_ray(q)
+		var clear: String = "none"
+		if hit.has("position"):
+			clear = "%.0f" % (foot - (hit["position"] as Vector3).y)
+		var q2 := PhysicsRayQueryParameters3D.create(Vector3(p.x, foot + 40.0, p.z), Vector3(p.x, foot + 600.0, p.z))
+		q2.collide_with_areas = false
+		var hit2 := space.intersect_ray(q2)
+		var head: String = "none"
+		if hit2.has("position"):
+			head = "%.0f" % ((hit2["position"] as Vector3).y - foot)
+		var brain = e.get("_brain")
+		print("[enemy] %-24s type=%3d st=%2s pos=(%.0f, %.0f, %.0f) feet=%.0f floor_clearance=%s ceiling_above_feet=%s" % [
+			e.name, int(e.get("_type_id")), str(brain.state) if brain != null else "-", p.x, p.y, p.z, foot, clear, head])
 
 func _scan_maps() -> void:
 	var bsa := BSAReader.new()
