@@ -603,7 +603,7 @@ func _shoot(muzzle: Vector3, dir: Vector3, ammo: int, dos_speed: float) -> void:
 	var tint: Color = _ammo_color(model)
 	var mf := MuzzleFlash.new()
 	scene.add_child(mf)
-	mf.setup(muzzle, tint, 90.0)
+	mf.setup(muzzle, tint, 44.0)
 	if fam == 0:
 		# Hitscan bullets: tracer + instant damage (DOS type 0/1/16).
 		var space := get_world_3d().direct_space_state

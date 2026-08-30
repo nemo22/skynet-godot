@@ -108,8 +108,12 @@ var _weapon_idx: int = 0
 var weapon_name: String = "UZI"
 var ammo: int = 500
 
-## Shot delay = FIRE_RATE_SCALE / rate (see the table notes above).
-const FIRE_RATE_SCALE: float = 0.5
+## Shot delay = FIRE_RATE_SCALE / rate. DOS (skynet_gh.c:27936, :28224):
+## the cooldown starts at 0x10000 / rec[+0x24] and every frame drops by
+## DAT_00043100 = the frame delta in 16.16 seconds — i.e. a weapon fires
+## exactly rec[+0x24] shots per second (UZI 5/s, MG 8/s, shotgun 1/s,
+## mini rocket 20/s). The scale is therefore 1.0; 0.5 ran twice as fast.
+const FIRE_RATE_SCALE: float = 1.0
 const DRY_FIRE_DELAY: float = 0.25
 ## TEXTURE.365 — the bullet ammo types' impact effect (ammo +0x08 =
 ## sprite index 0xB680 → bank 365), puffed where a shot strikes geometry.
@@ -437,7 +441,10 @@ func _shoot() -> void:
 	# white.
 	var mf := MuzzleFlash.new()
 	get_tree().current_scene.add_child(mf)
-	mf.setup(muzzle, tint, 130.0 if kind == "shotgun" else 100.0)
+	# TEXTURE.219 is a 17x17 px sprite — at the shared 2 u/px billboard
+	# scale that is ~36 world units. The old 100-130 covered half the
+	# screen from 90 u away.
+	mf.setup(muzzle, tint, 48.0 if kind == "shotgun" else 36.0)
 
 	# Ballistic / straight projectiles take a separate path.
 	if kind == "grenade":
