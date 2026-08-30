@@ -140,6 +140,9 @@ var _prox: Array = []             # entities with a proximity act type
 var _teleports: Array = []        # entities with act 0xF0
 var _sound_nodes: Array = []      # entities with a SOUND_ONESHOT act
 var _voice_nodes: Array = []      # entities with act 0xED
+## Physics access for reachability tests (set by the level controller).
+var space: PhysicsDirectSpaceState3D = null
+var player_body: CollisionObject3D = null
 var _destr: Dictionary = {}       # file_off → destructible runtime state
 var _hp: Dictionary = {}          # file_off → remaining HP
 var _spent: Dictionary = {}       # file_off → true (HP-depleted, inert)
@@ -198,6 +201,13 @@ func register_node(e: MapFile.Entity, node: Node3D) -> void:
 ## True when the entity at `off` is a mover (door/gate/lift/rotator).
 func is_mover_off(off: int) -> bool:
 	return _movers.has(off)
+
+## Movers that translate/swing as a solid piece (doors, gates, lifts) —
+## they get a box collider; continuous rotators keep their trimesh.
+func is_solid_mover(off: int) -> bool:
+	if not _movers.has(off):
+		return false
+	return String(_movers[off]["family"]) in ["slide", "swing", "jump", "slide5f"]
 
 func register_destructible(e: MapFile.Entity, stage_meshes: Array) -> void:
 	_destr[e.file_off] = {
@@ -259,6 +269,8 @@ func on_player_activate(file_off: int, player_pos: Vector3 = Vector3.INF) -> boo
 	if e.link_act_type == ACT_PROX_GATE:
 		var t: MapFile.Entity = _chain_teleport(e)
 		if t != null:
+			if (e.state_byte & 1) == 0:
+				return false                 # gate not enabled yet (switch first)
 			return _use_exit(e, t)
 	if (e.state_byte & 2) != 0:
 		_trigger(e)
@@ -353,7 +365,12 @@ func tick(delta: float, player_pos: Vector3) -> void:
 			continue
 		_step_mover(off, e, delta)
 	# Proximity triggers ------------------------------------------
+	# Only the 0xEF doorway gates watch the player; the 0xF1/0xF2 lever
+	# triggers (tower switch, laser cut-off) are use-key operated in the
+	# port — walking past a lever must not throw it.
 	for e in _prox:
+		if e.link_act_type != ACT_PROX_GATE:
+			continue
 		if (e.state_byte & 1) == 0 or _spent.has(e.file_off):
 			continue
 		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
@@ -402,20 +419,42 @@ func activate_teleport(player_pos: Vector3) -> bool:
 		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
 		if not _within(epos, player_pos, TELEPORT_TOUCH_RADIUS + PROX_GATE_RADIUS):
 			continue
+		if not _reachable(player_pos, epos):
+			continue                         # a closed door leaf is in the way
 		return _fire_teleport(e)
-	# Standing in an exit gate whose chain has not flipped (the spawn
-	# pre-latched it, e.g. the truck interiors start beside their DOOR):
-	# the use key goes through anyway.
+	# Standing in an ENABLED exit gate whose chain has not flipped (the
+	# spawn pre-latched it, e.g. the truck interiors start beside their
+	# DOOR): the use key goes through anyway.
 	for g in _prox:
 		if g.link_act_type != ACT_PROX_GATE or _spent.has(g.file_off):
 			continue
+		if (g.state_byte & 1) == 0:
+			continue
 		var gpos := Vector3(float(g.x), -float(g.y), -float(g.z))
 		if not _within(gpos, player_pos, _prox_radius(g)):
+			continue
+		if not _reachable(player_pos, gpos):
 			continue
 		var t: MapFile.Entity = _chain_teleport(g)
 		if t != null:
 			return _use_exit(g, t)
 	return false
+
+## Nothing solid between the player and `target` (a doorway sprite sits
+## on the floor, so aim a little above it). True when no physics space
+## is available (headless unit tests).
+func _reachable(from: Vector3, target: Vector3) -> bool:
+	if space == null:
+		return true
+	var to: Vector3 = target + Vector3(0.0, 40.0, 0.0)
+	var q := PhysicsRayQueryParameters3D.create(from, to)
+	q.collide_with_areas = false
+	if player_body != null:
+		q.exclude = [player_body.get_rid()]
+	var hit := space.intersect_ray(q)
+	if not hit.has("position"):
+		return true
+	return (hit["position"] as Vector3).distance_to(to) < 48.0
 
 ## Called right after the player is placed: latch every gate and doorway
 ## the spawn point already lies inside, so a return exit that drops the
@@ -567,14 +606,12 @@ func _apply_mover_transform(node: Node3D, m: Dictionary) -> void:
 		# DOS adds to entity+0xc (Y, Y-down) → Godot -Y (slides down).
 		node.transform = base.translated_local(
 			Vector3(0.0, -m["progress"] * sign, 0.0))
-		_sync_bodies(node)
 		return
 	if fam == "slide" or fam == "jump":
 		# Translate along the DOS world axis (handlers 0x137a28/0x137ad0
 		# add to the entity position, not to a local frame).
 		node.transform = Transform3D(base.basis,
 			base.origin + _dos_axis(int(m["axis"])) * (m["progress"] * sign))
-		_sync_bodies(node)
 		return
 	# Swing/rot: rotate about the DOS axis in entity-local space.
 	# DOS→Godot conjugation keeps X/Y angle signs, negates Z.
@@ -588,21 +625,8 @@ func _apply_mover_transform(node: Node3D, m: Dictionary) -> void:
 		angle = -angle
 	node.transform = Transform3D(
 		base.basis * Basis(axis, angle), base.origin)
-	_sync_bodies(node)
-
-## Movers move the MeshInstance; its AnimatableBody3D child (sync_to_
-## physics) only re-syncs on LOCAL transform changes, so a parent move
-## left the physics leaf where it was — the base door swung open on
-## screen but still blocked the doorway. Push the new global transform
-## to the server explicitly; as a kinematic move it also shoves the
-## player out of a closing leaf.
-static func _sync_bodies(node: Node3D) -> void:
-	if not node.is_inside_tree():
-		return
-	for c in node.get_children():
-		if c is AnimatableBody3D:
-			PhysicsServer3D.body_set_state(c.get_rid(),
-				PhysicsServer3D.BODY_STATE_TRANSFORM, c.global_transform)
+	# The AnimatableBody3D child follows through the global-transform
+	# notification (main.gd _make_animatable keeps sync_to_physics off).
 
 ## Destructible damage-stage advance (handler 0x120433): the damage
 ## counter steps one TRANSFRM.PRS stage per DESTRUCT_DAMAGE_PER_STAGE

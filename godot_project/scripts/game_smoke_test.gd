@@ -257,6 +257,38 @@ func _run() -> void:
 			_check(phys.basis.is_equal_approx(dbody.global_transform.basis) and phys.origin.distance_to(dbody.global_transform.origin) < 1.0,
 				"the physics body followed the swung leaf")
 
+	# --- 4c. The base gate (two sliding BIGDOOR leaves) becomes passable:
+	# a player-sized capsule in the opening is blocked while closed and
+	# free once both leaves have slid apart ---
+	var leaves: Array = []
+	for e in lvl.map.entities:
+		if (e.flags & 3) == 1 and lvl.action.is_mover_off(e.file_off) and LevelLoader.MapFile.entity_name(lvl.map, e) == "BIGDOOR":
+			leaves.append(e)
+	_check(leaves.size() == 2, "MAP.210 has two BIGDOOR gate leaves (%d)" % leaves.size())
+	if leaves.size() == 2:
+		var centre := Vector3(0, 0, 0)
+		for e in leaves:
+			centre += Vector3(float(e.x), -float(e.y), -float(e.z))
+		centre *= 0.5
+		var probe := PhysicsShapeQueryParameters3D.new()
+		var cap := CapsuleShape3D.new()
+		cap.radius = 26.0
+		cap.height = 88.0
+		probe.shape = cap
+		probe.exclude = [player.get_rid()]
+		probe.transform = Transform3D(Basis(), centre + Vector3(0.0, 60.0, 0.0))
+		var space: PhysicsDirectSpaceState3D = (_main as Node3D).get_world_3d().direct_space_state
+		var blocked_before: bool = not space.intersect_shape(probe, 4).is_empty()
+		_check(blocked_before, "the closed gate blocks a player capsule in the opening")
+		_gate_diag(lvl, leaves, centre, probe, space, "closed")
+		for e in leaves:
+			e.state_byte |= 1
+		for f in 300:
+			await get_tree().physics_frame
+		var blocked_after: bool = not space.intersect_shape(probe, 4).is_empty()
+		_check(not blocked_after, "the open gate lets a player capsule through the opening")
+		_gate_diag(lvl, leaves, centre, probe, space, "open")
+
 	# --- 5. Pickups: walking onto an item-table sprite collects it ---
 	var pick: Node3D = null
 	var pick_item: Array = []
@@ -336,6 +368,25 @@ func _run() -> void:
 		await get_tree().physics_frame
 	_check(_main.get("_game_over") == null, "no MISSION COMPLETE / game over after the round trip")
 	_finish()
+
+## Gate geometry dump: leaf node/body transforms and a capsule sweep
+## along the gate line (x - 400 .. x + 400) — '#' blocked, '.' free.
+func _gate_diag(lvl, leaves: Array, centre: Vector3, probe: PhysicsShapeQueryParameters3D, space: PhysicsDirectSpaceState3D, tag: String) -> void:
+	for e in leaves:
+		var n: Node3D = lvl.action._nodes.get(e.file_off)
+		var body_xf := Transform3D()
+		for c in n.get_children():
+			if c is AnimatableBody3D:
+				body_xf = PhysicsServer3D.body_get_state(c.get_rid(), PhysicsServer3D.BODY_STATE_TRANSFORM)
+		var aabb: AABB = (n as MeshInstance3D).get_aabb()
+		print("[e2e] gate %s: leaf act %02x node.origin=%s aabb.x=[%.0f..%.0f] body.origin=%s" % [tag, e.link_act_type, n.global_position, (n.global_transform * aabb).position.x, (n.global_transform * aabb).end.x, body_xf.origin])
+	var row := ""
+	var base_xf: Transform3D = probe.transform
+	for i in range(-8, 9):
+		probe.transform = Transform3D(Basis(), centre + Vector3(50.0 * i, 60.0, 0.0))
+		row += "#" if not space.intersect_shape(probe, 4).is_empty() else "."
+	probe.transform = base_xf
+	print("[e2e] gate %s sweep x=%.0f..%.0f: %s (centre y=%.0f)" % [tag, centre.x - 400.0, centre.x + 400.0, row, centre.y])
 
 func _finish() -> void:
 	print("[e2e] %s (%d failures)" % ["ALL PASS" if _fails == 0 else "FAILED", _fails])

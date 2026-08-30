@@ -169,12 +169,17 @@ static func _make_box_collision(mi: MeshInstance3D) -> void:
 
 ## Swap a mesh's baked StaticBody3D for an AnimatableBody3D so the
 ## physics server moves the collider kinematically (pushes bodies).
+## sync_to_physics stays OFF: with it on, the body only re-syncs on its
+## own LOCAL transform changes and the server writes its state back into
+## the node every step — a body under a moving parent then lags half-way
+## behind the mesh (measured: 61 u on a 128 u gate slide). Off, the
+## normal global-transform notification carries the parent's motion.
 static func _make_animatable(mi: MeshInstance3D) -> void:
 	for c in mi.get_children():
 		if c is StaticBody3D and not (c is AnimatableBody3D):
 			var ab := AnimatableBody3D.new()
 			ab.name = c.name
-			ab.sync_to_physics = true
+			ab.sync_to_physics = false
 			for s in c.get_children():
 				c.remove_child(s)
 				ab.add_child(s)
@@ -305,8 +310,14 @@ func _begin_level(name: String) -> void:
 			# movers (doors/gates/lifts) it is a child of the moving
 			# node, so the collision follows the action-system motion.
 			if c is MeshInstance3D:
-				if _is_small_prop(c, level):
-					_make_box_collision(c)          # DOS-style solid prop
+				# Doors, gates and lifts collide as their AABB box, like
+				# every DOS object: the BIGDOOR leaf is a braced frame
+				# whose trimesh has holes a player capsule slips through
+				# (closed!) and thin edges to wedge on.
+				var solid_mover: bool = (level.action != null and c.has_method("file_off")
+					and level.action.is_solid_mover(c.file_off()))
+				if solid_mover or _is_small_prop(c, level):
+					_make_box_collision(c)          # DOS-style solid box
 				else:
 					c.create_trimesh_collision()    # walls, buildings, bridges
 					_enable_backfaces(c)
@@ -319,6 +330,8 @@ func _begin_level(name: String) -> void:
 	if level.action != null:
 		level.action.teleport_requested.connect(_on_teleport_requested)
 		level.action.drop_requested.connect(_on_drop_requested)
+		level.action.space = get_world_3d().direct_space_state
+		level.action.player_body = player
 		if not player.pickup_message.is_connected(_set_status):
 			player.pickup_message.connect(_set_status)
 		if not player.use_pressed.is_connected(_on_use_pressed):
@@ -448,9 +461,14 @@ const FOG_END: float = 16000.0
 const PROP_BOX_MAX: float = 0.0
 const PROP_BOX_MIN_THICKNESS: float = 24.0
 ## Interior lighting (DOS AddLightSafe point lights over a dim ambient).
-const LIGHT_RANGE_PER_UNIT: float = 6.0     # variant-2 sub+8 → world units
-const LIGHT_ENERGY_DIV: float = 24.0        # variant-2 intensity → energy
-const INDOOR_AMBIENT: Color = Color(0.30, 0.30, 0.34)
+## Interior light model (variant-2 records: intensity at sub+0 14..72,
+## radius-ish value at sub+8 40..540). DOS interiors read as bright
+## rooms with lamps as accents; the lamps alone (radius ~1-5 m) cannot
+## carry a 12x12-cell map like MAP.214, so the base level does most of
+## the work and the lamps add the pools of light.
+const LIGHT_RANGE_PER_UNIT: float = 10.0    # variant-2 sub+8 → world units
+const LIGHT_ENERGY_DIV: float = 14.0        # variant-2 intensity → energy
+const INDOOR_AMBIENT: Color = Color(0.62, 0.62, 0.68)
 const OUTDOOR_AMBIENT: Color = Color(0.55, 0.55, 0.65)
 
 ## Interiors: dim ambient + one OmniLight3D per enabled variant-2
@@ -484,9 +502,9 @@ func _light_level(level: LevelLoader.Level) -> void:
 			continue
 		var l := OmniLight3D.new()
 		l.position = Vector3(float(e.x), -float(e.y), -float(e.z))
-		l.omni_range = clampf(float(e.light_enable) * LIGHT_RANGE_PER_UNIT, 200.0, 4000.0)
-		l.omni_attenuation = 1.4
-		l.light_energy = clampf(float(e.light_intensity) / LIGHT_ENERGY_DIV, 0.3, 3.0)
+		l.omni_range = clampf(float(e.light_enable) * LIGHT_RANGE_PER_UNIT, 400.0, 6000.0)
+		l.omni_attenuation = 1.0
+		l.light_energy = clampf(float(e.light_intensity) / LIGHT_ENERGY_DIV, 0.4, 3.5)
 		l.shadow_enabled = false
 		level.entities.add_child(l)
 		n += 1
