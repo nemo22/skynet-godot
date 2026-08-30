@@ -345,10 +345,38 @@ func _run() -> void:
 			_check(player.global_position.distance_to(m12) < 700.0,
 				"player spawned at MAP.216 marker 12 (d=%.0f)" % player.global_position.distance_to(m12))
 
-	# --- 6b. Interior ↔ interior state overlay: kill a robot and take a
-	# pickup in MAP.214, walk to MAP.215 and back — both must stay gone ---
+	# --- 6a. Mover colliders in MAP.214: the rotating corridor segment
+	# CORB122I keeps its trimesh (a box sealed the tunnel), the DORB door
+	# leaves get a box ---
 	_main.call("_on_teleport_requested", 214, 0)
 	ok = await _wait(func() -> bool: return _level_is("214") and _settled(), 180.0)
+	_check(ok, "MAP.214 loads for the collider check")
+	if ok:
+		lvl = _main.get("_current_level")
+		var seg_box: int = -1
+		var dorb_box: int = -1
+		for c in lvl.entities.get_children():
+			if not (c is MeshInstance3D) or not c.has_method("file_off"):
+				continue
+			if not lvl.action.is_mover_off(c.file_off()):
+				continue
+			var has_box: bool = false
+			for body in c.get_children():
+				if body is CollisionObject3D:
+					for sh in body.get_children():
+						if sh is CollisionShape3D and sh.shape is BoxShape3D:
+							has_box = true
+			if String(c.name).begins_with("CORB122I"):
+				seg_box = 1 if has_box else 0
+			elif String(c.name).begins_with("DORB"):
+				dorb_box = 1 if has_box else 0
+		_check(seg_box == 0, "rotating corridor segment CORB122I keeps its trimesh collider")
+		_check(dorb_box == 1, "DORB door leaf collides as a box")
+
+	# --- 6b. Interior ↔ interior state overlay: kill a robot and take a
+	# pickup in MAP.214, walk to MAP.215 and back — both must stay gone ---
+	# (already in MAP.214 after 6a — go via 215 and back below)
+	ok = _level_is("214")
 	_check(ok, "MAP.214 loads for the state round trip")
 	if ok:
 		var victim = get_tree().get_first_node_in_group("enemy")
