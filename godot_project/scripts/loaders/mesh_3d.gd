@@ -34,6 +34,16 @@
 ##                  (p0,p1,p2,uv0,uv1,uv2) affine map to all coplanar
 ##                  vertex positions via barycentric coordinates.
 ## UVunpack handles wrap on first 3 points.
+##
+## Winding / culling: XnGine culls back faces. A face is visible from the
+## side on which its vertices read COUNTER-clockwise, i.e. its outward
+## normal is (b-a)x(c-a). Evidence: SKY_SKY.3D (seen from inside) has all
+## 50 faces wound that way, closed character models mostly so, two-sided
+## catwalk plates are stored twice with reversed order (210TOWER faces
+## 33/34 ...), and the Win32 port sets glFrontFace(GL_CCW)+glCullFace(GL_BACK).
+## Godot's front faces are clockwise, so triangles are emitted as
+## (0, k+1, k) and materials keep the default CULL_BACK. Rendering both
+## sides made the reversed duplicates z-fight (moire on the tower stairs).
 
 extends RefCounted
 
@@ -282,7 +292,8 @@ static func build_textured_array_mesh(m: Mesh3D, provider: Callable,
 			var a := verts[f.idx[0]]
 			var b := verts[f.idx[1]]
 			var c := verts[f.idx[2]] if f.vert_count >= 3 else a
-			var n := (c - a).cross(b - a).normalized()
+			# Outward normal = visible side (see the winding note above).
+			var n := (b - a).cross(c - a).normalized()
 
 			# Points 3..N: stored values are ignored — extend the affine UV map
 			# (a, b, c -> uv[0], uv[1], uv[2]) to all coplanar vertices via
@@ -308,8 +319,10 @@ static func build_textured_array_mesh(m: Mesh3D, provider: Callable,
 					var t: float = (d00 * d21 - d01 * d20) / denom
 					face_uv[k] = uv_a + uv_ab * s + uv_ac * t
 
+			# Fan (0, k+1, k): reversed so the DOS-visible (CCW) side is
+			# Godot's clockwise front face; back faces are culled like DOS.
 			for k in range(1, f.vert_count - 1):
-				for vi in [0, k, k + 1]:
+				for vi in [0, k + 1, k]:
 					positions.append(verts[f.idx[vi]])
 					normals.append(n)
 					uvs.append(face_uv[vi])
@@ -323,10 +336,10 @@ static func build_textured_array_mesh(m: Mesh3D, provider: Callable,
 		arrays[Mesh.ARRAY_TEX_UV] = uvs
 
 		var mat := StandardMaterial3D.new()
-		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		mat.cull_mode = BaseMaterial3D.CULL_BACK
 		mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-		# Unshaded for the viewer so both sides of double-sided geometry
-		# show the texture clearly without needing per-face normals.
+		# Unshaded: DOS models carry no lighting; interiors swap this to
+		# per-vertex shading at load time (main.gd _shade_recursive).
 		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		if tex:
 			mat.albedo_texture = tex
@@ -388,16 +401,16 @@ static func build_array_mesh(m: Mesh3D, material: Material = null) -> ArrayMesh:
 		var a := m.vertices[f.idx[0]]
 		var b := m.vertices[f.idx[1]]
 		var c := m.vertices[f.idx[2]]
-		var n := (c - a).cross(b - a).normalized()
+		var n := (b - a).cross(c - a).normalized()
 
 		# Per-face color derived from texture type so different surfaces
 		# show different shades during debugging.
 		var hue := float(f.type & 0xFF) / 255.0
 		var col := Color.from_hsv(hue, 0.5, 0.85)
 
-		# Triangulate as a fan: (0, k, k+1) for k in 1..vc-1
+		# Triangulate as a fan: (0, k+1, k) — DOS CCW front -> Godot CW front.
 		for k in range(1, f.vert_count - 1):
-			for vi in [0, k, k + 1]:
+			for vi in [0, k + 1, k]:
 				positions.append(m.vertices[f.idx[vi]])
 				normals.append(n)
 				uvs.append(face_uv[vi])

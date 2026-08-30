@@ -183,6 +183,20 @@ static func _make_animatable(mi: MeshInstance3D) -> void:
 			mi.add_child(ab)
 			return
 
+## --pos (camera position, like the DOS markers) / --yaw / --pitch /
+## --noclip: place the player for an automated run.
+func _cli_place() -> void:
+	if _cli.has("pos"):
+		player.set_spawn(_cli_vec3(String(_cli["pos"])) - Vector3(0.0, EYE_HEIGHT, 0.0),
+			player.rotation.y, false)
+	if _cli.has("noclip") or _cli.has("pos"):
+		player.noclip = true
+		player.velocity = Vector3.ZERO
+	if _cli.has("yaw") or _cli.has("pitch"):
+		var yaw := deg_to_rad(float(_cli.get("yaw", rad_to_deg(player.rotation.y))))
+		var pitch := deg_to_rad(float(_cli.get("pitch", 0.0)))
+		player.set_view(yaw, pitch)
+
 ## `--key=value` / `--flag` switches from both argument lists.
 static func _parse_cli() -> Dictionary:
 	var out: Dictionary = {}
@@ -209,21 +223,16 @@ static func _cli_vec3(s: String) -> Vector3:
 func _cli_after_level() -> void:
 	if _cli.is_empty() or not is_instance_valid(player):
 		return
-	if _cli.has("noclip") or _cli.has("pos"):
-		player.noclip = true
 	if _cli.has("god"):
 		player.set("god_mode", true)
-	if _cli.has("pos"):
-		# --pos is the camera position, like the DOS markers.
-		player.set_spawn(_cli_vec3(String(_cli["pos"])) - Vector3(0.0, EYE_HEIGHT, 0.0),
-			player.rotation.y, false)
-	if _cli.has("yaw") or _cli.has("pitch"):
-		var yaw := deg_to_rad(float(_cli.get("yaw", rad_to_deg(player.rotation.y))))
-		var pitch := deg_to_rad(float(_cli.get("pitch", 0.0)))
-		player.set_view(yaw, pitch)
+	_cli_place()
 	if _cli.has("screenshot"):
 		var delay := float(_cli.get("shot-delay", 1.5))
 		await get_tree().create_timer(delay).timeout
+		# Re-apply the requested view: the first captured mouse event
+		# and gravity can drift the camera during the delay.
+		_cli_place()
+		await RenderingServer.frame_post_draw
 		await RenderingServer.frame_post_draw
 		var img: Image = get_viewport().get_texture().get_image()
 		var path := String(_cli["screenshot"])

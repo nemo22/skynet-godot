@@ -123,7 +123,7 @@ func _rebuild() -> void:
 			var a := verts[f.idx[0]]
 			var b := verts[f.idx[1]] if f.vert_count >= 2 else a
 			var c := verts[f.idx[2]] if f.vert_count >= 3 else a
-			var n := (c - a).cross(b - a).normalized()
+			var n := (b - a).cross(c - a).normalized()   # visible side
 			if f.vert_count > 3:
 				var v0 := b - a
 				var v1 := c - a
@@ -142,7 +142,7 @@ func _rebuild() -> void:
 					face_uv[k] = face_uv[0] + uv_ab * s + uv_ac * t
 
 			for k in range(1, f.vert_count - 1):
-				for vi in [0, k, k + 1]:
+				for vi in [0, k + 1, k]:   # DOS CCW front -> Godot CW front
 					positions.append(verts[f.idx[vi]])
 					normals.append(n)
 					uvs.append(face_uv[vi])
@@ -155,7 +155,7 @@ func _rebuild() -> void:
 		arrays[Mesh.ARRAY_TEX_UV] = uvs
 
 		var mat := StandardMaterial3D.new()
-		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		mat.cull_mode = BaseMaterial3D.CULL_BACK
 		mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
 		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		if tex:

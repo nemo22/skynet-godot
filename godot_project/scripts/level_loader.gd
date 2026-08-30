@@ -613,7 +613,8 @@ func load_level(map_name: String) -> Level:
 						if sm is StandardMaterial3D:
 							sm.shading_mode = \
 								BaseMaterial3D.SHADING_MODE_UNSHADED
-							sm.cull_mode = BaseMaterial3D.CULL_DISABLED
+							# Dome faces are wound to be seen from inside
+							# (DOS CCW rule) - default CULL_BACK is right.
 					level.sky = MeshInstance3D.new()
 					level.sky.name = "Sky"
 					level.sky.mesh = sky_am
