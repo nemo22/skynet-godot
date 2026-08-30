@@ -406,6 +406,7 @@ func _begin_level(name: String) -> void:
 	if level.action != null:
 		level.action.teleport_requested.connect(_on_teleport_requested)
 		level.action.drop_requested.connect(_on_drop_requested)
+		level.action.objective_complete.connect(_on_objective_complete)
 		level.action.space = get_world_3d().direct_space_state
 		level.action.player_body = player
 		if not player.pickup_message.is_connected(_set_status):
@@ -700,8 +701,33 @@ func _process(delta: float) -> void:
 func _on_use_pressed(pos: Vector3) -> void:
 	if _current_level != null and _current_level.action != null:
 		var a = _current_level.action
-		if not a.activate_teleport(pos):
-			a.use_nearby(pos)
+		if not a.activate_teleport(pos) and not a.use_nearby(pos):
+			_try_evac(pos)
+
+## A mission-objective act fired (silo opened, missile away …).
+func _on_objective_complete(idx: int) -> void:
+	_set_status("OBJECTIVE %d COMPLETE." % (idx + 1))
+
+## Marker-type-4 entities are evacuation zones (sub+2 = the radius:
+## 1024 at the jeep at the canyon end, 300 at secondary spots). The
+## use key inside one ends the mission and moves the campaign on.
+func _try_evac(pos: Vector3) -> bool:
+	var lvl := _current_level
+	if lvl == null or lvl.map == null or _game_over != null:
+		return false
+	for e in lvl.map.entities:
+		if (e.flags & 3) != 3 or e.marker_type != 4:
+			continue
+		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
+		if absf(pos.y - epos.y) > 512.0:
+			continue
+		if Vector2(pos.x - epos.x, pos.z - epos.z).length() > maxf(float(e.exit_map), 300.0):
+			continue
+		print("[skynet] evacuation at marker 4 (%d u zone) — mission complete" % e.exit_map)
+		_mission_done = true
+		_show_mission_complete()
+		return true
+	return false
 
 ## A destroyed object's drop (crate → ammo, locker → medkit).
 func _on_drop_requested(pos: Vector3, drop_type: int) -> void:
@@ -962,6 +988,7 @@ func _show_end_screen(title: String, color: Color, respawnable: bool,
 	cl.process_mode = Node.PROCESS_MODE_ALWAYS
 	add_child(cl)
 	_game_over = cl
+	print("[skynet] end screen: %s" % title)
 	var dim := ColorRect.new()
 	dim.color = Color(0.02, 0.03, 0.05, 0.85)
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)

@@ -37,6 +37,8 @@ const Explosion := preload("res://scripts/explosion.gd")
 signal teleport_requested(target_map: int, marker_set: int)
 ## A destroyed object drops an item (FUN_00124293 → FUN_00124119).
 signal drop_requested(pos: Vector3, drop_type: int)
+## A mission-objective act (0x1C..0x2A) fired; index = act - 0x1C.
+signal objective_complete(index: int)
 
 const MapFile := preload("res://scripts/loaders/map_file.gd")
 const PickupData := preload("res://scripts/pickup_data.gd")
@@ -142,6 +144,7 @@ var _prox: Array = []             # entities with a proximity act type
 var _teleports: Array = []        # entities with act 0xF0
 var _sound_nodes: Array = []      # entities with a SOUND_ONESHOT act
 var _voice_nodes: Array = []      # entities with act 0xED
+var _objective_nodes: Array = []  # entities with acts 0x1C..0x2A
 ## Physics access for reachability tests (set by the level controller).
 var space: PhysicsDirectSpaceState3D = null
 var player_body: CollisionObject3D = null
@@ -166,6 +169,8 @@ func setup(map: MapFile.MapFile) -> void:
 			_sound_nodes.append(e)
 		elif act == ACT_VOICE:
 			_voice_nodes.append(e)
+		elif act >= 0x1C and act <= 0x2A:
+			_objective_nodes.append(e)
 		if (e.flags & 3) == 1 and e.hp > 0:
 			_hp[e.file_off] = float(e.hp)
 
@@ -271,8 +276,6 @@ func on_player_activate(file_off: int, player_pos: Vector3 = Vector3.INF) -> boo
 	if e.link_act_type == ACT_PROX_GATE:
 		var t: MapFile.Entity = _chain_teleport(e)
 		if t != null:
-			if (e.state_byte & 1) == 0:
-				return false                 # gate not enabled yet (switch first)
 			return _use_exit(e, t)
 	if (e.state_byte & 2) != 0:
 		_trigger(e)
@@ -331,6 +334,7 @@ func _flip_link(start: MapFile.Entity) -> void:
 		cur.state_byte ^= 1
 		if cur.link_act_type == ACT_PROX_GATE:
 			cur.state_byte |= 1
+		_refresh_switch_visual(cur)
 		if (cur.flags & 0x40) != 0:
 			break
 		if cur.link_next < 1:
@@ -340,6 +344,24 @@ func _flip_link(start: MapFile.Entity) -> void:
 			break
 		cur = nxt
 
+## BUTTON01/02 are a single quad with the OFF texture (222/0, 222/2) on
+## the front face and the lit ON texture (222/1, 222/3) on the back —
+## showing the pressed state means showing the other side. Rotate the
+## panel 180 deg about its local Y while the state bit is on.
+func _refresh_switch_visual(e: MapFile.Entity) -> void:
+	var node: Node3D = _nodes.get(e.file_off)
+	if node == null or not is_instance_valid(node):
+		return
+	if not String(node.get_meta("mesh_name", node.name)).begins_with("BUTTON"):
+		return
+	if not node.has_meta("switch_base"):
+		node.set_meta("switch_base", node.transform)
+	var base: Transform3D = node.get_meta("switch_base")
+	if (e.state_byte & 1) != 0:
+		node.transform = Transform3D(base.basis * Basis(Vector3.UP, PI), base.origin)
+	else:
+		node.transform = base
+
 ## ObjDoAction: dispatch when enabled. Movers/proximity/teleports are
 ## per-tick handlers driven from tick(); the one-shot families run here.
 func _do_action(e: MapFile.Entity) -> void:
@@ -348,7 +370,8 @@ func _do_action(e: MapFile.Entity) -> void:
 		return
 	if is_mover(act) or act == ACT_PROX_GATE \
 			or act == ACT_PROX_CHAIN_A or act == ACT_PROX_CHAIN_B \
-			or act == ACT_TELEPORT or is_destructible(act):
+			or act == ACT_TELEPORT or is_destructible(act) \
+			or (act >= 0x1C and act <= 0x2A) or act == ACT_VOICE:
 		return                                  # handled in tick()/hit path
 	if not _unhandled_logged.has(act):
 		_unhandled_logged[act] = true
@@ -367,18 +390,18 @@ func tick(delta: float, player_pos: Vector3) -> void:
 			continue
 		_step_mover(off, e, delta)
 	# Proximity triggers ------------------------------------------
-	# Only the 0xEF doorway gates watch the player; the 0xF1/0xF2 lever
-	# triggers (tower switch, laser cut-off) are use-key operated in the
-	# port — walking past a lever must not throw it.
+	# DOS: the 0xEF handler (0x137e2e) never looks at bit 0 — every gate
+	# watches the player all the time (MAP.215's silo cover opens from a
+	# CORC3229 piece whose state is 0x10). The port keeps two kinds on
+	# the use key instead: 0xF1/0xF2 levers, and variant-1 meshes with
+	# state bit 3 (the wall buttons, state 0x09) — walking past a button
+	# must not press it.
 	for e in _prox:
 		if e.link_act_type != ACT_PROX_GATE:
 			continue
-		# Wall buttons, levers and doors are variant-1 meshes wired with
-		# the same 0xEF act — those wait for the use key too; only the
-		# invisible doorway gate sprites (variant 3) watch the player.
-		if (e.flags & 3) != 3:
-			continue
-		if (e.state_byte & 1) == 0 or _spent.has(e.file_off):
+		if (e.flags & 3) == 1 and (e.state_byte & 8) != 0:
+			continue                         # wall button: use key only
+		if _spent.has(e.file_off):
 			continue
 		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
 		var inside: bool = _within(epos, player_pos, _prox_radius(e))
@@ -403,6 +426,16 @@ func tick(delta: float, player_pos: Vector3) -> void:
 		if (e.state_byte & 1) != 0:
 			e.state_byte &= ~1
 			Audio.play_voice(e.exit_map)
+	# Mission objectives (0x1C..0x2A, handler 0x13779d): fire once when a
+	# chain enables them, then the act disarms itself (DOS writes 0xFF
+	# into the act byte). FUN_0012f53d confirms with sound 0x51.
+	for e in _objective_nodes:
+		if (e.state_byte & 1) != 0 and e.link_act_type >= 0x1C and e.link_act_type <= 0x2A:
+			var idx: int = e.link_act_type - 0x1C
+			e.state_byte &= ~1
+			e.link_act_type = 0xFF
+			Audio.play_id(0x51, -4.0)
+			objective_complete.emit(idx)
 	# Teleports ---------------------------------------------------
 	# A chain (0xEF gate → sound node → 0xF0) or touching the doorway
 	# sprite ARMS the exit (state bit 0); the map change itself needs
@@ -434,8 +467,6 @@ func activate_teleport(player_pos: Vector3) -> bool:
 	# DOOR): the use key goes through anyway.
 	for g in _prox:
 		if g.link_act_type != ACT_PROX_GATE or _spent.has(g.file_off):
-			continue
-		if (g.state_byte & 1) == 0:
 			continue
 		var gpos := Vector3(float(g.x), -float(g.y), -float(g.z))
 		if not _within(gpos, player_pos, _prox_radius(g)):

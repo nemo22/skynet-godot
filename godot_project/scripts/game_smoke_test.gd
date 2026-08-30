@@ -51,6 +51,10 @@ func _ready() -> void:
 
 func _run() -> void:
 	var player: CharacterBody3D = _main.get("player")
+	# God mode from the start: a lucky enemy volley used to kill the
+	# player mid-suite — the MISSION FAILED screen pauses the tree and
+	# every later movement/physics check fails as collateral.
+	player.set("god_mode", true)
 
 	# --- 1. Briefing → BEGIN → MAP.210 loaded, mission watcher armed ---
 	var ok: bool = await _wait(func() -> bool:
@@ -439,6 +443,55 @@ func _run() -> void:
 	for f in 60:
 		await get_tree().physics_frame
 	_check(_main.get("_game_over") == null, "no MISSION COMPLETE / game over after the round trip")
+
+	# --- 8. MAP.215 silo: walking up to the CORC3229 gate opens the four
+	# silo cover doors (0xEF ignores bit 0); the missile button raises
+	# HADES and fires objective 0x27; evac at a marker-4 zone ends the
+	# mission on the use key ---
+	_main.call("_on_teleport_requested", 215, 0)
+	ok = await _wait(func() -> bool: return _level_is("215") and _settled(), 180.0)
+	_check(ok, "MAP.215 loads for the silo check")
+	if ok:
+		lvl = _main.get("_current_level")
+		var cover = lvl.map.entities_by_off.get(0x3077)   # 210SDOR1 leaf
+		var cover_node: Node3D = lvl.action._nodes.get(0x3077)
+		var cbase: Vector3 = cover_node.global_position
+		var gate = lvl.map.entities_by_off.get(0x32cb)    # CORC3229, state 0x10
+		var gpos := Vector3(float(gate.x), -float(gate.y), -float(gate.z))
+		player.set("noclip", true)
+		player.velocity = Vector3.ZERO
+		player.global_position = gpos
+		for f in 240:
+			await get_tree().physics_frame
+		_check(cover_node.global_position.distance_to(cbase) > 100.0,
+			"silo cover door slides open from the bit-0-less proximity gate (%.0f u)" % cover_node.global_position.distance_to(cbase))
+		var objs: Array = []
+		lvl.action.objective_complete.connect(func(i: int) -> void: objs.append(i))
+		lvl.action.on_player_activate(0x2f8f)             # missile button
+		var hades: Node3D = lvl.action._nodes.get(0x47f0)
+		var hbase: Vector3 = hades.global_position
+		for f in 240:
+			await get_tree().physics_frame
+		_check(hades.global_position.distance_to(hbase) > 200.0, "HADES missile rises (%.0f u)" % hades.global_position.distance_to(hbase))
+		_check(objs.has(0x27 - 0x1C), "missile chain fires mission objective 0x27 (%s)" % str(objs))
+		var btn_node: Node3D = lvl.action._nodes.get(0x2f8f)
+		_check(btn_node.has_meta("switch_base"), "pressed button flips to its lit face")
+	# Evacuation: back to 210, use inside the jeep's marker-4 zone.
+	_main.call("_on_teleport_requested", 210, 0)
+	ok = await _wait(func() -> bool: return _level_is("210") and _settled(), 180.0)
+	_check(ok, "back on MAP.210 for the evacuation")
+	if ok:
+		lvl = _main.get("_current_level")
+		var evac = null
+		for e in lvl.map.entities:
+			if (e.flags & 3) == 3 and e.marker_type == 4 and e.exit_map >= 1024:
+				evac = e
+				break
+		_check(evac != null, "MAP.210 has a 1024 u evacuation zone")
+		if evac != null:
+			var at := Vector3(float(evac.x), -float(evac.y), -float(evac.z))
+			_main.call("_on_use_pressed", at + Vector3(200.0, 0.0, 0.0))
+			_check(_main.get("_game_over") != null, "use inside the evacuation zone ends the mission")
 	_finish()
 
 ## Gate geometry dump: leaf node/body transforms and a capsule sweep

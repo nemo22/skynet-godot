@@ -406,11 +406,15 @@ func load_level(map_name: String) -> Level:
 		# the map's per-name defaults).
 		var wants_action: bool = (ActionSystem.is_mover(act)
 			or ActionSystem.is_destructible(act) or has_transfrm
-			or (e.state_byte & 6) != 0 or e.hp > 0)
+			or (e.state_byte & 6) != 0 or e.hp > 0
+			or act == 0xEF or act == 0xF1 or act == 0xF2)
 		var mi: MeshInstance3D
 		if wants_action:
 			var at := ActionTarget.new()
 			at.setup_action(level.action, e.file_off)
+			# Sibling name collisions get renamed by the scene tree — keep
+			# the mesh identity where the action system can read it.
+			at.set_meta("mesh_name", name)
 			mi = at
 		else:
 			mi = MeshInstance3D.new()
