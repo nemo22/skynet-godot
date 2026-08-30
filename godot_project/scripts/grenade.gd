@@ -126,6 +126,11 @@ func _physics_process(delta: float) -> void:
 func _detonate(at: Vector3) -> void:
 	_exploded = true
 	Audio.play_sfx_3d("EXPLO1.RAW", at, -1.0)
+	for h in get_tree().get_nodes_in_group("hittable"):
+		if h is Node3D and h.has_method("take_damage"):
+			var dh := (h as Node3D).global_position.distance_to(at)
+			if dh < _splash:
+				h.take_damage(_damage * (1.0 - dh / _splash))
 	for e in get_tree().get_nodes_in_group("enemy"):
 		if e is Node3D and e.has_method("take_damage"):
 			var d := (e as Node3D).global_position.distance_to(at)

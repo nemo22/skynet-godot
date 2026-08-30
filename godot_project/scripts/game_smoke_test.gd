@@ -119,6 +119,26 @@ func _run() -> void:
 			left += 1
 	_check(left == 0, "all player projectiles expired or hit after 5 s of physics (%d left)" % left)
 
+	# --- 2b. Blast damage reaches destructible map objects (cars) ---
+	var car: Node3D = null
+	var action = _main.get("_current_level").action
+	for h in get_tree().get_nodes_in_group("hittable"):
+		if action._destr.has(int(h.call("file_off"))) 				and (String(h.name).begins_with("CARHIP") or String(h.name).begins_with("COPCAR")):
+			car = h
+			break
+	_check(car != null, "a staged destructible car is in the hittable group")
+	if car != null:
+		var off: int = car.call("file_off")
+		var stage0: int = int(action._destr[off]["stage"]) if action._destr.has(off) else -1
+		var rocket := preload("res://scripts/projectile.gd").new()
+		add_child(rocket)
+		rocket.setup(car.global_position + Vector3(0, 60, -200), Vector3(0, 0, 1), 400.0,
+			{"speed": 3000.0, "life": 1.0, "splash": 512.0, "hits": "enemy"}, player)
+		for f in 30:
+			await get_tree().physics_frame
+		var stage1: int = int(action._destr[off]["stage"]) if action._destr.has(off) else -1
+		_check(stage1 > stage0, "rocket blast advanced the car's damage stage (%d → %d)" % [stage0, stage1])
+
 	# --- 3. Enemy bolt at the player ---
 	var en = get_tree().get_first_node_in_group("enemy")
 	_check(en != null, "an enemy exists on MAP.210")
@@ -137,6 +157,9 @@ func _run() -> void:
 			"enemy dies to a lethal hit")
 
 	# --- 4. Exit MAP.210 → MAP.218 (bunker interior), marker set 0 ---
+	# The old level keeps simulating during the fade-out; god mode keeps
+	# a late enemy bolt from skewing the carry-over comparison.
+	player.set("god_mode", true)
 	var hp_before: float = float(player.get("health"))
 	_main.call("_on_teleport_requested", 218, 0)
 	ok = await _wait(func() -> bool: return _level_is("218") and _settled(), 180.0)

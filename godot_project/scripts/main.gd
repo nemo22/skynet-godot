@@ -129,6 +129,22 @@ func _ready() -> void:
 	if _map_idx < 0: _map_idx = 0
 	_load_current()
 
+## Swap a mesh's baked StaticBody3D for an AnimatableBody3D so the
+## physics server moves the collider kinematically (pushes bodies).
+static func _make_animatable(mi: MeshInstance3D) -> void:
+	for c in mi.get_children():
+		if c is StaticBody3D and not (c is AnimatableBody3D):
+			var ab := AnimatableBody3D.new()
+			ab.name = c.name
+			ab.sync_to_physics = true
+			for s in c.get_children():
+				c.remove_child(s)
+				ab.add_child(s)
+			mi.remove_child(c)
+			c.free()
+			mi.add_child(ab)
+			return
+
 ## `--key=value` / `--flag` switches from both argument lists.
 static func _parse_cli() -> Dictionary:
 	var out: Dictionary = {}
@@ -235,6 +251,11 @@ func _begin_level(name: String) -> void:
 			# node, so the collision follows the action-system motion.
 			if c is MeshInstance3D:
 				c.create_trimesh_collision()       # solid walls / props
+				# A moving StaticBody does not push the player — a closing
+				# gate would leave them wedged inside the leaf. Movers get
+				# an AnimatableBody3D (sync_to_physics) instead.
+				if level.action != null and c.has_method("file_off") 						and level.action.is_mover_off(c.file_off()):
+					_make_animatable(c)
 	if level.action != null:
 		level.action.teleport_requested.connect(_on_teleport_requested)
 	if level.enemies:  add_child(level.enemies)

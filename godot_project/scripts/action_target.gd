@@ -17,6 +17,10 @@ var _file_off: int = -1
 func setup_action(action: RefCounted, file_off: int) -> void:
 	_action = action
 	_file_off = file_off
+	add_to_group("hittable")          # blast damage from projectiles/grenades
+
+func file_off() -> int:
+	return _file_off
 
 func take_damage(amount: float) -> void:
 	if _action != null:

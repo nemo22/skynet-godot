@@ -53,6 +53,13 @@ var ui_fire: bool = false             # set by the TouchControls FIRE button
 var _fire_cd: float = 0.0
 var _spawn_pos: Vector3 = Vector3.ZERO
 var _spawn_yaw: float = 0.0
+## Anti-wedge: seconds of movement input without progress, and the last
+## position where walking was free (fallback teleport target).
+var _stuck_t: float = 0.0
+var _good_t: float = 0.0
+var _last_good: Vector3 = Vector3.ZERO
+const STUCK_TIME: float = 0.35
+const STUCK_RESET_TIME: float = 1.8
 
 # Weapon roster — DOS records 0..12 from `DAT_0004361c` in their
 # mouse-wheel cycle order (skynet_gh.c:27789-27828, cycle struct at VA
@@ -303,7 +310,44 @@ func _walk(delta: float, fwd_in: float, str_in: float) -> void:
 		velocity.y = jump_speed if jump else 0.0
 	else:
 		velocity.y -= gravity * delta
+	var before := global_position
 	move_and_slide()
+	_track_stuck(delta, horiz.length() > 0.1, global_position.distance_to(before))
+
+## Trimesh collision on detailed props can wedge the capsule (a step
+## under an overhang, a gate leaf, two meshes overlapping) — DOS never
+## did because it collided against object cylinders. When movement
+## input produces no motion: step up over the lip, push out along the
+## contact normals, and as a last resort return to the last free spot.
+func _track_stuck(delta: float, wants_move: bool, moved: float) -> void:
+	if wants_move and moved < 0.5:
+		_stuck_t += delta
+	else:
+		_stuck_t = 0.0
+		if moved > 2.0 and is_on_floor():
+			_good_t += delta
+			if _good_t > 0.5:
+				_good_t = 0.0
+				_last_good = global_position
+	if _stuck_t < STUCK_TIME:
+		return
+	var up := Vector3(0.0, 48.0, 0.0)
+	if not test_move(global_transform, up):
+		global_position += up
+		return
+	var n := Vector3.ZERO
+	for i in get_slide_collision_count():
+		n += get_slide_collision(i).get_normal()
+	if n.length() > 0.01:
+		var push := n.normalized() * 30.0
+		if not test_move(global_transform, push):
+			global_position += push
+			return
+	if _stuck_t > STUCK_RESET_TIME and _last_good != Vector3.ZERO:
+		print("[player] wedged — returning to the last free position")
+		global_position = _last_good + Vector3(0.0, 10.0, 0.0)
+		velocity = Vector3.ZERO
+		_stuck_t = 0.0
 
 ## Debug noclip: free 6-DOF flight along the camera look direction.
 func _fly(_delta: float, fwd_in: float, str_in: float) -> void:

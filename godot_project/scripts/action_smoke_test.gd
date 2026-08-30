@@ -17,6 +17,8 @@ const AIData := preload("res://scripts/enemy_ai_data.gd")
 const MapScene := preload("res://scripts/editor/map_scene.gd")
 const MapWriter := preload("res://scripts/editor/map_writer.gd")
 const MapFileC := preload("res://scripts/loaders/map_file.gd")
+const MapMeshN := preload("res://scripts/editor/map_mesh.gd")
+const MapEntityRecR := preload("res://scripts/editor/map_entity_rec.gd")
 
 const CAMPAIGN: Array = [
 	"MAP.210", "MAP.220", "MAP.230", "MAP.240",
@@ -405,6 +407,45 @@ func _run_map_writer_checks() -> void:
 				copies += 1
 		_check(copies == 1 and m.entities.size() == 490,
 			"duplicated entity appended and linked (%d entities, %d copies)" % [m.entities.size(), copies])
+	# New entities from templates: a mesh (name from the table) and an
+	# enemy marker, placed by node position only.
+	var nm: MeshInstance3D = MapMeshN.new()
+	var r1: Resource = MapEntityRecR.new()
+	r1.variant = 1
+	r1.flags = 1
+	r1.mesh_name = String((root.get("names") as PackedStringArray)[0])
+	r1.file_off = -1
+	nm.rec = r1
+	nm.position = Vector3(30000.0, -50.0, -30000.0)
+	nm.rotation.y = PI * 0.5
+	ents.add_child(nm)
+	var en: MeshInstance3D = MapMeshN.new()
+	var r2: Resource = MapEntityRecR.new()
+	r2.variant = 3
+	r2.flags = 3
+	r2.marker_type = 2
+	r2.enemy_type = 33
+	r2.sprite_index = (299 << 7) | 2
+	r2.file_off = -1
+	en.rec = r2
+	en.position = Vector3(31000.0, 100.0, -30500.0)
+	root.get_node("Enemies").add_child(en)
+	var edited2: PackedByteArray = MapWriter.write(root)
+	var m2 = MapFileC.parse(edited2)
+	var new_mesh = null
+	var new_enemy = null
+	if m2 != null:
+		for e in m2.entities:
+			if (e.flags & 3) == 1 and e.x == 30000 and e.z == 30000:
+				new_mesh = e
+			if e.marker_type == 2 and e.enemy_type == 33 and e.x == 31000:
+				new_enemy = e
+	_check(m2 != null and m2.entities.size() == 492, "two created entities re-parse (%d entities)" % (m2.entities.size() if m2 else -1))
+	_check(new_mesh != null and new_mesh.name_index == 0 and new_mesh.y == 50
+		and (new_mesh.off_y & 0x7FF) == 512 and new_mesh.cell_x == 29 and new_mesh.cell_z == 29,
+		"created mesh has name 0, DOS y=50, yaw 512, cell 29/29")
+	_check(new_enemy != null and new_enemy.y == -100 - 0x10 and new_enemy.cell_x == 30,
+		"created enemy marker sits at y-0x10 in cell 30")
 	root.free()
 
 ## Walk a chain with ObjFlipLink's rules (follow link_next, stop at an

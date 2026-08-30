@@ -200,6 +200,14 @@ func _finish(at: Vector3, impact: bool) -> void:
 					var d := (e as Node3D).global_position.distance_to(at)
 					if d < _splash:
 						e.take_damage(_damage * (1.0 - d / _splash))
+		# Destructible map objects (cars, generators …) take blast damage
+		# from anyone's explosion — DOS ObjHit runs for every object in
+		# the radius.
+		for h in get_tree().get_nodes_in_group("hittable"):
+			if h is Node3D and h.has_method("take_damage"):
+				var dh := (h as Node3D).global_position.distance_to(at)
+				if dh < _splash:
+					h.take_damage(_damage * (1.0 - dh / _splash))
 		var pl := get_tree().get_first_node_in_group("player")
 		if pl is Node3D and pl != _owner and pl.has_method("take_damage"):
 			var d := (pl as Node3D).global_position.distance_to(at)

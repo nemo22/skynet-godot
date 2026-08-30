@@ -32,6 +32,8 @@
 
 extends RefCounted
 
+const Explosion := preload("res://scripts/explosion.gd")
+
 signal teleport_requested(target_map: int, marker_set: int)
 
 const MapFile := preload("res://scripts/loaders/map_file.gd")
@@ -174,6 +176,10 @@ func register_node(e: MapFile.Entity, node: Node3D) -> void:
 
 ## Register the damage-stage meshes for a destructible entity (built by
 ## the level loader from TRANSFRM.PRS; may be empty → vanish on kill).
+## True when the entity at `off` is a mover (door/gate/lift/rotator).
+func is_mover_off(off: int) -> bool:
+	return _movers.has(off)
+
 func register_destructible(e: MapFile.Entity, stage_meshes: Array) -> void:
 	_destr[e.file_off] = {
 		"meshes": stage_meshes,   # ArrayMesh per stage, [0] = intact
@@ -487,16 +493,38 @@ func _advance_destructible(e: MapFile.Entity, damage: float) -> void:
 			if node != null and is_instance_valid(node) \
 					and node is MeshInstance3D and meshes[new_stage] != null:
 				(node as MeshInstance3D).mesh = meshes[new_stage]
-				Audio.play_sfx_3d("EXPLO1.RAW", node.global_position, -4.0)
+				_blast(node, new_stage == meshes.size() - 1)
 			if new_stage == meshes.size() - 1:
 				_spent[e.file_off] = true
 	elif want >= 1:
 		# No stage meshes — vanish (rubble piles etc.).
 		_spent[e.file_off] = true
 		if node != null and is_instance_valid(node):
-			Audio.play_sfx_3d("EXPLO1.RAW", node.global_position, -4.0)
+			_blast(node, true)
 			node.visible = false
 			_disable_collision(node)
+
+## Explosion at a destructible's centre; the final stage also hurts
+## the player nearby (DOS cars and generators blow up in your face).
+func _blast(node: Node3D, final: bool) -> void:
+	var aabb: AABB = (node as MeshInstance3D).get_aabb() if node is MeshInstance3D else AABB()
+	var centre: Vector3 = node.global_transform * (aabb.position + aabb.size * 0.5)
+	var radius: float = maxf(aabb.size.length() * 0.35, 120.0)
+	Audio.play_sfx_3d("EXPLO3.RAW" if final else "EXPLO1.RAW", centre, -3.0)
+	if not node.is_inside_tree():
+		return
+	var scene := node.get_tree().current_scene
+	if scene != null:
+		var ex := Explosion.new()
+		scene.add_child(ex)
+		ex.setup(centre, radius * (1.6 if final else 1.0))
+	if final:
+		var pl := node.get_tree().get_first_node_in_group("player")
+		if pl is Node3D and pl.has_method("take_damage"):
+			var d: float = (pl as Node3D).global_position.distance_to(centre)
+			var reach: float = radius * 2.5
+			if d < reach:
+				pl.take_damage(45.0 * (1.0 - d / reach))
 
 static func _disable_collision(node: Node3D) -> void:
 	for c in node.get_children():

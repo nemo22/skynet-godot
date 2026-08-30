@@ -187,6 +187,38 @@ static func _block_size(off: int, sorted_offs: Array, file_size: int) -> int:
 		return int(sorted_offs[i + 1]) - off
 	return mini(file_size - off, 48)
 
+## A fresh entity block: 48 bytes for a mesh (variant 1), 35 for a
+## light (2), 36 for a sprite/marker (3) — the layouts seen in every
+## MAP. Position, angles and the variant fields are filled by the
+## main loop; a mesh must use a name already in the map's name table
+## (the header region after the table is not free space).
+static func _new_block(rec: Resource, root: Node) -> PackedByteArray:
+	var v: int = int(rec.get("variant"))
+	var size: int = 48 if v == 1 else (35 if v == 2 else 36)
+	var blk := PackedByteArray()
+	blk.resize(size)
+	blk.fill(0)
+	_put32(blk, 0, END_A)
+	blk[20] = v
+	if v == 1:
+		var names: PackedStringArray = root.get("names")
+		var idx: int = -1
+		var want: String = String(rec.get("mesh_name")).to_upper()
+		for i in names.size():
+			if names[i].to_upper() == want:
+				idx = i
+				break
+		if idx < 0:
+			return PackedByteArray()
+		_put16(blk, 25 + 12, idx)
+	return blk
+
+## Readers (ours included) only walk blocks with 48 bytes in bounds, so
+## a 35/36-byte block appended at the very end needs zero padding.
+static func _pad_block(b: PackedByteArray, off: int) -> void:
+	while b.size() < off + 48:
+		b.append(0)
+
 ## Produce the MAP bytes for the scene under `root`. Returns an empty
 ## array when the root carries no original data. `log` receives
 ## human-readable lines about what changed.
@@ -211,14 +243,28 @@ static func write(root: Node, log: Array = []) -> PackedByteArray:
 		var rec: Resource = pair[1]
 		var off: int = int(rec.get("file_off"))
 		var kind := _kind(node, rec)
+		# --- new entity (file_off < 0): a block from the variant template -
+		if off < 0:
+			var blk := _new_block(rec, root)
+			if blk.is_empty():
+				push_warning("[mapwriter] %s: cannot create (mesh name not in this map's table?)" % node.name)
+				continue
+			var new_off := b.size()
+			b.append_array(blk)
+			_pad_block(b, new_off)
+			_put32(b, new_off + 21, new_off + 25)
+			off = new_off
+			added += 1
+			log.append("%s: created → offset %d" % [node.name, new_off])
 		# --- duplicate: append a copy of the source block --------------
-		if seen.has(off) or not chains.has(off):
+		elif seen.has(off) or not chains.has(off):
 			if not chains.has(off):
 				push_warning("[mapwriter] %s: unknown file offset %d — skipped" % [node.name, off])
 				continue
 			var size := _block_size(off, sorted_offs, raw.size())
 			var new_off := b.size()
 			b.append_array(raw.slice(off, off + size))
+			_pad_block(b, new_off)
 			_put32(b, new_off + 21, new_off + 25)          # inline sub-record
 			off = new_off
 			added += 1
