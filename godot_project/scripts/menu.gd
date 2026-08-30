@@ -147,10 +147,17 @@ func _ready() -> void:
 ## data into the asset cache behind a progress overlay. `--import`
 ## quits afterwards so the conversion can run from a script.
 func _maybe_import() -> void:
-	if not Assets.enabled:
-		return
 	var args: PackedStringArray = OS.get_cmdline_args()
 	args.append_array(OS.get_cmdline_user_args())
+	# `--map=MAP.213`: skip the menu and start the game on that map.
+	for a in args:
+		if a.begins_with("--map="):
+			SkynetPaths.selected_map = a.substr(6).strip_edges().to_upper()
+			# _ready is still adding children — switch scenes afterwards.
+			get_tree().change_scene_to_file.call_deferred(GAME_SCENE)
+			return
+	if not Assets.enabled:
+		return
 	var forced: bool = "--import" in args
 	# `--map-scene=MAP.210`: build one editor map scene and quit.
 	for a in args:

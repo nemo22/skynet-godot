@@ -217,6 +217,7 @@ class Level:
 	var enemy_count: int = 0
 	var is_outdoor: bool = false
 	var map_suffix: String = ""           # e.g. "210"
+	var map_bytes: PackedByteArray = PackedByteArray()   # the MAP file as loaded
 	var terrain_tex: TextureNNN.TexFile   # TEXTURE.NNN for map-specific terrain materials
 	## Player spawn read from the MAP markers (DOS-faithful):
 	##   marker_type 0 = start position, marker_type 1 = facing direction.
@@ -260,6 +261,13 @@ func load_level(map_name: String) -> Level:
 		return null
 	var map_bytes := maps.read(map_name)
 	maps.close()
+	# An edited map (editor export) overrides the archive entry.
+	var mod := "res://mods/maps/%s" % map_name.to_upper()
+	if FileAccess.file_exists(mod):
+		var mb := SkynetPaths.read_bytes(mod)
+		if not mb.is_empty():
+			map_bytes = mb
+			print("[level] %s: using mod file %s" % [map_name, mod])
 	if map_bytes.is_empty():
 		push_error("[level] MAP not found: %s" % map_name)
 		return null
@@ -267,6 +275,7 @@ func load_level(map_name: String) -> Level:
 	if level.map == null:
 		push_error("[level] MAP parse failed: %s" % map_name)
 		return null
+	level.map_bytes = map_bytes
 	level.map_suffix = map_name.split(".")[-1]
 	# Indoor/outdoor flag at MAP+9028 (sub_153A8B reads `MAP[+9028] == 1`).
 	if map_bytes.size() > 9028 + 4:
@@ -511,10 +520,12 @@ func load_level(map_name: String) -> Level:
 				enemy_frame_cache, provider)
 			if aim_seg != null and STATIONARY_ENEMIES.has(ebase):
 				emi.set_aim_node(aim_seg)
-			# Marker sub+2 = trigger distance: a dormant trap that
-			# detonates when the player comes close (EnemiesStartMarked
-			# FUN_00129f39 → FUN_00142800, death state 0x14285e).
-			var trig: int = (e.off_x >> 16) & 0xFFFF
+			# Marker sub+2 (u16, parsed into exit_map for variant 3) =
+			# trigger distance: a dormant trap that detonates when the
+			# player comes close (EnemiesStartMarked FUN_00129f39 →
+			# FUN_00142800, death state 0x14285e). Enemy markers carry
+			# no spawn yaw — DOS actors start facing +Z.
+			var trig: int = e.exit_map & 0xFFFF
 			if trig > 0:
 				emi.make_dormant(float(trig))
 			en += 1

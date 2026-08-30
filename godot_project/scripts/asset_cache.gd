@@ -37,7 +37,7 @@ const FramePack  := preload("res://scripts/loaders/frame_pack.gd")
 const MapScene   := preload("res://scripts/editor/map_scene.gd")
 
 ## Bump whenever a loader changes its output.
-const CACHE_VERSION: int = 1
+const CACHE_VERSION: int = 3
 const SAVE_FLAGS: int = ResourceSaver.FLAG_COMPRESS | ResourceSaver.FLAG_CHANGE_PATH
 
 ## Cache root ("" when disabled with --no-cache).
@@ -59,6 +59,9 @@ func _ready() -> void:
 		print("[assets] cache disabled (--no-cache)")
 		return
 	root = "user://converted" if OS.has_feature("template") else "res://converted"
+	# Outside the editor a PortableCompressedTexture2D drops its source
+	# buffer right after decoding it — and then saves as an EMPTY texture.
+	PortableCompressedTexture2D.set_keep_all_compressed_buffers(true)
 	_check_version()
 	print("[assets] cache at %s" % root)
 
@@ -146,6 +149,10 @@ func fetch(kind: String, key: String, builder: Callable) -> Resource:
 		var err := ResourceSaver.save(built, p, SAVE_FLAGS)
 		if err != OK:
 			push_warning("[assets] cannot save %s (%s)" % [p, error_string(err)])
+		else:
+			# Later saves (a mesh's material → this texture) must reference
+			# the file, not embed a copy.
+			built.take_over_path(p)
 	_mem[p] = built
 	return built
 
@@ -170,13 +177,19 @@ func texture(bank: int, rec: int, transparent0: bool = false) -> Texture2D:
 		if t == null or t.records.is_empty():
 			return null
 		var ri: int = clampi(rec, 0, t.records.size() - 1)
-		var it: ImageTexture = TextureNNN.to_image_texture(t.records[ri], palette(), transparent0)
-		if it == null:
+		var img: Image = TextureNNN.to_image(t.records[ri], palette(), transparent0)
+		if img == null:
 			return null
-		var pct := PortableCompressedTexture2D.new()
-		pct.create_from_image(it.get_image(), PortableCompressedTexture2D.COMPRESSION_MODE_LOSSLESS)
-		return pct)
+		return _portable(img))
 	return r as Texture2D
+
+## A saveable texture from an Image. (Never go through ImageTexture:
+## on the headless renderer get_image() comes back empty.)
+static func _portable(img: Image) -> PortableCompressedTexture2D:
+	var pct := PortableCompressedTexture2D.new()
+	pct.keep_compressed_buffer = true
+	pct.create_from_image(img, PortableCompressedTexture2D.COMPRESSION_MODE_LOSSLESS)
+	return pct
 
 ## Provider callable for Mesh3D.build_textured_array_mesh.
 func provide(bank: int, rec: int) -> Dictionary:
@@ -267,18 +280,13 @@ func cfa_frames(name: String) -> Array:
 		imgs.close()
 		if bytes.is_empty():
 			return null
-		var frames: Array = CFAFile.parse(bytes, palette())
+		var frames: Array = CFAFile.parse(bytes, palette(), true)
 		if frames.is_empty():
 			return null
 		var fp := FramePack.new()
 		for f in frames:
-			if f is ImageTexture:
-				var pct := PortableCompressedTexture2D.new()
-				pct.create_from_image((f as ImageTexture).get_image(),
-					PortableCompressedTexture2D.COMPRESSION_MODE_LOSSLESS)
-				fp.frames.append(pct)
-			elif f is Texture2D:
-				fp.frames.append(f)
+			if f is Image:
+				fp.frames.append(_portable(f))
 		return fp)
 	if pack is FramePack:
 		return (pack as FramePack).frames

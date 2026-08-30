@@ -18,9 +18,11 @@
 
 extends RefCounted
 
-## Decode a .CFA buffer into an Array of ImageTexture, one per frame.
+## Decode a .CFA buffer into an Array of ImageTexture, one per frame
+## (or of Image when `as_images` — the asset cache stores those).
 ## Returns [] on a malformed file.
-static func parse(bytes: PackedByteArray, palette: PackedColorArray) -> Array:
+static func parse(bytes: PackedByteArray, palette: PackedColorArray,
+		as_images: bool = false) -> Array:
 	if bytes == null or bytes.size() < 14 or palette.size() < 256:
 		return []
 	var w: int = bytes.decode_u16(0)
@@ -84,5 +86,5 @@ static func parse(bytes: PackedByteArray, palette: PackedColorArray) -> Array:
 					dst += 1
 		var img := Image.create_from_data(w, h, false,
 			Image.FORMAT_RGBA8, rgba)
-		frames.append(ImageTexture.create_from_image(img))
+		frames.append(img if as_images else ImageTexture.create_from_image(img))
 	return frames

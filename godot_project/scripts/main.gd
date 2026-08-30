@@ -47,6 +47,10 @@ var _status_font: FontFile = null      # FONT0005.FNT — status messages
 var _game_over: CanvasLayer = null
 var _mission_hostiles: int = 0
 var _mission_done: bool = false
+## Command-line switches after `--` (see _parse_cli): --map=, --pos=x,y,z,
+## --yaw=deg, --pitch=deg, --noclip, --no-briefing, --screenshot=PATH,
+## --shot-delay=sec, --quit-after-shot — the agent/automation interface.
+var _cli: Dictionary = {}
 var _campaign_maps: Array[String] = []   # ordered mission "main" maps
 # --- Map transitions (DOS session loop FUN_001216df, skynet_gh.c:24720) --
 # `_prev_map_name` mirrors DAT_00038b18 (the map we came from — an exit
@@ -97,6 +101,7 @@ var _briefing_scroll: ScrollContainer = null
 var _briefing_pending_map: String = ""     # map to load when BEGIN is pressed
 
 func _ready() -> void:
+	_cli = _parse_cli()
 	print("[skynet] Godot port boot")
 	print("[skynet] game root: %s" % SkynetPaths.game_root)
 	# Show the dev F-key overlay again (the menu hides it).
@@ -123,6 +128,52 @@ func _ready() -> void:
 	_map_idx = _maps.find(initial_map)
 	if _map_idx < 0: _map_idx = 0
 	_load_current()
+
+## `--key=value` / `--flag` switches from both argument lists.
+static func _parse_cli() -> Dictionary:
+	var out: Dictionary = {}
+	var args: PackedStringArray = OS.get_cmdline_args()
+	args.append_array(OS.get_cmdline_user_args())
+	for a in args:
+		if not a.begins_with("--"):
+			continue
+		var eq := a.find("=")
+		if eq > 0:
+			out[a.substr(2, eq - 2)] = a.substr(eq + 1)
+		else:
+			out[a.substr(2)] = true
+	return out
+
+static func _cli_vec3(s: String) -> Vector3:
+	var p := s.split(",")
+	if p.size() < 3:
+		return Vector3.ZERO
+	return Vector3(float(p[0]), float(p[1]), float(p[2]))
+
+## Apply the automation switches once a level is up: place the camera,
+## then capture a screenshot and optionally quit.
+func _cli_after_level() -> void:
+	if _cli.is_empty() or not is_instance_valid(player):
+		return
+	if _cli.has("noclip") or _cli.has("pos"):
+		player.noclip = true
+	if _cli.has("pos"):
+		player.set_spawn(_cli_vec3(String(_cli["pos"])), player.rotation.y, false)
+	if _cli.has("yaw") or _cli.has("pitch"):
+		var yaw := deg_to_rad(float(_cli.get("yaw", rad_to_deg(player.rotation.y))))
+		var pitch := deg_to_rad(float(_cli.get("pitch", 0.0)))
+		player.set_view(yaw, pitch)
+	if _cli.has("screenshot"):
+		var delay := float(_cli.get("shot-delay", 1.5))
+		await get_tree().create_timer(delay).timeout
+		await RenderingServer.frame_post_draw
+		var img: Image = get_viewport().get_texture().get_image()
+		var path := String(_cli["screenshot"])
+		var err := img.save_png(path)
+		print("[skynet] screenshot %s (%s) at pos=%s yaw=%.1f pitch=%.1f" % [path, error_string(err),
+			player.global_position, rad_to_deg(player.rotation.y), rad_to_deg(player.get("_pitch"))])
+		if _cli.has("quit-after-shot"):
+			get_tree().quit()
 
 func _scan_maps() -> void:
 	var bsa := BSAReader.new()
@@ -152,7 +203,10 @@ func _load_current() -> void:
 	var name := _maps[_map_idx]
 	# Mission "main" maps open with the briefing screen; the level itself
 	# loads only when the player presses BEGIN. Other maps load directly.
-	if not _maybe_show_briefing(name):
+	# Automation runs (screenshots) skip the briefing.
+	if _cli.has("screenshot") or _cli.has("no-briefing"):
+		_begin_level(name)
+	elif not _maybe_show_briefing(name):
 		_begin_level(name)
 
 ## Load and show the level geometry for `name` — called directly for
@@ -188,6 +242,7 @@ func _begin_level(name: String) -> void:
 	if level.sky:
 		add_child(level.sky)
 		level.sky.position = player.global_position
+	_set_sky_fill(level)
 	# Re-apply this map's state overlay when we have been here before.
 	_apply_map_state(level, name)
 
@@ -200,6 +255,7 @@ func _begin_level(name: String) -> void:
 	# gate they came through.
 	if level.action != null and is_instance_valid(player):
 		level.action.arm_proximity(player.global_position)
+	_cli_after_level()
 
 	# Ambient bed — wind for outdoor maps.
 	if level.is_outdoor:
@@ -286,6 +342,33 @@ func _find_clear_spawn(pos: Vector3) -> Vector3:
 					print("[skynet] spawn nudged %.0fu clear of geometry" % ring)
 				return p
 	return pos
+
+## DOS fills the frame with a flat sky colour before drawing the
+## SKY_SKY.3D band, so nothing black shows above the dome. Sample the
+## dome texture's top rows for that colour; interiors get black.
+func _set_sky_fill(level: LevelLoader.Level) -> void:
+	var we: WorldEnvironment = get_node_or_null("WorldEnvironment")
+	if we == null or we.environment == null:
+		return
+	var env: Environment = we.environment
+	var fill := Color(0.0, 0.0, 0.0)
+	if level.is_outdoor and level.sky != null and level.sky.mesh != null:
+		var am: Mesh = level.sky.mesh
+		var mat: Material = am.surface_get_material(0) if am.get_surface_count() > 0 else null
+		if mat is BaseMaterial3D and (mat as BaseMaterial3D).albedo_texture != null:
+			var img: Image = (mat as BaseMaterial3D).albedo_texture.get_image()
+			if img != null and img.get_width() > 0:
+				var sum := Color(0, 0, 0)
+				var n := 0
+				for y in mini(4, img.get_height()):
+					for x in img.get_width():
+						sum += img.get_pixel(x, y)
+						n += 1
+				if n > 0:
+					fill = sum / float(n)
+					fill.a = 1.0
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = fill
 
 ## Pin the sky mesh to the camera position each frame (DOS FUN_00133bbb
 ## re-centres SKY_SKY.3D on the camera). Orientation stays fixed so the

@@ -175,6 +175,14 @@ func set_spawn(pos: Vector3, yaw: float, reset_state: bool = true) -> void:
 		_reset_pools()
 	_sync_hud()
 
+## Point the view (radians) — automation / debug.
+func set_view(yaw: float, pitch: float) -> void:
+	_yaw = yaw
+	_pitch = clampf(pitch, -PI * 0.49, PI * 0.49)
+	rotation.y = yaw
+	if _cam != null:
+		_cam.rotation.x = _pitch
+
 func _reset_pools() -> void:
 	for p in POOL_TABLE:
 		_pools[p] = int(POOL_TABLE[p][0])

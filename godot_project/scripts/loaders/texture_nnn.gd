@@ -287,6 +287,14 @@ static func _decode_sparse_rows(src: PackedByteArray, off: int,
 ## rendered transparent if `transparent_index_0` is true.
 static func to_image_texture(rec: Record, palette: PackedColorArray,
 		transparent_index_0: bool = false) -> ImageTexture:
+	var img := to_image(rec, palette, transparent_index_0)
+	return ImageTexture.create_from_image(img) if img != null else null
+
+## The decoded RGBA8 Image of a record (what the asset cache stores —
+## a texture created on a headless/dummy renderer cannot give its
+## pixels back, so conversion must start from the Image).
+static func to_image(rec: Record, palette: PackedColorArray,
+		transparent_index_0: bool = false) -> Image:
 	if rec == null or rec.pixels.is_empty() or palette.size() < 256:
 		return null
 	var n: int = rec.width * rec.height
@@ -309,9 +317,8 @@ static func to_image_texture(rec: Record, palette: PackedColorArray,
 		rgba[po + 1] = lut[lo + 1]
 		rgba[po + 2] = lut[lo + 2]
 		rgba[po + 3] = lut[lo + 3]
-	var img := Image.create_from_data(rec.width, rec.height, false,
+	return Image.create_from_data(rec.width, rec.height, false,
 		Image.FORMAT_RGBA8, rgba)
-	return ImageTexture.create_from_image(img)
 
 ## Convenience: open a TEXTURE.NNN file by archive id and return a
 ## specific record's ImageTexture. `gamedata_root` defaults to the
