@@ -88,6 +88,19 @@ func _run() -> void:
 		if (e as Node3D).global_position.distance_to(start_pos[e]) > 20.0:
 			moved += 1
 	_check(scripted >= 2, "%d enemies run an AIS animation block" % scripted)
+	# The observation-deck terminator (endorfl, marker 66 u above the
+	# 210TOWER origin) must still be up there — no walking off the deck,
+	# no falling through it.
+	var deck_ok := false
+	var deck_y := -1.0
+	for e in enemies:
+		if not is_instance_valid(e) or not String(e.name).contains("endorfl"):
+			continue
+		var sp: Vector3 = start_pos[e]
+		if sp.distance_to(Vector3(49956.0, 980.0, -56315.0)) < 300.0:
+			deck_y = (e as Node3D).global_position.y
+			deck_ok = deck_y > 930.0 and deck_y < 1090.0    # deck floor 978, roof 1108
+	_check(deck_ok, "tower-deck terminator stays on the deck, not the roof (y=%.0f)" % deck_y)
 	_check(segs >= 2, "%d enemies carry DOS turret segments (hvytrrt/guntwr)" % segs)
 	_check(moved >= 1, "%d enemies moved under the DOS AI" % moved)
 
@@ -179,6 +192,13 @@ func _run() -> void:
 	_check(st.has("MAP.210") and killed_off >= 0 and (st["MAP.210"]["dead"] as Dictionary).has(killed_off),
 		"MAP.210 state overlay saved with the killed enemy")
 	_check(String(_main.get("_prev_map_name")) == "MAP.210", "previous-map register = MAP.210")
+	# Floors must hold: 3 s of physics later the player still stands
+	# near the marker (a degenerate collider once let them fall through).
+	var y0: float = player.global_position.y
+	for f in 180:
+		await get_tree().physics_frame
+	_check(absf(player.global_position.y - y0) < 200.0,
+		"player stays on the interior floor (dy=%.0f)" % (player.global_position.y - y0))
 
 	# --- 5. Return exit (map 0 → previous map, marker 27) ---
 	_main.call("_on_teleport_requested", 0, 27)

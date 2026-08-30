@@ -114,6 +114,11 @@ func _run_map210_checks(level: LevelLoader.Level) -> void:
 			for i in 30:                          # ~0.5 s of motion
 				action.tick(0.016, far)
 			_check(node.transform != before, "mover transform is moving")
+			# BIGDOOR (act 0x41/0x42, handler 0x137a28) is a sliding
+			# gate leaf: the origin moves, the basis does not.
+			var slid: float = node.transform.origin.distance_to(before.origin)
+			_check(slid > 1.0 and node.transform.basis.is_equal_approx(before.basis),
+				"BIGDOOR gate slides without rotating (%.1f u)" % slid)
 
 	# --- 2. GENER0: HP-gated (state bit2, hp 200) chain on destruction ---
 	var gener: LevelLoader.MapFile.Entity = null
@@ -188,11 +193,13 @@ func _run_map210_checks(level: LevelLoader.Level) -> void:
 	_check(gate != null, "0xEF gate chained to a 0xF0 teleport exists")
 	if gate != null:
 		var gpos := Vector3(float(gate.x), -float(gate.y), -float(gate.z))
-		action.tick(0.016, gpos)                  # gate flips teleport on
-		action.tick(0.016, gpos)                  # teleport fires
+		action.tick(0.016, gpos)                  # gate arms the teleport
+		action.tick(0.016, gpos)
+		_check(_teleport_seen.is_empty(), "an armed exit does not fire by itself")
+		action.activate_teleport(gpos)            # the use key fires it
 		_check(_teleport_seen.size() == 1
 			and _teleport_seen[0][0] in [211, 212, 213, 214, 218],
-			"teleport fired once → map %s" % str(_teleport_seen))
+			"use key fires the armed exit once → map %s" % str(_teleport_seen))
 
 func _on_teleport(target_map: int, marker_set: int) -> void:
 	_teleport_seen.append([target_map, marker_set])
@@ -243,9 +250,11 @@ func _run_transition_checks(level210: LevelLoader.Level) -> void:
 		var ex = l210c.action._teleports[0]
 		var epos := Vector3(float(ex.x), -float(ex.y), -float(ex.z))
 		l210c.action.tick(0.016, epos)
+		l210c.action.activate_teleport(epos)
 		_check(seen.size() == 1 and seen[0][0] == ex.exit_map,
-			"touching a doorway sprite fires its teleport once (%s)" % str(seen))
+			"touching a doorway sprite arms it; the use key fires it once (%s)" % str(seen))
 		l210c.action.tick(0.016, epos)
+		l210c.action.activate_teleport(epos)
 		_check(seen.size() == 1, "a fired level never teleports twice")
 
 	# Spawn-inside latch: arm_proximity at the doorway → no fire until the
@@ -259,10 +268,12 @@ func _run_transition_checks(level210: LevelLoader.Level) -> void:
 		var epos2 := Vector3(float(ex2.x), -float(ex2.y), -float(ex2.z))
 		l210d.action.arm_proximity(epos2)
 		l210d.action.tick(0.016, epos2)
-		_check(seen2.is_empty(), "spawning on a doorway does not fire it")
+		l210d.action.activate_teleport(epos2)
+		_check(seen2.is_empty(), "spawning on a doorway does not arm it")
 		l210d.action.tick(0.016, epos2 + Vector3(2000.0, 0.0, 0.0))
 		l210d.action.tick(0.016, epos2)
-		_check(seen2.size() == 1, "stepping out and back in fires the doorway")
+		l210d.action.activate_teleport(epos2)
+		_check(seen2.size() == 1, "stepping out, back in and pressing use fires the doorway")
 
 ## Phase 3 — DOS enemy AI data + the AIS interpreter, headless.
 func _run_ai_checks() -> void:

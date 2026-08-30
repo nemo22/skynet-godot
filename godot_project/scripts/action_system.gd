@@ -39,35 +39,42 @@ signal teleport_requested(target_map: int, marker_set: int)
 const MapFile := preload("res://scripts/loaders/map_file.gd")
 
 ## Mover ids → [family, p4, p6] from the 0x59b00 table's per-slot
-## config dword (+4 low u16, +6 high u16). For swing/rot p4 selects the
-## rotation axis (0=X, 1=Y, 2=Z; DOS axes) and p6 is the SIGNED angle
-## limit in 11-bit units (2048 = 360°; 0 = continuous). For the 0x5f
-## slide p4 is the speed base and p6<<4 the travel distance. The odd
-## 0xbd..0xc0 pair carries a non-axis p4 — treated as Y-axis swings.
+## config dword (+4 low u16, +6 high u16). Families by handler body
+## (disassembled 2026-08-30 with tools/x86dis.py):
+##   "slide"   0x137a28 (0x3f-0x7e): translate along DOS axis p4 (0=X,
+##             1=Y, 2=Z) by p6 units at 70 u/s (140 when p6 >= 0x800);
+##             the act parity flips at the limit → next trigger reverses.
+##             BIGDOOR 0x41/0x42 = the two gate leaves sliding apart.
+##   "swing"   0x137c6b (0x8d-92, 0xa5-ac, 0xc1-c6): rotate about axis
+##             p4 by p6 11-bit units at 512/s (90°/s). 210DOOR0/1.
+##   "jump"    0x137ad0 (0x30-35): instant translate by SIGNED p6.
+##   "slide5f" 0x137d41: p4 speed base, p6<<4 travel (as before).
+##   "rot"     continuous rotators (never stop).
+## The odd 0xbd..0xc0 pair (0x137b33) is untraced — treated as swings.
 const MOVER_TABLE: Dictionary = {
-	0x30: ["swing", 0, 512], 0x31: ["swing", 0, 65024],
-	0x32: ["swing", 1, 512], 0x33: ["swing", 1, 65024],
-	0x34: ["swing", 2, 512], 0x35: ["swing", 2, 65024],
+	0x30: ["jump", 0, 512], 0x31: ["jump", 0, 65024],
+	0x32: ["jump", 1, 512], 0x33: ["jump", 1, 65024],
+	0x34: ["jump", 2, 512], 0x35: ["jump", 2, 65024],
 	0x36: ["rot", 0, 1024], 0x37: ["rot", 1, 1024], 0x38: ["rot", 2, 1024],
 	0x39: ["rot", 0, 0], 0x3a: ["rot", 0, 0], 0x3b: ["rot", 1, 0],
 	0x3c: ["rot", 1, 0], 0x3d: ["rot", 2, 0], 0x3e: ["rot", 2, 0],
-	0x3f: ["swing", 0, 64], 0x40: ["swing", 0, 64], 0x41: ["swing", 0, 128],
-	0x42: ["swing", 0, 128], 0x43: ["swing", 0, 256], 0x44: ["swing", 0, 256],
-	0x45: ["swing", 0, 512], 0x46: ["swing", 0, 512], 0x59: ["swing", 1, 64],
-	0x5a: ["swing", 1, 64], 0x5b: ["swing", 1, 128], 0x5c: ["swing", 1, 128],
-	0x5d: ["swing", 1, 256], 0x5e: ["swing", 1, 256],
-	0x5f: ["slide", 316, 128], 0x61: ["swing", 1, 512],
-	0x62: ["swing", 1, 512], 0x63: ["swing", 1, 2048],
-	0x64: ["swing", 1, 2048], 0x65: ["swing", 1, 2560],
-	0x66: ["swing", 1, 2560], 0x67: ["swing", 1, 24], 0x68: ["swing", 1, 24],
-	0x69: ["swing", 1, 768], 0x6a: ["swing", 1, 768], 0x6b: ["swing", 1, 480],
-	0x6c: ["swing", 1, 480], 0x6d: ["swing", 1, 378], 0x6e: ["swing", 1, 378],
-	0x6f: ["swing", 1, 1024], 0x70: ["swing", 1, 1024],
-	0x71: ["swing", 1, 1520], 0x72: ["swing", 1, 1520],
-	0x73: ["swing", 2, 64], 0x74: ["swing", 2, 64], 0x75: ["swing", 2, 128],
-	0x76: ["swing", 2, 128], 0x77: ["swing", 2, 256], 0x78: ["swing", 2, 256],
-	0x79: ["swing", 2, 512], 0x7a: ["swing", 2, 512], 0x7b: ["swing", 2, 640],
-	0x7c: ["swing", 2, 640], 0x7d: ["swing", 2, 384], 0x7e: ["swing", 2, 384],
+	0x3f: ["slide", 0, 64], 0x40: ["slide", 0, 64], 0x41: ["slide", 0, 128],
+	0x42: ["slide", 0, 128], 0x43: ["slide", 0, 256], 0x44: ["slide", 0, 256],
+	0x45: ["slide", 0, 512], 0x46: ["slide", 0, 512], 0x59: ["slide", 1, 64],
+	0x5a: ["slide", 1, 64], 0x5b: ["slide", 1, 128], 0x5c: ["slide", 1, 128],
+	0x5d: ["slide", 1, 256], 0x5e: ["slide", 1, 256],
+	0x5f: ["slide5f", 316, 128], 0x61: ["slide", 1, 512],
+	0x62: ["slide", 1, 512], 0x63: ["slide", 1, 2048],
+	0x64: ["slide", 1, 2048], 0x65: ["slide", 1, 2560],
+	0x66: ["slide", 1, 2560], 0x67: ["slide", 1, 24], 0x68: ["slide", 1, 24],
+	0x69: ["slide", 1, 768], 0x6a: ["slide", 1, 768], 0x6b: ["slide", 1, 480],
+	0x6c: ["slide", 1, 480], 0x6d: ["slide", 1, 378], 0x6e: ["slide", 1, 378],
+	0x6f: ["slide", 1, 1024], 0x70: ["slide", 1, 1024],
+	0x71: ["slide", 1, 1520], 0x72: ["slide", 1, 1520],
+	0x73: ["slide", 2, 64], 0x74: ["slide", 2, 64], 0x75: ["slide", 2, 128],
+	0x76: ["slide", 2, 128], 0x77: ["slide", 2, 256], 0x78: ["slide", 2, 256],
+	0x79: ["slide", 2, 512], 0x7a: ["slide", 2, 512], 0x7b: ["slide", 2, 640],
+	0x7c: ["slide", 2, 640], 0x7d: ["slide", 2, 384], 0x7e: ["slide", 2, 384],
 	0x8d: ["swing", 0, 256], 0x8e: ["swing", 0, 256], 0x8f: ["swing", 0, 512],
 	0x90: ["swing", 0, 512], 0x91: ["swing", 0, 1024],
 	0x92: ["swing", 0, 1024], 0xa5: ["swing", 1, 688],
@@ -103,10 +110,11 @@ const SOUND_ONESHOT: Dictionary = {
 ## tick (~35 Hz) through a <<4 fixed-point accumulator — ≈153/306
 ## units/s (27°/54° per second). Slide analogously from its p4 base.
 ## TODO: calibrate against DOSBox once doors are visibly moving.
-const SWING_SPEED_SLOW: float = 153.0    # 11-bit units/s, |limit| < 0x800
-const SWING_SPEED_FAST: float = 306.0    # 11-bit units/s, |limit| >= 0x800
+const SWING_SPEED: float = 512.0         # 11-bit units/s (0x137c6b: 0x200/s)
+const SLIDE_SPEED_SLOW: float = 70.0     # units/s (0x137a28: 0x46/s)
+const SLIDE_SPEED_FAST: float = 140.0    # units/s when p6 >= 0x800
 const ROT_SPEED: float = 153.0           # continuous rotators
-const SLIDE_SPEED_SCALE: float = 2.2     # slide speed = p4 * this (units/s)
+const SLIDE_SPEED_SCALE: float = 2.2     # 0x5f slide speed = p4 * this (units/s)
 const PROX_GATE_RADIUS: float = 60.0     # 0xEF (Skynet.exe 0x137e2e)
 ## The DOS 60-unit gate test is against the player's body, so the player
 ## capsule radius is added — MAP data places gates 32..79 units from the
@@ -169,6 +177,10 @@ func register_node(e: MapFile.Entity, node: Node3D) -> void:
 			"axis": clampi(int(cfg[1]), 0, 2),
 			"limit": float(limit),
 			"p4": int(cfg[1]),
+			# Slide/swing handlers step +p6 for odd act ids and -p6 for
+			# even ones (`and ebx,1` in 0x137a28/0x137c6b) — the two
+			# leaves of a gate carry 0x41 and 0x42 and part.
+			"sign": 1.0 if (e.link_act_type & 1) != 0 else -1.0,
 			"progress": 0.0,
 			"dir": 1.0,
 			"base": node.transform,
@@ -211,6 +223,14 @@ func on_player_hit(file_off: int, damage: float) -> bool:
 		if depleted:
 			_spent[file_off] = true
 		_trigger(e)
+		if depleted:
+			# DOS ObjHit: HP gone → the object is destroyed (FUN_00124293):
+			# explosion, then it is removed from the world.
+			var node: Node3D = _nodes.get(file_off)
+			if node != null and is_instance_valid(node):
+				_blast(node, true)
+				node.visible = false
+				_disable_collision(node)
 		return true
 	return false
 
@@ -223,9 +243,16 @@ func on_player_activate(file_off: int) -> bool:
 		if _map != null else null
 	if e == null or _spent.has(file_off):
 		return false
-	if (e.state_byte & 2) == 0:
+	# Levers, buttons and proximity gates (0xEF/0xF1/0xF2) are use-key
+	# operated in DOS — the tower lever opens the base gate — even
+	# though their state byte carries no "act on hit" bit.
+	var usable: bool = (e.state_byte & 2) != 0 		or e.link_act_type == ACT_PROX_GATE or e.link_act_type == 0xF1 		or e.link_act_type == 0xF2
+	if not usable:
 		return false
-	_trigger(e)
+	if (e.state_byte & 2) != 0:
+		_trigger(e)
+	else:
+		_flip_link(e)
 	return true
 
 ## ObjFlipLink + immediate ObjDoAction, DOS order: flip the chain from
@@ -304,26 +331,35 @@ func tick(delta: float, player_pos: Vector3) -> void:
 			Audio.play_id_3d(int(SOUND_ONESHOT.get(e.link_act_type, -1)),
 				Vector3(float(e.x), -float(e.y), -float(e.z)), -4.0)
 	# Teleports ---------------------------------------------------
-	# Armed by a chain (0xEF gate → sound node → 0xF0) or by the player
-	# touching the doorway sprite itself. One map change per level
-	# instance — the level is torn down once the signal fires.
-	if _teleport_fired:
-		return
+	# A chain (0xEF gate → sound node → 0xF0) or touching the doorway
+	# sprite ARMS the exit (state bit 0); the map change itself needs
+	# the use key — in DOS you walk into the truck and press use at its
+	# rear doors, nothing happens just by standing there.
 	for e in _teleports:
 		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
 		var touching: bool = _within(epos, player_pos, TELEPORT_TOUCH_RADIUS)
-		var armed: bool = (e.state_byte & 1) != 0
 		if touching and not _touch_latched.get(e.file_off, false):
-			armed = true
+			e.state_byte |= 1
 		_touch_latched[e.file_off] = touching
-		if not armed:
+
+## Use key: fire an armed exit the player stands in. Returns true when
+## a map change was requested (one per level instance).
+func activate_teleport(player_pos: Vector3) -> bool:
+	if _teleport_fired:
+		return false
+	for e in _teleports:
+		if (e.state_byte & 1) == 0:
+			continue
+		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
+		if not _within(epos, player_pos, TELEPORT_TOUCH_RADIUS + PROX_GATE_RADIUS):
 			continue
 		e.state_byte &= ~1                       # one-shot (0x137881)
 		_teleport_fired = true
 		print("[action] teleport → map %d, marker set %d"
 			% [e.exit_map, e.exit_marker_id])
 		teleport_requested.emit(e.exit_map, e.exit_marker_id)
-		return
+		return true
+	return false
 
 ## Called right after the player is placed: latch every gate and doorway
 ## the spawn point already lies inside, so a return exit that drops the
@@ -434,16 +470,21 @@ func _step_mover(off: int, e: MapFile.Entity, delta: float) -> void:
 		_apply_mover_transform(node, m)
 		return
 	var limit: float = m["limit"]
-	if fam == "slide":
+	if fam == "slide5f":
 		limit = float(int(m["limit"]) << 4)      # p6<<4 travel distance
 	if limit == 0.0:
 		return
 	var span: float = absf(limit)
 	var speed: float
-	if fam == "slide":
-		speed = float(m["p4"]) * SLIDE_SPEED_SCALE
-	else:
-		speed = SWING_SPEED_FAST if span >= 2048.0 else SWING_SPEED_SLOW
+	match fam:
+		"slide":
+			speed = SLIDE_SPEED_FAST if span >= 2048.0 else SLIDE_SPEED_SLOW
+		"slide5f":
+			speed = float(m["p4"]) * SLIDE_SPEED_SCALE
+		"jump":
+			speed = 1.0e9                        # instant (0x137ad0)
+		_:
+			speed = SWING_SPEED
 	var target: float = span if m["dir"] > 0.0 else 0.0
 	var p: float = move_toward(m["progress"], target, speed * delta)
 	m["progress"] = p
@@ -452,16 +493,30 @@ func _step_mover(off: int, e: MapFile.Entity, delta: float) -> void:
 		e.state_byte &= ~1                       # arrived: self-disable
 		m["dir"] = -m["dir"]                     # next activation reverses
 
+## DOS axis p4 (0=X, 1=Y-down, 2=Z) → Godot world direction.
+static func _dos_axis(axis_i: int) -> Vector3:
+	if axis_i == 1:
+		return Vector3.DOWN
+	if axis_i == 2:
+		return Vector3(0.0, 0.0, -1.0)
+	return Vector3.RIGHT
+
 func _apply_mover_transform(node: Node3D, m: Dictionary) -> void:
 	var base: Transform3D = m["base"]
 	var fam: String = m["family"]
-	var sign: float = 1.0
-	if fam != "rot" and m["limit"] < 0.0:
-		sign = -1.0
-	if fam == "slide":
+	var sign: float = float(m.get("sign", 1.0))
+	if fam != "rot" and fam != "slide" and m["limit"] < 0.0:
+		sign = -sign
+	if fam == "slide5f":
 		# DOS adds to entity+0xc (Y, Y-down) → Godot -Y (slides down).
 		node.transform = base.translated_local(
 			Vector3(0.0, -m["progress"] * sign, 0.0))
+		return
+	if fam == "slide" or fam == "jump":
+		# Translate along the DOS world axis (handlers 0x137a28/0x137ad0
+		# add to the entity position, not to a local frame).
+		node.transform = Transform3D(base.basis,
+			base.origin + _dos_axis(int(m["axis"])) * (m["progress"] * sign))
 		return
 	# Swing/rot: rotate about the DOS axis in entity-local space.
 	# DOS→Godot conjugation keeps X/Y angle signs, negates Z.

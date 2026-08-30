@@ -58,6 +58,20 @@ const PERCEPTION_RANGE: float = 2000.0
 const FLYER_ALT_DEFAULT: float = 300.0
 ## Wander leg length / interval when the player is not perceived.
 const WANDER_RADIUS: float = 1200.0
+## Max uphill slope a walker takes (radians). Only the terminator family
+## (types 33-38) climbs steep canyon walls in DOS; raptors, spiders and
+## hover units stay on gentle ground.
+const SLOPE_TERMINATOR: float = 0.79     # ~45° over 120 u
+const SLOPE_OTHER: float = 0.47          # ~27°
+## Max single step (rise within 40 u): window sills and crates are not
+## stairs — the tower terminator climbed onto its own roof without it.
+const STEP_TERMINATOR: float = 40.0
+const STEP_OTHER: float = 20.0
+## Ground actors never step off a ledge: the floor 120 u ahead may be at
+## most this far below the feet (terminators take catwalk ramps up to
+## ~39°, the rest gentler slopes; a real platform edge is far deeper).
+const MAX_DROP_TERMINATOR: float = 96.0
+const MAX_DROP_OTHER: float = 60.0
 const DEATH_SOUND_ID: int = 38            # dormant-trap detonation (0x26)
 
 # Legacy exports (fallback FSM and level_loader compatibility).
@@ -112,6 +126,7 @@ var _blocked: bool = false
 var _seen: bool = false
 var _dormant_dist: float = 0.0                 # > 0: trap, explode when near
 var _rest_yaw: float = 0.0
+var _ticks: int = 0
 
 ## Bind the DOS type data. Call before setup() (level_loader does).
 func configure(type_id: int) -> void:
@@ -223,10 +238,13 @@ func _show_frame(f: int) -> void:
 func _physics_process(delta: float) -> void:
 	if _state == State.DEAD:
 		return
+	_ticks += 1
+	if _ticks < 2:
+		return                                 # colliders settle into the space first
 	if not _init_done:
 		if _flying or _stationary:
 			_init_done = true
-		elif _snap_to_ground():
+		elif _snap_to_ground(true):
 			_init_done = true
 	if _player == null or not is_instance_valid(_player):
 		_player = get_tree().get_first_node_in_group("player")
@@ -330,17 +348,79 @@ func _move_data(delta: float, sense: Dictionary) -> void:
 	if moving and absf(speed) > 0.5:
 		var fwd: Vector3 = -global_transform.basis.z
 		var step: Vector3 = fwd * speed * delta
-		if _path_blocked(step):
+		var ground_bound: bool = st != 9 and not _flying
+		if _path_blocked(step) or (ground_bound and (_too_steep(fwd) or _drop_ahead(fwd))):
 			_blocked = true
+			if st == 9:
+				rotation.y += 1.2 * delta          # flyer: veer off the wall
+			elif not see:
+				_wander_t = 0.0                    # pick another leg
 		else:
 			global_position += step
 	if st == 9:
-		# Flyers hold an altitude above the player (script var 56).
+		# Flyers hold an altitude above the player — and above whatever
+		# stands below them (roofs, walls), so they never enter a building.
 		var alt: float = float(_brain.var_or(56, int(FLYER_ALT_DEFAULT)))
-		var want_y: float = _player.global_position.y + maxf(alt, 60.0)
+		var want_y: float = maxf(_player.global_position.y, _surface_below()) + maxf(alt, 60.0)
 		global_position.y = lerpf(global_position.y, want_y, minf(1.0, delta * 1.5))
 	elif not _flying:
 		_snap_to_ground()
+
+## Highest solid surface under the actor (terrain or a roof).
+func _surface_below() -> float:
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return global_position.y
+	var q := PhysicsRayQueryParameters3D.create(
+		global_position + Vector3(0.0, 6000.0, 0.0),
+		global_position + Vector3(0.0, -20000.0, 0.0))
+	q.collide_with_areas = false
+	var hit := space.intersect_ray(q)
+	return (hit["position"] as Vector3).y if hit.has("position") else global_position.y
+
+## True when the floor 120 units ahead is missing or more than MAX_DROP
+## below the feet — a platform edge, not a ramp.
+func _drop_ahead(fwd: Vector3) -> bool:
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return false
+	var ahead: Vector3 = global_position + fwd * 120.0
+	var max_drop: float = MAX_DROP_TERMINATOR if (_type_id >= 33 and _type_id <= 38) else MAX_DROP_OTHER
+	var q := PhysicsRayQueryParameters3D.create(ahead + Vector3(0.0, 60.0, 0.0),
+		ahead + Vector3(0.0, -max_drop - 60.0, 0.0))
+	q.collide_with_areas = false
+	var hit := space.intersect_ray(q)
+	return not hit.has("position")
+
+## True when the ground 120 units ahead rises more steeply than the
+## family allows.
+func _too_steep(fwd: Vector3) -> bool:
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return false
+	var term: bool = _type_id >= 33 and _type_id <= 38
+	# A ledge right ahead (40 u) may rise at most one step.
+	var near: Vector3 = global_position + fwd * 40.0
+	var qn := PhysicsRayQueryParameters3D.create(near + Vector3(0.0, 400.0, 0.0),
+		near + Vector3(0.0, -400.0, 0.0))
+	qn.collide_with_areas = false
+	var hn := space.intersect_ray(qn)
+	if hn.has("position"):
+		var step_up: float = (hn["position"] as Vector3).y - global_position.y
+		if step_up > (STEP_TERMINATOR if term else STEP_OTHER):
+			return true
+	var ahead: Vector3 = global_position + fwd * 120.0
+	var q := PhysicsRayQueryParameters3D.create(ahead + Vector3(0.0, 400.0, 0.0),
+		ahead + Vector3(0.0, -400.0, 0.0))
+	q.collide_with_areas = false
+	var hit := space.intersect_ray(q)
+	if not hit.has("position"):
+		return false
+	var rise: float = (hit["position"] as Vector3).y - global_position.y
+	if rise <= 0.0:
+		return false
+	var limit: float = SLOPE_TERMINATOR if term else SLOPE_OTHER
+	return atan2(rise, 120.0) > limit
 
 ## Solid geometry ahead along `step` (bodies only, not the player).
 func _path_blocked(step: Vector3) -> bool:
@@ -791,21 +871,29 @@ func _spawn_debris(at: Vector3, part: Mesh) -> void:
 		randf_range(-1.0, 1.0)).normalized()
 	d.setup(at, dir * randf_range(950.0, 1750.0), part)
 
-## Drop the actor onto the surface directly below it.
-func _snap_to_ground() -> bool:
+## Put the feet on the floor directly below. The ray starts one step
+## above the FEET (not the model origin — inside the tower deck a ray
+## from 120 u up started above the 130 u ceiling and "found" the roof)
+## and reaches down at most one ledge; with nothing in reach the actor
+## keeps its height, as DOS keeps a marker's Y. Returns true when the
+## actor is settled.
+func _snap_to_ground(init: bool = false) -> bool:
 	var space := get_world_3d().direct_space_state
 	if space == null:
 		return false
-	for start_h in [120.0, 4000.0]:
-		var q := PhysicsRayQueryParameters3D.create(
-			global_position + Vector3(0.0, start_h, 0.0),
-			global_position + Vector3(0.0, -20000.0, 0.0))
-		q.collide_with_areas = false
-		var hit := space.intersect_ray(q)
-		if hit.has("position"):
-			global_position.y = (hit["position"] as Vector3).y - _foot_offset
-			return true
-	return false
+	var term: bool = _type_id >= 33 and _type_id <= 38
+	var feet_y: float = global_position.y + _foot_offset
+	var up: float = 60.0 if init else (STEP_TERMINATOR if term else STEP_OTHER)
+	var down: float = 400.0 if init else (MAX_DROP_TERMINATOR if term else MAX_DROP_OTHER)
+	var q := PhysicsRayQueryParameters3D.create(
+		Vector3(global_position.x, feet_y + up, global_position.z),
+		Vector3(global_position.x, feet_y - down, global_position.z))
+	q.collide_with_areas = false
+	var hit := space.intersect_ray(q)
+	if hit.has("position"):
+		global_position.y = (hit["position"] as Vector3).y - _foot_offset
+		return true
+	return init
 
 ## Step `cur` toward `target` (radians) by at most `max_step`.
 static func _approach_angle(cur: float, target: float, max_step: float) -> float:

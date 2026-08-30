@@ -46,6 +46,8 @@ const GRID_W: int = 256
 const GRID_H: int = 256
 const LAYER_BYTES: int = GRID_W * GRID_H
 const WORLD_PER_CELL: float = 256.0
+## Tile orientation sense of the layer-2 bits 6/7 (see build_terrain_mesh).
+const TILE_ROT_CCW: bool = false
 
 ## World Z at row 0. row N → world Z = K - N*256. With K = 65536 and
 ## GRID_H = 256, the heightmap fills exactly Z = 256..65536 — the same
@@ -397,12 +399,18 @@ static func build_terrain_mesh(w: WLD, tile_textures: Array = [],
 
 			# World-planar UV: one tile per 256-unit cell, continuous
 			# across cells — with REPEAT wrap a road tiles seamlessly.
+			# Layer-2 bits 6/7 orient the tile (XnGine, as in Daggerfall):
+			# bit 6 rotates 90°, bit 7 flips (180°). Road edge and corner
+			# tiles only join up when honoured.
+			var b2: int = sample_byte(w, 2, col, row)
+			var orient: int = ((b2 & 0x40) >> 6) | ((b2 & 0x80) >> 6)
+			if TILE_ROT_CCW:
+				orient = (4 - orient) & 3
 			var uv_NW := Vector2(float(col),     float(row))
 			var uv_NE := Vector2(float(col + 1), float(row))
 			var uv_SE := Vector2(float(col + 1), float(row + 1))
 			var uv_SW := Vector2(float(col),     float(row + 1))
 
-			var b2: int = sample_byte(w, 2, col, row)
 			var mat_id: int = b2 & 0x3F
 
 			# Per-corner blended colours (smooth transitions at boundaries).
@@ -427,6 +435,16 @@ static func build_terrain_mesh(w: WLD, tile_textures: Array = [],
 			bp.append(p_NW); bp.append(p_SE); bp.append(p_SW)
 			bn.append(n1); bn.append(n1); bn.append(n1)
 			bn.append(n2); bn.append(n2); bn.append(n2)
+			if orient != 0:
+				var base_c := Vector2(float(col), float(row))
+				var q := [uv_NW - base_c, uv_NE - base_c, uv_SE - base_c, uv_SW - base_c]
+				for r_i in orient:
+					for i in 4:
+						q[i] = Vector2(1.0 - q[i].y, q[i].x)   # rotate 90° about the tile centre
+				uv_NW = q[0] + base_c
+				uv_NE = q[1] + base_c
+				uv_SE = q[2] + base_c
+				uv_SW = q[3] + base_c
 			bu.append(uv_NW); bu.append(uv_NE); bu.append(uv_SE)
 			bu.append(uv_NW); bu.append(uv_SE); bu.append(uv_SW)
 			# Per-corner colours — each triangle vertex gets the blended
@@ -458,11 +476,11 @@ static func build_terrain_mesh(w: WLD, tile_textures: Array = [],
 		if tex != null:
 			smat.albedo_texture = tex
 			smat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-			# Vertex colour modulates the texture: the blended corner
-			# colours tint the tile at material boundaries, and the
-			# height-based shading adds depth to slopes.
-			smat.vertex_color_use_as_albedo = true
-			smat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_VERTEX
+			# DOS draws the raw tile texture — no lighting and no vertex
+			# tint (the blended corner colours only serve the untextured
+			# fallback below). Depth comes from the fog instead.
+			smat.vertex_color_use_as_albedo = false
+			smat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		else:
 			# No tile — vertex colour IS the albedo.
 			smat.vertex_color_use_as_albedo = true

@@ -551,6 +551,10 @@ func _melee_hit(from: Vector3, fwd: Vector3, dmg: float) -> void:
 ## `activate()` method. Hits Area3D so wall-mounted switches register
 ## (their hitbox is an Area3D, like enemies); the parent-walk filter
 ## ignores anything without `activate()` so enemy hitboxes are inert.
+## Emitted when the use key finds nothing to operate — the level
+## controller then checks for an armed map exit around the player.
+signal use_pressed(pos: Vector3)
+
 func _try_activate() -> void:
 	if _cam == null:
 		return
@@ -562,12 +566,15 @@ func _try_activate() -> void:
 	q.exclude = [get_rid()]
 	var hit := space.intersect_ray(q)
 	if not hit.has("collider"):
+		use_pressed.emit(global_position)
 		return
 	var n: Node = hit["collider"] as Node
 	while n != null and not n.has_method("activate"):
 		n = n.get_parent()
 	if n != null:
 		n.activate()
+		return
+	use_pressed.emit(global_position)
 
 ## Take damage from an enemy shot. On death the player just dies — the
 ## level controller shows a game-over screen and calls respawn().

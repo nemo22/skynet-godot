@@ -129,6 +129,44 @@ func _ready() -> void:
 	if _map_idx < 0: _map_idx = 0
 	_load_current()
 
+## DOS meshes are drawn double-sided and their winding is arbitrary —
+## the 210TOWER observation deck floor faces DOWN. Godot's concave
+## shapes ignore back faces by default, so rays fell through that floor
+## (the deck terminator dropped to the ground) and bodies could push
+## through walls from behind. Make every trimesh solid both ways.
+static func _enable_backfaces(mi: MeshInstance3D) -> void:
+	for body in mi.get_children():
+		if body is CollisionObject3D:
+			for cs in body.get_children():
+				if cs is CollisionShape3D and cs.shape is ConcavePolygonShape3D:
+					(cs.shape as ConcavePolygonShape3D).backface_collision = true
+
+## Small non-mover props: a single box is close to the DOS cylinder
+## and cannot wedge the player between triangles.
+static func _is_small_prop(mi: MeshInstance3D, level: LevelLoader.Level) -> bool:
+	if mi.mesh == null:
+		return false
+	if level.action != null and mi.has_method("file_off") 			and level.action.is_mover_off(mi.file_off()):
+		return false
+	var s: Vector3 = mi.mesh.get_aabb().size
+	# Flat pieces (floor tiles, wall panels, ramps) are level geometry,
+	# not props — and a zero-thickness box would not collide at all.
+	if minf(s.x, minf(s.y, s.z)) < PROP_BOX_MIN_THICKNESS:
+		return false
+	return maxf(s.x, maxf(s.y, s.z)) <= PROP_BOX_MAX
+
+static func _make_box_collision(mi: MeshInstance3D) -> void:
+	var aabb: AABB = mi.mesh.get_aabb()
+	var sb := StaticBody3D.new()
+	sb.name = mi.name + "_col"
+	var cs := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = aabb.size
+	cs.shape = box
+	cs.position = aabb.position + aabb.size * 0.5
+	sb.add_child(cs)
+	mi.add_child(sb)
+
 ## Swap a mesh's baked StaticBody3D for an AnimatableBody3D so the
 ## physics server moves the collider kinematically (pushes bodies).
 static func _make_animatable(mi: MeshInstance3D) -> void:
@@ -173,8 +211,12 @@ func _cli_after_level() -> void:
 		return
 	if _cli.has("noclip") or _cli.has("pos"):
 		player.noclip = true
+	if _cli.has("god"):
+		player.set("god_mode", true)
 	if _cli.has("pos"):
-		player.set_spawn(_cli_vec3(String(_cli["pos"])), player.rotation.y, false)
+		# --pos is the camera position, like the DOS markers.
+		player.set_spawn(_cli_vec3(String(_cli["pos"])) - Vector3(0.0, EYE_HEIGHT, 0.0),
+			player.rotation.y, false)
 	if _cli.has("yaw") or _cli.has("pitch"):
 		var yaw := deg_to_rad(float(_cli.get("yaw", rad_to_deg(player.rotation.y))))
 		var pitch := deg_to_rad(float(_cli.get("pitch", 0.0)))
@@ -243,27 +285,39 @@ func _begin_level(name: String) -> void:
 	if level.terrain:
 		add_child(level.terrain)
 		level.terrain.create_trimesh_collision()   # walkable ground
+		_enable_backfaces(level.terrain)
 	if level.entities:
-		add_child(level.entities)
+		# Bake the colliders BEFORE the subtree enters the physics space so
+		# their flags (backface_collision) are registered from the first
+		# step — the deck terminator's first snap otherwise only found
+		# the roof.
 		for c in level.entities.get_children():
 			# Every entity mesh gets a trimesh StaticBody child — for
 			# movers (doors/gates/lifts) it is a child of the moving
 			# node, so the collision follows the action-system motion.
 			if c is MeshInstance3D:
-				c.create_trimesh_collision()       # solid walls / props
+				if _is_small_prop(c, level):
+					_make_box_collision(c)          # DOS-style solid prop
+				else:
+					c.create_trimesh_collision()    # walls, buildings, bridges
+					_enable_backfaces(c)
 				# A moving StaticBody does not push the player — a closing
 				# gate would leave them wedged inside the leaf. Movers get
 				# an AnimatableBody3D (sync_to_physics) instead.
 				if level.action != null and c.has_method("file_off") 						and level.action.is_mover_off(c.file_off()):
 					_make_animatable(c)
+		add_child(level.entities)
 	if level.action != null:
 		level.action.teleport_requested.connect(_on_teleport_requested)
+		if not player.use_pressed.is_connected(_on_use_pressed):
+			player.use_pressed.connect(_on_use_pressed)
 	if level.enemies:  add_child(level.enemies)
 	if level.sprites:  add_child(level.sprites)
 	if level.sky:
 		add_child(level.sky)
 		level.sky.position = player.global_position
 	_set_sky_fill(level)
+	_light_level(level)
 	# Re-apply this map's state overlay when we have been here before.
 	_apply_map_state(level, name)
 
@@ -335,6 +389,9 @@ func _frame_camera(level: LevelLoader.Level) -> void:
 	# Some MAP start markers sit inside a parked vehicle/prop — step the
 	# spawn out to the nearest capsule-sized free spot so the player
 	# starts beside it, not embedded in it.
+	# Marker + 0x10 is floor level in the MAP data (MAP.218's start sits
+	# exactly on its floor), so the body spawns there and the camera
+	# rides EYE_HEIGHT above it.
 	player.set_spawn(_find_clear_spawn(spawn), yaw, not keep_state)
 
 	# Sun above and slightly behind the camera.
@@ -349,7 +406,7 @@ func _find_clear_spawn(pos: Vector3) -> Vector3:
 		return pos
 	var shape := CapsuleShape3D.new()
 	shape.radius = 26.0
-	shape.height = 120.0
+	shape.height = 88.0
 	var q := PhysicsShapeQueryParameters3D.new()
 	q.shape = shape
 	for ring in [0.0, 100.0, 200.0, 320.0, 460.0, 640.0]:
@@ -363,6 +420,84 @@ func _find_clear_spawn(pos: Vector3) -> Vector3:
 					print("[skynet] spawn nudged %.0fu clear of geometry" % ring)
 				return p
 	return pos
+
+## DOS player: eye 75 units above the feet (DAT_00038ce5 = 0x4b,
+## skynet_gh.c:25016); marker/start positions are EYE positions.
+const EYE_HEIGHT: float = 75.0
+## Outdoor depth haze (world units) — DOS fades distant terrain out.
+const FOG_BEGIN: float = 3500.0
+const FOG_END: float = 16000.0
+## Props up to this AABB extent collide as boxes. 0 = off: an AABB box
+## turns open props (tables, counters, arches) into solid blocks — the
+## MAP.218 spawn ended up inside one, was relocated outside the room and
+## fell through the world. DOS-style object cylinders would need the
+## .3D bounding radius, not the AABB; trimesh + the anti-wedge routine
+## is the safer default.
+const PROP_BOX_MAX: float = 0.0
+const PROP_BOX_MIN_THICKNESS: float = 24.0
+## Interior lighting (DOS AddLightSafe point lights over a dim ambient).
+const LIGHT_RANGE_PER_UNIT: float = 6.0     # variant-2 sub+8 → world units
+const LIGHT_ENERGY_DIV: float = 24.0        # variant-2 intensity → energy
+const INDOOR_AMBIENT: Color = Color(0.30, 0.30, 0.34)
+const OUTDOOR_AMBIENT: Color = Color(0.55, 0.55, 0.65)
+
+## Interiors: dim ambient + one OmniLight3D per enabled variant-2
+## light, and the cached (unshaded) materials swapped for per-vertex
+## shaded duplicates so the lights show. Outdoors stays unlit like DOS.
+func _light_level(level: LevelLoader.Level) -> void:
+	var we: WorldEnvironment = get_node_or_null("WorldEnvironment")
+	if we == null or we.environment == null:
+		return
+	var env: Environment = we.environment
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	if level.is_outdoor:
+		env.ambient_light_color = OUTDOOR_AMBIENT
+		if sun != null:
+			sun.visible = true
+		return
+	env.ambient_light_color = INDOOR_AMBIENT
+	env.ambient_light_energy = 1.0
+	if sun != null:
+		sun.visible = false
+	var cache: Dictionary = {}
+	_shade_recursive(level.entities, cache)
+	_shade_recursive(level.enemies, cache)
+	if level.sprites != null:
+		for s in level.sprites.get_children():
+			if s is SpriteBase3D:
+				(s as SpriteBase3D).shaded = true
+	var n := 0
+	for e in level.map.entities:
+		if (e.flags & 3) != 2 or e.light_enable <= 0:
+			continue
+		var l := OmniLight3D.new()
+		l.position = Vector3(float(e.x), -float(e.y), -float(e.z))
+		l.omni_range = clampf(float(e.light_enable) * LIGHT_RANGE_PER_UNIT, 200.0, 4000.0)
+		l.omni_attenuation = 1.4
+		l.light_energy = clampf(float(e.light_intensity) / LIGHT_ENERGY_DIV, 0.3, 3.0)
+		l.shadow_enabled = false
+		level.entities.add_child(l)
+		n += 1
+	print("[level] interior: %d lights, %d shaded materials" % [n, cache.size()])
+
+static func _shade_recursive(n: Node, cache: Dictionary) -> void:
+	if n == null:
+		return
+	if n is MeshInstance3D:
+		var mi := n as MeshInstance3D
+		if mi.mesh != null:
+			for si in mi.mesh.get_surface_count():
+				var m: Material = mi.mesh.surface_get_material(si)
+				if m is BaseMaterial3D:
+					var key: int = m.get_instance_id()
+					var dup: BaseMaterial3D = cache.get(key)
+					if dup == null:
+						dup = (m as BaseMaterial3D).duplicate()
+						dup.shading_mode = BaseMaterial3D.SHADING_MODE_PER_VERTEX
+						cache[key] = dup
+					mi.set_surface_override_material(si, dup)
+	for c in n.get_children():
+		_shade_recursive(c, cache)
 
 ## DOS fills the frame with a flat sky colour before drawing the
 ## SKY_SKY.3D band, so nothing black shows above the dome. Sample the
@@ -390,6 +525,28 @@ func _set_sky_fill(level: LevelLoader.Level) -> void:
 					fill.a = 1.0
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = fill
+	# The dome is pinned far beyond the fog end — it must not fog out.
+	if level.sky != null and level.sky.mesh != null:
+		for si in level.sky.mesh.get_surface_count():
+			var m: Material = level.sky.mesh.surface_get_material(si)
+			if m is BaseMaterial3D:
+				var sm: BaseMaterial3D = (m as BaseMaterial3D).duplicate()
+				sm.disable_fog = true
+				level.sky.set_surface_override_material(si, sm)
+	# DOS haze: outdoors everything fades to the dark horizon with
+	# distance (the painted mountains in the sky band are black too).
+	env.fog_enabled = level.is_outdoor
+	if level.is_outdoor:
+		env.fog_mode = Environment.FOG_MODE_DEPTH
+		env.fog_light_color = fill * 0.35
+		env.fog_light_energy = 1.0
+		env.fog_sun_scatter = 0.0
+		env.fog_density = 1.0
+		env.fog_depth_begin = FOG_BEGIN
+		env.fog_depth_end = FOG_END
+		env.fog_depth_curve = 1.0
+		env.fog_aerial_perspective = 0.0
+		env.fog_sky_affect = 0.0
 
 ## Pin the sky mesh to the camera position each frame (DOS FUN_00133bbb
 ## re-centres SKY_SKY.3D on the camera). Orientation stays fixed so the
@@ -427,6 +584,11 @@ func _process(delta: float) -> void:
 			and get_tree().get_nodes_in_group("enemy").is_empty():
 		_mission_done = true
 		_show_mission_complete()
+
+## Use key with nothing under the crosshair: fire an armed exit here.
+func _on_use_pressed(pos: Vector3) -> void:
+	if _current_level != null and _current_level.action != null:
+		_current_level.action.activate_teleport(pos)
 
 ## Of several markers sharing an id, the one nearest `to` (a map may hold
 ## two facing markers; DOS pairs the closest). `to` itself when empty.
