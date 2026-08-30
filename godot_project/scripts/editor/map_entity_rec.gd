@@ -15,6 +15,11 @@ extends Resource
 @export_range(0, 2047) var pitch: int = 0
 @export_range(0, 2047) var yaw: int = 0
 @export_range(0, 2047) var roll: int = 0
+## The three raw i32 angle words (sub+0/+4/+8) — the bits above the
+## 11-bit angle carry other data (an enemy marker's trap distance sits
+## in the upper half of the first word), so the writer only replaces
+## the low 11 bits.
+@export var raw_angles: Vector3i = Vector3i.ZERO
 @export var state_byte: int = 0
 @export var link_next: int = 0
 @export var link_act_type: int = 0

@@ -34,6 +34,10 @@ window/size/viewport_height=720
 window/stretch/mode="canvas_items"
 window/handheld/orientation="landscape"
 
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/skynet_maps/plugin.cfg")
+
 [rendering]
 
 textures/canvas_textures/default_texture_filter=0

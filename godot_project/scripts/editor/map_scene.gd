@@ -50,6 +50,7 @@ static func build(map_name: String) -> Node3D:
 	root.is_outdoor = level.is_outdoor
 	root.grid_size = Vector2i(level.map.grid_width, level.map.grid_height)
 	root.names = PackedStringArray(level.map.names)
+	root.raw = level.map_bytes
 
 	if level.terrain != null and level.terrain.mesh != null:
 		var t := MeshInstance3D.new()
@@ -163,6 +164,7 @@ static func _rec_for(m: MapFile.MapFile, e: MapFile.Entity) -> Resource:
 	r.pitch = e.off_x & 0x7FF
 	r.yaw = e.off_y & 0x7FF
 	r.roll = e.off_z & 0x7FF
+	r.raw_angles = Vector3i(e.off_x, e.off_y, e.off_z)
 	r.state_byte = e.state_byte
 	r.link_next = e.link_next
 	r.link_act_type = e.link_act_type

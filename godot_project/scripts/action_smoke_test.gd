@@ -15,6 +15,8 @@ const ActionSystem := preload("res://scripts/action_system.gd")
 const EnemyAI := preload("res://scripts/enemy_ai.gd")
 const AIData := preload("res://scripts/enemy_ai_data.gd")
 const MapScene := preload("res://scripts/editor/map_scene.gd")
+const MapWriter := preload("res://scripts/editor/map_writer.gd")
+const MapFileC := preload("res://scripts/loaders/map_file.gd")
 
 const CAMPAIGN: Array = [
 	"MAP.210", "MAP.220", "MAP.230", "MAP.240",
@@ -49,6 +51,7 @@ func _ready() -> void:
 		_run_transition_checks(level210)
 	_run_ai_checks()
 	_run_map_scene_checks()
+	_run_map_writer_checks()
 	print("[smoke] %s (%d failures)"
 		% ["ALL PASS" if _fails == 0 else "FAILED", _fails])
 	get_tree().quit(1 if _fails > 0 else 0)
@@ -329,6 +332,79 @@ func _run_map_scene_checks() -> void:
 	if f != null:
 		f.close()
 	_check(sz > 0 and sz < 2_000_000, "scene file references cache resources instead of embedding them (%d bytes)" % sz)
+	root.free()
+	# Cached textures must carry their pixels on disk (a fresh load, not
+	# the in-memory object) and meshes must reference them by path.
+	var tp: String = Assets.texture(302, 17, false).resource_path
+	var fresh: Texture2D = ResourceLoader.load(tp, "", ResourceLoader.CACHE_MODE_IGNORE)
+	_check(fresh != null and fresh.get_width() > 0 and fresh.get_height() > 0,
+		"cached texture reloads from disk with pixels (%s %s)" % [tp, str(fresh.get_size()) if fresh else "null"])
+	var mesh_res: ArrayMesh = ResourceLoader.load(Assets.mesh("BIGDOOR.3D").resource_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	var mat: BaseMaterial3D = mesh_res.surface_get_material(0) if mesh_res else null
+	_check(mat != null and mat.albedo_texture != null
+		and mat.albedo_texture.resource_path.begins_with(Assets.root + "/tex/")
+		and mat.albedo_texture.get_width() > 0,
+		"cached mesh references a cache texture file (%s)" % (mat.albedo_texture.resource_path if mat and mat.albedo_texture else "none"))
+
+## MAP writer: byte-exact round trip, then move / rotate / delete /
+## duplicate entities and re-parse the result.
+func _run_map_writer_checks() -> void:
+	var root: Node3D = MapScene.build("MAP.210")
+	if root == null:
+		_check(false, "MAP.210 scene builds for the writer")
+		return
+	var raw: PackedByteArray = root.get("raw")
+	var out: PackedByteArray = MapWriter.write(root)
+	_check(out.size() == raw.size() and out == raw,
+		"unedited scene round-trips byte for byte (%d bytes)" % out.size())
+	# Angle decomposition reproduces every entity's rotation (an
+	# equivalent Euler triple is fine — 180/180/180 is the identity).
+	var bad_ang := 0
+	for c in root.get_node("Entities").get_children():
+		var r = c.get("rec")
+		var b0: Basis = MapWriter.basis_from_angles(r.pitch, r.yaw, r.roll)
+		var back: Vector3i = MapWriter.angles_from_basis(b0)
+		var b1: Basis = MapWriter.basis_from_angles(back.x, back.y, back.z)
+		if not b1.is_equal_approx(b0):
+			bad_ang += 1
+	_check(bad_ang == 0, "angle decomposition reproduces every mesh rotation (%d bad)" % bad_ang)
+	# Edit: move the first mesh 3 cells along +X, rotate it 90°, delete
+	# the second, duplicate the third.
+	var ents: Node = root.get_node("Entities")
+	var n0: Node3D = ents.get_child(0)
+	var n1: Node3D = ents.get_child(1)
+	var n2: Node3D = ents.get_child(2)
+	var off0: int = int(n0.get("rec").get("file_off"))
+	var off1: int = int(n1.get("rec").get("file_off"))
+	var off2: int = int(n2.get("rec").get("file_off"))
+	var old_pos: Vector3 = n0.position
+	n0.position.x += 3.0 * 1024.0
+	n0.rotation.y += PI * 0.5
+	ents.remove_child(n1)
+	n1.free()
+	var dup: Node3D = n2.duplicate()
+	dup.position.z -= 500.0
+	ents.add_child(dup)
+	var log: Array = []
+	var edited: PackedByteArray = MapWriter.write(root, log)
+	var m = MapFileC.parse(edited)
+	_check(m != null, "edited MAP parses")
+	if m != null:
+		var e0 = m.entities_by_off.get(off0)
+		_check(e0 != null and e0.x == int(round(old_pos.x)) + 3072
+			and e0.cell_x == e0.x / 1024 and e0.cell_z == e0.z / 1024,
+			"moved entity re-parses in its new cell (x=%d cell=%d)" % [e0.x if e0 else -1, e0.cell_x if e0 else -1])
+		var yaw0: int = int(n0.get("rec").get("yaw"))
+		_check(e0 != null and ((e0.off_y & 0x7FF) - yaw0 - 512) % 2048 == 0,
+			"rotated entity carries yaw+512 (%d → %d)" % [yaw0, (e0.off_y & 0x7FF) if e0 else -1])
+		_check(not m.entities_by_off.has(off1), "deleted entity is gone after re-parse")
+		var e2 = m.entities_by_off.get(off2)
+		var copies: int = 0
+		for e in m.entities:
+			if e.name_index == e2.name_index and e.x == e2.x and e.z == e2.z + 500:
+				copies += 1
+		_check(copies == 1 and m.entities.size() == 490,
+			"duplicated entity appended and linked (%d entities, %d copies)" % [m.entities.size(), copies])
 	root.free()
 
 ## Walk a chain with ObjFlipLink's rules (follow link_next, stop at an
