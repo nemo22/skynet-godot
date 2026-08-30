@@ -104,6 +104,18 @@ func _run() -> void:
 	_check(deck_ok, "tower-deck terminator stays on the deck, not the roof (y=%.0f)" % deck_y)
 	_check(segs >= 2, "%d enemies carry DOS turret segments (hvytrrt/guntwr)" % segs)
 	_check(moved >= 1, "%d enemies moved under the DOS AI" % moved)
+	# Hovers (HK) never sink onto the player or into a hillside: at least
+	# 200 u of air under every one of them (0x13c300 min altitude p6-100).
+	var hovers: int = 0
+	var low: int = 0
+	for e in enemies:
+		if not is_instance_valid(e) or e.get("_brain") == null or int(e.get("_brain").state) != 9:
+			continue
+		hovers += 1
+		var clearance: float = (e as Node3D).global_position.y - float(e.call("_surface_below"))
+		if clearance < 200.0:
+			low += 1
+	_check(hovers > 0 and low == 0, "%d hovers all keep >= 200 u above the ground (%d low)" % [hovers, low])
 
 	# --- 2. Every weapon slot fires without errors; pools drain per DOS cost ---
 	player.set("_pools", {0: 123, 1: 50, 2: 10, 3: 5, 4: 500, 12: 9999})
@@ -220,6 +232,31 @@ func _run() -> void:
 	_check(killed_off >= 0 and not still_there, "killed enemy stays dead after the round trip")
 	_check(int(_main.get("_mission_hostiles")) > 0 and not bool(_main.get("_mission_done")),
 		"mission watcher re-armed on the main map (%d hostiles)" % int(_main.get("_mission_hostiles")))
+	# --- 4b. Mover physics follows the mesh: open a swing door and check
+	# its AnimatableBody3D really moved in the physics server ---
+	var door_e = null
+	for e in lvl.map.entities:
+		if (e.flags & 3) == 1 and lvl.action.is_mover_off(e.file_off) and LevelLoader.MapFile.entity_name(lvl.map, e).begins_with("210DOOR"):
+			door_e = e
+			break
+	_check(door_e != null, "MAP.210 has a 210DOOR swing-door mover")
+	if door_e != null:
+		var dnode: Node3D = lvl.action._nodes.get(door_e.file_off)
+		var dbody: AnimatableBody3D = null
+		for c in dnode.get_children():
+			if c is AnimatableBody3D:
+				dbody = c
+		_check(dbody != null, "the door leaf carries an AnimatableBody3D")
+		var closed: Transform3D = dnode.global_transform
+		door_e.state_byte |= 1
+		for f in 150:
+			await get_tree().physics_frame
+		_check(not dnode.global_transform.basis.is_equal_approx(closed.basis), "the door leaf swung open")
+		if dbody != null:
+			var phys: Transform3D = PhysicsServer3D.body_get_state(dbody.get_rid(), PhysicsServer3D.BODY_STATE_TRANSFORM)
+			_check(phys.basis.is_equal_approx(dbody.global_transform.basis) and phys.origin.distance_to(dbody.global_transform.origin) < 1.0,
+				"the physics body followed the swung leaf")
+
 	# --- 5. Pickups: walking onto an item-table sprite collects it ---
 	var pick: Node3D = null
 	var pick_item: Array = []

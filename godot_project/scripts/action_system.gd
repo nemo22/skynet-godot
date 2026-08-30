@@ -567,12 +567,14 @@ func _apply_mover_transform(node: Node3D, m: Dictionary) -> void:
 		# DOS adds to entity+0xc (Y, Y-down) → Godot -Y (slides down).
 		node.transform = base.translated_local(
 			Vector3(0.0, -m["progress"] * sign, 0.0))
+		_sync_bodies(node)
 		return
 	if fam == "slide" or fam == "jump":
 		# Translate along the DOS world axis (handlers 0x137a28/0x137ad0
 		# add to the entity position, not to a local frame).
 		node.transform = Transform3D(base.basis,
 			base.origin + _dos_axis(int(m["axis"])) * (m["progress"] * sign))
+		_sync_bodies(node)
 		return
 	# Swing/rot: rotate about the DOS axis in entity-local space.
 	# DOS→Godot conjugation keeps X/Y angle signs, negates Z.
@@ -586,6 +588,21 @@ func _apply_mover_transform(node: Node3D, m: Dictionary) -> void:
 		angle = -angle
 	node.transform = Transform3D(
 		base.basis * Basis(axis, angle), base.origin)
+	_sync_bodies(node)
+
+## Movers move the MeshInstance; its AnimatableBody3D child (sync_to_
+## physics) only re-syncs on LOCAL transform changes, so a parent move
+## left the physics leaf where it was — the base door swung open on
+## screen but still blocked the doorway. Push the new global transform
+## to the server explicitly; as a kinematic move it also shoves the
+## player out of a closing leaf.
+static func _sync_bodies(node: Node3D) -> void:
+	if not node.is_inside_tree():
+		return
+	for c in node.get_children():
+		if c is AnimatableBody3D:
+			PhysicsServer3D.body_set_state(c.get_rid(),
+				PhysicsServer3D.BODY_STATE_TRANSFORM, c.global_transform)
 
 ## Destructible damage-stage advance (handler 0x120433): the damage
 ## counter steps one TRANSFRM.PRS stage per DESTRUCT_DAMAGE_PER_STAGE

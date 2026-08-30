@@ -89,11 +89,16 @@ def decode_script(start):
 # Per-state parameter layouts (dword indices into the 36-dword block).
 # fire = (mx, my, mz, ammo, speed, rate, range) indices.
 LAYOUT = {
-    7:  dict(speed=4, near=6, turn=7, fire=(11, 12, 13, 14, 15, 18, 19), script=26, events=29),
-    6:  dict(speed=4, near=6, turn=7, fire=(12, 13, 14, 15, 16, 19, 20), script=21),
-    2:  dict(axis=4, amin=5, amax=6, turn=7, range=8, fire=(12, 13, 14, 15, 16, 19, 20)),
-    8:  dict(axis=4, amin=5, amax=6, turn=7, range=8, fire=(12, 13, 14, 15, 16, 19, 20), script=24, events=27),
-    9:  dict(speed=4, turn=5, fire=(17, 18, 19, 20, 21, 24, 25), script=14, engine=(26, 27)),
+    # fire = (mx, my, mz, ammo, speed, rate, range, aim gate); the aim gate is
+    # an 11-bit bearing for walkers/turrets and a cos*65536 dot threshold for
+    # hovers (46340 = 45 deg).
+    7:  dict(speed=4, near=6, turn=7, fire=(11, 12, 13, 14, 15, 18, 19, 16), script=26, events=29),
+    6:  dict(speed=4, near=6, turn=7, fire=(12, 13, 14, 15, 16, 19, 20, 17), script=21),
+    2:  dict(axis=4, amin=5, amax=6, turn=7, range=8, fire=(12, 13, 14, 15, 16, 19, 20, 17)),
+    8:  dict(axis=4, amin=5, amax=6, turn=7, range=8, fire=(12, 13, 14, 15, 16, 19, 20, 17), script=24, events=27),
+    # hover (0x13c300): p4 = max turn rate, p5 = turn accel, p6 = min altitude
+    # over terrain + 100, p7 = vertical accel, p8 = obstacle radius, p9 = speed.
+    9:  dict(speed=4, turn=5, alt=6, vaccel=7, avoid=8, fspeed=9, fire=(17, 18, 19, 20, 21, 24, 25, 22), script=14, engine=(26, 27)),
     13: dict(speed=6, turn=5, script=12, engine=(22, 23)),
     10: dict(script=6),
 }
@@ -107,7 +112,7 @@ for i in range(256):
     p = [i32(prm + BASE + 4 * k) for k in range(36)] if prm else [0] * 36
     lay = LAYOUT.get(st, {})
     t = {'n': name, 'st': st, 'hp': max(0, min(p[0], 0x7fff))}
-    for key in ('speed', 'near', 'turn', 'axis', 'amin', 'amax', 'range'):
+    for key in ('speed', 'near', 'turn', 'axis', 'amin', 'amax', 'range', 'alt', 'vaccel', 'avoid', 'fspeed'):
         if key in lay:
             t[key] = p[lay[key]]
     if 'fire' in lay:
@@ -179,7 +184,7 @@ out.append('extends RefCounted')
 out.append('')
 out.append('## Per enemy type: n name, st AI state id, hp, speed (u/s), near (stop')
 out.append('## distance), turn (2048 = 360 deg/s), axis/amin/amax (turret segment),')
-out.append('## range (engage), fire [mx,my,mz, ammo, speed, rate, range], script VA,')
+out.append('## range (engage), fire [mx,my,mz, ammo, speed, rate, range, aim gate], script VA,')
 out.append('## events [frame, sound, ...], engine (loop sound id), death parts')
 out.append('## [[type, ox, oy, oz], ...].')
 out.append('const TYPES: Array = [')

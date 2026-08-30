@@ -54,8 +54,14 @@ const FIRE_RATE_DIV: float = 128.0
 const AIM_CONE: float = 140.0 / 2048.0 * TAU
 ## DOS perception cutoff (FUN_0013bcda: 0x7d1).
 const PERCEPTION_RANGE: float = 2000.0
-## Flyer altitude above the player when the script has not set var 56.
-const FLYER_ALT_DEFAULT: float = 300.0
+## Hover handler 0x13c300 vertical limits: sinks toward the player at
+## 250 u/s, climbs at 300 u/s, and never goes below (p6 - 100) above the
+## ground under it (fighter 284, bomber 92 — floored here so a bomber
+## does not skim the player's head).
+const FLYER_SINK_SPEED: float = 250.0
+const FLYER_CLIMB_SPEED: float = 300.0
+const FLYER_MIN_ALT: float = 250.0
+const FLYER_LOOKAHEAD: float = 400.0
 ## Wander leg length / interval when the player is not perceived.
 const WANDER_RADIUS: float = 1200.0
 ## Max uphill slope a walker takes (radians). Only the terminator family
@@ -333,6 +339,10 @@ func _move_data(delta: float, sense: Dictionary) -> void:
 		if _brain.vars.has(44):
 			want_yaw = float(_brain.var_or(44, 0)) / 2048.0 * TAU
 		speed = float(_brain.var_or(48, int(_t.get("speed", 0)))) * SPEED_SCALE
+	elif st == 9:
+		# Hover (0x13c300): forward speed p9, or the script's target speed
+		# (var 56 — 50..800, negative = back off); p4/p5 are turn limits.
+		speed = float(_brain.var_or(56, int(_t.get("fspeed", 400)))) * SPEED_SCALE
 	rotation.y = _approach_angle(rotation.y, want_yaw, turn_speed * delta)
 	var moving: bool = true
 	if st == 7:
@@ -340,8 +350,8 @@ func _move_data(delta: float, sense: Dictionary) -> void:
 		moving = (_brain.anim_flags & EnemyAI.ANIM_LOOP) != 0 \
 			and not _brain.freeze_anim
 	var near: float = float(_t.get("near", 100))
-	if st == 13 and speed < 0.0:
-		moving = true
+	if (st == 13 and speed < 0.0) or st == 9:
+		moving = true                          # hovers never park — they overfly
 	elif dist <= near:
 		moving = false
 	_blocked = false
@@ -358,25 +368,36 @@ func _move_data(delta: float, sense: Dictionary) -> void:
 		else:
 			global_position += step
 	if st == 9:
-		# Flyers hold an altitude above the player — and above whatever
-		# stands below them (roofs, walls), so they never enter a building.
-		var alt: float = float(_brain.var_or(56, int(FLYER_ALT_DEFAULT)))
-		var want_y: float = maxf(_player.global_position.y, _surface_below()) + maxf(alt, 60.0)
-		global_position.y = lerpf(global_position.y, want_y, minf(1.0, delta * 1.5))
+		# DOS hover: sink toward the player's eye height, but stay at
+		# least (p6 - 100) above the ground beneath — sampled under the
+		# craft AND p8 ahead, so a rising hillside is climbed before it
+		# is hit, and a strafing pass stays well over the player's head.
+		var min_alt: float = maxf(float(_t.get("alt", 384)) - 100.0, FLYER_MIN_ALT)
+		var ahead: Vector3 = -global_transform.basis.z * maxf(float(_t.get("avoid", 400)), FLYER_LOOKAHEAD)
+		var floor_y: float = maxf(_surface_at(global_position), _surface_at(global_position + ahead))
+		var want_y: float = maxf(_player.global_position.y + 31.0, floor_y + min_alt)
+		var dy: float = want_y - global_position.y
+		var vmax: float = (FLYER_CLIMB_SPEED if dy > 0.0 else FLYER_SINK_SPEED) * delta
+		global_position.y += clampf(dy, -vmax, vmax)
 	elif not _flying:
 		_snap_to_ground()
 
 ## Highest solid surface under the actor (terrain or a roof).
 func _surface_below() -> float:
+	return _surface_at(global_position)
+
+## Highest solid surface under `at` (terrain or a roof); `at.y` when
+## nothing is found.
+func _surface_at(at: Vector3) -> float:
 	var space := get_world_3d().direct_space_state
 	if space == null:
-		return global_position.y
+		return at.y
 	var q := PhysicsRayQueryParameters3D.create(
-		global_position + Vector3(0.0, 6000.0, 0.0),
-		global_position + Vector3(0.0, -20000.0, 0.0))
+		at + Vector3(0.0, 6000.0, 0.0),
+		at + Vector3(0.0, -20000.0, 0.0))
 	q.collide_with_areas = false
 	var hit := space.intersect_ray(q)
-	return (hit["position"] as Vector3).y if hit.has("position") else global_position.y
+	return (hit["position"] as Vector3).y if hit.has("position") else at.y
 
 ## True when the floor 120 units ahead is missing or more than MAX_DROP
 ## below the feet — a platform edge, not a ramp.
@@ -539,7 +560,16 @@ func _try_fire(node: Node3D, fp: Array, delta: float, _td: Dictionary) -> void:
 	if dist > float(fp[6]) or dist < 1.0:
 		return
 	var fwd: Vector3 = -node.global_transform.basis.z
-	if fwd.angle_to(to) > AIM_CONE:
+	# Aim gate from the fire struct: cos*65536 (hovers 46340 = 45 deg,
+	# endoskeleton 60415 = 23 deg) or an 11-bit bearing; default 24.6 deg.
+	var cone: float = AIM_CONE
+	if fp.size() > 7:
+		var gate: int = int(fp[7])
+		if gate > 4096:
+			cone = acos(clampf(float(gate) / 65536.0, -1.0, 1.0))
+		elif gate > 0:
+			cone = float(gate) / 2048.0 * TAU
+	if fwd.angle_to(to) > cone:
 		return
 	if not _has_los():
 		return
