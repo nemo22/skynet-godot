@@ -344,6 +344,14 @@ func _run() -> void:
 			var m12: Vector3 = (lvl.markers[12] as Array)[0] if lvl.markers.has(12) else Vector3.INF
 			_check(player.global_position.distance_to(m12) < 700.0,
 				"player spawned at MAP.216 marker 12 (d=%.0f)" % player.global_position.distance_to(m12))
+			# Variant carry-over: the gate opened in MAP.210 (step 4c) is
+			# open here too — MAP.216 is the same base re-authored.
+			var open_leaves: int = 0
+			for e in lvl.map.entities:
+				if (e.flags & 3) == 1 and lvl.action.is_mover_off(e.file_off) and LevelLoader.MapFile.entity_name(lvl.map, e) == "BIGDOOR":
+					if float(lvl.action._movers[e.file_off]["progress"]) > 100.0:
+						open_leaves += 1
+			_check(open_leaves == 2, "MAP.216 inherits the open base gate from MAP.210 (%d leaves open)" % open_leaves)
 
 	# --- 6a. Mover colliders in MAP.214: the rotating corridor segment
 	# CORB122I keeps its trimesh (a box sealed the tunnel), the DORB door

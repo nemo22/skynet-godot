@@ -803,13 +803,119 @@ func _save_map_state() -> void:
 	_map_state[_level_name()] = {
 		"dead": dead, "taken": taken,
 		"action": lvl.action.save_state() if lvl.action != null else {},
+		# Entity signature for variant maps (MAP.216/217 are the base of
+		# MAP.210 re-authored): file offset → identity key, see
+		# _import_variant_state.
+		"sig": _map_signature(lvl.map),
+		"grid": Vector2i(lvl.map.grid_width, lvl.map.grid_height),
+		"outdoor": lvl.is_outdoor,
 	}
+
+## Identity of an entity across map variants: kind + name/type + exact
+## DOS position (shared objects keep their coordinates when a map is
+## re-authored; only the file offsets shift).
+static func _entity_key(m: LevelLoader.MapFile.MapFile, e) -> String:
+	var v: int = e.flags & 3
+	var id: String
+	if v == 1:
+		id = "1|" + LevelLoader.MapFile.entity_name(m, e)
+	elif v == 2:
+		id = "L"
+	elif e.marker_type == 2:
+		id = "E|%d" % e.enemy_type
+	elif e.marker_type >= 0:
+		id = "M|%d" % e.marker_type
+	else:
+		id = "S|%d" % e.sprite_index
+	return "%s|%d,%d,%d" % [id, e.x, e.y, e.z]
+
+static func _map_signature(m: LevelLoader.MapFile.MapFile) -> Dictionary:
+	var sig: Dictionary = {}
+	if m == null:
+		return sig
+	for e in m.entities:
+		sig[e.file_off] = _entity_key(m, e)
+	return sig
+
+## First visit to a map that is a VARIANT of one already played (the
+## base after the truck ride = MAP.216, after the lasers = MAP.217):
+## DOS keeps its Mst overlay per map number, so the base would come
+## back with every switch reset — the player asked for the state to
+## carry over. Find the best-matching visited map (same grid, ≥ 60 % of
+## this map's meshes present at the same coordinates) and translate its
+## snapshot by entity identity: dead enemies, taken pickups, switch and
+## mover states, damage. Objects the variant adds (reinforcements) are
+## untouched, objects it drops are skipped.
+func _import_variant_state(level: LevelLoader.Level, name: String) -> Dictionary:
+	# Outdoor maps only: interiors built from the same room kit (the two
+	# truck boxes MAP.211/212 share 72 % of their pieces) are different
+	# places, not variants of one.
+	if level.map == null or not level.is_outdoor:
+		return {}
+	var mine: Dictionary = {}            # key → my file offset
+	var mesh_total: int = 0
+	for e in level.map.entities:
+		mine[_entity_key(level.map, e)] = e.file_off
+		if (e.flags & 3) == 1:
+			mesh_total += 1
+	if mesh_total == 0:
+		return {}
+	var best: String = ""
+	var best_ratio: float = 0.6
+	var best_remap: Dictionary = {}
+	for other in _map_state:
+		if other == name:
+			continue
+		var snap: Dictionary = _map_state[other]
+		if snap.get("grid", Vector2i.ZERO) != Vector2i(level.map.grid_width, level.map.grid_height):
+			continue
+		if bool(snap.get("outdoor", false)) != level.is_outdoor:
+			continue
+		var sig: Dictionary = snap.get("sig", {})
+		var remap: Dictionary = {}       # other offset → my offset
+		var mesh_hits: int = 0
+		for off in sig:
+			var key: String = sig[off]
+			if mine.has(key):
+				remap[off] = mine[key]
+				if key.begins_with("1|"):
+					mesh_hits += 1
+		var ratio: float = float(mesh_hits) / float(mesh_total)
+		if ratio >= best_ratio:
+			best_ratio = ratio
+			best = other
+			best_remap = remap
+	if best.is_empty():
+		return {}
+	var src: Dictionary = _map_state[best]
+	var out: Dictionary = {"dead": {}, "taken": {}, "action": {}}
+	for off in src.get("dead", {}):
+		if best_remap.has(off):
+			out["dead"][best_remap[off]] = true
+	for off in src.get("taken", {}):
+		if best_remap.has(off):
+			out["taken"][best_remap[off]] = true
+	var act_src: Dictionary = src.get("action", {})
+	var act: Dictionary = {}
+	for part in ["states", "movers", "destr", "hp", "spent"]:
+		var d: Dictionary = {}
+		for off in act_src.get(part, {}):
+			if best_remap.has(off):
+				d[best_remap[off]] = act_src[part][off]
+		act[part] = d
+	out["action"] = act
+	print("[skynet] %s: first visit — importing state from variant %s (%d%% of meshes shared, %d dead, %d taken)"
+		% [name, best, int(best_ratio * 100.0), out["dead"].size(), out["taken"].size()])
+	return out
 
 ## Re-apply a saved snapshot to a freshly loaded map (DOS MstLoad).
 func _apply_map_state(level: LevelLoader.Level, name: String) -> void:
 	var snap: Dictionary = _map_state.get(name, {})
 	if snap.is_empty():
-		return
+		snap = _import_variant_state(level, name)
+		if snap.is_empty():
+			return
+		_map_state[name] = snap
 	var dead: Dictionary = snap.get("dead", {})
 	if level.enemies:
 		for c in level.enemies.get_children():
