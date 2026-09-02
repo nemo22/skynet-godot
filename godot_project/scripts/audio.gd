@@ -1,8 +1,10 @@
 ## Autoload: game audio — sound effects and ambient loops.
 ##
 ## Sound effects live in MDMDSFXS.BSA: mostly 8-bit unsigned mono PCM
-## .RAW clips at 11025 Hz, plus a few RIFF/WAVE .WAV. Music is .XMI
-## (Miles MIDI) in MDMDMUSC.BSA — not played yet (needs XMI→MIDI + synth).
+## .RAW clips at 11025 Hz, plus a few RIFF/WAVE .WAV. Music is the
+## loose gamedata/T*.HMI + TITLE.HMI (the files the DOS engine plays —
+## MDMDMUSC.BSA only holds Miles .XMI twins), decoded by HmiFile and
+## played by MidiSynth on the "Music" bus.
 
 extends Node
 
@@ -12,6 +14,8 @@ const SFX_VOICES: int = 6
 const AUDIO_CFG: String = "user://audio.cfg"
 
 const PrsFile := preload("res://scripts/loaders/prs_file.gd")
+const HmiFile := preload("res://scripts/loaders/hmi_file.gd")
+const MidiSynth := preload("res://scripts/midi_synth.gd")
 
 var _bsa = null                       # BSAReader, kept open for the session
 var _cache: Dictionary = {}           # key -> AudioStreamWAV
@@ -20,13 +24,39 @@ var _voices3d: Array[AudioStreamPlayer3D] = []
 var _ambient: AudioStreamPlayer = null
 ## Master volume, 0..1 — set from the OPTIONS menu, persisted.
 var master_volume: float = 0.7
+## Music volume, 0..1 (console `music <0-100>`), persisted.
+var music_volume: float = 0.6
+var _synth: Node = null
+var _songs: Dictionary = {}           # name → parsed song
+
+## DOS maptype (marker type 6, sub+2) → track, Skynet.exe table at
+## VA 0x4f9f9 (0x24-byte entries: u32, "gamedata\tNNN.hmi", flag).
+## The menu plays TITLE.HMI (skynet_gh.c:21787).
+const MAPTYPE_TRACKS: PackedStringArray = [
+	"T200.HMI", "T205.HMI", "T204.HMI", "T206.HMI", "T201.HMI", "T202.HMI",
+	"T205.HMI", "T300NEW.HMI", "T301.HMI", "T303.HMI", "T302.HMI", "T305.HMI",
+]
+const TITLE_TRACK := "TITLE.HMI"
 
 func _ready() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(AUDIO_CFG) == OK:
 		master_volume = clampf(
 			float(cfg.get_value("audio", "master", 0.7)), 0.0, 1.0)
+		music_volume = clampf(
+			float(cfg.get_value("audio", "music", 0.6)), 0.0, 1.0)
 	_apply_master()
+	# A "Music" bus so the score has its own level under Master.
+	if AudioServer.get_bus_index("Music") < 0:
+		var idx := AudioServer.bus_count
+		AudioServer.add_bus(idx)
+		AudioServer.set_bus_name(idx, "Music")
+		AudioServer.set_bus_send(idx, "Master")
+	_apply_music_volume()
+	_synth = MidiSynth.new()
+	_synth.name = "MidiSynth"
+	_synth.bus = "Music"
+	add_child(_synth)
 	_bsa = preload("res://scripts/loaders/bsa_reader.gd").new()
 	if not _bsa.open(SkynetPaths.gamedata_path(SFX_BSA), SkynetPaths.variant):
 		push_warning("[audio] cannot open %s — sound disabled" % SFX_BSA)
@@ -181,9 +211,68 @@ func _apply_master() -> void:
 func set_master_volume(v: float) -> void:
 	master_volume = clampf(v, 0.0, 1.0)
 	_apply_master()
+	_save_cfg()
+
+func _save_cfg() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("audio", "master", master_volume)
+	cfg.set_value("audio", "music", music_volume)
 	cfg.save(AUDIO_CFG)
+
+## --- music -------------------------------------------------------------
+
+func _apply_music_volume() -> void:
+	var idx := AudioServer.get_bus_index("Music")
+	if idx < 0:
+		return
+	var db: float = linear_to_db(music_volume) if music_volume > 0.001 else -60.0
+	AudioServer.set_bus_volume_db(idx, db)
+	AudioServer.set_bus_mute(idx, music_volume <= 0.001)
+
+func set_music_volume(v: float) -> void:
+	music_volume = clampf(v, 0.0, 1.0)
+	_apply_music_volume()
+	_save_cfg()
+
+## Parsed HMI song (memory-cached; a 30 KB file parses in milliseconds).
+func song(name: String) -> Dictionary:
+	name = name.to_upper()
+	if _songs.has(name):
+		return _songs[name]
+	var bytes := SkynetPaths.read_bytes(SkynetPaths.gamedata_path(name))
+	var s: Dictionary = HmiFile.parse(bytes) if not bytes.is_empty() else {}
+	if s.is_empty():
+		push_warning("[audio] cannot play %s" % name)
+	_songs[name] = s
+	return s
+
+## Start a track ("T200.HMI"); a no-op when it is already playing.
+func play_music(name: String) -> void:
+	name = name.to_upper()
+	if _synth == null:
+		return
+	if _synth.playing and _synth.song_name == name:
+		return
+	var s := song(name)
+	if s.is_empty():
+		_synth.stop()
+		return
+	_synth.play(s, name)
+	print("[audio] music %s (%d events, %.0f s)" % [name, s["events"].size() / HmiFile.REC,
+		float(s["length"]) / float(s["rate"])])
+
+func stop_music() -> void:
+	if _synth != null:
+		_synth.stop()
+
+func music_name() -> String:
+	return String(_synth.song_name) if _synth != null and _synth.playing else ""
+
+## The level's track from its maptype marker (DOS MapStart: no marker → 0).
+func play_music_for_maptype(maptype: int) -> void:
+	if maptype < 0 or maptype >= MAPTYPE_TRACKS.size():
+		maptype = 0
+	play_music(MAPTYPE_TRACKS[maptype])
 
 ## --- DOS sound-id table ---------------------------------------------
 ## Skynet.exe VA 0x4ff00: 126 × 20-byte records, field 0 = pointer

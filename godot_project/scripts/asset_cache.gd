@@ -14,10 +14,11 @@
 ##   converted/sfx/DOORA.RAW.res      AudioStreamWAV
 ##   converted/cfa/WEAPON04.CFA.res   FramePack of textures
 ##
-## Where the cache lives: `res://converted/` when running from the
-## project (so the Godot editor sees the resources and maps can be
-## opened as scenes later), `user://converted/` in an exported build,
-## where res:// is read-only. `CACHE_VERSION` is written to
+## Where the cache lives: `<game dir>/converted/` next to the gamedata
+## directory (SkynetPaths.converted_dir — a portable install, nothing
+## in the per-user Godot folder); only data bundled inside the project
+## keeps it at res://converted (dev) or user://converted (export, where
+## res:// is read-only). `CACHE_VERSION` is written to
 ## converted/VERSION; a mismatch wipes the directory so a loader change
 ## never serves stale data.
 ##
@@ -58,12 +59,25 @@ func _ready() -> void:
 		enabled = false
 		print("[assets] cache disabled (--no-cache)")
 		return
-	root = "user://converted" if OS.has_feature("template") else "res://converted"
+	root = SkynetPaths.converted_dir()
 	# Outside the editor a PortableCompressedTexture2D drops its source
 	# buffer right after decoding it — and then saves as an EMPTY texture.
 	PortableCompressedTexture2D.set_keep_all_compressed_buffers(true)
 	_check_version()
 	print("[assets] cache at %s" % root)
+
+## The data directory changed (first-start prompt): move to its cache.
+func relocate() -> void:
+	if not enabled:
+		return
+	var r := SkynetPaths.converted_dir()
+	if r == root:
+		return
+	root = r
+	_mem.clear()
+	_tex_files.clear()
+	_check_version()
+	print("[assets] cache moved to %s" % root)
 
 func _exit_tree() -> void:
 	# Drop the session references before the servers shut down.

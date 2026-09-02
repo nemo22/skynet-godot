@@ -34,7 +34,7 @@ const GAMEDATA_CFG := "user://gamedata.cfg"
 const PROBE_FILE := "MDMDMAP2.BSA"
 
 func _ready() -> void:
-	var found := _locate_gamedata()
+	var found := locate_gamedata()
 	if found.is_empty():
 		push_warning("[paths] original game data not found — looked for %s" % PROBE_FILE)
 	else:
@@ -45,7 +45,24 @@ func _ready() -> void:
 static func _has_data(dir: String) -> bool:
 	return not dir.is_empty() and FileAccess.file_exists("%s/%s" % [dir, PROBE_FILE])
 
-func _locate_gamedata() -> String:
+## The converted-asset cache lives NEXT TO the game data (the player
+## asked for a portable install: <game>/gamedata + <game>/converted),
+## never in the per-user Godot directory. Data bundled inside the
+## project (res://gamedata) keeps the cache in the project while
+## developing; an exported build cannot write res://, so that case
+## falls back to user://.
+static func converted_dir_for(gamedata: String) -> String:
+	if gamedata.is_empty():
+		return "user://converted"
+	if gamedata.begins_with("res://"):
+		return "user://converted" if OS.has_feature("template") else "res://converted"
+	return gamedata.get_base_dir() + "/converted"
+
+func converted_dir() -> String:
+	return converted_dir_for(gamedata_dir if _has_data(gamedata_dir) else "")
+
+## Static so the editor plugin (no autoloads there) can find it too.
+static func locate_gamedata() -> String:
 	var args: PackedStringArray = OS.get_cmdline_args()
 	args.append_array(OS.get_cmdline_user_args())
 	for a in args:
@@ -81,11 +98,19 @@ func set_gamedata_dir(dir: String) -> bool:
 	var cfg := ConfigFile.new()
 	cfg.set_value("paths", "gamedata", dir)
 	cfg.save(GAMEDATA_CFG)
+	# The cache follows the data directory.
+	var assets := get_node_or_null("/root/Assets")
+	if assets != null and assets.has_method("relocate"):
+		assets.relocate()
 	return true
 
 ## Map chosen in the main menu; the game scene reads this on load.
 ## Empty → the game falls back to its own default (MAP.210).
 var selected_map: String = ""
+
+## Save slot picked in the LOAD menu; main._ready loads it instead of
+## the selected map and resets this to -1.
+var pending_load_slot: int = -1
 
 func gamedata_path(filename: String) -> String:
 	return "%s/%s" % [gamedata_dir, filename]

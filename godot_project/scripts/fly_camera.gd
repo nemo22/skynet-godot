@@ -101,9 +101,23 @@ var _weapons: Array = [
 	{"name": "PLASMA PISTOL",    "kind": "plasma",  "dmg": 25.0,  "rate": 3,  "pool": 4,  "cost": 1,  "snd": "LASER8.RAW",   "sel": 17, "dry": 16, "cfa": "WEAPON09.CFA", "animspd": 16, "vx": 152},
 	{"name": "PLASMA RIFLE",     "kind": "plasma",  "dmg": 50.0,  "rate": 3,  "pool": 4,  "cost": 2,  "snd": "LASER6.RAW",   "sel": 17, "dry": 16, "cfa": "WEAPON10.CFA", "animspd": 16, "vx": 160},
 	{"name": "PLASMA CANNON",    "kind": "plasma",  "dmg": 100.0, "rate": 3,  "pool": 4,  "cost": 10, "snd": "LASER3.RAW",   "sel": 17, "dry": 16, "cfa": "WEAPON11.CFA", "animspd": 16, "vx": 128},
-	{"name": "MINI ROCKET",      "kind": "bullet",  "dmg": 50.0,  "rate": 20, "pool": 12, "cost": 1,  "snd": "SHOTS2.RAW",   "sel": 9,  "dry": 10, "cfa": "WEAPON12.CFA", "animspd": 16, "vx": 156},
+	# Record 12 is the DOS "superuzi" cheat weapon (cheat handler
+	# 0x141fc8 sets record 12's owned bit and selects it): an UZI with the
+	# 9999-round pool and a 20/s cadence. STRINGS.PRS calls it MINI
+	# ROCKET; the player knows it as the red super uzi.
+	{"name": "SUPER UZI",        "kind": "bullet",  "dmg": 50.0,  "rate": 20, "pool": 12, "cost": 1,  "snd": "SHOTS5.RAW",   "sel": 9,  "dry": 10, "cfa": "WEAPON12.CFA", "animspd": 16, "vx": 156},
 ]
 var _weapon_idx: int = 0
+## Weapon ownership — DOS record +0x5c bit 0. A new SkyNET campaign
+## game hands out the list at 0x43470 (FUN_0012562c from the session
+## start, skynet_gh.c:21838): PIPE, UZI, ASSAULT RIFLE, SHOTGUN, LASER
+## RIFLE (plus the jeep/thrown-item records that have no slot here).
+const START_WEAPONS: Array = [0, 1, 2, 4, 7]
+## The "arnold" cheat list at 0x4350c: every on-foot weapon except the
+## super uzi (its own cheat).
+const ALL_WEAPONS: Array = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+const SUPER_UZI: int = 12
+var _owned: Dictionary = {}          # weapon idx → true
 # HUD mirrors of the active weapon (read by the level controller).
 var weapon_name: String = "UZI"
 var ammo: int = 500
@@ -127,7 +141,7 @@ const IMPACT_BANK_BULLET: int = 365
 #   3  rockets     0/99   ROCKET LAUNCHER ×1
 #   4  energy    500/800  LASER RIFLE ×2 · LASER CANNON ×5 · PLASMA
 #                         PISTOL ×1 · PLASMA RIFLE ×2 · PLASMA CANNON ×10
-#   12 mini-rkt 9999/9999 MINI ROCKET ×1 (the only unlimited one)
+#   12 super-uzi 9999/9999 SUPER UZI ×1 (the only unlimited one)
 # DOS starts grenades and rockets at 0 — they come only from pickups,
 # whose weapon/ammo types (TEXTURE.200/201 records) are not decoded
 # yet — so a handful is seeded here to keep the launchers usable.
@@ -165,6 +179,7 @@ func _ready() -> void:
 	if _cam != null:
 		_pitch = _cam.rotation.x
 	_reset_pools()
+	_reset_owned()
 	_build_viewmodel()
 
 ## Place the player at a spawn point facing `yaw` (radians). Called by
@@ -183,7 +198,9 @@ func set_spawn(pos: Vector3, yaw: float, reset_state: bool = true) -> void:
 	_spawn_yaw = yaw
 	if reset_state:
 		health = max_health
+		armor = 0.0
 		_reset_pools()
+		_reset_owned()
 	_sync_hud()
 
 ## Point the view (radians) — automation / debug.
@@ -197,6 +214,36 @@ func set_view(yaw: float, pitch: float) -> void:
 func _reset_pools() -> void:
 	for p in POOL_TABLE:
 		_pools[p] = int(POOL_TABLE[p][0])
+
+## Back to the campaign's starting arsenal; the active slot must be
+## one of them.
+func _reset_owned() -> void:
+	_owned.clear()
+	for w in START_WEAPONS:
+		_owned[int(w)] = true
+	if not _owned.has(_weapon_idx):
+		_weapon_idx = int(START_WEAPONS[1]) if START_WEAPONS.size() > 1 else 0
+		_vm_idx = 0
+		_vm_firing = false
+
+func owns(idx: int) -> bool:
+	return _owned.has(idx)
+
+## Owned weapon indices, ascending.
+func owned_list() -> Array:
+	var out: Array = _owned.keys()
+	out.sort()
+	return out
+
+## Next owned slot from `from` in direction `dir` (wheel / cheats).
+func _next_owned(from: int, dir: int) -> int:
+	var n: int = _weapons.size()
+	var i: int = from
+	for _k in n:
+		i = (i + dir + n) % n
+		if _owned.has(i):
+			return i
+	return from
 
 ## Rounds left for weapon `idx` — its pool's count, or 99 for the pipe.
 func _ammo_for(idx: int) -> int:
@@ -214,7 +261,9 @@ func _sync_hud() -> void:
 ## (+0x54: uzicock3 for ballistic, ppcload for energy weapons).
 func _select_weapon(idx: int) -> void:
 	idx = clampi(idx, 0, _weapons.size() - 1)
-	if idx == _weapon_idx:
+	# DOS WeaponSelect (skynet_gh.c:27846) ignores slots without the
+	# owned bit — the key just does nothing.
+	if idx == _weapon_idx or not _owned.has(idx):
 		return
 	_weapon_idx = idx
 	_fire_cd = maxf(_fire_cd, 0.15)
@@ -248,9 +297,9 @@ func _unhandled_input(event: InputEvent) -> void:
 				if _captured:
 					_throw_grenade()
 			MOUSE_BUTTON_WHEEL_UP:
-				_select_weapon((_weapon_idx - 1 + _weapons.size()) % _weapons.size())
+				_select_weapon(_next_owned(_weapon_idx, -1))
 			MOUSE_BUTTON_WHEEL_DOWN:
-				_select_weapon((_weapon_idx + 1) % _weapons.size())
+				_select_weapon(_next_owned(_weapon_idx, 1))
 	elif event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
 			_capture(false)
@@ -302,7 +351,7 @@ func _walk(delta: float, fwd_in: float, str_in: float) -> void:
 	var horiz := -basis_y.z * fwd_in + basis_y.x * str_in
 	if horiz.length() > 1.0:
 		horiz = horiz.normalized()
-	var speed := walk_speed
+	var speed := walk_speed * speed_boost
 	if Controls.is_pressed("sprint"):
 		speed *= sprint_multiplier
 	velocity.x = horiz.x * speed
@@ -653,14 +702,82 @@ func heal_percent(pct: int) -> void:
 func add_armor(frac: float) -> void:
 	armor = clampf(armor + frac, 0.0, 1.0)
 
-## A weapon pickup also selects that weapon (0x11d670 → 0x1254c6).
+## A weapon pickup sets the owned bit and selects that weapon
+## (0x11d670 → 0x1254c6).
 func give_weapon(idx: int) -> void:
 	if idx >= 0 and idx < _weapons.size():
+		_owned[idx] = true
 		_select_weapon(idx)
+
+## --- DOS cheat effects (CHEAT.PRS codes, handlers at 0x141f08..) ------
+
+## "arnold": the 0x4350c list — every on-foot weapon but the super uzi.
+func give_all_weapons() -> void:
+	for w in ALL_WEAPONS:
+		_owned[int(w)] = true
+	_sync_hud()
+
+## "superuzi": record 12 owned + selected.
+func give_super_uzi() -> void:
+	give_weapon(SUPER_UZI)
+
+## "slugs": every pool to its maximum.
+func fill_ammo() -> void:
+	for p in POOL_TABLE:
+		_pools[p] = int(POOL_TABLE[p][1])
+	_sync_hud()
+
+## "surgery": full health, full armor (0x38cc8 = 0x10000, 0x38cc4 = 0).
+func full_health() -> void:
+	health = max_health
+	armor = 1.0
+
+## "nitrous": DOS adds 0x8000 (0.5 in 16.16) to the walk speed each time.
+var speed_boost: float = 1.0
+func nitrous() -> float:
+	speed_boost += 0.5
+	return speed_boost
+
+## Let go of the mouse (menus, console).
+func release_mouse() -> void:
+	_capture(false)
 
 ## Rounds in pool `pool` (tests / HUD).
 func pool_count(pool: int) -> int:
 	return int(_pools.get(pool, 0))
+
+## --- save / load (main.save_to_slot / load_from_slot) -------------------
+
+## Everything about the player a save file keeps.
+func save_state() -> Dictionary:
+	return {
+		"pos": global_position, "yaw": _yaw, "pitch": _pitch,
+		"health": health, "armor": armor,
+		"pools": _pools.duplicate(), "weapon": _weapon_idx,
+		"owned": owned_list(), "speed_boost": speed_boost,
+	}
+
+## Restore a save_state() snapshot — called once the level is up.
+func restore_state(d: Dictionary) -> void:
+	set_spawn(d.get("pos", global_position), float(d.get("yaw", _yaw)), false)
+	set_view(float(d.get("yaw", _yaw)), float(d.get("pitch", 0.0)))
+	health = clampf(float(d.get("health", max_health)), 0.0, max_health)
+	armor = clampf(float(d.get("armor", 0.0)), 0.0, 1.0)
+	var pools = d.get("pools")
+	if pools is Dictionary:
+		_pools = (pools as Dictionary).duplicate()
+	var owned = d.get("owned")
+	if owned is Array and not (owned as Array).is_empty():
+		_owned.clear()
+		for w in owned:
+			_owned[int(w)] = true
+	speed_boost = float(d.get("speed_boost", 1.0))
+	_weapon_idx = clampi(int(d.get("weapon", _weapon_idx)), 0, _weapons.size() - 1)
+	if not _owned.has(_weapon_idx):
+		_owned[_weapon_idx] = true
+	_vm_idx = 0
+	_vm_firing = false
+	_sync_hud()
 
 func _capture(on: bool) -> void:
 	_captured = on

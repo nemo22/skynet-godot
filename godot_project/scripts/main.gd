@@ -5,7 +5,9 @@
 ##   PageUp / [ / P     previous map
 ##   PageDown / ] / N   next map
 ##   Home / End         first / last map
-##   ESC                quit
+##   F6 / F7            quicksave / quickload (slot 1 of the LOAD menu)
+##   ESC                in-game menu (resume / save / load / cheats / main menu)
+##   ~  or Alt+\        console (DOS cheat codes work as commands)
 
 extends Node3D
 
@@ -15,6 +17,9 @@ const ImgFile     := preload("res://scripts/loaders/img_file.gd")
 const Palette     := preload("res://scripts/loaders/palette.gd")
 const Briefing    := preload("res://scripts/loaders/briefing.gd")
 const FntFont     := preload("res://scripts/loaders/fnt_font.gd")
+const SaveGame    := preload("res://scripts/save_game.gd")
+const GameConsole := preload("res://scripts/game_console.gd")
+const PauseMenu   := preload("res://scripts/pause_menu.gd")
 
 ## Map to load on startup (falls back to first map if missing).
 @export var initial_map: String = "MAP.210"
@@ -63,6 +68,11 @@ var _prev_map_name: String = ""
 var _pending_marker_set: int = -1
 var _map_state: Dictionary = {}
 var _fade: ColorRect = null
+## Player snapshot from a save file, applied at the end of _begin_level.
+var _pending_player: Dictionary = {}
+## Esc menu (level stays loaded) and the `~` console.
+var _pause: CanvasLayer = null
+var _console: CanvasLayer = null
 # --- DOS mission-briefing screen (320x200) -------------------------------
 # The original briefing screen (FUN_0012c300) is three stacked .IMG bands:
 # the top button bar, the BRIEF<map>.IMG scene picture, and the MENU000
@@ -112,6 +122,12 @@ func _ready() -> void:
 	if SkynetPaths.selected_map != "":
 		initial_map = SkynetPaths.selected_map
 	_build_status_ui()
+	_console = GameConsole.new()
+	_console.handler = self
+	add_child(_console)
+	_pause = PauseMenu.new()
+	_pause.game = self
+	add_child(_pause)
 	_scan_maps()
 	if _maps.is_empty():
 		_set_status("No maps found in MDMDMAP2.BSA")
@@ -127,7 +143,13 @@ func _ready() -> void:
 
 	_map_idx = _maps.find(initial_map)
 	if _map_idx < 0: _map_idx = 0
-	_load_current()
+	# A slot picked in the LOAD menu replaces the normal start.
+	var slot: int = SkynetPaths.pending_load_slot
+	SkynetPaths.pending_load_slot = -1
+	if slot >= 0 and SaveGame.exists(slot):
+		load_from_slot(slot)
+	else:
+		_load_current()
 
 ## DOS meshes are drawn double-sided and their winding is arbitrary —
 ## the 210TOWER observation deck floor faces DOWN. Godot's concave
@@ -439,18 +461,21 @@ func _begin_level(name: String) -> void:
 		Audio.play_ambient("AMB_WIND.RAW")
 	else:
 		Audio.stop_ambient()
+	# Score: the maptype marker (type 6, sub+2) picks the HMI track.
+	Audio.play_music_for_maptype(_maptype(level))
 	_set_status("[%d/%d] %s   %s   meshes=%d   enemies=%d   PgUp/PgDn=switch  click=fly (WASD/QE, Esc=release)"
 		% [_map_idx + 1, _maps.size(), name,
 		   "outdoor" if level.is_outdoor else "indoor",
 		   level.entity_count, level.enemy_count])
 
-	# Mission objective: eliminate every hostile on the map. Only the
-	# mission's main map ends the mission — the interiors reached
-	# through exits are side areas of the same mission.
+	# Hostile count for the HUD/tests — only the mission's main map
+	# tracks it; the interiors reached through exits are side areas of
+	# the same mission. Missions end at the evacuation zone, never here.
 	_mission_done = false
 	_mission_hostiles = 0
 	if _is_campaign_main(name):
 		_mission_hostiles = get_tree().get_nodes_in_group("enemy").size()
+	_apply_pending_player()
 
 ## Place the camera at the DOS player-start marker (marker_type 0), facing
 ## the direction marker (marker_type 1) — read by LevelLoader. Falls back
@@ -691,11 +716,9 @@ func _process(delta: float) -> void:
 			Color(1, 0.4, 0.32) if am <= 0 else Color(0.55, 0.95, 0.62))
 		if hp <= 0 and _game_over == null:
 			_show_game_over()
-	# Mission objective — all hostiles eliminated.
-	if _mission_hostiles > 0 and not _mission_done and _game_over == null \
-			and get_tree().get_nodes_in_group("enemy").is_empty():
-		_mission_done = true
-		_show_mission_complete()
+	# No DOS mission ends by body count: missions end at the extraction
+	# zone (marker type 4, _try_evac on the use key). `_mission_hostiles`
+	# is only a counter for the HUD/tests.
 
 ## Use key with nothing under the crosshair: fire an armed exit here.
 func _on_use_pressed(pos: Vector3) -> void:
@@ -746,6 +769,16 @@ static func _nearest_marker(list: Array, to: Vector3) -> Vector3:
 			best = p
 	return best
 
+## DOS maptype (MapStart, skynet_gh.c:32525): marker type 6, value at
+## sub+2; 0 when the map has none. Indexes the music table.
+static func _maptype(level: LevelLoader.Level) -> int:
+	if level == null or level.map == null:
+		return 0
+	for e in level.map.entities:
+		if (e.flags & 3) == 3 and e.marker_type == 6:
+			return int(e.exit_map)
+	return 0
+
 ## Mission "main" maps end in 0 (mission = (map - 200) / 10).
 static func _is_campaign_main(map_name: String) -> bool:
 	var sfx: int = _suffix(map_name)
@@ -789,6 +822,77 @@ func _transition(target: String) -> void:
 	_clear_level()
 	await _begin_level(target)
 	await _fade_to(0.0, 0.35)
+
+## --- Save / load (docs §N.4) -----------------------------------------------
+## A save is the DOS session state: the current map, the previous-map
+## register, every map's Mst overlay and the player. Maps reload from
+## disk on load, as they do on every transition.
+
+## Snapshot the running game into `slot`. False when no level is up.
+func save_to_slot(slot: int) -> bool:
+	if _current_level == null or not is_instance_valid(player):
+		_set_status("NOTHING TO SAVE.")
+		return false
+	_save_map_state()
+	var data := {
+		"version": SaveGame.VERSION,
+		"time": Time.get_datetime_string_from_system(false, true),
+		"map": _level_name(),
+		"prev_map": _prev_map_name,
+		"map_state": _map_state,
+		"player": player.save_state(),
+	}
+	if not SaveGame.write(slot, data):
+		_set_status("SAVE FAILED.")
+		return false
+	print("[skynet] saved slot %d: %s" % [slot, data["map"]])
+	_set_status("GAME SAVED.")
+	return true
+
+## Restore `slot`: tear the current level down, install the saved state
+## and reload the saved map with the player where they were.
+func load_from_slot(slot: int) -> bool:
+	var data: Dictionary = SaveGame.read(slot)
+	if data.is_empty():
+		_set_status("EMPTY SLOT.")
+		return false
+	var map_name: String = String(data.get("map", ""))
+	var idx: int = _maps.find(map_name)
+	if idx < 0:
+		_set_status("SAVED MAP %s IS MISSING." % map_name)
+		return false
+	print("[skynet] loading slot %d: %s" % [slot, map_name])
+	# Whatever screen is up (briefing, end screen) goes away first.
+	if _briefing_overlay != null:
+		_briefing_teardown()
+	get_tree().paused = false
+	if _game_over != null:
+		_game_over.queue_free()
+		_game_over = null
+	await _fade_to(1.0, 0.25)
+	# _clear_level snapshots the live map into _map_state — do it BEFORE
+	# the saved overlay replaces that dictionary.
+	_clear_level()
+	_map_state = data.get("map_state", {})
+	_prev_map_name = String(data.get("prev_map", ""))
+	_pending_marker_set = -1
+	_pending_player = data.get("player", {})
+	_map_idx = idx
+	await _begin_level(map_name)
+	await _fade_to(0.0, 0.35)
+	_set_status("GAME LOADED.")
+	return true
+
+## End of _begin_level: put the player back where the save left them.
+func _apply_pending_player() -> void:
+	if _pending_player.is_empty():
+		return
+	var snap: Dictionary = _pending_player
+	_pending_player = {}
+	if is_instance_valid(player):
+		player.restore_state(snap)
+		if _current_level != null and _current_level.action != null:
+			_current_level.action.arm_proximity(player.global_position)
 
 func _fade_to(alpha: float, dur: float) -> void:
 	if _fade == null:
@@ -1424,11 +1528,7 @@ func _game_over_menu() -> void:
 	_return_to_menu()
 
 func _clear_level() -> void:
-	# Mission-complete watcher off while the level is torn down and the
-	# next one streams in: _begin_level awaits between freeing the old
-	# enemies and adding the new ones, and a stale hostile count with an
-	# empty "enemy" group would fire a false MISSION COMPLETE — exactly
-	# what walking into an interior exit used to do.
+	# The hostile counter belongs to the map being torn down.
 	_mission_hostiles = 0
 	_mission_done = true
 	if _current_level == null: return
@@ -1452,12 +1552,19 @@ func _input(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 	var k: int = event.keycode
+	# (Esc/~ inside the pause menu or console are theirs — this node is
+	# paused while either is up.)
 	if k == KEY_ESCAPE:
-		# While flying (mouse captured) ESC releases the mouse — let
-		# fly_camera's _unhandled_input handle that. Otherwise return to
-		# the main menu.
-		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
-			_return_to_menu()
+		# The in-game menu: the level keeps running underneath, only
+		# its MAIN MENU item drops it.
+		if _briefing_overlay == null:
+			open_pause_menu()
+			get_viewport().set_input_as_handled()
+	elif GameConsole.is_toggle_key(event) \
+			or (k == KEY_BACKSLASH and event.alt_pressed):
+		# `~` = the console; Alt+\ = the DOS cheat prompt, same thing.
+		open_console()
+		get_viewport().set_input_as_handled()
 	elif k == KEY_PAGEUP or k == KEY_BRACKETLEFT or k == KEY_P:
 		_step_map(-1)
 	elif k == KEY_PAGEDOWN or k == KEY_BRACKETRIGHT or k == KEY_N:
@@ -1468,6 +1575,10 @@ func _input(event: InputEvent) -> void:
 	elif k == KEY_END:
 		_map_idx = _maps.size() - 1
 		_load_current()
+	elif k == KEY_F6:                       # quicksave (F1-F5 dev, F8/F9 cheats)
+		save_to_slot(SaveGame.QUICK_SLOT)
+	elif k == KEY_F7:                       # quickload
+		load_from_slot(SaveGame.QUICK_SLOT)
 
 func _step_map(d: int) -> void:
 	if _maps.is_empty(): return
@@ -1475,7 +1586,266 @@ func _step_map(d: int) -> void:
 	_load_current()
 
 func _return_to_menu() -> void:
+	get_tree().paused = false
 	get_tree().change_scene_to_file("res://scenes/menu.tscn")
+
+## --- In-game menu, console, cheats -----------------------------------------
+
+func open_pause_menu() -> void:
+	if _pause == null or _current_level == null:
+		return
+	if is_instance_valid(player):
+		player.release_mouse()
+	_pause.open()
+
+func close_pause_menu() -> void:
+	if _pause != null:
+		_pause.close()
+
+func open_console(preset: String = "") -> void:
+	if _console == null:
+		return
+	if _pause != null and _pause.is_open:
+		_pause.close()
+	if is_instance_valid(player):
+		player.release_mouse()
+	_console.open(preset)
+
+## State the CHEATS page mirrors on its toggle buttons.
+func cheat_state() -> Dictionary:
+	return {
+		"willnotstop": bool(player.get("god_mode")) if is_instance_valid(player) else false,
+		"noclip": bool(player.noclip) if is_instance_valid(player) else false,
+	}
+
+const HELP_TEXT := """[b]commands[/b]
+  help · cheats · version · maps · map <MAP.NNN|nnn> · pos · tp x y z
+  god [on|off] · noclip [on|off] · give <all|super|slot|name> · ammo
+  health [n] · armor [0-100] · speed [x] · nextlevel · win · enemies
+  music [0-100|off|t200|title] · save [slot] · load [slot] · menu · quit"""
+
+const CHEATS_TEXT := """[b]DOS cheat codes[/b] (CHEAT.PRS, typed after Alt+\\ in the original)
+  superuzi · arnold (all weapons) · slugs (ammo) · surgery (health+armor)
+  willnotstop (immortal) · nitrous (faster) · illbeback (next level)
+  showspawns (list enemies) · whoami · version · win"""
+
+## Console / cheat-menu command line. Returns the reply (BBCode ok).
+func run_command(line: String) -> String:
+	var parts: PackedStringArray = line.strip_edges().split(" ", false)
+	if parts.is_empty():
+		return ""
+	var cmd: String = parts[0].to_lower()
+	var args: PackedStringArray = parts.slice(1)
+	var p := player if is_instance_valid(player) else null
+	match cmd:
+		"help", "?":
+			return HELP_TEXT
+		"cheats":
+			return CHEATS_TEXT
+		"version", "cversion":
+			return "SkyNET Godot port — Godot %s" % Engine.get_version_info().get("string", "?")
+		"whoami":
+			return "%s — map %s" % [OS.get_environment("USERNAME"), _level_name()]
+		"maps":
+			return "%d maps: %s" % [_maps.size(), " ".join(_maps)]
+		"map":
+			if args.is_empty():
+				return "current map: %s" % _level_name()
+			var want: String = args[0].to_upper()
+			if want.is_valid_int():
+				want = "MAP.%03d" % int(want)
+			var idx: int = _maps.find(want)
+			if idx < 0:
+				return "no such map: %s" % want
+			_map_idx = idx
+			_prev_map_name = ""
+			_pending_marker_set = -1
+			_close_overlays()
+			_transition(want)
+			return "loading %s" % want
+		"pos":
+			if p == null:
+				return "no player"
+			var gp: Vector3 = p.global_position
+			return "pos %.0f %.0f %.0f  yaw %.0f  (DOS x=%.0f y=%.0f z=%.0f)" % [gp.x, gp.y, gp.z,
+				rad_to_deg(p.rotation.y), gp.x, -gp.y, -gp.z]
+		"tp":
+			if p == null or args.size() < 3:
+				return "usage: tp x y z"
+			p.set_spawn(Vector3(float(args[0]), float(args[1]), float(args[2])), p.rotation.y, false)
+			return "teleported"
+		"god", "willnotstop", "csej":
+			if p == null:
+				return "no player"
+			var on: bool = _bool_arg(args, not bool(p.get("god_mode")))
+			p.set("god_mode", on)
+			return "god mode %s" % ("ON" if on else "OFF")
+		"noclip", "fly":
+			if p == null:
+				return "no player"
+			p.noclip = _bool_arg(args, not p.noclip)
+			p.velocity = Vector3.ZERO
+			return "noclip %s" % ("ON" if p.noclip else "OFF")
+		"arnold", "cskydere":
+			if p == null:
+				return "no player"
+			p.give_all_weapons()
+			return "all weapons (%d owned)" % p.owned_list().size()
+		"superuzi", "cskyder":
+			if p == null:
+				return "no player"
+			p.give_super_uzi()
+			return "SUPER UZI — 9999 rounds"
+		"give":
+			if p == null:
+				return "no player"
+			if args.is_empty():
+				return "owned: %s" % ", ".join(_weapon_names(p.owned_list()))
+			var a: String = args[0].to_lower()
+			if a == "all":
+				p.give_all_weapons()
+				p.give_super_uzi()
+				return "every weapon"
+			if a == "super" or a == "superuzi":
+				p.give_super_uzi()
+				return "SUPER UZI"
+			if a == "ammo":
+				p.fill_ammo()
+				return "ammo filled"
+			var idx: int = _weapon_index(p, " ".join(args))
+			if idx < 0:
+				return "unknown weapon '%s' (slot 0-12 or a name)" % " ".join(args)
+			p.give_weapon(idx)
+			return "%s" % String(p._weapons[idx]["name"])
+		"slugs", "ammo", "ckugler":
+			if p == null:
+				return "no player"
+			p.fill_ammo()
+			return "all ammo pools full"
+		"surgery", "cfalck", "heal":
+			if p == null:
+				return "no player"
+			p.full_health()
+			return "health %d, armor 100 %%" % int(p.health)
+		"health", "hp":
+			if p == null:
+				return "no player"
+			if not args.is_empty():
+				p.health = clampf(float(args[0]), 0.0, p.max_health)
+			return "health %d / %d" % [int(p.health), int(p.max_health)]
+		"armor":
+			if p == null:
+				return "no player"
+			if not args.is_empty():
+				p.armor = clampf(float(args[0]) / 100.0, 0.0, 1.0)
+			return "armor %d %%" % int(round(p.armor * 100.0))
+		"nitrous", "churtig":
+			if p == null:
+				return "no player"
+			return "speed x%.1f" % p.nitrous()
+		"speed":
+			if p == null:
+				return "no player"
+			if not args.is_empty():
+				p.speed_boost = clampf(float(args[0]), 0.1, 20.0)
+			return "speed x%.1f" % p.speed_boost
+		"illbeback", "cbane", "nextlevel":
+			var nxt: String = _next_campaign_map()
+			if nxt.is_empty():
+				return "end of the campaign"
+			_close_overlays()
+			_advance_to(nxt)
+			return "next mission: %s" % nxt
+		"win", "cslut":
+			if _current_level == null:
+				return "no level"
+			_close_overlays()
+			_mission_done = true
+			_show_mission_complete()
+			return "mission complete"
+		"showspawns", "cfyr", "enemies":
+			var lines: Array = []
+			for e in get_tree().get_nodes_in_group("enemy"):
+				if e is Node3D and is_instance_valid(e):
+					var gp: Vector3 = (e as Node3D).global_position
+					lines.append("  %-20s type %3d  at %.0f %.0f %.0f" % [e.name, int(e.get("_type_id")), gp.x, gp.y, gp.z])
+			return "%d enemies\n%s" % [lines.size(), "\n".join(lines)]
+		"counters", "ctal":
+			return "hostiles tracked %d, map state for %d maps, prev map %s" % [
+				_mission_hostiles, _map_state.size(), _prev_map_name if not _prev_map_name.is_empty() else "-"]
+		"save":
+			var slot: int = int(args[0]) - 1 if not args.is_empty() and args[0].is_valid_int() else SaveGame.QUICK_SLOT
+			if slot < 0 or slot >= SaveGame.SLOTS:
+				return "slot 1-%d" % SaveGame.SLOTS
+			return "saved to slot %d" % (slot + 1) if save_to_slot(slot) else "save failed"
+		"load":
+			var slot: int = int(args[0]) - 1 if not args.is_empty() and args[0].is_valid_int() else SaveGame.QUICK_SLOT
+			if slot < 0 or slot >= SaveGame.SLOTS:
+				return "slot 1-%d" % SaveGame.SLOTS
+			if not SaveGame.exists(slot):
+				return "slot %d is empty" % (slot + 1)
+			_close_overlays()
+			load_from_slot(slot)
+			return "loading slot %d" % (slot + 1)
+		"music":
+			if args.is_empty():
+				return "music: %s, volume %d %%" % [Audio.music_name() if not Audio.music_name().is_empty() else "off", int(round(Audio.music_volume * 100.0))]
+			var a: String = args[0].to_lower()
+			if a == "off" or a == "stop":
+				Audio.stop_music()
+				return "music stopped"
+			if a.is_valid_int():
+				Audio.set_music_volume(float(a) / 100.0)
+				return "music volume %d %%" % int(round(Audio.music_volume * 100.0))
+			if a.begins_with("t") or a == "title":
+				var track: String = a.to_upper()
+				if not track.ends_with(".HMI"):
+					track += ".HMI"
+				Audio.play_music(track)
+				return "music %s" % (Audio.music_name() if not Audio.music_name().is_empty() else "failed")
+			return "usage: music [0-100 | off | t200 | title]"
+		"menu":
+			_close_overlays()
+			_return_to_menu()
+			return ""
+		"quit", "exit":
+			get_tree().quit()
+			return ""
+	return "unknown command '%s' — try help" % cmd
+
+## Console and pause menu both go away before a level change.
+func _close_overlays() -> void:
+	if _console != null and _console.is_open:
+		_console.close()
+	if _pause != null and _pause.is_open:
+		_pause.close()
+
+static func _bool_arg(args: PackedStringArray, fallback: bool) -> bool:
+	if args.is_empty():
+		return fallback
+	var a: String = args[0].to_lower()
+	return a in ["on", "1", "true", "yes"]
+
+func _weapon_names(idxs: Array) -> Array:
+	var out: Array = []
+	for i in idxs:
+		if int(i) >= 0 and int(i) < player._weapons.size():
+			out.append(String(player._weapons[int(i)]["name"]))
+	return out
+
+## Weapon slot from "7", "laser rifle", "shotgun" …
+func _weapon_index(p: Node, what: String) -> int:
+	what = what.strip_edges().to_lower()
+	if what.is_valid_int():
+		var i: int = int(what)
+		return i if i >= 0 and i < p._weapons.size() else -1
+	for i in p._weapons.size():
+		if String(p._weapons[i]["name"]).to_lower() == what:
+			return i
+	for i in p._weapons.size():
+		if String(p._weapons[i]["name"]).to_lower().begins_with(what):
+			return i
+	return -1
 
 func _build_status_ui() -> void:
 	# Authentic DOS bitmap fonts: FONT0003 (8×8) for the HUD read-outs,
@@ -1559,7 +1929,7 @@ func _build_status_ui() -> void:
 	menu_btn.offset_right = -16.0
 	menu_btn.offset_top = 8.0
 	menu_btn.offset_bottom = 56.0
-	menu_btn.pressed.connect(_return_to_menu)
+	menu_btn.pressed.connect(open_pause_menu)
 	canvas.add_child(menu_btn)
 
 ## Keep the PANEL0 bar full-width at its native 8:1 aspect (320:40).

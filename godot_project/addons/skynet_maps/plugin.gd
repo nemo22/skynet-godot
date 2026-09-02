@@ -11,6 +11,11 @@ const MapSprite := preload("res://scripts/editor/map_sprite.gd")
 const MapMarker := preload("res://scripts/editor/map_marker.gd")
 const MapEntityRec := preload("res://scripts/editor/map_entity_rec.gd")
 const AIData := preload("res://scripts/enemy_ai_data.gd")
+const Paths := preload("res://scripts/skynet_paths.gd")
+
+## The converted-asset cache (next to the game data — see SkynetPaths).
+static func _cache() -> String:
+	return Paths.converted_dir_for(Paths.locate_gamedata())
 
 const KINDS := ["Mesh (name from map table)", "Sprite (bank,record)", "Enemy (type id)", "Marker (type id)", "Light (intensity)"]
 
@@ -69,9 +74,9 @@ func _say(msg: String) -> void:
 
 func _fill_maps() -> void:
 	_maps.clear()
-	var d := DirAccess.open("res://converted/maps")
+	var d := DirAccess.open(_cache() + "/maps")
 	if d == null:
-		_say("no converted/maps — run the game once with -- --import")
+		_say("no %s/maps — run the game once with -- --import" % _cache())
 		return
 	var names: Array = []
 	for f in d.get_files():
@@ -88,7 +93,7 @@ func _open() -> void:
 	var m := _selected()
 	if m.is_empty():
 		return
-	EditorInterface.open_scene_from_path("res://converted/maps/%s.scn" % m)
+	EditorInterface.open_scene_from_path("%s/maps/%s.scn" % [_cache(), m])
 	_say("opened %s" % m)
 
 func _export() -> void:
@@ -128,7 +133,7 @@ func _add() -> void:
 			rec.variant = 1
 			rec.flags = 1
 			rec.mesh_name = nm
-			node.set("mesh", _res("res://converted/mesh/%s.res" % nm))
+			node.set("mesh", _res("%s/mesh/%s.res" % [_cache(), nm]))
 			group = "Entities"
 		1:
 			var parts := p.split(",")
@@ -141,7 +146,7 @@ func _add() -> void:
 			rec.variant = 3
 			rec.flags = 3
 			rec.sprite_index = (bank << 7) | (ri & 0x7F)
-			var tex := _res("res://converted/tex/T%03d_%03d_A.res" % [bank, ri])
+			var tex := _res("%s/tex/T%03d_%03d_A.res" % [_cache(), bank, ri])
 			if tex != null:
 				node.set("texture", tex)
 			node.set("pixel_size", 2.0)
@@ -159,7 +164,7 @@ func _add() -> void:
 			rec.marker_type = 2
 			rec.enemy_type = t
 			rec.sprite_index = (299 << 7) | 2
-			node.set("mesh", _res("res://converted/mesh/%s.res" % String(AIData.TYPES[t]["n"]).to_upper()))
+			node.set("mesh", _res("%s/mesh/%s.res" % [_cache(), String(AIData.TYPES[t]["n"]).to_upper()]))
 			group = "Enemies"
 		3:
 			var t := int(p)
@@ -209,7 +214,7 @@ func _rebuild() -> void:
 	var m := _selected()
 	if m.is_empty():
 		return
-	var scn := "res://converted/maps/%s.scn" % m
+	var scn := "%s/maps/%s.scn" % [_cache(), m]
 	DirAccess.remove_absolute(scn)
 	var pid := OS.create_process(OS.get_executable_path(),
 		_godot_args(["--headless", "--", "--map-scene=%s" % m]))

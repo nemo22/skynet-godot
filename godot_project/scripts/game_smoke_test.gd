@@ -2,7 +2,8 @@
 ## boots MAP.210 through the briefing, fires every weapon slot, lets an
 ## enemy shoot, then walks the MAP.210 → MAP.218 → MAP.210 exit round trip
 ## and checks marker spawns, HP/ammo carry-over, the per-map state
-## overlay and that no false MISSION COMPLETE fires.
+## overlay, a save/load round trip and that no end screen fires by
+## itself (missions end only at the evacuation zone).
 ##
 ##   godot --headless --path . res://scenes/game_smoke_test.tscn
 
@@ -10,6 +11,7 @@ extends Node
 
 const MainScene := preload("res://scenes/main.tscn")
 const LevelLoader := preload("res://scripts/level_loader.gd")
+const SaveGame := preload("res://scripts/save_game.gd")
 
 var _fails: int = 0
 var _main: Node = null
@@ -56,7 +58,7 @@ func _run() -> void:
 	# every later movement/physics check fails as collateral.
 	player.set("god_mode", true)
 
-	# --- 1. Briefing → BEGIN → MAP.210 loaded, mission watcher armed ---
+	# --- 1. Briefing → BEGIN → MAP.210 loaded, hostiles tracked ---
 	var ok: bool = await _wait(func() -> bool:
 		return _main.get("_briefing_overlay") != null, 60.0)
 	_check(ok, "MAP.210 briefing screen shows")
@@ -64,7 +66,7 @@ func _run() -> void:
 		_main.call("_briefing_begin")
 	ok = await _wait(func() -> bool:
 		return _level_is("210") and int(_main.get("_mission_hostiles")) > 0, 180.0)
-	_check(ok, "MAP.210 loads and counts hostiles (%d)" % int(_main.get("_mission_hostiles")))
+	_check(ok, "MAP.210 loads, hostiles tracked (%d)" % int(_main.get("_mission_hostiles")))
 	if not ok:
 		return _finish()
 	var lvl = _main.get("_current_level")
@@ -120,6 +122,83 @@ func _run() -> void:
 		if clearance < 200.0:
 			low += 1
 	_check(hovers > 0 and low == 0, "%d hovers all keep >= 200 u above the ground (%d low)" % [hovers, low])
+
+	# --- 1c. Cache location, weapon ownership, cheats, pause menu, console ---
+	_check(Assets.root == SkynetPaths.converted_dir() and not Assets.root.begins_with("user://"),
+		"asset cache sits next to the game data (%s)" % Assets.root)
+	_check(player.call("owned_list") == [0, 1, 2, 4, 7],
+		"campaign start arsenal = PIPE, UZI, ASSAULT RIFLE, SHOTGUN, LASER RIFLE (%s)" % str(player.call("owned_list")))
+	player.call("_select_weapon", 6)
+	_check(int(player.get("_weapon_idx")) != 6, "an unowned weapon (ROCKET LAUNCHER) cannot be selected")
+	player.call("_select_weapon", 4)
+	_check(int(player.get("_weapon_idx")) == 4, "an owned weapon (SHOTGUN) can be selected")
+	var reply: String = String(_main.call("run_command", "arnold"))
+	_check((player.call("owned_list") as Array).size() == 12 and not bool(player.call("owns", 12)),
+		"'arnold' gives the 12 on-foot weapons but not the super uzi (%s)" % reply)
+	reply = String(_main.call("run_command", "superuzi"))
+	_check(bool(player.call("owns", 12)) and int(player.get("_weapon_idx")) == 12
+		and String(player.get("weapon_name")) == "SUPER UZI",
+		"'superuzi' grants and selects slot 12 SUPER UZI (%s)" % reply)
+	reply = String(_main.call("run_command", "slugs"))
+	_check(int(player.call("pool_count", 0)) == 750 and int(player.call("pool_count", 4)) == 800,
+		"'slugs' fills every ammo pool (%s)" % reply)
+	player.set("health", 10.0)
+	_main.call("run_command", "surgery")
+	_check(is_equal_approx(float(player.get("health")), 100.0) and is_equal_approx(float(player.get("armor")), 1.0),
+		"'surgery' restores full health and armor")
+	_main.call("run_command", "god off")
+	_check(not bool(player.get("god_mode")), "'god off' clears god mode")
+	_main.call("run_command", "god on")
+	_check(bool(player.get("god_mode")), "'god on' sets god mode")
+	_check(String(_main.call("run_command", "bogus")).begins_with("unknown command"), "unknown commands are reported")
+	_main.call("open_pause_menu")
+	var pm = _main.get("_pause")
+	_check(pm != null and bool(pm.is_open) and get_tree().paused, "Esc menu opens and pauses the tree")
+	_main.call("close_pause_menu")
+	_check(not get_tree().paused and _level_is("210"), "closing the Esc menu resumes with the level still loaded")
+	var con = _main.get("_console")
+	_main.call("open_console")
+	_check(con != null and bool(con.is_open) and get_tree().paused, "console drops down and pauses")
+	con.call("run", "pos")
+	con.call("close")
+	_check(not bool(con.is_open) and not get_tree().paused, "console closes and resumes")
+	_main.call("run_command", "give ammo")
+
+	# --- 1d. Music: every HMI parses to a sane song, the map's maptype
+	# picks its track and the synth is running ---
+	var hmi_ok: int = 0
+	var hmi_total: int = 0
+	var dir := DirAccess.open(SkynetPaths.gamedata_dir)
+	if dir != null:
+		for fn in dir.get_files():
+			if not fn.to_upper().ends_with(".HMI"):
+				continue
+			hmi_total += 1
+			var sg: Dictionary = Audio.song(fn)
+			var secs: float = 0.0
+			var nev: int = 0
+			if not sg.is_empty():
+				nev = (sg["events"] as PackedInt32Array).size() / 5
+				secs = float(sg["length"]) / float(sg["rate"])
+			var sane: bool = nev > 50 and secs > 5.0 and secs < 900.0
+			if sane:
+				hmi_ok += 1
+			print("[e2e] hmi %-12s %6d events %6.1f s %s" % [fn, nev, secs, "" if sane else "<-- odd"])
+	_check(hmi_total >= 20 and hmi_ok == hmi_total, "all %d HMI tracks parse to sane songs (%d ok)" % [hmi_total, hmi_ok])
+	var mt: int = int(_main.call("_maptype", _main.get("_current_level")))
+	var want_track: String = Audio.MAPTYPE_TRACKS[mt] if mt >= 0 and mt < Audio.MAPTYPE_TRACKS.size() else "T200.HMI"
+	_check(Audio.music_name() == want_track, "MAP.210 (maptype %d) plays %s (playing: %s)" % [mt, want_track, Audio.music_name()])
+	for f in 90:
+		await get_tree().physics_frame
+	var synth = Audio.get("_synth")
+	var sounding: int = 0
+	for c in synth.get_children():
+		if c is AudioStreamPlayer and (c as AudioStreamPlayer).playing:
+			sounding += 1
+	_check(bool(synth.playing) and float(synth.get("_tick")) > 0.0, "the sequencer advances (tick %.0f, %d voices sounding)" % [float(synth.get("_tick")), sounding])
+	Audio.set_music_volume(0.0)          # keep the rest of the run quiet
+	_check(AudioServer.is_bus_mute(AudioServer.get_bus_index("Music")), "music volume 0 mutes the Music bus")
+	Audio.set_music_volume(0.6)
 
 	# --- 2. Every weapon slot fires without errors; pools drain per DOS cost ---
 	player.set("_pools", {0: 123, 1: 50, 2: 10, 3: 5, 4: 500, 12: 9999})
@@ -206,7 +285,7 @@ func _run() -> void:
 	_check(int(pools[0]) == 115 and int(pools[4]) == 480, "ammo pools carry into the interior")
 	_check(is_equal_approx(float(player.get("health")), hp_before), "health carries into the interior")
 	_check(int(_main.get("_mission_hostiles")) == 0 and _main.get("_game_over") == null,
-		"interior does not arm the mission watcher (no false MISSION COMPLETE)")
+		"interior tracks no hostiles and shows no end screen")
 	var st: Dictionary = _main.get("_map_state")
 	_check(st.has("MAP.210") and killed_off >= 0 and (st["MAP.210"]["dead"] as Dictionary).has(killed_off),
 		"MAP.210 state overlay saved with the killed enemy")
@@ -235,7 +314,7 @@ func _run() -> void:
 			still_there = true
 	_check(killed_off >= 0 and not still_there, "killed enemy stays dead after the round trip")
 	_check(int(_main.get("_mission_hostiles")) > 0 and not bool(_main.get("_mission_done")),
-		"mission watcher re-armed on the main map (%d hostiles)" % int(_main.get("_mission_hostiles")))
+		"hostiles tracked again on the main map (%d)" % int(_main.get("_mission_hostiles")))
 	# --- 4b. Mover physics follows the mesh: open a swing door and check
 	# its AnimatableBody3D really moved in the physics server ---
 	var door_e = null
@@ -303,6 +382,7 @@ func _run() -> void:
 			pick_item = it
 			break
 	_check(pick != null, "MAP.210 has an item-table pickup with an ammo pool")
+	var pick_off: int = int(pick.get_meta("pickup_off")) if pick != null and pick.has_meta("pickup_off") else -1
 	if pick != null:
 		var pool: int = int(pick_item[0])
 		var before_cnt: int = int(player.call("pool_count", pool))
@@ -314,6 +394,51 @@ func _run() -> void:
 		_check(not is_instance_valid(pick), "pickup is consumed when the player stands on it")
 		_check(int(player.call("pool_count", pool)) > before_cnt,
 			"pickup topped up pool %d (%d → %d)" % [pool, before_cnt, int(player.call("pool_count", pool))])
+
+	# --- 5b. Save / load: slot 9 keeps the map, the player and the overlay ---
+	var saved_owned: Array = player.call("owned_list")
+	var saved_pos: Vector3 = player.global_position
+	var saved_pools: Dictionary = (player.get("_pools") as Dictionary).duplicate()
+	var saved_prev: String = String(_main.get("_prev_map_name"))
+	player.set("health", 61.0)
+	_check(bool(_main.call("save_to_slot", 9)), "save_to_slot(9) writes a save file")
+	_check(SaveGame.exists(9), "slot 9 file exists (%s)" % SaveGame.path(9))
+	_check(SaveGame.info(9).begins_with("MAP.210"), "slot 9 header names MAP.210 (%s)" % SaveGame.info(9))
+	# Wreck the live state, then load it back.
+	player.global_position = saved_pos + Vector3(4000.0, 0.0, 0.0)
+	player.set("_pools", {0: 1, 1: 1, 2: 1, 3: 1, 4: 1, 12: 1})
+	player.set("health", 100.0)
+	var old_lvl = _main.get("_current_level")
+	_main.call("load_from_slot", 9)
+	ok = await _wait(func() -> bool:
+		var cur = _main.get("_current_level")
+		return cur != null and cur != old_lvl and _level_is("210") and _settled() \
+			and (_main.get("_pending_player") as Dictionary).is_empty(), 180.0)
+	_check(ok, "load_from_slot(9) reloads MAP.210")
+	if ok:
+		_check(player.global_position.distance_to(saved_pos) < 150.0,
+			"player restored to the saved position (d=%.0f)" % player.global_position.distance_to(saved_pos))
+		_check(player.get("_pools") == saved_pools, "ammo pools restored from the save")
+		_check(is_equal_approx(float(player.get("health")), 61.0), "health restored from the save (%.0f)" % float(player.get("health")))
+		_check(String(_main.get("_prev_map_name")) == saved_prev, "previous-map register restored (%s)" % saved_prev)
+		_check(player.call("owned_list") == saved_owned, "weapon ownership restored from the save (%d weapons)" % saved_owned.size())
+		var pk_back: bool = false
+		for s in get_tree().get_nodes_in_group("pickup"):
+			if s.has_meta("pickup_off") and int(s.get_meta("pickup_off")) == pick_off:
+				pk_back = true
+		_check(pick_off >= 0 and not pk_back, "pickup taken before the save stays taken after the load")
+		var en_back: bool = false
+		for e in get_tree().get_nodes_in_group("enemy"):
+			if e.has_meta("marker_off") and int(e.get_meta("marker_off")) == killed_off:
+				en_back = true
+		_check(killed_off >= 0 and not en_back, "enemy killed before the save stays dead after the load")
+		lvl = _main.get("_current_level")
+		var open_after_load: int = 0
+		for e in lvl.map.entities:
+			if (e.flags & 3) == 1 and lvl.action.is_mover_off(e.file_off) and LevelLoader.MapFile.entity_name(lvl.map, e) == "BIGDOOR":
+				if float(lvl.action._movers[e.file_off]["progress"]) > 100.0:
+					open_after_load += 1
+		_check(open_after_load == 2, "the opened base gate is still open after the load (%d leaves)" % open_after_load)
 
 	# --- 6. MAP.212 (truck interior): spawn, crate breaks + drops, DOOR + use → MAP.216/12 ---
 	_main.call("_on_teleport_requested", 212, 0)
@@ -442,7 +567,7 @@ func _run() -> void:
 
 	for f in 60:
 		await get_tree().physics_frame
-	_check(_main.get("_game_over") == null, "no MISSION COMPLETE / game over after the round trip")
+	_check(_main.get("_game_over") == null, "no end screen fires by itself after the round trip")
 
 	# --- 8. MAP.215 silo: walking up to the CORC3229 gate opens the four
 	# silo cover doors (0xEF ignores bit 0); the missile button raises
@@ -514,5 +639,6 @@ func _gate_diag(lvl, leaves: Array, centre: Vector3, probe: PhysicsShapeQueryPar
 	print("[e2e] gate %s sweep x=%.0f..%.0f: %s (centre y=%.0f)" % [tag, centre.x - 400.0, centre.x + 400.0, row, centre.y])
 
 func _finish() -> void:
+	SaveGame.delete(9)                                   # the test's scratch slot
 	print("[e2e] %s (%d failures)" % ["ALL PASS" if _fails == 0 else "FAILED", _fails])
 	get_tree().quit(1 if _fails > 0 else 0)

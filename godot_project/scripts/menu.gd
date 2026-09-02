@@ -17,6 +17,7 @@ const BSAReader  := preload("res://scripts/loaders/bsa_reader.gd")
 const Palette    := preload("res://scripts/loaders/palette.gd")
 const ImgFile    := preload("res://scripts/loaders/img_file.gd")
 const GAME_SCENE := "res://scenes/main.tscn"
+const SaveGame   := preload("res://scripts/save_game.gd")
 
 # START.IMG is 320x200; the menu bar occupies the top 17 rows. Hotspot
 # x-ranges were measured from the menu-bar art (MAIN1.IMG).
@@ -113,6 +114,7 @@ var _screen_debug: Control = null
 var _screen_maps: Control = null
 var _god_btn: Button = null            # DEBUG TOOLS god-mode toggle
 var _toast: Label = null
+var _load_slot_buttons: Array[Button] = []   # LOAD.IMG slot hotspots
 
 ## Player script — accessed for its static `god_mode` flag so the debug
 ## screen can arm invincibility before a map loads.
@@ -136,6 +138,7 @@ func _ready() -> void:
 	if ss != null and ss.has_method("set_hud_visible"):
 		ss.set_hud_visible(false)
 	Audio.stop_ambient()
+	Audio.play_music(Audio.TITLE_TRACK)
 	_scan_maps()
 	if SkynetPaths.selected_map == "" and not _maps.is_empty():
 		SkynetPaths.selected_map = "MAP.210" if _maps.has("MAP.210") else _maps[0]
@@ -463,9 +466,10 @@ func _first_campaign_map() -> String:
 			return m
 	return _maps[0] if not _maps.is_empty() else "MAP.210"
 
-## LOAD GAME — the original LOAD.IMG panel with 10 save slots.
-## Every slot is empty until a save system exists; clicking one just
-## reports it as empty. The baked-in EXIT button returns to the menu.
+## LOAD GAME — the original LOAD.IMG panel with 10 save slots
+## (user://saves/slot_NN.save, see save_game.gd; slot 1 is the F6
+## quicksave). A full slot shows its map and time and loads on click;
+## an empty one just says so. The baked-in EXIT button returns.
 func _build_load_screen(load_tex: Variant) -> Control:
 	var root := Control.new()
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -495,19 +499,28 @@ func _build_load_screen(load_tex: Variant) -> Control:
 	else:
 		panel.add_child(_heading("LOAD GAME"))
 
-	# 10 empty save slots — transparent hotspots over the LOAD.IMG bars.
+	# 10 save slots — transparent hotspots over the LOAD.IMG bars, their
+	# text refreshed from the slot files each time the screen opens.
+	_load_slot_buttons.clear()
 	for i in LOAD_SLOTS:
 		var slot := Button.new()
 		slot.flat = true
 		slot.focus_mode = Control.FOCUS_NONE
 		_style_hotspot(slot)
+		slot.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		slot.add_theme_font_size_override("font_size", int(8.0 * s))
+		slot.add_theme_color_override("font_color", Color(0.72, 0.95, 0.78))
+		slot.add_theme_color_override("font_hover_color", Color(1, 1, 1))
+		slot.add_theme_color_override("font_pressed_color", Color(1, 1, 1))
+		slot.add_theme_constant_override("h_separation", int(4.0 * s))
 		slot.position = Vector2(LOAD_SLOT_X * s,
 			(LOAD_SLOT_Y0 + i * LOAD_SLOT_PITCH) * s)
 		slot.size = Vector2(LOAD_SLOT_W * s, LOAD_SLOT_H * s)
 		var idx: int = i
-		slot.pressed.connect(func() -> void:
-			_show_toast("Slot %d — empty (no saved game)." % (idx + 1)))
+		slot.pressed.connect(func() -> void: _on_load_slot(idx))
 		panel.add_child(slot)
+		_load_slot_buttons.append(slot)
+	_refresh_load_slots()
 
 	# Baked-in EXIT button.
 	var exit_b := Button.new()
@@ -519,6 +532,24 @@ func _build_load_screen(load_tex: Variant) -> Control:
 	exit_b.pressed.connect(func() -> void: _show_screen(_screen_main))
 	panel.add_child(exit_b)
 	return root
+
+## Slot captions: "  1  MAP.210 · 2026-08-30 21:14" or "  1  - empty -".
+func _refresh_load_slots() -> void:
+	for i in _load_slot_buttons.size():
+		var b: Button = _load_slot_buttons[i]
+		if not is_instance_valid(b):
+			continue
+		var info: String = SaveGame.info(i)
+		var tag: String = "QUICK" if i == SaveGame.QUICK_SLOT else "%d" % (i + 1)
+		b.text = "  %-5s  %s" % [tag, info if not info.is_empty() else "- empty -"]
+
+func _on_load_slot(idx: int) -> void:
+	if not SaveGame.exists(idx):
+		_show_toast("Slot %d is empty. Save in-game with F6." % (idx + 1))
+		return
+	Audio.play_sfx("BUTTON1.RAW")
+	SkynetPaths.pending_load_slot = idx
+	_launch(GAME_SCENE)
 
 ## OPTIONS — the original OPTIONS.IMG panel. Its baked CONTROLS / DETAIL
 ## / EXIT bottom-bar buttons are live hotspots: CONTROLS opens the
@@ -1081,9 +1112,10 @@ func _on_bar_item(label: String) -> void:
 		"NEW GAME":
 			_show_screen(_screen_newgame)
 		"LOAD":
+			_refresh_load_slots()
 			_show_screen(_screen_load)
 		"SAVE":
-			_show_toast("Saving is available in-game.")
+			_show_toast("Save in-game: F6 = quicksave (slot 1), F7 = quickload.")
 		"OPTIONS":
 			_show_screen(_screen_options)
 		"QUIT":
