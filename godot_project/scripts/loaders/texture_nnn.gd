@@ -119,9 +119,19 @@ static func _parse_record(bytes: PackedByteArray, ro: int) -> Record:
 	var pix_off: int = desc_off + pix_rel
 	var rec_pixels: PackedByteArray
 
+	# Rows live at a 256-byte stride (see the TEXTURE.NNN stride note), so
+	# a 256-wide wall texture has row_gap 0 — exactly like a sprite. It is
+	# a wall when the raw W×H block fits and the sprite frame table does
+	# not make sense (TEXTURE.266 rec 1, the MAP.252 wardrobe: 256×128).
+	if row_gap == 0 and w == 256 and pix_off + w * h <= bytes.size():
+		var f0: int = _u32(bytes, pix_off)
+		if depth < 1 or f0 < depth * 4 or pix_off + f0 + 4 > bytes.size() \
+				or _u16(bytes, pix_off + f0) != w:
+			row_gap = -1                     # force layout A at stride W
+
 	if row_gap != 0:
 		# Layout A — wall/terrain, row-interleaved at stride W+row_gap.
-		var stride: int = w + row_gap
+		var stride: int = w + maxi(row_gap, 0)
 		var span: int = (h - 1) * stride + w
 		if pix_off + span > bytes.size():
 			stride = w

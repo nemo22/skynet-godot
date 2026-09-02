@@ -38,7 +38,7 @@ const FramePack  := preload("res://scripts/loaders/frame_pack.gd")
 const MapScene   := preload("res://scripts/editor/map_scene.gd")
 
 ## Bump whenever a loader changes its output.
-const CACHE_VERSION: int = 6
+const CACHE_VERSION: int = 8
 const SAVE_FLAGS: int = ResourceSaver.FLAG_COMPRESS | ResourceSaver.FLAG_CHANGE_PATH
 
 ## Cache root ("" when disabled with --no-cache).

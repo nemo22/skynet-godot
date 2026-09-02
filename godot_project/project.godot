@@ -26,6 +26,7 @@ SceneSwitcher="*res://scripts/scene_switcher.gd"
 Controls="*res://scripts/controls.gd"
 Audio="*res://scripts/audio.gd"
 Assets="*res://scripts/asset_cache.gd"
+Net="*res://scripts/net/net_game.gd"
 
 [display]
 

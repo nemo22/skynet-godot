@@ -35,6 +35,9 @@ var _damage: float = 200.0
 var _splash: float = 256.0
 var _owner: Node = null
 var _exploded: bool = false
+## A replicated copy of somebody else's grenade: flies and bangs, hurts
+## nobody on this machine (the thrower's copy does the damage).
+var visual_only: bool = false
 
 ## TEXTURE.217 record 2 as a texture (loaded once per session).
 static func _load_sprite() -> Texture2D:
@@ -111,7 +114,7 @@ func _physics_process(delta: float) -> void:
 			while n != null and not n.has_method("take_damage"):
 				n = n.get_parent()
 			if n != null and n != _owner and n is Node3D \
-					and n.is_in_group("enemy"):
+					and (n.is_in_group("enemy") or n.is_in_group("dm_actor")):
 				_detonate(hit["position"])
 				return
 			# Bounce: reflect velocity around the hit normal, lose energy.
@@ -126,6 +129,19 @@ func _physics_process(delta: float) -> void:
 func _detonate(at: Vector3) -> void:
 	_exploded = true
 	Audio.play_sfx_3d("EXPLO1.RAW", at, -1.0)
+	if visual_only:
+		var vscene := get_tree().current_scene
+		if vscene != null:
+			var vex := Explosion.new()
+			vscene.add_child(vex)
+			vex.setup(at, 280.0, IMPACT_BANK)
+		queue_free()
+		return
+	for a in get_tree().get_nodes_in_group("dm_actor"):
+		if a is Node3D and a != _owner and a.has_method("net_damage"):
+			var da := (a as Node3D).global_position.distance_to(at)
+			if da < _splash:
+				a.net_damage(_damage * (1.0 - da / _splash), _owner)
 	for h in get_tree().get_nodes_in_group("hittable"):
 		if h is Node3D and h.has_method("take_damage"):
 			var dh := (h as Node3D).global_position.distance_to(at)
@@ -137,10 +153,15 @@ func _detonate(at: Vector3) -> void:
 			if d < _splash:
 				e.take_damage(_damage * (1.0 - d / _splash))
 	var pl := get_tree().get_first_node_in_group("player")
-	if pl is Node3D and pl != _owner and pl.has_method("take_damage"):
+	if pl is Node3D and pl.has_method("take_damage"):
 		var d := (pl as Node3D).global_position.distance_to(at)
 		if d < _splash:
-			pl.take_damage(_damage * 0.55 * (1.0 - d / _splash))
+			if pl == _owner:
+				pl.take_damage(_damage * 0.55 * (1.0 - d / _splash))
+			elif pl.has_method("net_damage"):
+				pl.net_damage(_damage * 0.55 * (1.0 - d / _splash), _owner)
+			else:
+				pl.take_damage(_damage * 0.55 * (1.0 - d / _splash))
 	var scene := get_tree().current_scene
 	if scene != null:
 		var ex := Explosion.new()

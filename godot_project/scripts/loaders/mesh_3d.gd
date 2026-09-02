@@ -71,6 +71,12 @@ class Mesh3D:
 ## Values outside ±14336 (with -7168 reserved) are wrapped by some
 ## multiple of 8192; this undoes that.
 static func uv_unpack(v: int) -> int:
+	# SkyNET stores plain s16 deltas: a 1024 u edge carries 16384 (= 1024
+	# px / 16), which the Daggerfall wrap heuristic below folded to 0 and
+	# smeared one texel along the whole overpass (OVRPASS1 on MAP.230,
+	# 2026-09-02 report). No SkyNET face has been found that needs the
+	# wrap, so the raw value is kept.
+	return v
 	# v comes in as signed s16. Range check.
 	if v > -14336 and v < 14336 and v != -7168:
 		return v

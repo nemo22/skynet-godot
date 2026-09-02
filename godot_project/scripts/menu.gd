@@ -18,6 +18,9 @@ const Palette    := preload("res://scripts/loaders/palette.gd")
 const ImgFile    := preload("res://scripts/loaders/img_file.gd")
 const GAME_SCENE := "res://scenes/main.tscn"
 const SaveGame   := preload("res://scripts/save_game.gd")
+const FntFont    := preload("res://scripts/loaders/fnt_font.gd")
+## FONT0003.FNT (8×8) ×2 — the DOS bitmap font for the NETMENU fields.
+var _net_font: FontFile = null
 
 # START.IMG is 320x200; the menu bar occupies the top 17 rows. Hotspot
 # x-ranges were measured from the menu-bar art (MAIN1.IMG).
@@ -85,8 +88,8 @@ const NJ_EXIT_RECT: Rect2 = Rect2(154, 65, 44, 14)
 
 # NETMENU1.IMG is 320x200 — the network game-setup screen (START / EXIT).
 const NM_PANEL_SCALE: float = 3.2
-const NM_START_RECT: Rect2 = Rect2(228, 144, 54, 18)
-const NM_EXIT_RECT: Rect2 = Rect2(283, 145, 36, 16)
+const NM_START_RECT: Rect2 = Rect2(214, 144, 63, 16)
+const NM_EXIT_RECT: Rect2 = Rect2(280, 145, 39, 15)
 
 # DISPLAY dialog (opened from OPTIONS → DETAIL): resolution + window mode.
 const DISPLAY_CFG: String = "user://display.cfg"
@@ -153,6 +156,47 @@ func _maybe_import() -> void:
 	var args: PackedStringArray = OS.get_cmdline_args()
 	args.append_array(OS.get_cmdline_user_args())
 	# `--map=MAP.213`: skip the menu and start the game on that map.
+	# `--host=MAP.605 --bots=3 --name=X`: host a deathmatch straight away;
+	# `--join=ip[:port]`: connect to one (automation / second instance).
+	var cli: Dictionary = {}
+	for a in args:
+		if a.begins_with("--") and a.find("=") > 0:
+			cli[a.substr(2, a.find("=") - 2)] = a.substr(a.find("=") + 1)
+	if cli.has("name"):
+		Net.save_name(String(cli["name"]))
+	if cli.has("host"):
+		var lv: Dictionary = NetLevels.for_map(String(cli["host"]).strip_edges().to_upper())
+		var cfg := {"name": "%s's game" % Net.local_name, "map": String(lv["map"]),
+			"arena": String(lv["name"]), "max_players": 0,
+			"time_limit": int(cli.get("time", 0)), "frag_limit": int(cli.get("frags", 0)),
+			"items": lv.get("items", {}), "replenish": bool(lv.get("replenish", true)),
+			"bots": int(cli.get("bots", 0)), "bot_skill": int(cli.get("skill", 1)),
+			"port": int(cli.get("port", Net.DEFAULT_PORT))}
+		if Net.host(cfg):
+			SkynetPaths.selected_map = String(cfg["map"])
+			get_tree().change_scene_to_file.call_deferred(GAME_SCENE)
+		return
+	# `--screen=netmenu|join|newgame --menu-shot=PATH`: open a menu screen
+	# and capture it (layout checks from a script).
+	if cli.has("screen"):
+		var target: Control = {"netmenu": _screen_netmenu, "join": _screen_join,
+			"newgame": _screen_newgame, "netjoin": _screen_netjoin}.get(String(cli["screen"]), _screen_main)
+		_show_screen(target)
+		if cli.has("menu-shot"):
+			await get_tree().create_timer(float(cli.get("shot-delay", 1.0))).timeout
+			await RenderingServer.frame_post_draw
+			var img: Image = get_viewport().get_texture().get_image()
+			print("[menu] screenshot %s (%s)" % [cli["menu-shot"], error_string(img.save_png(String(cli["menu-shot"])))])
+			if cli.has("quit-after-shot"):
+				get_tree().quit()
+		return
+	if cli.has("join"):
+		_join_name = LineEdit.new()
+		_join_name.text = Net.local_name
+		_join_addr = LineEdit.new()
+		_join_addr.text = String(cli["join"])
+		_on_join_typed.call_deferred()
+		return
 	for a in args:
 		if a.begins_with("--map="):
 			SkynetPaths.selected_map = a.substr(6).strip_edges().to_upper()
@@ -259,6 +303,9 @@ func _load_images() -> Dictionary:
 
 func _build() -> void:
 	var art := _load_images()
+	var fnt_bytes := SkynetPaths.read_bytes(SkynetPaths.gamedata_path("FONT0003.FNT"))
+	if not fnt_bytes.is_empty():
+		_net_font = FntFont.build(fnt_bytes, 2)
 
 	# Title-screen backdrop, kept behind every screen.
 	var bg := TextureRect.new()
@@ -293,6 +340,7 @@ func _build() -> void:
 	_screen_newgame = _build_newgame_screen(art.get("NEWGAME"))
 	_screen_netjoin = _build_netjoin_screen(art.get("NETJOIN"))
 	_screen_netmenu = _build_netmenu_screen(art.get("NETMENU"))
+	_screen_join = _build_join_screen()
 	_screen_load = _build_load_screen(art.get("LOAD"))
 	_screen_options = _build_options_screen(art.get("OPTIONS"))
 	_screen_controls = _build_controls_screen(art.get("CONTROLS"))
@@ -307,6 +355,7 @@ func _build() -> void:
 		_screen_newgame:  _screen_main,
 		_screen_netjoin:  _screen_newgame,
 		_screen_netmenu:  _screen_netjoin,
+		_screen_join:     _screen_netjoin,
 		_screen_load:     _screen_main,
 		_screen_options:  _screen_main,
 		_screen_controls: _screen_options,
@@ -319,10 +368,15 @@ func _build() -> void:
 	resized.connect(_layout_bar)
 	_layout_bar()
 	_show_screen(_screen_main)
+	# Back from a network game that ended on us (server gone, kicked).
+	Net.leave()
+	if not Net.pending_message.is_empty():
+		_show_toast(Net.pending_message)
+		Net.pending_message = ""
 
 func _all_screens() -> Array:
 	return [_screen_main, _screen_newgame, _screen_netjoin, _screen_netmenu,
-		_screen_load, _screen_options, _screen_controls,
+		_screen_join, _screen_load, _screen_options, _screen_controls,
 		_screen_display, _screen_debug, _screen_maps]
 
 ## Main screen — transparent hotspots over the START.IMG menu bar.
@@ -437,21 +491,417 @@ func _build_netjoin_screen(tex: Variant) -> Control:
 	panel.add_child(_img_hotspot(NJ_NEW_RECT, s,
 		func() -> void: _show_screen(_screen_netmenu)))
 	panel.add_child(_img_hotspot(NJ_JOIN_RECT, s,
-		func() -> void: _show_toast("Server browser — coming soon.")))
+		func() -> void: _show_screen(_screen_join)))
 	panel.add_child(_img_hotspot(NJ_EXIT_RECT, s,
 		func() -> void: _show_screen(_screen_newgame)))
 	return pair[0]
 
-## NETMENU1.IMG — network game-setup screen. START hosts (stub), EXIT back.
+# --- NETMENU1.IMG field boxes (320x200 image pixels) ---------------------
+const NM_NAME_RECT: Rect2 = Rect2(33, 9, 96, 9)
+const NM_SKILL_RECT: Rect2 = Rect2(63, 24, 14, 7)
+const NM_LIST_RECT: Rect2 = Rect2(8, 35, 121, 124)
+const NM_AREA_RECT: Rect2 = Rect2(168, 9, 145, 9)
+const NM_MAXP_RECT: Rect2 = Rect2(209, 24, 13, 7)
+const NM_TIME_RECT: Rect2 = Rect2(249, 24, 63, 7)
+const NM_GOAL_RECT: Rect2 = Rect2(166, 38, 65, 9)
+const NM_KILLS_RECT: Rect2 = Rect2(247, 38, 65, 9)
+const NM_SCORE_KILL_RECT: Rect2 = Rect2(212, 51, 25, 8)
+const NM_SCORE_DEATH_RECT: Rect2 = Rect2(277, 51, 25, 8)
+const NM_SCORE_HIT_RECT: Rect2 = Rect2(212, 63, 25, 8)
+const NM_REPLENISH_RECT: Rect2 = Rect2(181, 144, 13, 8)
+const NM_BOTTOM_RECT: Rect2 = Rect2(8, 165, 305, 30)
+## Item count boxes: left column (jeeps … health) and right column
+## (slugthrowers … rockets), one row per 10 px from y = 69.
+const NM_ITEMS_LEFT: Array = ["jeeps", "hks", "bullets", "energy", "armor", "health"]
+const NM_ITEMS_RIGHT: Array = ["slugthrowers", "lasers", "plasmas", "launchers", "grenades", "rockets"]
+const NM_ITEM_ROW0: float = 74.0
+const NM_ITEM_PITCH: float = 11.0
+const NM_ITEM_LEFT_X: float = 181.0
+const NM_ITEM_RIGHT_X: float = 282.0
+const NM_ITEM_W: float = 13.0
+const NM_ITEM_H: float = 8.0
+const BOT_SKILLS: Array = ["EASY", "NORMAL", "HARD"]
+
+var _screen_join: Control = null
+var _nm_fields: Dictionary = {}          # key → LineEdit
+var _nm_arena_buttons: Array = []
+var _nm_arena: int = 0
+var _nm_area_label: Label = null
+var _nm_skill_btn: Button = null
+var _nm_replenish_btn: Button = null
+var _nm_bots_edit: LineEdit = null
+var _nm_port_edit: LineEdit = null
+var _bot_skill: int = 1
+var _replenish: bool = true
+var _join_list: VBoxContainer = null
+var _join_name: LineEdit = null
+var _join_addr: LineEdit = null
+var _join_status: Label = null
+var _discovery = null                     # net_discovery.gd, live on the JOIN screen
+const NetDiscovery := preload("res://scripts/net/net_discovery.gd")
+const NetLevels := preload("res://scripts/net/net_levels.gd")
+
+## A transparent entry box over a baked NETMENU field.
+func _nm_field(panel: Control, rect: Rect2, s: float, text: String, key: String,
+		numeric: bool = false) -> LineEdit:
+	var e := LineEdit.new()
+	e.text = text
+	e.custom_minimum_size = Vector2.ZERO
+	e.position = rect.position * s
+	e.size = rect.size * s
+	_dos_font(e)
+	e.add_theme_constant_override("minimum_character_width", 1)
+	e.add_theme_color_override("font_color", Color(0.6, 1.0, 0.7))
+	e.add_theme_color_override("caret_color", Color(0.6, 1.0, 0.7))
+	var empty := StyleBoxEmpty.new()
+	e.add_theme_stylebox_override("normal", empty)
+	e.add_theme_stylebox_override("focus", empty)
+	e.add_theme_stylebox_override("read_only", empty)
+	e.context_menu_enabled = false
+	if numeric:
+		e.max_length = 3
+		e.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	else:
+		e.max_length = 16
+		# The DOS font is all-caps; keep what the player types that way.
+		e.text_changed.connect(func(t: String) -> void:
+			var up := t.to_upper()
+			if up != t:
+				var c := e.caret_column
+				e.text = up
+				e.caret_column = c)
+	panel.add_child(e)
+	_nm_fields[key] = e
+	return e
+
+## The FONT0003 bitmap font (16 px) on a Control, or a same-sized
+## fallback when the game data lacks it.
+func _dos_font(c: Control, size: int = 16) -> void:
+	if _net_font != null:
+		c.add_theme_font_override("font", _net_font)
+		c.add_theme_font_size_override("font_size", _net_font.fixed_size * size / 16)
+	else:
+		c.add_theme_font_size_override("font_size", size)
+
+func _nm_static(panel: Control, rect: Rect2, s: float, text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.position = rect.position * s
+	l.size = rect.size * s
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_dos_font(l)
+	l.add_theme_color_override("font_color", Color(0.6, 1.0, 0.7))
+	l.clip_text = true
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(l)
+	return l
+
+func _nm_toggle(panel: Control, rect: Rect2, s: float, text: String, cb: Callable) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.flat = true
+	b.focus_mode = Control.FOCUS_NONE
+	_style_hotspot(b)
+	b.position = rect.position * s
+	b.size = rect.size * s
+	_dos_font(b)
+	b.add_theme_color_override("font_color", Color(0.6, 1.0, 0.7))
+	b.add_theme_color_override("font_hover_color", Color(1, 1, 1))
+	b.pressed.connect(cb)
+	panel.add_child(b)
+	return b
+
+## NETMENU1.IMG — the DOS network game-setup screen, live: NAME, the
+## arena list (NETLEVEL.PRS), MAX # PLAYERS, TIME (minutes), the KILLS
+## goal (frag limit), the item counts the host scatters over the arena,
+## REPLENISH, plus bots/skill/port in the message box. START hosts.
 func _build_netmenu_screen(tex: Variant) -> Control:
 	var pair := _img_panel(tex, 320.0, 200.0, NM_PANEL_SCALE)
 	var panel: Control = pair[1]
 	var s := NM_PANEL_SCALE
-	panel.add_child(_img_hotspot(NM_START_RECT, s,
-		func() -> void: _show_toast("Hosting a server is not implemented yet.")))
+	_nm_fields.clear()
+	_nm_field(panel, NM_NAME_RECT, s, Net.local_name, "name")
+	_nm_area_label = _nm_static(panel, NM_AREA_RECT, s, "")
+	_nm_field(panel, NM_MAXP_RECT, s, "8", "max_players", true)
+	_nm_field(panel, NM_TIME_RECT, s, "20", "time_limit", true)
+	_nm_static(panel, NM_GOAL_RECT, s, "KILLS")
+	_nm_field(panel, NM_KILLS_RECT, s, "20", "frag_limit", true)
+	_nm_static(panel, NM_SCORE_KILL_RECT, s, "500")
+	_nm_static(panel, NM_SCORE_DEATH_RECT, s, "400")
+	_nm_static(panel, NM_SCORE_HIT_RECT, s, "100")
+	for i in NM_ITEMS_LEFT.size():
+		var y: float = NM_ITEM_ROW0 + float(i) * NM_ITEM_PITCH
+		var key: String = NM_ITEMS_LEFT[i]
+		_nm_field(panel, Rect2(NM_ITEM_LEFT_X, y, NM_ITEM_W, NM_ITEM_H), s, "0", key, true)
+		_nm_field(panel, Rect2(NM_ITEM_RIGHT_X, y, NM_ITEM_W, NM_ITEM_H), s, "0", NM_ITEMS_RIGHT[i], true)
+	# The SKILL LEVEL box holds two characters: bot skill 1..3.
+	_nm_skill_btn = _nm_toggle(panel, NM_SKILL_RECT, s, str(_bot_skill + 1), func() -> void:
+		_bot_skill = (_bot_skill + 1) % BOT_SKILLS.size()
+		_nm_skill_btn.text = str(_bot_skill + 1))
+	_nm_replenish_btn = _nm_toggle(panel, NM_REPLENISH_RECT, s, "YES", func() -> void:
+		_replenish = not _replenish
+		_nm_replenish_btn.text = "YES" if _replenish else "NO")
+
+	# Arena list in the left box.
+	var scroll := ScrollContainer.new()
+	scroll.position = NM_LIST_RECT.position * s
+	scroll.size = NM_LIST_RECT.size * s
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	panel.add_child(scroll)
+	var vb := VBoxContainer.new()
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vb.add_theme_constant_override("separation", 0)
+	scroll.add_child(vb)
+	_nm_arena_buttons.clear()
+	var levels: Array = NetLevels.levels()
+	for i in levels.size():
+		var lv: Dictionary = levels[i]
+		if not _maps.has(String(lv["map"])):
+			continue
+		var b := Button.new()
+		b.text = " %s  %s" % [String(lv["name"]).to_upper(), String(lv["map"]).trim_prefix("MAP.")]
+		b.flat = true
+		b.focus_mode = Control.FOCUS_NONE
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.custom_minimum_size = Vector2(NM_LIST_RECT.size.x * s - 12.0, 8.0 * s)
+		_dos_font(b)
+		b.add_theme_color_override("font_color", Color(0.55, 0.85, 0.65))
+		b.add_theme_color_override("font_hover_color", Color(1, 1, 1))
+		_style_hotspot(b)
+		var idx: int = i
+		b.pressed.connect(func() -> void: _nm_select_arena(idx))
+		vb.add_child(b)
+		_nm_arena_buttons.append([b, idx])
+	_nm_select_arena(0)
+
+	# Message box: the fields the DOS screen never had.
+	var row := HBoxContainer.new()
+	row.position = NM_BOTTOM_RECT.position * s + Vector2(6.0, 4.0)
+	row.size = NM_BOTTOM_RECT.size * s - Vector2(12.0, 8.0)
+	row.add_theme_constant_override("separation", int(4.0 * s))
+	panel.add_child(row)
+	for spec in [["BOTS", "3", "bots"], ["PORT", str(Net.DEFAULT_PORT), "port"]]:
+		var l := Label.new()
+		l.text = spec[0]
+		_dos_font(l)
+		l.add_theme_color_override("font_color", Color(0.8, 0.85, 0.85))
+		row.add_child(l)
+		var e := LineEdit.new()
+		e.text = spec[1]
+		e.max_length = 5
+		e.custom_minimum_size = Vector2((34.0 if spec[2] == "port" else 22.0) * s, 8.0 * s)
+		_dos_font(e)
+		e.add_theme_color_override("font_color", Color(0.6, 1.0, 0.7))
+		row.add_child(e)
+		_nm_fields[spec[2]] = e
+	# HUMAN / TERMINATOR — the DOS MP class choice.
+	var pl := Label.new()
+	pl.text = "PLAY AS"
+	_dos_font(pl)
+	pl.add_theme_color_override("font_color", Color(0.8, 0.85, 0.85))
+	row.add_child(pl)
+	row.add_child(_class_button())
+	var hint := Label.new()
+	hint.text = "SKILL 1-3 = BOTS   TIME = MIN   KILLS = FRAG LIMIT"
+	_dos_font(hint)
+	hint.add_theme_color_override("font_color", Color(0.6, 0.66, 0.66))
+	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	row.add_child(hint)
+
+	panel.add_child(_img_hotspot(NM_START_RECT, s, _on_host_start))
 	panel.add_child(_img_hotspot(NM_EXIT_RECT, s,
 		func() -> void: _show_screen(_screen_netjoin)))
 	return pair[0]
+
+## A toggle showing the local class (HUMAN = fast, fragile; TERMINATOR =
+## slow, tough, machine vision). Shared by the host and join screens.
+func _class_button() -> Button:
+	var b := Button.new()
+	b.text = Net.CLASS_NAMES[Net.local_class]
+	b.focus_mode = Control.FOCUS_NONE
+	b.custom_minimum_size = Vector2(190, 36)
+	_dos_font(b)
+	_style_button(b)
+	b.pressed.connect(func() -> void:
+		Net.set_class((Net.local_class + 1) % 2)
+		b.text = Net.CLASS_NAMES[Net.local_class]
+		_show_toast("HUMAN: faster, 100 HP.  TERMINATOR: slower, 200 HP, machine vision."))
+	return b
+
+func _nm_select_arena(idx: int) -> void:
+	var levels: Array = NetLevels.levels()
+	if levels.is_empty():
+		return
+	_nm_arena = clampi(idx, 0, levels.size() - 1)
+	var lv: Dictionary = levels[_nm_arena]
+	if _nm_area_label != null:
+		_nm_area_label.text = String(lv["name"]).to_upper()
+	for pair in _nm_arena_buttons:
+		var b: Button = pair[0]
+		b.add_theme_color_override("font_color",
+			Color(1.0, 0.9, 0.4) if int(pair[1]) == _nm_arena else Color(0.55, 0.85, 0.65))
+	var items: Dictionary = lv.get("items", {})
+	for key in items:
+		if _nm_fields.has(key):
+			(_nm_fields[key] as LineEdit).text = str(int(items[key]))
+	_replenish = bool(lv.get("replenish", true))
+	if _nm_replenish_btn != null:
+		_nm_replenish_btn.text = "YES" if _replenish else "NO"
+
+func _nm_int(key: String, fallback: int) -> int:
+	var e: LineEdit = _nm_fields.get(key)
+	if e == null or not e.text.strip_edges().is_valid_int():
+		return fallback
+	return int(e.text.strip_edges())
+
+## START: host the arena with the fields as set, then load it.
+func _on_host_start() -> void:
+	var levels: Array = NetLevels.levels()
+	if levels.is_empty():
+		_show_toast("No network arenas (NETLEVEL.PRS).")
+		return
+	var lv: Dictionary = levels[_nm_arena]
+	var nm: String = (_nm_fields["name"] as LineEdit).text.strip_edges()
+	Net.save_name(nm)
+	var items: Dictionary = {}
+	for key in NM_ITEMS_LEFT + NM_ITEMS_RIGHT:
+		if _nm_fields.has(key):
+			items[key] = clampi(_nm_int(key, 0), 0, 99)
+	var cfg := {
+		"name": "%s's game — %s" % [Net.local_name, String(lv["name"])],
+		"map": String(lv["map"]),
+		"arena": String(lv["name"]),
+		"max_players": clampi(_nm_int("max_players", 8), 0, Net.MAX_PEERS),
+		"time_limit": clampi(_nm_int("time_limit", 0), 0, 180),
+		"frag_limit": clampi(_nm_int("frag_limit", 0), 0, 999),
+		"items": items,
+		"replenish": _replenish,
+		"bots": clampi(_nm_int("bots", 0), 0, 12),
+		"bot_skill": _bot_skill,
+		"port": clampi(_nm_int("port", Net.DEFAULT_PORT), 1024, 65535),
+	}
+	if not Net.host(cfg):
+		_show_toast("Could not open port %d." % int(cfg["port"]))
+		return
+	SkynetPaths.selected_map = String(cfg["map"])
+	_launch(GAME_SCENE)
+
+## JOIN GAME — LAN server list (UDP discovery) plus a typed address.
+func _build_join_screen() -> Control:
+	var pair := _framed_panel()
+	var vb: VBoxContainer = pair[1]
+	vb.add_child(_heading("JOIN GAME"))
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	vb.add_child(row)
+	row.add_child(_section_label("NAME"))
+	_join_name = LineEdit.new()
+	_join_name.text = Net.local_name
+	_join_name.max_length = 16
+	_join_name.custom_minimum_size = Vector2(220, 40)
+	_join_name.add_theme_font_size_override("font_size", 20)
+	row.add_child(_join_name)
+	row.add_child(_section_label("PLAY AS"))
+	row.add_child(_class_button())
+	vb.add_child(_section_label("Servers on the LAN"))
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(560, 220)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	vb.add_child(scroll)
+	_join_list = VBoxContainer.new()
+	_join_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(_join_list)
+	_join_status = Label.new()
+	_join_status.text = "Searching..."
+	_join_status.add_theme_font_size_override("font_size", 18)
+	_join_status.add_theme_color_override("font_color", Color(0.7, 0.8, 0.8))
+	vb.add_child(_join_status)
+	var row2 := HBoxContainer.new()
+	row2.add_theme_constant_override("separation", 10)
+	vb.add_child(row2)
+	row2.add_child(_section_label("ADDRESS"))
+	_join_addr = LineEdit.new()
+	_join_addr.placeholder_text = "host or ip[:port]"
+	_join_addr.custom_minimum_size = Vector2(300, 40)
+	_join_addr.add_theme_font_size_override("font_size", 20)
+	_join_addr.text_submitted.connect(func(_t: String) -> void: _on_join_typed())
+	row2.add_child(_join_addr)
+	var cb := _option_button("CONNECT", _on_join_typed)
+	cb.custom_minimum_size = Vector2(180, 44)
+	row2.add_child(cb)
+	vb.add_child(_spacer(6))
+	vb.add_child(_menu_button("BACK", func() -> void: _show_screen(_screen_netjoin)))
+	return pair[0]
+
+func _refresh_join_list() -> void:
+	if _join_list == null or _discovery == null:
+		return
+	for c in _join_list.get_children():
+		c.queue_free()
+	var keys: Array = _discovery.servers.keys()
+	keys.sort()
+	for k in keys:
+		var sv: Dictionary = _discovery.servers[k]
+		var b := _option_button("%s   %s   %d players%s" % [String(sv["name"]), String(sv["map"]),
+			int(sv["players"]), (" + %d bots" % int(sv["bots"])) if int(sv["bots"]) > 0 else ""],
+			func() -> void: _connect_to(String(sv["ip"]), int(sv["port"])))
+		b.custom_minimum_size = Vector2(540, 44)
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		_join_list.add_child(b)
+	_join_status.text = "Searching..." if keys.is_empty() else "%d server(s) found" % keys.size()
+
+func _on_join_typed() -> void:
+	var a: String = _join_addr.text.strip_edges()
+	if a.is_empty():
+		_show_toast("Type a server address, or pick one from the list.")
+		return
+	var port: int = Net.DEFAULT_PORT
+	var host: String = a
+	var colon: int = a.rfind(":")
+	if colon > 0 and a.substr(colon + 1).is_valid_int():
+		port = int(a.substr(colon + 1))
+		host = a.substr(0, colon)
+	_connect_to(host, port)
+
+func _connect_to(host: String, port: int) -> void:
+	Audio.play_sfx("BUTTON1.RAW")
+	if not Net.join(host, port, _join_name.text):
+		_show_toast("Cannot connect to %s:%d." % [host, port])
+		return
+	_join_status.text = "Connecting to %s:%d ..." % [host, port]
+	if not Net.welcome_received.is_connected(_on_net_welcome):
+		Net.welcome_received.connect(_on_net_welcome)
+	if not Net.connection_failed.is_connected(_on_net_failed):
+		Net.connection_failed.connect(_on_net_failed)
+
+func _on_net_welcome() -> void:
+	var m: String = String(Net.settings.get("map", ""))
+	if not _maps.has(m):
+		Net.leave()
+		_show_toast("The server plays %s, which this install does not have." % m)
+		return
+	SkynetPaths.selected_map = m
+	_launch(GAME_SCENE)
+
+func _on_net_failed(reason: String) -> void:
+	_show_toast(reason)
+	if _join_status != null:
+		_join_status.text = reason
+
+func _process(delta: float) -> void:
+	var on_join: bool = _screen_join != null and _screen_join.visible
+	if on_join and _discovery == null:
+		_discovery = NetDiscovery.new()
+		if not _discovery.start():
+			_discovery = null
+			_join_status.text = "LAN discovery unavailable — type an address."
+	elif not on_join and _discovery != null:
+		_discovery.stop()
+		_discovery = null
+	if _discovery != null and _discovery.tick(delta):
+		_refresh_join_list()
 
 ## The first single-player campaign map. The campaign proper starts at
 ## MAP.210 — the MAP.200..202 series below it are not single-player

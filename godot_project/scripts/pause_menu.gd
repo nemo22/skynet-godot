@@ -55,7 +55,12 @@ func open() -> void:
 		return
 	is_open = true
 	visible = true
-	get_tree().paused = true
+	# A network match keeps running underneath (nobody else pauses).
+	if Net.active:
+		if game != null and is_instance_valid(game.get("player")):
+			game.get("player").set("input_locked", true)
+	else:
+		get_tree().paused = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_show("main")
 
@@ -64,7 +69,12 @@ func close() -> void:
 		return
 	is_open = false
 	visible = false
-	get_tree().paused = false
+	if Net.active:
+		var dm = game.get("_dm") if game != null else null
+		if dm != null and is_instance_valid(game.get("player")) and not bool(dm.get("_dead_local")):
+			game.get("player").set("input_locked", false)
+	else:
+		get_tree().paused = false
 	closed.emit()
 
 func _input(event: InputEvent) -> void:

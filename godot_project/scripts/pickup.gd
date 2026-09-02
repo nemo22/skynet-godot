@@ -48,10 +48,31 @@ func _physics_process(delta: float) -> void:
 	var d: Vector3 = _player.global_position - global_position
 	if Vector2(d.x, d.z).length() > GRAB_RANGE_H or absf(d.y) > GRAB_RANGE_V:
 		return
+	if has_meta("dm_key"):
+		# Deathmatch: the server hands the item out (dm_game.gd applies
+		# it when the taken notice names us).
+		if _player.get("input_locked") == true:
+			return
+		_dm_req_t -= delta
+		if _dm_req_t <= 0.0:
+			_dm_req_t = 0.5
+			Net.request_pickup(int(get_meta("dm_key")))
+		return
 	collect(_player)
+
+var _dm_req_t: float = 0.0
 
 ## Apply the item to `player` and consume the pickup.
 func collect(player: Node) -> void:
+	apply(player)
+	if Audio.sound_name(PICKUP_SOUND_ID).is_empty():
+		Audio.play_sfx("CLICK.RAW", -4.0)
+	else:
+		Audio.play_id(PICKUP_SOUND_ID, -4.0)
+	queue_free()
+
+## The item's effect on `player` (no sound, the node stays).
+func apply(player: Node) -> void:
 	if _item.size() >= 6:
 		var pool: int = int(_item[0])
 		var amount: int = int(_item[1])
@@ -69,8 +90,3 @@ func collect(player: Node) -> void:
 			player.give_weapon(weapon)
 		if not msg.is_empty() and player.has_signal("pickup_message"):
 			player.emit_signal("pickup_message", PrsFile.text("STRINGS.PRS", msg, msg))
-	if Audio.sound_name(PICKUP_SOUND_ID).is_empty():
-		Audio.play_sfx("CLICK.RAW", -4.0)
-	else:
-		Audio.play_id(PICKUP_SOUND_ID, -4.0)
-	queue_free()

@@ -66,9 +66,13 @@ func _ready() -> void:
 		add_child(p)
 		_voices.append(p)
 		# Positional voice pool — panned/attenuated by source location.
+		# Inverse-square from 400 u: a robot two streets away is a murmur,
+		# not a neighbour (a 2026-09-02 report: "every robot audible from
+		# anywhere"). Walls add occlusion_db() on top.
 		var p3 := AudioStreamPlayer3D.new()
-		p3.unit_size = 2000.0
-		p3.max_distance = 22000.0
+		p3.attenuation_model = AudioStreamPlayer3D.ATTENUATION_INVERSE_SQUARE_DISTANCE
+		p3.unit_size = SFX_UNIT_SIZE
+		p3.max_distance = SFX_MAX_DISTANCE
 		p3.max_db = 0.0
 		add_child(p3)
 		_voices3d.append(p3)
@@ -184,8 +188,48 @@ func play_sfx_3d(name: String, world_pos: Vector3, volume_db: float = -6.0) -> v
 			break
 	pick.stream = s
 	pick.global_position = world_pos
-	pick.volume_db = volume_db
+	pick.volume_db = volume_db + occlusion_db(world_pos)
 	pick.play()
+
+## Positional attenuation shared by every 3D voice (one-shots, enemy
+## engines and alerts, ambient loops): inverse-square from unit_size,
+## silent past max_distance.
+const SFX_UNIT_SIZE: float = 400.0
+const SFX_MAX_DISTANCE: float = 9000.0
+const OCCLUDED_DB: float = -14.0
+
+## Apply the shared attenuation model to a looping/actor voice.
+func setup_3d(p: AudioStreamPlayer3D, unit: float = SFX_UNIT_SIZE, max_dist: float = SFX_MAX_DISTANCE) -> void:
+	p.attenuation_model = AudioStreamPlayer3D.ATTENUATION_INVERSE_SQUARE_DISTANCE
+	p.unit_size = unit
+	p.max_distance = max_dist
+
+## Godot has no sound occlusion: a ray from the listener (the camera)
+## to the source that hits level geometry first means a wall is in the
+## way — muffle by OCCLUDED_DB. Actor hitboxes (areas) do not count.
+func occlusion_db(world_pos: Vector3) -> float:
+	var vp := get_viewport()
+	if vp == null:
+		return 0.0
+	var cam: Camera3D = vp.get_camera_3d()
+	if cam == null:
+		return 0.0
+	var world := cam.get_world_3d()
+	if world == null:
+		return 0.0
+	var space := world.direct_space_state
+	if space == null:
+		return 0.0
+	var from: Vector3 = cam.global_position
+	var q := PhysicsRayQueryParameters3D.create(from, world_pos)
+	q.collide_with_areas = false
+	var hit := space.intersect_ray(q)
+	if not hit.has("position"):
+		return 0.0
+	# A hit on the source's own body (an enemy's capsule) is not a wall.
+	if (hit["position"] as Vector3).distance_to(world_pos) < 120.0:
+		return 0.0
+	return OCCLUDED_DB
 
 ## Start a looping ambient bed (replaces any current one).
 func play_ambient(name: String, volume_db: float = -13.0) -> void:
@@ -339,8 +383,7 @@ func attach_loop_3d(id: int, parent: Node, volume_db: float = -10.0) -> AudioStr
 		return null
 	var p := AudioStreamPlayer3D.new()
 	p.stream = s
-	p.unit_size = 600.0
-	p.max_distance = 6000.0
+	setup_3d(p, 300.0, 5000.0)
 	p.max_db = 0.0
 	p.volume_db = volume_db
 	p.autoplay = true

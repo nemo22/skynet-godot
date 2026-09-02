@@ -176,16 +176,31 @@ func _physics_process(delta: float) -> void:
 			global_position = hit["position"] + _dir * 2.0
 			return
 		if _splash <= 0.0:
-			n.take_damage(_damage)
+			_deal(n, _damage)
 		_finish(hit["position"], true)
 		return
 	_finish(hit["position"], true)               # solid geometry
 
-## Enemy shots hurt the player, player shots hurt enemies.
+## Enemy shots hurt the player, player shots hurt enemies; in a
+## deathmatch every other actor is fair game. "none" = a replicated
+## visual of somebody else's shot — it stops on actors but hurts nobody.
 func _is_target(n: Node) -> bool:
+	if _hits == "none":
+		return not n.is_in_group("dm_actor") and not n.is_in_group("player")
+	if n.is_in_group("dm_actor"):
+		return true
 	if _hits == "player":
 		return n.is_in_group("player")
 	return n.is_in_group("enemy")
+
+## Attributed damage for deathmatch actors, plain for everything else.
+func _deal(n: Node, dmg: float) -> void:
+	if _hits == "none":
+		return
+	if n.has_method("net_damage"):
+		n.net_damage(dmg, _owner)
+	else:
+		n.take_damage(dmg)
 
 ## Impact: splash damage (when the type has a blast radius), the impact
 ## effect and sound, then free. A fizzled shot (lifetime over) just
@@ -193,7 +208,12 @@ func _is_target(n: Node) -> bool:
 func _finish(at: Vector3, impact: bool) -> void:
 	_done = true
 	global_position = at
-	if impact and _splash > 0.0:
+	if impact and _splash > 0.0 and _hits != "none":
+		for a in get_tree().get_nodes_in_group("dm_actor"):
+			if a is Node3D and a != _owner and a.has_method("net_damage"):
+				var da := (a as Node3D).global_position.distance_to(at)
+				if da < _splash:
+					a.net_damage(_damage * (1.0 - da / _splash), _owner)
 		if _hits == "enemy":
 			for e in get_tree().get_nodes_in_group("enemy"):
 				if e is Node3D and e.has_method("take_damage") and e != _owner:
@@ -209,10 +229,14 @@ func _finish(at: Vector3, impact: bool) -> void:
 				if dh < _splash:
 					h.take_damage(_damage * (1.0 - dh / _splash))
 		var pl := get_tree().get_first_node_in_group("player")
-		if pl is Node3D and pl != _owner and pl.has_method("take_damage"):
+		if pl is Node3D and pl.has_method("take_damage"):
 			var d := (pl as Node3D).global_position.distance_to(at)
 			if d < _splash:
-				pl.take_damage(_damage * 0.55 * (1.0 - d / _splash))
+				if pl == _owner:
+					pl.take_damage(_damage * 0.55 * (1.0 - d / _splash))   # own rocket
+				elif _hits != "enemy" or pl.has_method("net_damage") and Net.active:
+					pl.net_damage(_damage * 0.55 * (1.0 - d / _splash), _owner) if pl.has_method("net_damage") \
+						else pl.take_damage(_damage * 0.55 * (1.0 - d / _splash))
 	if impact:
 		if not _impact_sound.is_empty():
 			Audio.play_sfx_3d(_impact_sound, at, -2.0)

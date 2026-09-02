@@ -13,7 +13,9 @@ extends RefCounted
 
 ## Decode an .IMG byte buffer to an ImageTexture using a 256-colour
 ## palette (see palette.gd). Returns null on a bad/compressed image.
-static func parse(bytes: PackedByteArray, palette: PackedColorArray) -> ImageTexture:
+## `transparent0`: palette index 0 becomes see-through (the cockpit
+## panels PANEL1/PANEL2 leave the windscreen as index 0).
+static func parse(bytes: PackedByteArray, palette: PackedColorArray, transparent0: bool = false) -> ImageTexture:
 	if bytes == null or bytes.size() < 12 or palette.size() < 256:
 		return null
 	var w: int = bytes.decode_u16(4)
@@ -31,6 +33,6 @@ static func parse(bytes: PackedByteArray, palette: PackedColorArray) -> ImageTex
 		rgba[o + 0] = int(c.r * 255.0)
 		rgba[o + 1] = int(c.g * 255.0)
 		rgba[o + 2] = int(c.b * 255.0)
-		rgba[o + 3] = 255
+		rgba[o + 3] = 0 if (transparent0 and bytes[12 + i] == 0) else 255
 	var img := Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba)
 	return ImageTexture.create_from_image(img)

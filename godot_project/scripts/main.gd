@@ -20,6 +20,8 @@ const FntFont     := preload("res://scripts/loaders/fnt_font.gd")
 const SaveGame    := preload("res://scripts/save_game.gd")
 const GameConsole := preload("res://scripts/game_console.gd")
 const PauseMenu   := preload("res://scripts/pause_menu.gd")
+const DmGame      := preload("res://scripts/net/dm_game.gd")
+const WldTerrain  := preload("res://scripts/loaders/wld_terrain.gd")
 
 ## Map to load on startup (falls back to first map if missing).
 @export var initial_map: String = "MAP.210"
@@ -73,6 +75,8 @@ var _pending_player: Dictionary = {}
 ## Esc menu (level stays loaded) and the `~` console.
 var _pause: CanvasLayer = null
 var _console: CanvasLayer = null
+## Deathmatch controller (scripts/net/dm_game.gd) — only while Net.active.
+var _dm: Node = null
 # --- DOS mission-briefing screen (320x200) -------------------------------
 # The original briefing screen (FUN_0012c300) is three stacked .IMG bands:
 # the top button bar, the BRIEF<map>.IMG scene picture, and the MENU000
@@ -121,6 +125,9 @@ func _ready() -> void:
 	# A map picked in the main menu overrides the built-in default.
 	if SkynetPaths.selected_map != "":
 		initial_map = SkynetPaths.selected_map
+	# A network game: the host's arena, no briefing, the DM controller.
+	if Net.active:
+		initial_map = String(Net.settings.get("map", initial_map))
 	_build_status_ui()
 	_console = GameConsole.new()
 	_console.handler = self
@@ -128,6 +135,10 @@ func _ready() -> void:
 	_pause = PauseMenu.new()
 	_pause.game = self
 	add_child(_pause)
+	if Net.active:
+		_dm = DmGame.new()
+		add_child(_dm)
+		_dm.setup(self, player)
 	_scan_maps()
 	if _maps.is_empty():
 		_set_status("No maps found in MDMDMAP2.BSA")
@@ -296,6 +307,12 @@ func _cli_after_level() -> void:
 		return
 	if _cli.has("god"):
 		player.set("god_mode", true)
+	if _cli.has("quit-after"):
+		# Automation: leave after N seconds (a headless client in a test).
+		get_tree().create_timer(float(_cli["quit-after"])).timeout.connect(func() -> void:
+			print("[skynet] --quit-after elapsed")
+			Net.leave()
+			get_tree().quit())
 	_cli_place()
 	if _cli.has("screenshot"):
 		var delay := float(_cli.get("shot-delay", 1.5))
@@ -310,6 +327,40 @@ func _cli_after_level() -> void:
 		var err := img.save_png(path)
 		print("[skynet] screenshot %s (%s) at pos=%s yaw=%.1f pitch=%.1f" % [path, error_string(err),
 			player.global_position, rad_to_deg(player.rotation.y), rad_to_deg(player.get("_pitch"))])
+		if _cli.has("quit-after-shot"):
+			get_tree().quit()
+	elif _cli.has("floor-probe"):
+		# Agent diagnostics: what is under the spawn (fall-through reports).
+		await get_tree().physics_frame
+		await get_tree().physics_frame
+		var space := get_world_3d().direct_space_state
+		var p: Vector3 = player.global_position
+		for off in [Vector3.ZERO, Vector3(150, 0, 0), Vector3(-150, 0, 0), Vector3(0, 0, 150), Vector3(0, 0, -150)]:
+			var a: Vector3 = p + off
+			for top in [40.0, 400.0]:
+				var q := PhysicsRayQueryParameters3D.create(Vector3(a.x, a.y + top, a.z), Vector3(a.x, a.y - 3000.0, a.z))
+				q.collide_with_areas = false
+				var hit := space.intersect_ray(q)
+				var what: String = "nothing"
+				if hit.has("position"):
+					var c: Node = hit["collider"] as Node
+					what = "%s at y=%.0f n=%s" % [c.get_parent().name if c != null and c.get_parent() != null else "?",
+						(hit["position"] as Vector3).y, hit.get("normal", Vector3.ZERO)]
+				print("[probe] from %s +%.0f: %s" % [a, top, what])
+		var shape := CapsuleShape3D.new()
+		shape.radius = 26.0
+		shape.height = 88.0
+		var sq := PhysicsShapeQueryParameters3D.new()
+		sq.shape = shape
+		sq.transform = Transform3D(Basis(), p + Vector3(0.0, 44.0, 0.0))
+		var overl := space.intersect_shape(sq, 8)
+		var names: Array = []
+		for o in overl:
+			var c: Node = o["collider"] as Node
+			names.append(c.get_parent().name if c != null and c.get_parent() != null else "?")
+		print("[probe] capsule at spawn overlaps: %s" % [names])
+		await get_tree().create_timer(float(_cli.get("shot-delay", 3.0))).timeout
+		print("[probe] after settle: pos=%s on_floor=%s" % [player.global_position, player.is_on_floor()])
 		if _cli.has("quit-after-shot"):
 			get_tree().quit()
 	elif _cli.has("dump-enemies"):
@@ -374,7 +425,7 @@ func _load_current() -> void:
 	# Mission "main" maps open with the briefing screen; the level itself
 	# loads only when the player presses BEGIN. Other maps load directly.
 	# Automation runs (screenshots) skip the briefing.
-	if _cli.has("screenshot") or _cli.has("no-briefing"):
+	if _cli.has("screenshot") or _cli.has("no-briefing") or Net.active:
 		_begin_level(name)
 	elif not _maybe_show_briefing(name):
 		_begin_level(name)
@@ -435,6 +486,18 @@ func _begin_level(name: String) -> void:
 			player.pickup_message.connect(_set_status)
 		if not player.use_pressed.is_connected(_on_use_pressed):
 			player.use_pressed.connect(_on_use_pressed)
+	if Net.active:
+		# Deathmatch: no map enemies (the 31/32 markers on the arenas are
+		# the DOS jeep/HK vehicle spots) and no map pickups — the server
+		# scatters the arena's items (NETLEVEL.PRS) over the item markers.
+		if level.enemies:
+			level.enemies.queue_free()
+			level.enemies = null
+		if level.sprites:
+			for c in level.sprites.get_children():
+				if c.has_meta("pickup_off"):
+					level.sprites.remove_child(c)
+					c.queue_free()
 	if level.enemies:  add_child(level.enemies)
 	if level.sprites:  add_child(level.sprites)
 	if level.sky:
@@ -475,7 +538,15 @@ func _begin_level(name: String) -> void:
 	_mission_hostiles = 0
 	if _is_campaign_main(name):
 		_mission_hostiles = get_tree().get_nodes_in_group("enemy").size()
+	# Vehicle missions (Skynet.exe mission table 0x34846, +8 = player
+	# mode): mission 2 and 6 are driven in the jeep, mission 7 flown in
+	# the HK, for the whole mission including its sub-maps.
+	if _dm == null and is_instance_valid(player):
+		player.set_vehicle(_vehicle_for_map(name))
 	_apply_pending_player()
+	_set_hud_mode(player.vehicle if is_instance_valid(player) else 0)
+	if _dm != null:
+		_dm.on_level_ready(level)
 
 ## Place the camera at the DOS player-start marker (marker_type 0), facing
 ## the direction marker (marker_type 1) — read by LevelLoader. Falls back
@@ -506,6 +577,15 @@ func _frame_camera(level: LevelLoader.Level) -> void:
 	# Guard against a degenerate look target on top of the spawn.
 	if look_target.distance_to(spawn) < 1.0:
 		look_target = spawn + Vector3(0, 0, -512)
+	# Outdoors the DOS player is clamped to the heightfield — MAP.217's
+	# start marker sits 200 u UNDER its hillside and the capsule fell
+	# through the world (audit 2026-09-03). Never spawn below the terrain.
+	if level.is_outdoor and level.wld != null:
+		var ground: float = WldTerrain.height_at_world(level.wld, spawn.x, -spawn.z)
+		if spawn.y < ground + 4.0:
+			print("[skynet] spawn %.0f u under the terrain — lifted to the surface" % (ground - spawn.y))
+			spawn.y = ground + 4.0
+	spawn = _lift_to_floor(spawn)
 
 	# Spawn the player feet at the marker; gravity settles them onto the
 	# surface. Face the direction marker — yaw only, the body never pitches.
@@ -525,6 +605,29 @@ func _frame_camera(level: LevelLoader.Level) -> void:
 	sun.position = spawn + Vector3(0, 8000, -2000)
 	print("[skynet] spawn %s, yaw %.1f deg" % [spawn, rad_to_deg(yaw)])
 
+## DOS puts the player on the floor its cell scan finds (FUN_00138500);
+## a marker under a walkway (MAP.271: 174 u below the pipe floor) or
+## under a hillside is lifted onto the first upward-facing surface above
+## it when nothing is within reach below. Returns the adjusted point.
+func _lift_to_floor(pos: Vector3) -> Vector3:
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return pos
+	var down := PhysicsRayQueryParameters3D.create(pos + Vector3(0.0, 40.0, 0.0), pos - Vector3(0.0, 600.0, 0.0))
+	down.collide_with_areas = false
+	if space.intersect_ray(down).has("position"):
+		return pos
+	var up := PhysicsRayQueryParameters3D.create(pos + Vector3(0.0, 2.0, 0.0), pos + Vector3(0.0, 900.0, 0.0))
+	up.collide_with_areas = false
+	var hit := space.intersect_ray(up)
+	# Seen from below the floor reports its flipped (downward) normal —
+	# any near-horizontal surface counts.
+	if hit.has("position") and absf((hit["normal"] as Vector3).y) > 0.5:
+		var y: float = (hit["position"] as Vector3).y + 2.0
+		print("[skynet] spawn has no floor below — lifted %.0f u onto the surface above" % (y - pos.y))
+		return Vector3(pos.x, y, pos.z)
+	return pos
+
 ## Return the spawn point, or — if a player-sized capsule there overlaps
 ## level geometry — the nearest free spot found by searching outward.
 func _find_clear_spawn(pos: Vector3) -> Vector3:
@@ -536,16 +639,26 @@ func _find_clear_spawn(pos: Vector3) -> Vector3:
 	shape.height = 88.0
 	var q := PhysicsShapeQueryParameters3D.new()
 	q.shape = shape
-	for ring in [0.0, 100.0, 200.0, 320.0, 460.0, 640.0]:
+	for ring in [0.0, 50.0, 100.0, 200.0, 320.0, 460.0, 640.0]:
 		var steps: int = 1 if ring < 1.0 else 12
 		for i in steps:
 			var a: float = TAU * float(i) / float(steps)
 			var p := pos + Vector3(cos(a) * ring, 0.0, sin(a) * ring)
 			q.transform = Transform3D(Basis(), p + Vector3(0.0, 60.0, 0.0))
-			if space.intersect_shape(q, 1).is_empty():
-				if ring > 0.0:
-					print("[skynet] spawn nudged %.0fu clear of geometry" % ring)
-				return p
+			if not space.intersect_shape(q, 1).is_empty():
+				continue
+			# A nudged spot must have a floor under it: on MAP.252/473 the
+			# start marker touched a table, the first free spot 100 u away
+			# was OUTSIDE the room wall, and the player fell into the void
+			# (2026-09-02 report).
+			if ring > 0.0:
+				var r := PhysicsRayQueryParameters3D.create(p + Vector3(0.0, 60.0, 0.0), p - Vector3(0.0, 400.0, 0.0))
+				r.collide_with_areas = false
+				if not space.intersect_ray(r).has("position"):
+					continue
+				print("[skynet] spawn nudged %.0fu clear of geometry" % ring)
+			return p
+	print("[skynet] spawn: no clear spot with a floor nearby — using the marker")
 	return pos
 
 ## DOS player: eye 75 units above the feet (DAT_00038ce5 = 0x4b,
@@ -710,11 +823,15 @@ func _process(delta: float) -> void:
 			_health_fill.color = Color(0.9, 0.3, 0.22) if low \
 				else Color(0.3, 0.85, 0.4)
 		_weapon_label.text = str(player.weapon_name)
+		if _hud_mode != player.vehicle:
+			_set_hud_mode(player.vehicle)
+		if _hud_mode != 0:
+			_update_vehicle_hud()
 		var am: int = int(player.ammo)
 		_ammo_label.text = "%d" % am
 		_ammo_label.add_theme_color_override("font_color",
 			Color(1, 0.4, 0.32) if am <= 0 else Color(0.55, 0.95, 0.62))
-		if hp <= 0 and _game_over == null:
+		if hp <= 0 and _game_over == null and _dm == null:
 			_show_game_over()
 	# No DOS mission ends by body count: missions end at the extraction
 	# zone (marker type 4, _try_evac on the use key). `_mission_hostiles`
@@ -736,7 +853,7 @@ func _on_objective_complete(idx: int) -> void:
 ## use key inside one ends the mission and moves the campaign on.
 func _try_evac(pos: Vector3) -> bool:
 	var lvl := _current_level
-	if lvl == null or lvl.map == null or _game_over != null:
+	if lvl == null or lvl.map == null or _game_over != null or _dm != null:
 		return false
 	for e in lvl.map.entities:
 		if (e.flags & 3) != 3 or e.marker_type != 4:
@@ -777,6 +894,20 @@ static func _maptype(level: LevelLoader.Level) -> int:
 	for e in level.map.entities:
 		if (e.flags & 3) == 3 and e.marker_type == 6:
 			return int(e.exit_map)
+	return 0
+
+## Player mode per mission (table 0x34846 entries: {mission, map, mode}):
+## 220 → 4 (jeep), 260 → 4 (jeep), 270 → 8 (HK); everything else 0.
+## Sub-maps belong to their mission (map / 10).
+static func _vehicle_for_map(map_name: String) -> int:
+	var sfx: int = _suffix(map_name)
+	if sfx < 200 or sfx >= 300:
+		return 0
+	match (sfx - 200) / 10:
+		2, 6:
+			return 1
+		7:
+			return 2
 	return 0
 
 ## Mission "main" maps end in 0 (mission = (map - 200) / 10).
@@ -830,6 +961,9 @@ func _transition(target: String) -> void:
 
 ## Snapshot the running game into `slot`. False when no level is up.
 func save_to_slot(slot: int) -> bool:
+	if _dm != null:
+		_set_status("NO SAVING IN A NETWORK GAME.")
+		return false
 	if _current_level == null or not is_instance_valid(player):
 		_set_status("NOTHING TO SAVE.")
 		return false
@@ -852,6 +986,9 @@ func save_to_slot(slot: int) -> bool:
 ## Restore `slot`: tear the current level down, install the saved state
 ## and reload the saved map with the player where they were.
 func load_from_slot(slot: int) -> bool:
+	if _dm != null:
+		_set_status("NO LOADING IN A NETWORK GAME.")
+		return false
 	var data: Dictionary = SaveGame.read(slot)
 	if data.is_empty():
 		_set_status("EMPTY SLOT.")
@@ -1565,6 +1702,8 @@ func _input(event: InputEvent) -> void:
 		# `~` = the console; Alt+\ = the DOS cheat prompt, same thing.
 		open_console()
 		get_viewport().set_input_as_handled()
+	elif _dm != null:
+		return                              # no map hopping / saves in a match
 	elif k == KEY_PAGEUP or k == KEY_BRACKETLEFT or k == KEY_P:
 		_step_map(-1)
 	elif k == KEY_PAGEDOWN or k == KEY_BRACKETRIGHT or k == KEY_N:
@@ -1587,6 +1726,7 @@ func _step_map(d: int) -> void:
 
 func _return_to_menu() -> void:
 	get_tree().paused = false
+	Net.leave()
 	get_tree().change_scene_to_file("res://scenes/menu.tscn")
 
 ## --- In-game menu, console, cheats -----------------------------------------
@@ -1808,6 +1948,30 @@ func run_command(line: String) -> String:
 			_close_overlays()
 			_return_to_menu()
 			return ""
+		"bots":
+			if not Net.is_server():
+				return "only the host can change bots"
+			if not args.is_empty() and args[0].is_valid_int():
+				Net.set_bot_count(int(args[0]))
+			return "%d bots" % int(Net.settings.get("bots", 0))
+		"class":
+			if args.is_empty():
+				return "class: %s (human | terminator)" % Net.CLASS_NAMES[Net.local_class]
+			var want: String = args[0].to_lower()
+			if want.begins_with("h"):
+				Net.set_class(Net.CLASS_HUMAN)
+			elif want.begins_with("t"):
+				Net.set_class(Net.CLASS_TERMINATOR)
+			else:
+				return "usage: class human|terminator"
+			return "%s from the next spawn" % Net.CLASS_NAMES[Net.local_class]
+		"players", "who":
+			if not Net.active:
+				return "not in a network game"
+			var rows: Array = []
+			for r in Net.scoreboard():
+				rows.append("  %-16s %3d frags %3d deaths%s" % [r[1], r[2], r[3], "  (bot)" if r[4] else ""])
+			return "%d players\n%s" % [rows.size(), "\n".join(rows)]
 		"quit", "exit":
 			get_tree().quit()
 			return ""
@@ -1982,7 +2146,9 @@ func _load_fnt(filename: String, scale: int) -> FontFile:
 	return FntFont.build(bytes, scale)
 
 ## Load PANEL0.IMG (the on-foot HUD bar) as an ImageTexture, or null.
-func _load_panel_texture() -> ImageTexture:
+## `name` picks another panel: PANEL1.IMG (jeep cockpit) / PANEL2.IMG
+## (HK cockpit) are full 320×200 frames with the windscreen as index 0.
+func _load_panel_texture(name: String = "PANEL0.IMG", transparent0: bool = false) -> ImageTexture:
 	var bsa := BSAReader.new()
 	if not bsa.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"),
 			SkynetPaths.variant):
@@ -1990,12 +2156,71 @@ func _load_panel_texture() -> ImageTexture:
 	var pal_bytes := bsa.read("SKYNET.COL")
 	if pal_bytes.is_empty():
 		pal_bytes = bsa.read("BRIEF.COL")
-	var panel_bytes := bsa.read("PANEL0.IMG")
+	var panel_bytes := bsa.read(name)
 	bsa.close()
 	var palette := Palette.parse(pal_bytes)
 	if palette.is_empty() or panel_bytes.is_empty():
 		return null
-	return ImgFile.parse(panel_bytes, palette)
+	return ImgFile.parse(panel_bytes, palette, transparent0)
+
+## --- Vehicle cockpit HUD (DOS mode 4 = PANEL1 jeep, 8 = PANEL2 HK) -----
+## The cockpit art fills the screen (320×200 stretched); the green
+## read-outs sit in its right-hand block. Rects in image pixels.
+const VEH_PANELS: Array = ["", "PANEL1.IMG", "PANEL2.IMG"]
+const VEH_READOUTS: Dictionary = {
+	1: {"energy": Rect2(207, 151, 38, 9), "armor": Rect2(207, 160, 38, 9), "damage": Rect2(207, 169, 38, 9)},
+	2: {"missiles": Rect2(207, 141, 38, 9), "energy": Rect2(207, 151, 38, 9), "armor": Rect2(207, 160, 38, 9), "damage": Rect2(207, 169, 38, 9)},
+}
+var _veh_layer: CanvasLayer = null
+var _veh_panel: TextureRect = null
+var _veh_labels: Dictionary = {}
+var _hud_mode: int = 0
+
+## Swap the HUD between the foot bar and a vehicle cockpit.
+func _set_hud_mode(v: int) -> void:
+	_hud_mode = v
+	if _hud_panel != null:
+		_hud_panel.visible = v == 0
+	if _veh_layer == null:
+		_veh_layer = CanvasLayer.new()
+		_veh_layer.layer = 49
+		add_child(_veh_layer)
+		_veh_panel = TextureRect.new()
+		_veh_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		_veh_panel.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		_veh_panel.stretch_mode = TextureRect.STRETCH_SCALE
+		_veh_panel.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+		_veh_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_veh_layer.add_child(_veh_panel)
+	for l in _veh_labels.values():
+		(l as Node).queue_free()
+	_veh_labels.clear()
+	if v <= 0 or v >= VEH_PANELS.size():
+		_veh_layer.visible = false
+		return
+	_veh_panel.texture = _load_panel_texture(String(VEH_PANELS[v]), true)
+	_veh_layer.visible = _veh_panel.texture != null
+	for key in VEH_READOUTS[v]:
+		var l := _hud_box_label()
+		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		_br_anchor(l, VEH_READOUTS[v][key])
+		_veh_panel.add_child(l)
+		_veh_labels[key] = l
+
+## Cockpit read-outs: MISSILES (pool 11), ENERGY (pool 10), ARMOR %,
+## DAMAGE % (100 - health).
+func _update_vehicle_hud() -> void:
+	if _veh_labels.is_empty() or not is_instance_valid(player):
+		return
+	if _veh_labels.has("missiles"):
+		_veh_labels["missiles"].text = "%d" % player.pool_count(11)
+	if _veh_labels.has("energy"):
+		_veh_labels["energy"].text = "%d" % player.pool_count(10)
+	if _veh_labels.has("armor"):
+		_veh_labels["armor"].text = "%d" % int(round(player.armor * 100.0))
+	if _veh_labels.has("damage"):
+		var frac: float = 1.0 - clampf(player.health / maxf(player.max_health, 1.0), 0.0, 1.0)
+		_veh_labels["damage"].text = "%d" % int(round(frac * 100.0))
 
 func _set_status(text: String) -> void:
 	if _status_label != null:

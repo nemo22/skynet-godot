@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://b0skynetmapaudit"]
+
+[ext_resource type="Script" path="res://scripts/map_audit.gd" id="1_audit"]
+
+[node name="MapAudit" type="Node"]
+script = ExtResource("1_audit")

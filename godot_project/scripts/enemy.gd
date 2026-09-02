@@ -98,6 +98,7 @@ const DEATH_SOUND_ID: int = 38            # dormant-trap detonation (0x26)
 @export var death_anim_time: float = 0.5
 
 const DEATH_FRAME_BUDGET: int = 8
+const ENGINE_DB: float = -10.0
 
 ## Wreck parts resolved by level_loader: [[Mesh, Vector3 offset], …].
 var death_parts: Array = []
@@ -155,8 +156,14 @@ func setup(frame_meshes: Array, aabb: AABB, stationary: bool = false,
 		passive: bool = false) -> void:
 	_frames = frame_meshes
 	# Feet = the lowest vertex across EVERY frame, not just frame 0.
+	# Feet = the lowest vertex over the LIVING frames (the first two thirds
+	# of the strip): a death/collapse pose reaches lower than any walk
+	# frame (SPIDBOT f22 -158 vs -129) and pulled the spider 30 u into the
+	# ground on MAP.240 (2026-09-02 report).
 	_foot_offset = aabb.position.y
-	for fm in _frames:
+	var living: int = _frames.size() if _frames.size() < 6 else int(ceil(float(_frames.size()) * 2.0 / 3.0))
+	for i in living:
+		var fm = _frames[i]
 		if fm is ArrayMesh:
 			_foot_offset = minf(_foot_offset,
 				(fm as ArrayMesh).get_aabb().position.y)
@@ -184,8 +191,7 @@ func setup(frame_meshes: Array, aabb: AABB, stationary: bool = false,
 	if sound_name != "" and not _t.has("engine"):
 		_snd = AudioStreamPlayer3D.new()
 		_snd.stream = Audio.stream(sound_name)
-		_snd.unit_size = 2000.0
-		_snd.max_distance = 22000.0
+		Audio.setup_3d(_snd)
 		_snd.volume_db = -8.0
 		_snd.max_db = 0.0
 		add_child(_snd)
@@ -195,9 +201,8 @@ func setup(frame_meshes: Array, aabb: AABB, stationary: bool = false,
 		if not nm.is_empty():
 			_engine = AudioStreamPlayer3D.new()
 			_engine.stream = Audio.stream(nm)
-			_engine.unit_size = 1500.0
-			_engine.max_distance = 16000.0
-			_engine.volume_db = -10.0
+			Audio.setup_3d(_engine, 500.0, 8000.0)
+			_engine.volume_db = ENGINE_DB
 			_engine.max_db = -2.0
 			_engine.finished.connect(func() -> void:
 				if is_inside_tree() and _state != State.DEAD:
@@ -248,6 +253,10 @@ func _physics_process(delta: float) -> void:
 	if _state == State.DEAD:
 		return
 	_ticks += 1
+	# Engine loops muffle behind walls (Audio.occlusion_db — one ray every
+	# 20 ticks, staggered across the actors).
+	if _engine != null and _engine.playing and (_ticks + get_instance_id()) % 20 == 0:
+		_engine.volume_db = ENGINE_DB + Audio.occlusion_db(global_position + Vector3(0.0, 40.0, 0.0))
 	if _ticks < 2:
 		return                                 # colliders settle into the space first
 	if not _init_done:
@@ -939,7 +948,9 @@ func _snap_to_ground(init: bool = false) -> bool:
 		# at a seam, or pushed beneath a raised walkway)? A surface with
 		# an upward normal within SINK_RECOVER above the feet is a floor,
 		# not a ceiling (those face down): pop out onto it.
-		var pop := _floor_ray(space, global_position, feet_y + SINK_RECOVER, feet_y + up, true)
+		# At placement a marker may sit well under the surface (the MAP.240
+		# spiders: 130 u) — reach further up on the first snap.
+		var pop := _floor_ray(space, global_position, feet_y + (240.0 if init else SINK_RECOVER), feet_y + up, true)
 		if not pop.is_empty():
 			global_position.y = (pop["position"] as Vector3).y - _foot_offset
 			return true

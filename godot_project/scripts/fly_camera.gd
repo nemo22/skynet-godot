@@ -15,7 +15,9 @@ extends CharacterBody3D
 @export var sprint_multiplier: float = 2.5
 @export var fly_speed: float = 3500.0          # noclip
 @export var gravity: float = 4500.0
-@export var jump_speed: float = 1800.0
+## Jump apex = v²/2g: 950 → ~100 u (a crate, not a truck). The old 1800
+## reached 360 u — four eye heights, far above the DOS hop (2026-09-03).
+@export var jump_speed: float = 950.0
 @export var mouse_sensitivity: float = 0.003
 @export var touch_look_speed: float = 2.2
 
@@ -37,6 +39,11 @@ var _captured: bool = false
 var _mobile: bool = OS.has_feature("mobile")
 ## Debug: when true, gravity/collision are off (fly through everything).
 var noclip: bool = false
+## Deathmatch: no movement / fire while dead, typing in chat or waiting
+## for the server's spawn (dm_game.gd drives this).
+var input_locked: bool = false
+## Deathmatch class: HUMAN 1.3, TERMINATOR 0.85 (Net.CLASS_SPEED).
+var class_speed: float = 1.0
 ## Debug: when true, the player takes no damage. Static so the menu's
 ## DEBUG TOOLS screen can arm it before a map loads; F9 toggles it
 ## in-game. Persists across scene changes.
@@ -106,7 +113,47 @@ var _weapons: Array = [
 	# 9999-round pool and a 20/s cadence. STRINGS.PRS calls it MINI
 	# ROCKET; the player knows it as the red super uzi.
 	{"name": "SUPER UZI",        "kind": "bullet",  "dmg": 50.0,  "rate": 20, "pool": 12, "cost": 1,  "snd": "SHOTS5.RAW",   "sel": 9,  "dry": 10, "cfa": "WEAPON12.CFA", "animspd": 16, "vx": 156},
+	# Vehicle guns (DOS records 20/22 jeep, 24/25 HK — owned bit 2 = vehicle
+	# only, no viewmodel). Ammo types 18 (laser2, -40), 5 (rocket, -400,
+	# splash 512), 22 (laser1, -75). Pool 10 = vehicle energy 1000/2000
+	# at 100 per bolt, pool 11 = vehicle rockets 40/50. `snd_id` = the
+	# ammo type's fire sound id (+0x1c), `veh` = the vehicle that mounts it.
+	{"name": "JEEP PLASMA",      "kind": "plasma",  "dmg": 40.0,  "rate": 8,  "pool": 10, "cost": 100, "snd": "", "snd_id": 14, "sel": 17, "dry": 16, "cfa": "", "vx": 160, "splash": 64.0,  "veh": 1},
+	{"name": "JEEP ROCKETS",     "kind": "rocket",  "dmg": 400.0, "rate": 1,  "pool": 11, "cost": 1,   "snd": "", "snd_id": 26, "sel": 9,  "dry": 10, "cfa": "", "vx": 160, "splash": 512.0, "veh": 1},
+	{"name": "HK LASER",         "kind": "laser",   "dmg": 75.0,  "rate": 8,  "pool": 10, "cost": 100, "snd": "", "snd_id": 12, "sel": 17, "dry": 16, "cfa": "", "vx": 160, "splash": 64.0,  "veh": 2},
+	{"name": "HK ROCKETS",       "kind": "rocket",  "dmg": 400.0, "rate": 1,  "pool": 11, "cost": 1,   "snd": "", "snd_id": 26, "sel": 9,  "dry": 10, "cfa": "", "vx": 160, "splash": 512.0, "veh": 2},
 ]
+## Weapon slots per vehicle (indices into `_weapons`).
+const VEHICLE_WEAPONS: Dictionary = {1: [13, 14], 2: [15, 16]}
+const VEH_FOOT: int = 0
+const VEH_JEEP: int = 1
+const VEH_HK: int = 2
+const VEH_NAMES: Array = ["", "JEEP", "HK"]
+## Eye height above the body origin per vehicle (DOS foot = 75).
+const VEH_EYE: Array = [75.0, 92.0, 110.0]
+## Capsule (radius, height) per vehicle — the HUMMER is 106×75×227, the
+## HK_FTR 357×205×501; a rounder body slides over terrain and rubble.
+const VEH_CAPSULE: Array = [[26.0, 88.0], [55.0, 110.0], [110.0, 220.0]]
+## Jeep: DOS mission 2/6 driving — throttle with inertia, mouse steers.
+const JEEP_MAX_SPEED: float = 1800.0
+const JEEP_REVERSE_SPEED: float = 700.0
+const JEEP_ACCEL: float = 1400.0
+const JEEP_BRAKE: float = 2600.0
+const JEEP_DRAG: float = 900.0
+const JEEP_TURN_RATE: float = 1.6              # rad/s with A/D at full speed
+## HK: DOS mission 7 flight — hover, thrust in every axis, no gravity.
+const HK_SPEED: float = 2600.0
+const HK_STRAFE: float = 1400.0
+const HK_CLIMB: float = 900.0
+const HK_ACCEL: float = 2200.0
+const HK_MIN_ALTITUDE: float = 150.0
+## The vehicle this player is in (VEH_*). Set by the level (mission
+## table: MAP.220/260 jeep, MAP.270 HK) or, in a deathmatch, by
+## climbing into a parked one.
+var vehicle: int = 0
+var _veh_speed: float = 0.0                    # jeep forward speed (signed)
+var _foot_owned: Dictionary = {}
+var _foot_weapon: int = 1
 var _weapon_idx: int = 0
 ## Weapon ownership — DOS record +0x5c bit 0. A new SkyNET campaign
 ## game hands out the list at 0x43470 (FUN_0012562c from the session
@@ -147,7 +194,7 @@ const IMPACT_BANK_BULLET: int = 365
 # yet — so a handful is seeded here to keep the launchers usable.
 const POOL_TABLE: Dictionary = {
 	0: [500, 750], 1: [50, 200], 2: [10, 99], 3: [5, 99],
-	4: [500, 800], 12: [9999, 9999],
+	4: [500, 800], 10: [1000, 2000], 11: [40, 50], 12: [9999, 9999],
 }
 ## Rounds a generic ammo pickup adds per pool (placeholder until the
 ## pickup sprite records are decoded into specific ammo types).
@@ -219,12 +266,96 @@ func _reset_pools() -> void:
 ## one of them.
 func _reset_owned() -> void:
 	_owned.clear()
+	if vehicle != VEH_FOOT:
+		for w in VEHICLE_WEAPONS.get(vehicle, []):
+			_owned[int(w)] = true
+		if not _owned.has(_weapon_idx):
+			_weapon_idx = int(VEHICLE_WEAPONS[vehicle][0])
+		return
 	for w in START_WEAPONS:
 		_owned[int(w)] = true
 	if not _owned.has(_weapon_idx):
 		_weapon_idx = int(START_WEAPONS[1]) if START_WEAPONS.size() > 1 else 0
 		_vm_idx = 0
 		_vm_firing = false
+
+## Climb into / out of a vehicle (VEH_*). The on-foot arsenal is parked
+## with the body: a jeep mounts only its plasma guns and rockets, the
+## HK its laser and rockets; the eye height and the collision capsule
+## follow the vehicle. Health is the driver's — DOS keeps one bar.
+func set_vehicle(v: int) -> void:
+	v = clampi(v, VEH_FOOT, VEH_HK)
+	if v == vehicle:
+		return
+	if vehicle == VEH_FOOT:
+		_foot_owned = _owned.duplicate()
+		_foot_weapon = _weapon_idx
+	vehicle = v
+	_veh_speed = 0.0
+	velocity = Vector3.ZERO
+	if v == VEH_FOOT:
+		_owned = _foot_owned.duplicate() if not _foot_owned.is_empty() else _owned
+		_weapon_idx = _foot_weapon
+		if not _owned.has(_weapon_idx):
+			_reset_owned()
+	else:
+		_owned.clear()
+		for w in VEHICLE_WEAPONS[v]:
+			_owned[int(w)] = true
+		_weapon_idx = int(VEHICLE_WEAPONS[v][0])
+	_vm_idx = 0
+	_vm_firing = false
+	_fire_cd = 0.3
+	motion_mode = CharacterBody3D.MOTION_MODE_FLOATING if v == VEH_HK else CharacterBody3D.MOTION_MODE_GROUNDED
+	if _cam != null:
+		_cam.position.y = float(VEH_EYE[v])
+	var cs: CollisionShape3D = get_node_or_null("CollisionShape3D")
+	if cs != null:
+		var cap := CapsuleShape3D.new()
+		cap.radius = float(VEH_CAPSULE[v][0])
+		cap.height = float(VEH_CAPSULE[v][1])
+		cs.shape = cap
+		cs.position = Vector3(0.0, cap.height * 0.5, 0.0)
+	if v == VEH_HK:
+		# Lift off the ground so the hover starts clear of the terrain.
+		global_position.y += 60.0
+	if v != VEH_FOOT:
+		Audio.play_id(int(_weapons[_weapon_idx].get("sel", -1)), -8.0)
+	_start_engine(v)
+	_sync_hud()
+	print("[player] vehicle: %s" % (VEH_NAMES[v] if v > 0 else "on foot"))
+
+## Engine loops from the DOS sound table: careng1 (id 68) for the jeep,
+## hk2 (id 48, the same loop the enemy HKs run) for the HK; the jeep
+## revs with its speed (DOS action 0xd6-0xda ramps the vehicle pitch).
+const ENGINE_SOUND_ID: Array = [-1, 68, 48]
+const CAR_START_ID: int = 123
+var _engine: AudioStreamPlayer3D = null
+
+func _start_engine(v: int) -> void:
+	if _engine != null:
+		_engine.queue_free()
+		_engine = null
+	if v == VEH_FOOT:
+		return
+	if v == VEH_JEEP:
+		Audio.play_id(CAR_START_ID, -6.0)
+	_engine = Audio.attach_loop_3d(int(ENGINE_SOUND_ID[v]), self, -9.0)
+	if _engine != null:
+		_engine.position = Vector3(0.0, 40.0, 60.0)     # under the bonnet / behind the seat
+		_engine.pitch_scale = 0.85
+
+func _update_engine() -> void:
+	if _engine == null:
+		return
+	if vehicle == VEH_JEEP:
+		var k: float = clampf(absf(_veh_speed) / JEEP_MAX_SPEED, 0.0, 1.0)
+		_engine.pitch_scale = lerpf(_engine.pitch_scale, 0.75 + 0.75 * k, 0.1)
+		_engine.volume_db = -11.0 + 5.0 * k
+	elif vehicle == VEH_HK:
+		var k: float = clampf(velocity.length() / HK_SPEED, 0.0, 1.0)
+		_engine.pitch_scale = lerpf(_engine.pitch_scale, 0.9 + 0.35 * k, 0.05)
+		_engine.volume_db = -10.0 + 4.0 * k
 
 func owns(idx: int) -> bool:
 	return _owned.has(idx)
@@ -320,6 +451,19 @@ func _physics_process(delta: float) -> void:
 	if _cam != null:
 		_cam.rotation.x = _pitch
 
+	if input_locked:
+		# Dead / chatting / unspawned: gravity only, no intent.
+		ui_fire = false
+		if not noclip:
+			velocity.x = 0.0
+			velocity.z = 0.0
+			if not is_on_floor():
+				velocity.y -= gravity * delta
+			else:
+				velocity.y = 0.0
+			move_and_slide()
+		return
+
 	# --- weapon -------------------------------------------------------
 	if _fire_cd > 0.0:
 		_fire_cd -= delta
@@ -342,8 +486,82 @@ func _physics_process(delta: float) -> void:
 
 	if noclip:
 		_fly(delta, fwd_in, str_in)
+	elif vehicle == VEH_JEEP:
+		_drive(delta, fwd_in, str_in)
+	elif vehicle == VEH_HK:
+		_hover(delta, fwd_in, str_in)
 	else:
 		_walk(delta, fwd_in, str_in)
+
+## Jeep (DOS mode 4): the mouse steers the heading, W/S throttle with
+## inertia, A/D lean the wheel; no strafing, no jumping, gravity keeps
+## the wheels on the terrain.
+func _drive(delta: float, fwd_in: float, str_in: float) -> void:
+	# Steering keys turn the heading; faster at speed, like a wheel.
+	if absf(str_in) > 0.1:
+		var k: float = clampf(absf(_veh_speed) / JEEP_MAX_SPEED, 0.25, 1.0)
+		var dir: float = 1.0 if _veh_speed >= 0.0 else -1.0
+		_yaw -= str_in * JEEP_TURN_RATE * k * dir * delta
+		rotation.y = _yaw
+	if fwd_in > 0.1:
+		if _veh_speed < 0.0:
+			_veh_speed = minf(_veh_speed + JEEP_BRAKE * delta, 0.0)
+		else:
+			_veh_speed = minf(_veh_speed + JEEP_ACCEL * delta, JEEP_MAX_SPEED * speed_boost)
+	elif fwd_in < -0.1:
+		if _veh_speed > 0.0:
+			_veh_speed = maxf(_veh_speed - JEEP_BRAKE * delta, 0.0)
+		else:
+			_veh_speed = maxf(_veh_speed - JEEP_ACCEL * 0.6 * delta, -JEEP_REVERSE_SPEED)
+	else:
+		_veh_speed = move_toward(_veh_speed, 0.0, JEEP_DRAG * delta)
+	var fwd := -Basis(Vector3.UP, _yaw).z
+	velocity.x = fwd.x * _veh_speed
+	velocity.z = fwd.z * _veh_speed
+	if is_on_floor():
+		velocity.y = 0.0
+	else:
+		velocity.y -= gravity * delta
+	var before := global_position
+	move_and_slide()
+	# A wall stops the jeep dead (and the momentum with it) — carcoll2.
+	if absf(_veh_speed) > 50.0 and global_position.distance_to(before) < absf(_veh_speed) * delta * 0.2:
+		if absf(_veh_speed) > 500.0:
+			Audio.play_id(30, -4.0)
+		_veh_speed *= 0.3
+	_update_engine()
+
+## HK (DOS mode 8): a hovering gunship — thrust along the view with W/S,
+## strafe with A/D, climb / dive with E-Space / Q, no gravity, never
+## below HK_MIN_ALTITUDE over whatever is under the hull.
+func _hover(delta: float, fwd_in: float, str_in: float) -> void:
+	var look := global_transform.basis
+	if _cam != null:
+		look = _cam.global_transform.basis
+	var vert: float = ui_vert
+	if Input.is_key_pressed(KEY_E) or Input.is_key_pressed(KEY_SPACE) or Controls.is_pressed("up"):
+		vert += 1.0
+	if Input.is_key_pressed(KEY_Q) or Controls.is_pressed("down"):
+		vert -= 1.0
+	var want: Vector3 = -look.z * fwd_in * HK_SPEED * speed_boost \
+		+ look.x * str_in * HK_STRAFE + Vector3.UP * vert * HK_CLIMB
+	if Controls.is_pressed("sprint"):
+		want *= 1.4
+	velocity = velocity.move_toward(want, HK_ACCEL * delta)
+	# Ground clearance: push up when the surface below comes too close.
+	var space := get_world_3d().direct_space_state
+	if space != null:
+		var q := PhysicsRayQueryParameters3D.create(global_position + Vector3(0.0, 20.0, 0.0),
+			global_position - Vector3(0.0, HK_MIN_ALTITUDE + 40.0, 0.0))
+		q.collide_with_areas = false
+		q.exclude = [get_rid()]
+		var hit := space.intersect_ray(q)
+		if hit.has("position"):
+			var clearance: float = global_position.y - (hit["position"] as Vector3).y
+			if clearance < HK_MIN_ALTITUDE and velocity.y < HK_CLIMB * 0.5:
+				velocity.y = maxf(velocity.y, (HK_MIN_ALTITUDE - clearance) * 4.0)
+	move_and_slide()
+	_update_engine()
 
 ## Grounded movement: walk on surfaces, gravity, jump, wall collision.
 func _walk(delta: float, fwd_in: float, str_in: float) -> void:
@@ -351,7 +569,7 @@ func _walk(delta: float, fwd_in: float, str_in: float) -> void:
 	var horiz := -basis_y.z * fwd_in + basis_y.x * str_in
 	if horiz.length() > 1.0:
 		horiz = horiz.normalized()
-	var speed := walk_speed * speed_boost
+	var speed := walk_speed * speed_boost * class_speed
 	if Controls.is_pressed("sprint"):
 		speed *= sprint_multiplier
 	velocity.x = horiz.x * speed
@@ -466,6 +684,8 @@ func _shoot() -> void:
 	var snd: String = String(w.get("snd", ""))
 	if not snd.is_empty():
 		Audio.play_sfx(snd, -5.0)
+	elif int(w.get("snd_id", -1)) >= 0:
+		Audio.play_id(int(w["snd_id"]), -5.0)
 	# Kick off the viewmodel fire animation.
 	_vm_firing = true
 	_vm_idx = 0
@@ -474,7 +694,14 @@ func _shoot() -> void:
 	var fwd: Vector3 = -_cam.global_transform.basis.z
 	var muzzle: Vector3 = _cam.global_position + fwd * 90.0 \
 		- _cam.global_transform.basis.y * 26.0
+	if vehicle != VEH_FOOT:
+		# Vehicle guns sit low on the hull, well ahead of the cockpit.
+		muzzle = _cam.global_position + fwd * (160.0 if vehicle == VEH_JEEP else 260.0) \
+			- _cam.global_transform.basis.y * 40.0
 	var dmg: float = float(w["dmg"])
+	# Deathmatch: everybody else draws this shot.
+	if Net.active:
+		Net.send_fire(_weapon_idx, muzzle, fwd)
 
 	# Melee: short-range hitscan, no tracer, no muzzle flash. The
 	# viewmodel swing animation (CFA frames) is the only visible cue.
@@ -490,10 +717,10 @@ func _shoot() -> void:
 	# white.
 	var mf := MuzzleFlash.new()
 	get_tree().current_scene.add_child(mf)
-	# TEXTURE.219 is a 17x17 px sprite — at the shared 2 u/px billboard
-	# scale that is ~36 world units. The old 100-130 covered half the
-	# screen from 90 u away.
-	mf.setup(muzzle, tint, 48.0 if kind == "shotgun" else 36.0)
+	# TEXTURE.219 is a 17x17 px sprite. DOS draws it as a small flare at
+	# the gun's muzzle; from 90 u a 36 u sprite filled a third of the
+	# screen, so it sits further out and smaller (a 2026-09-02 report).
+	mf.setup(muzzle + fwd * 70.0, tint, 26.0 if kind == "shotgun" else 18.0)
 
 	# Ballistic / straight projectiles take a separate path.
 	if kind == "grenade":
@@ -518,9 +745,9 @@ func _shoot() -> void:
 	var endpoint: Vector3 = to
 	if hit.has("position"):
 		endpoint = hit["position"]
-	var tr: MeshInstance3D = Tracer.new()
-	get_tree().current_scene.add_child(tr)
-	tr.setup(muzzle, endpoint, tint)
+	# No tracer on the player's own bullets: DOS shows only the flash and
+	# the impact puff, and a 16 u beam seen end-on from the muzzle drew a
+	# big tan wedge across the view (2026-09-02 report).
 	# Shotgun: a smoke puff lingering at the muzzle after the shot.
 	if kind == "shotgun":
 		var sm := SmokePuff.new()
@@ -531,11 +758,19 @@ func _shoot() -> void:
 		while n != null and not n.has_method("take_damage"):
 			n = n.get_parent()
 		if n != null and n != self:
-			n.take_damage(dmg)
+			_deal(n, dmg)
 		else:
 			var puff := Explosion.new()
 			get_tree().current_scene.add_child(puff)
 			puff.setup(endpoint, 40.0, IMPACT_BANK_BULLET)
+
+## Damage `n` from this player's shot — deathmatch actors take the
+## attributed form (their `net_damage` reports the hit to the server).
+func _deal(n: Node, dmg: float) -> void:
+	if n.has_method("net_damage"):
+		n.net_damage(dmg, self)
+	else:
+		n.take_damage(dmg)
 
 ## Look and payload of the straight-flying projectile families, from the
 ## DOS ammo records: the .3D model at +0x04, the impact effect bank at
@@ -576,6 +811,8 @@ func _throw_grenade() -> void:
 	var fwd: Vector3 = -_cam.global_transform.basis.z
 	var muzzle: Vector3 = _cam.global_position + fwd * 60.0
 	var arc: Vector3 = (fwd + Vector3.UP * 0.35).normalized()
+	if Net.active:
+		Net.send_fire(5, muzzle, arc)            # drawn as a launcher shot
 	var g := Grenade.new()
 	get_tree().current_scene.add_child(g)
 	g.setup(muzzle, arc, 200.0, 256.0, self)
@@ -600,7 +837,7 @@ func _melee_hit(from: Vector3, fwd: Vector3, dmg: float) -> void:
 		n = n.get_parent()
 	if n != null and n != self:
 		Audio.play_sfx_3d("HIT2.RAW", hit["position"], -3.0)
-		n.take_damage(dmg)
+		_deal(n, dmg)
 
 ## Activate action (Controls "activate", default F): operate the door or
 ## switch the player is looking at within reach. Ray-walks parents for an
@@ -639,6 +876,14 @@ func take_damage(amount: float) -> void:
 		return
 	if god_mode:
 		return                                   # debug invincibility
+	if Net.active:
+		# Deathmatch: the server owns our health — this is our own splash
+		# (rocket at the feet); other people's shots reach us as reports
+		# from THEIR machines, never through here.
+		Net.hit(Net.local_id, amount, Net.local_id, _weapon_idx)
+		return
+	if vehicle != VEH_FOOT:
+		amount *= 0.6                            # the hull takes part of it
 	if armor > 0.0:
 		var soak: float = minf(amount * 0.5, armor * max_health)
 		armor = maxf(armor - soak / max_health, 0.0)
@@ -649,6 +894,19 @@ func take_damage(amount: float) -> void:
 		health = 0.0
 		Audio.play_sfx("EXPLO2.RAW", -2.0)
 		_capture(false)                          # release the mouse
+
+## A deathmatch hit from `attacker` (a server-side bot shooting the
+## host, or a splash from another actor's projectile on this machine).
+func net_damage(amount: float, attacker: Node) -> void:
+	if health <= 0.0 or god_mode:
+		return
+	if not Net.active:
+		take_damage(amount)
+		return
+	var weapon: int = -1
+	if attacker != null and "weapon_idx" in attacker:
+		weapon = int(attacker.get("weapon_idx"))
+	Net.hit(Net.local_id, amount, Net.id_of(attacker), weapon)
 
 ## Respawn at the stored level start (set_spawn resets health and ammo).
 func respawn() -> void:
@@ -755,10 +1013,18 @@ func save_state() -> Dictionary:
 		"health": health, "armor": armor,
 		"pools": _pools.duplicate(), "weapon": _weapon_idx,
 		"owned": owned_list(), "speed_boost": speed_boost,
+		"vehicle": vehicle, "foot_owned": _foot_owned.keys(), "foot_weapon": _foot_weapon,
 	}
 
 ## Restore a save_state() snapshot — called once the level is up.
 func restore_state(d: Dictionary) -> void:
+	set_vehicle(int(d.get("vehicle", 0)))
+	var fo = d.get("foot_owned")
+	if fo is Array and not (fo as Array).is_empty():
+		_foot_owned.clear()
+		for w in fo:
+			_foot_owned[int(w)] = true
+		_foot_weapon = int(d.get("foot_weapon", 1))
 	set_spawn(d.get("pos", global_position), float(d.get("yaw", _yaw)), false)
 	set_view(float(d.get("yaw", _yaw)), float(d.get("pitch", 0.0)))
 	health = clampf(float(d.get("health", max_health)), 0.0, max_health)
@@ -812,7 +1078,7 @@ func _load_viewmodels() -> void:
 func _process(delta: float) -> void:
 	if _viewmodel == null:
 		return
-	var frames: Array = _vm_cache.get(_weapon_idx, [])
+	var frames: Array = _vm_cache.get(_weapon_idx, []) if vehicle == VEH_FOOT else []
 	if frames.is_empty():
 		_viewmodel.visible = false
 		return
