@@ -33,10 +33,16 @@ func _ready() -> void:
 			var enemies: Dictionary = {}
 			var banks: Dictionary = {}
 			var meshes: int = 0
+			var lights: int = 0
+			var lights_on: int = 0
 			for e in m.entities:
 				var v: int = e.flags & 3
 				if v == 1:
 					meshes += 1
+				elif v == 2:
+					lights += 1
+					if e.light_enable > 0:
+						lights_on += 1
 				elif v == 3:
 					if e.marker_type >= 0:
 						var key := "%d" % e.marker_type
@@ -48,9 +54,11 @@ func _ready() -> void:
 					elif e.sprite_index >= 0:
 						var b: int = e.sprite_index >> 7
 						banks[b] = banks.get(b, 0) + 1
-			print("%s: grid %dx%d outdoor=%s meshes=%d markers=%s enemies=%s sprite_banks=%s"
-				% [name, m.grid_width, m.grid_height, outdoor, meshes, markers, enemies, banks])
+			print("%s: grid %dx%d outdoor=%s meshes=%d lights=%d(%d on) markers=%s enemies=%s sprite_banks=%s"
+				% [name, m.grid_width, m.grid_height, outdoor, meshes, lights, lights_on, markers, enemies, banks])
 		bsa.close()
+	if cli.has("radiation"):
+		dump_radiation(String(cli["radiation"]))
 	if cli.has("brief"):
 		var bb := BSAReader.new()
 		if bb.open(SkynetPaths.gamedata_path("MDMDBRIF.BSA"), SkynetPaths.variant):
@@ -291,6 +299,10 @@ static func dump_faces(names: String) -> void:
 static func find_entities(m, name_part: String) -> void:
 	var MapFile = load("res://scripts/loaders/map_file.gd")
 	for e in m.entities:
+		if (e.flags & 3) == 2 and name_part.to_lower() == "lights":
+			print("   light at godot (%d, %d, %d) intensity=%d range=%d"
+				% [e.x, -e.y, -e.z, e.light_intensity, e.light_enable])
+			continue
 		if (e.flags & 3) == 3 and name_part.to_lower() == "sprites" and e.sprite_index >= 0 				and e.marker_type < 0:
 			print("   sprite %d/%d at godot (%d, %d, %d) act=%02x" % [e.sprite_index >> 7,
 				e.sprite_index & 0x7F, e.x, -e.y, -e.z, e.link_act_type])
@@ -336,6 +348,42 @@ static func dump_links(spec: String) -> void:
 			print("  @%05x %-14s v%d (%6d,%6d,%6d) st=%02x act=%02x hp=%d next=%05x%s%s"
 				% [e.file_off, label, v, e.x, -e.y, -e.z, e.state_byte, e.link_act_type,
 					e.hp, maxi(e.link_next, 0), extra, "  <head" if not targets.has(e.file_off) and e.link_next > 0 else ""])
+	bsa.close()
+
+## --radiation=210,220: the marker-4 radiation sources of each map with
+## their strength, the lethal core (strength-256, where the dose is at
+## its 50 HP/s ceiling), and how far the player start sits from the
+## nearest one — a spawn inside a source would be unplayable.
+static func dump_radiation(spec: String) -> void:
+	var MapFile = load("res://scripts/loaders/map_file.gd")
+	var bsa := BSAReader.new()
+	bsa.open(SkynetPaths.gamedata_path("MDMDMAP2.BSA"), SkynetPaths.variant)
+	for sfx in spec.split(","):
+		var name := "MAP.%03d" % int(sfx)
+		var bytes := bsa.read(name)
+		if bytes.is_empty():
+			continue
+		var m = MapFile.parse(bytes)
+		var start := Vector3.ZERO
+		var srcs: Array = []
+		for e in m.entities:
+			if (e.flags & 3) != 3:
+				continue
+			if e.marker_type == 0:
+				start = Vector3(float(e.x), -float(e.y), -float(e.z))
+			elif e.marker_type == 4 and e.exit_map > 0:
+				srcs.append([Vector3(float(e.x), -float(e.y), -float(e.z)), float(e.exit_map)])
+		var nearest: float = 1e9
+		var lines: Array = []
+		for r in srcs:
+			var d: float = (r[0] as Vector3).distance_to(start)
+			nearest = minf(nearest, d - float(r[1]))
+			lines.append("      %s strength %d, lethal core %d u, %d u from the start"
+				% [r[0], int(r[1]), int(maxf(float(r[1]) - 256.0, 0.0)), int(d)])
+		print("%s: %d radiation sources; nearest edge %s from the player start"
+			% [name, srcs.size(), ("%d u" % int(nearest)) if nearest < 1e8 else "n/a"])
+		for l in lines:
+			print(l)
 	bsa.close()
 
 ## --makepack=SRC,PREFIX,OUT.pck: pack a directory into a Godot resource

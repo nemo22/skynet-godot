@@ -903,10 +903,21 @@ const LIGHT_RANGE_PER_UNIT: float = 10.0    # variant-2 sub+8 → world units
 const LIGHT_ENERGY_DIV: float = 14.0        # variant-2 intensity → energy
 const INDOOR_AMBIENT: Color = Color(0.62, 0.62, 0.68)
 const OUTDOOR_AMBIENT: Color = Color(0.55, 0.55, 0.65)
+## Sodium-ish tint for the street lamps (the DOS lamp sprite's heads are
+## white-hot, and the pools they throw read warm against the night).
+const LAMP_COLOR: Color = Color(1.0, 0.86, 0.62)
+const OUTDOOR_LAMP_SCALE: float = 0.35
 
-## Interiors: dim ambient + one OmniLight3D per enabled variant-2
-## light, and the cached (unshaded) materials swapped for per-vertex
-## shaded duplicates so the lights show. Outdoors stays unlit like DOS.
+## One OmniLight3D per enabled variant-2 light entity, plus the interior
+## treatment (dim ambient, cached unshaded materials swapped for shaded
+## duplicates).
+##
+## Outdoor maps carry lights too — MAP.210 has 32, MAP.220 fifty — and
+## they are the street lamps: the DOS renderer never lit outdoor terrain
+## with them (the lamp SPRITE simply has bright pixels), so the port
+## ignored them as well. In ENHANCED, where the world is really lit,
+## they go in: that is what makes the lamps cast pools of light at night.
+## DOS/RETRO keeps the flat original look.
 func _light_level(level: LevelLoader.Level) -> void:
 	var we: WorldEnvironment = get_node_or_null("WorldEnvironment")
 	if we == null or we.environment == null:
@@ -917,6 +928,8 @@ func _light_level(level: LevelLoader.Level) -> void:
 		env.ambient_light_color = OUTDOOR_AMBIENT
 		if sun != null:
 			sun.visible = true
+		if Render.enhanced():
+			print("[level] outdoor: %d lamp lights" % _place_map_lights(level, true))
 		return
 	env.ambient_light_color = INDOOR_AMBIENT
 	env.ambient_light_energy = 1.0
@@ -935,6 +948,15 @@ func _light_level(level: LevelLoader.Level) -> void:
 		for s in level.sprites.get_children():
 			if s is SpriteBase3D:
 				(s as SpriteBase3D).shaded = true
+	print("[level] interior: %d lights, %d shaded materials"
+		% [_place_map_lights(level, false), cache.size()])
+
+## Build the OmniLight3D for every enabled variant-2 entity. Outdoors the
+## lamps are warmer and dimmer than an interior fixture, and none of them
+## casts shadows — there can be fifty on a map.
+func _place_map_lights(level: LevelLoader.Level, outdoor: bool) -> int:
+	if level.map == null or level.entities == null:
+		return 0
 	var n := 0
 	for e in level.map.entities:
 		if (e.flags & 3) != 2 or e.light_enable <= 0:
@@ -944,13 +966,22 @@ func _light_level(level: LevelLoader.Level) -> void:
 		l.omni_range = clampf(float(e.light_enable) * LIGHT_RANGE_PER_UNIT, 400.0, 6000.0)
 		l.omni_attenuation = 1.0
 		l.light_energy = clampf(float(e.light_intensity) / LIGHT_ENERGY_DIV, 0.4, 3.5)
-		if Render.enhanced():
-			l.light_energy *= 1.6
-		# ENHANCED: the first few lamps cast shadows (each costs a cubemap).
-		l.shadow_enabled = Render.enhanced() and n < 6
+		if outdoor:
+			# Accents, not room lighting: a night street has dozens of
+			# these overlapping and the full interior energy blows the
+			# whole frame out.
+			l.light_color = LAMP_COLOR
+			l.light_energy = clampf(l.light_energy * OUTDOOR_LAMP_SCALE, 0.15, 0.9)
+			l.shadow_enabled = false
+		else:
+			if Render.enhanced():
+				l.light_energy *= 1.6
+			# The first few interior lamps cast shadows (a cubemap each).
+			l.shadow_enabled = Render.enhanced() and n < 6
+		l.add_to_group("maplight")      # agent aid: --near=maplight:N
 		level.entities.add_child(l)
 		n += 1
-	print("[level] interior: %d lights, %d shaded materials" % [n, cache.size()])
+	return n
 
 static func _shade_recursive(n: Node, cache: Dictionary) -> void:
 	if n == null:

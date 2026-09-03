@@ -30,7 +30,9 @@ SPRITES = {
     "T204_000": ("Barrel_01", {}),
     "T206_000": ("Barrel_02", {}),
     "T213_010": ("barrel_03", {}),
-    "T204_002": ("Barrel_01", {"tint": "1.0,0.95,0.6"}),      # radioactive drum
+    # T204_002 is a canister with a RADIATION TREFOIL on it — a plain
+    # barrel loses the marking, and radiation is a real hazard in the
+    # port now, so the DOS sprite stays.
     "T201_007": ("old_military_crate", {"fit": "w"}),
     # dead vegetation
     "T208_000": ("dead_quiver_branch_01", {}),
@@ -56,9 +58,11 @@ SPRITES = {
     "T210_011": ("rock_09", {"fit": "w"}),
     "T215_011": ("namaqualand_boulder_03", {"fit": "w"}),
     # street furniture
-    "T204_017": ("fire_hydrant", {}),
-    "T204_022": ("street_lamp_01", {}),
-    "T209_012": ("street_lamp_01", {}),
+    # T204_017/005 are hanging cables with a fitting on the end, not a
+    # hydrant and not a lamp body.
+    # T204_022 is a MODERN three-head floodlight mast (and its heads are
+    # lit); street_lamp_01 is a Victorian gas lamp — wrong century.
+    # T209_012 is a wooden utility pole with cross-arms, not a lamp.
     "T213_009": ("old_tyre", {"fit": "w"}),
     "T213_011": ("rusted_wheel_rim_01", {"fit": "w"}),
     # hanging lamps (indoor)
@@ -67,7 +71,6 @@ SPRITES = {
     "T204_010": ("caged_hanging_light", {}),
     "T204_011": ("caged_hanging_light", {}),
     "T204_018": ("hanging_industrial_lamp", {}),
-    "T204_005": ("hanging_industrial_lamp", {}),
     "T204_015": ("hanging_industrial_lamp", {}),
 }
 
