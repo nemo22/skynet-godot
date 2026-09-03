@@ -51,20 +51,50 @@ const OPT_PANEL_SCALE: float = 3.0
 const OPT_CONTROLS_RECT: Rect2 = Rect2(4, 105, 86, 16)
 const OPT_DETAIL_RECT: Rect2 = Rect2(94, 105, 58, 16)
 const OPT_EXIT_RECT: Rect2 = Rect2(156, 105, 42, 16)
-const OPT_SOUND_RECT: Rect2 = Rect2(60, 26, 109, 6)    # SOUND slider track (inner)
+# Slider tracks and buttons, measured off the art by scanning for the
+# recessed boxes and the bevel edges.
+const OPT_SOUND_RECT: Rect2 = Rect2(59, 25, 112, 8)     # SOUND slider track
+const OPT_MUSIC_RECT: Rect2 = Rect2(59, 42, 112, 8)     # MUSIC slider track
+const OPT_STEREO_RECT: Rect2 = Rect2(11, 69, 50, 28)    # REVERSE STEREO
+## DIFFICULTY LEVEL — LOW / MED / HIGH (Settings.difficulty).
+const OPT_DIFF_RECTS: Array = [
+	Rect2(82, 75, 32, 18), Rect2(116, 75, 33, 18), Rect2(151, 75, 33, 18),
+]
+
+# DETAIL.IMG is 198x102 — the original RENDER DETAIL screen: a
+# LOW / MED / HIGH row, a RESOLUTION row and EXIT. Rects measured off
+# the art by finding the buttons' bevel edges.
+const DET_PANEL_SCALE: float = 3.0
+const DET_LEVEL_RECTS: Array = [
+	Rect2(48, 28, 32, 18), Rect2(82, 28, 33, 18), Rect2(117, 28, 33, 18),
+]
+const DET_RES_RECTS: Array = [Rect2(34, 63, 60, 18), Rect2(103, 63, 60, 18)]
+const DET_EXIT_RECT: Rect2 = Rect2(158, 86, 38, 14)
 
 # CONTROLS.IMG is 269x166 — the original CONTROL CONFIGURATION screen.
-# Bind-box rects (image pixels) for the fly-camera actions the port uses;
-# the remaining boxes (FIRE, JUMP-as-game, AUTOMAP …) stay unbound.
+# All 17 captions on the art are bindable (controls.gd ACTIONS).
 const CTL_PANEL_SCALE: float = 4.0
 const CTL_BOXES: Dictionary = {
-	"forward": Rect2(72, 24, 48, 11),    # FORWARD
-	"back":    Rect2(72, 36, 48, 11),    # REVERSE
-	"left":    Rect2(72, 72, 48, 11),    # SLIDE LEFT
-	"right":   Rect2(72, 84, 48, 11),    # SLIDE RIGHT
-	"sprint":  Rect2(198, 36, 48, 11),   # RUN
-	"up":      Rect2(198, 48, 48, 11),   # JUMP
-	"down":    Rect2(198, 60, 48, 11),   # CROUCH
+	# Measured off CONTROLS.IMG (269x166) by scanning for the dark bind
+	# boxes, so every caption on the art has a working box — the same 17
+	# the DOS CONTROLS.DAT stores (+0x00..+0x43).
+	"forward":     Rect2(77, 25, 48, 8),     # FORWARD
+	"back":        Rect2(77, 37, 48, 8),     # REVERSE
+	"turn_left":   Rect2(77, 49, 48, 8),     # TURN LEFT
+	"turn_right":  Rect2(77, 61, 48, 8),     # TURN RIGHT
+	"left":        Rect2(77, 73, 48, 8),     # SLIDE LEFT
+	"right":       Rect2(77, 85, 48, 8),     # SLIDE RIGHT
+	"fire":        Rect2(77, 102, 48, 8),    # FIRE
+	"throw":       Rect2(77, 115, 48, 8),    # THROW/USE
+	"activate":    Rect2(77, 128, 48, 8),    # ACTIVATE
+	"slide":       Rect2(201, 25, 48, 8),    # SLIDE (strafe modifier)
+	"sprint":      Rect2(201, 37, 48, 8),    # RUN
+	"up":          Rect2(201, 49, 48, 8),    # JUMP
+	"down":        Rect2(201, 61, 48, 8),    # CROUCH
+	"look_up":     Rect2(201, 82, 48, 8),    # LOOK UP
+	"look_down":   Rect2(201, 95, 48, 8),    # LOOK DOWN
+	"center_view": Rect2(201, 108, 48, 8),   # CENTER VIEW
+	"automap":     Rect2(201, 128, 48, 8),   # AUTOMAP
 }
 const CTL_JOYSTICK_RECT: Rect2 = Rect2(4, 151, 76, 13)
 const CTL_MOUSE_RECT: Rect2 = Rect2(89, 151, 53, 13)
@@ -113,6 +143,8 @@ var _screen_load: Control = null
 var _screen_options: Control = null
 var _screen_controls: Control = null
 var _screen_display: Control = null
+## QUIT.IMG — the "QUIT TO DOS?" confirmation box (see _confirm_quit).
+var _quit_art: Variant = null
 var _screen_debug: Control = null
 var _screen_maps: Control = null
 var _god_btn: Button = null            # DEBUG TOOLS god-mode toggle
@@ -180,8 +212,15 @@ func _maybe_import() -> void:
 	# and capture it (layout checks from a script).
 	if cli.has("screen"):
 		var target: Control = {"netmenu": _screen_netmenu, "join": _screen_join,
-			"newgame": _screen_newgame, "netjoin": _screen_netjoin}.get(String(cli["screen"]), _screen_main)
+			"newgame": _screen_newgame, "netjoin": _screen_netjoin,
+			"load": _screen_load, "options": _screen_options,
+			"controls": _screen_controls, "detail": _screen_display,
+			"debug": _screen_debug, "maps": _screen_maps}.get(String(cli["screen"]), _screen_main)
+		if target == _screen_load:
+			_refresh_load_slots()
 		_show_screen(target)
+		if String(cli["screen"]) == "quit":
+			_confirm_quit()
 		if cli.has("menu-shot"):
 			await get_tree().create_timer(float(cli.get("shot-delay", 1.0))).timeout
 			await RenderingServer.frame_post_draw
@@ -317,6 +356,9 @@ func _load_images() -> Dictionary:
 	out["OPTIONS"] = ImgFile.parse(imgs.read("OPTIONS.IMG"), menu_pal)
 	out["LOAD"] = ImgFile.parse(imgs.read("LOAD.IMG"), menu_pal)
 	out["CONTROLS"] = ImgFile.parse(imgs.read("CONTROLS.IMG"), menu_pal)
+	out["DETAIL"] = ImgFile.parse(imgs.read("DETAIL.IMG"), menu_pal)
+	out["QUIT"] = ImgFile.parse(imgs.read("QUIT.IMG"), menu_pal)
+	out["QUITMAIN"] = ImgFile.parse(imgs.read("QUITMAIN.IMG"), menu_pal)
 	out["NEWGAME"] = ImgFile.parse(imgs.read("NETGAME1.IMG"), menu_pal)
 	out["NETJOIN"] = ImgFile.parse(imgs.read("NETJOIN1.IMG"), menu_pal)
 	out["NETMENU"] = ImgFile.parse(imgs.read("NETMENU1.IMG"), menu_pal)
@@ -368,7 +410,8 @@ func _build() -> void:
 	_screen_load = _build_load_screen(art.get("LOAD"))
 	_screen_options = _build_options_screen(art.get("OPTIONS"))
 	_screen_controls = _build_controls_screen(art.get("CONTROLS"))
-	_screen_display = _build_display_screen()
+	_screen_display = _build_display_screen(art.get("DETAIL"))
+	_quit_art = art.get("QUIT")
 	_screen_debug = _build_debug_screen()
 	_screen_maps = _build_maps_screen()
 	for s in _all_screens():
@@ -603,7 +646,11 @@ func _nm_field(panel: Control, rect: Rect2, s: float, text: String, key: String,
 func _dos_font(c: Control, size: int = 16) -> void:
 	if _net_font != null:
 		c.add_theme_font_override("font", _net_font)
-		c.add_theme_font_size_override("font_size", _net_font.fixed_size * size / 16)
+		# A bitmap font only stays sharp at whole multiples of its own
+		# cell (FONT0003 is 8x8, built at x2 = 16 px): round the request
+		# to the nearest multiple instead of resampling it at 1.5x.
+		var unit: int = maxi(_net_font.fixed_size, 1)
+		c.add_theme_font_size_override("font_size", maxi(int(round(float(size) / float(unit))), 1) * unit)
 	else:
 		c.add_theme_font_size_override("font_size", size)
 
@@ -982,7 +1029,7 @@ func _build_load_screen(load_tex: Variant) -> Control:
 		slot.focus_mode = Control.FOCUS_NONE
 		_style_hotspot(slot)
 		slot.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		slot.add_theme_font_size_override("font_size", int(8.0 * s))
+		_dos_font(slot, int(8.0 * s))
 		slot.add_theme_color_override("font_color", Color(0.72, 0.95, 0.78))
 		slot.add_theme_color_override("font_hover_color", Color(1, 1, 1))
 		slot.add_theme_color_override("font_pressed_color", Color(1, 1, 1))
@@ -1055,16 +1102,64 @@ func _build_options_screen(options_tex: Variant) -> Control:
 	panel.add_child(_img_hotspot(OPT_EXIT_RECT, s,
 		func() -> void: _show_screen(_screen_main)))
 
-	# Interactive SOUND volume over the baked OPTIONS.IMG slider track.
-	var vol: Control = preload("res://scripts/volume_slider.gd").new()
-	vol.position = OPT_SOUND_RECT.position * s
-	vol.size = OPT_SOUND_RECT.size * s
-	panel.add_child(vol)
+	# SOUND and MUSIC volumes over the baked slider tracks.
+	for row in [[OPT_SOUND_RECT, "sound"], [OPT_MUSIC_RECT, "music"]]:
+		var vol: Control = preload("res://scripts/volume_slider.gd").new()
+		vol.channel = String(row[1])
+		vol.position = (row[0] as Rect2).position * s
+		vol.size = (row[0] as Rect2).size * s
+		panel.add_child(vol)
+
+	# REVERSE STEREO — swaps the panning, like the DOS toggle.
+	_stereo_mark = _option_mark(panel, OPT_STEREO_RECT, s)
+	panel.add_child(_img_hotspot(OPT_STEREO_RECT, s, func() -> void:
+		Settings.set_reverse_stereo(not Settings.reverse_stereo)
+		_refresh_option_marks()))
+
+	# DIFFICULTY LEVEL — LOW / MED / HIGH.
+	_diff_marks.clear()
+	for i in OPT_DIFF_RECTS.size():
+		var r: Rect2 = OPT_DIFF_RECTS[i]
+		_diff_marks.append(_option_mark(panel, r, s))
+		var lvl: int = i
+		panel.add_child(_img_hotspot(r, s, func() -> void:
+			Settings.set_difficulty(lvl)
+			_refresh_option_marks()))
+	_refresh_option_marks()
 
 	vb.add_child(_spacer(8))
 	vb.add_child(_menu_button("DEBUG TOOLS",
 		func() -> void: _show_screen(_screen_debug)))
 	return pair[0]
+
+## A selection highlight drawn inside one of the baked buttons: the DOS
+## screens light the chosen cell up rather than moving a marker.
+var _stereo_mark: ColorRect = null
+var _diff_marks: Array = []
+var _detail_marks: Array = []
+var _res_marks: Array = []
+
+func _option_mark(panel: Control, rect: Rect2, s: float) -> ColorRect:
+	var m := ColorRect.new()
+	m.color = Color(0.35, 0.95, 0.55, 0.30)
+	m.position = rect.position * s
+	m.size = rect.size * s
+	m.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	m.visible = false
+	panel.add_child(m)
+	return m
+
+func _refresh_option_marks() -> void:
+	if _stereo_mark != null and is_instance_valid(_stereo_mark):
+		_stereo_mark.visible = Settings.reverse_stereo
+	for i in _diff_marks.size():
+		var m: ColorRect = _diff_marks[i]
+		if is_instance_valid(m):
+			m.visible = (i == Settings.difficulty)
+	for i in _detail_marks.size():
+		var m2: ColorRect = _detail_marks[i]
+		if is_instance_valid(m2):
+			m2.visible = (i == Settings.detail)
 
 ## CONTROLS — the original CONTROL CONFIGURATION screen (CONTROLS.IMG).
 ## The bind boxes for the fly-camera actions show their key and rebind
@@ -1107,7 +1202,7 @@ func _build_controls_screen(controls_tex: Variant) -> Control:
 		lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		lbl.position = r.position * s
 		lbl.size = r.size * s
-		lbl.add_theme_font_size_override("font_size", 18)
+		_dos_font(lbl, 16)
 		lbl.add_theme_color_override("font_color", Color(0.55, 1.0, 0.65))
 		lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		panel.add_child(lbl)
@@ -1137,22 +1232,62 @@ func _img_hotspot(rect: Rect2, s: float, cb: Callable) -> Button:
 	b.pressed.connect(func() -> void: Audio.play_sfx("BUTTON1.RAW"))
 	return b
 
-## DISPLAY — resolution and window-mode settings (OPTIONS → DETAIL).
-func _build_display_screen() -> Control:
-	var pair := _framed_panel()
+## RENDER DETAIL — the original DETAIL.IMG screen (OPTIONS → DETAIL),
+## with the port's own display settings underneath it.
+##
+## The two art rows do what they did in DOS: RENDER DETAIL pulls the
+## haze in (Settings.fog_scale) and RESOLUTION picks the 3D render
+## resolution, 320 or 640 pixels wide stretched up — the chunky software
+## look. NATIVE and the window settings below are the port's additions.
+func _build_display_screen(detail_tex: Variant) -> Control:
+	var pair := _panel_screen()
 	var vb: VBoxContainer = pair[1]
-	vb.add_child(_heading("DISPLAY"))
+	var s := DET_PANEL_SCALE
 
-	vb.add_child(_section_label("Resolution"))
+	var panel := Control.new()
+	panel.custom_minimum_size = Vector2(198.0 * s, 102.0 * s)
+	vb.add_child(panel)
+	if detail_tex != null:
+		var pic := TextureRect.new()
+		pic.texture = detail_tex
+		pic.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+		pic.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		pic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		panel.add_child(pic)
+	else:
+		panel.add_child(_heading("RENDER DETAIL"))
+
+	_detail_marks.clear()
+	for i in DET_LEVEL_RECTS.size():
+		var r: Rect2 = DET_LEVEL_RECTS[i]
+		_detail_marks.append(_option_mark(panel, r, s))
+		var lvl: int = i
+		panel.add_child(_img_hotspot(r, s, func() -> void:
+			Settings.set_detail(lvl)
+			_refresh_option_marks()
+			_show_toast("Render detail: %s" % Settings.LEVEL_NAMES[lvl])))
+
+	_res_marks.clear()
+	for i in DET_RES_RECTS.size():
+		var r2: Rect2 = DET_RES_RECTS[i]
+		_res_marks.append(_option_mark(panel, r2, s))
+		var mode: int = i
+		panel.add_child(_img_hotspot(r2, s, func() -> void:
+			Settings.set_resolution(mode)
+			_refresh_display_marks()))
+	panel.add_child(_img_hotspot(DET_EXIT_RECT, s,
+		func() -> void: _show_screen(_screen_options)))
+
+	vb.add_child(_section_label("Render resolution"))
+	var native := _option_button("NATIVE (FULL WINDOW)", func() -> void:
+		Settings.set_resolution(Settings.RES_NATIVE)
+		_refresh_display_marks())
+	native.set_meta("res_mode", Settings.RES_NATIVE)
 	_res_buttons.clear()
-	for res in _detect_resolutions():
-		var r: Vector2i = res
-		var rb := _option_button("", func() -> void: _set_resolution(r))
-		rb.set_meta("res", r)
-		_res_buttons.append(rb)
-		vb.add_child(rb)
+	_res_buttons.append(native)
+	vb.add_child(native)
 
-	vb.add_child(_section_label("Window Mode"))
+	vb.add_child(_section_label("Window"))
 	var modes := HBoxContainer.new()
 	modes.alignment = BoxContainer.ALIGNMENT_CENTER
 	modes.add_theme_constant_override("separation", 14)
@@ -1188,6 +1323,7 @@ func _build_display_screen() -> Control:
 	vb.add_child(_spacer(4))
 	vb.add_child(_menu_button("BACK", func() -> void: _show_screen(_screen_options)))
 	_refresh_display_marks()
+	_refresh_option_marks()
 	return pair[0]
 
 var _render_buttons: Array[Button] = []
@@ -1213,18 +1349,21 @@ func _detect_resolutions() -> Array:
 
 func _section_label(text: String) -> Label:
 	var l := Label.new()
-	l.text = text
+	l.text = text.to_upper()
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	l.add_theme_font_size_override("font_size", 19)
+	_dos_font(l, 16)
 	l.add_theme_color_override("font_color", Color(0.62, 0.65, 0.7))
 	return l
 
 ## Mark the active resolution / mode button with a leading caret.
 func _refresh_display_marks() -> void:
 	for rb in _res_buttons:
-		var r: Vector2i = rb.get_meta("res")
-		var on: bool = (not _disp_fullscreen) and r == _disp_res
-		rb.text = "%s%d x %d" % ["> " if on else "", r.x, r.y]
+		var mode: int = int(rb.get_meta("res_mode", -1))
+		rb.text = ("> " if mode == Settings.resolution else "") + "NATIVE (FULL WINDOW)"
+	for i in _res_marks.size():
+		var m: ColorRect = _res_marks[i]
+		if is_instance_valid(m):
+			m.visible = (i == Settings.resolution)
 	for mb in _mode_buttons:
 		var fs: bool = mb.get_meta("fs")
 		var nm: String = "FULLSCREEN" if fs else "WINDOWED"
@@ -1347,7 +1486,7 @@ func _build_maps_screen() -> Control:
 		mb.text = m.trim_prefix("MAP.")
 		mb.custom_minimum_size = Vector2(0, 54)
 		mb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		mb.add_theme_font_size_override("font_size", 20)
+		_dos_font(mb, 16)
 		mb.focus_mode = Control.FOCUS_NONE
 		_style_button(mb)
 		var mname: String = m
@@ -1454,9 +1593,9 @@ func _get_panel_style() -> StyleBoxTexture:
 ## A compact option button (resolution / mode rows in the DISPLAY dialog).
 func _option_button(text: String, cb: Callable) -> Button:
 	var b := Button.new()
-	b.text = text
+	b.text = text.to_upper()
 	b.custom_minimum_size = Vector2(340, 44)
-	b.add_theme_font_size_override("font_size", 22)
+	_dos_font(b, 16)
 	b.focus_mode = Control.FOCUS_NONE
 	_style_button(b)
 	b.pressed.connect(cb)
@@ -1464,9 +1603,9 @@ func _option_button(text: String, cb: Callable) -> Button:
 
 func _heading(text: String) -> Label:
 	var l := Label.new()
-	l.text = text
+	l.text = text.to_upper()          # the DOS bitmap font has no lower case
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	l.add_theme_font_size_override("font_size", 38)
+	_dos_font(l, 32)
 	l.add_theme_color_override("font_color", Color(0.82, 0.84, 0.88))
 	return l
 
@@ -1477,9 +1616,9 @@ func _spacer(h: float) -> Control:
 
 func _menu_button(text: String, cb: Callable) -> Button:
 	var b := Button.new()
-	b.text = text
+	b.text = text.to_upper()
 	b.custom_minimum_size = Vector2(360, 58)
-	b.add_theme_font_size_override("font_size", 24)
+	_dos_font(b, 16)
 	b.focus_mode = Control.FOCUS_NONE
 	_style_button(b)
 	b.pressed.connect(cb)
@@ -1530,7 +1669,7 @@ func _build_toast() -> void:
 	_toast.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
 	_toast.offset_top = -96.0
 	_toast.offset_bottom = -56.0
-	_toast.add_theme_font_size_override("font_size", 22)
+	_dos_font(_toast, 16)
 	_toast.add_theme_color_override("font_color", Color(1, 0.85, 0.4))
 	_toast.add_theme_color_override("font_outline_color", Color(0, 0, 0))
 	_toast.add_theme_constant_override("outline_size", 5)
@@ -1596,14 +1735,77 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		return
 	if event.keycode == KEY_ESCAPE:
-		if _screen_main != null and _screen_main.visible:
-			get_tree().quit()
+		if _quit_overlay != null and is_instance_valid(_quit_overlay):
+			_close_quit()                     # DOS: ESC in the box = NO
+		elif _screen_main != null and _screen_main.visible:
+			_confirm_quit()                   # DOS: ESC on the title = QUIT?
 		else:
 			for scr in _all_screens():
 				if scr != null and scr.visible and _back_target.has(scr):
 					_show_screen(_back_target[scr])
 					break
 		get_viewport().set_input_as_handled()
+
+## QUIT confirmation — the original QUIT.IMG box (96x37, drawn at
+## 115,70 of the 320x200 screen) with its baked YES / NO captions.
+## DOS: FUN_00140684; ESC inside the box means NO, and ESC on the title
+## menu OPENS this box rather than doing nothing.
+const QUIT_PANEL_SCALE: float = 4.0
+const QUIT_YES_RECT: Rect2 = Rect2(0, 20, 52, 17)
+const QUIT_NO_RECT: Rect2 = Rect2(52, 20, 44, 17)
+var _quit_overlay: Control = null
+
+func _confirm_quit() -> void:
+	if _quit_overlay != null and is_instance_valid(_quit_overlay):
+		return
+	var root := Control.new()
+	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var dim := ColorRect.new()
+	dim.color = Color(0.02, 0.03, 0.05, 0.6)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	root.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(center)
+	var s := QUIT_PANEL_SCALE
+	var panel := Control.new()
+	panel.custom_minimum_size = Vector2(96.0 * s, 37.0 * s)
+	center.add_child(panel)
+	if _quit_art != null:
+		var pic := TextureRect.new()
+		pic.texture = _quit_art
+		pic.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+		pic.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		pic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		panel.add_child(pic)
+	else:
+		panel.add_child(_heading("QUIT TO DOS?"))
+	panel.add_child(_quit_hotspot(QUIT_YES_RECT, s, func() -> void:
+		get_tree().quit()))
+	panel.add_child(_quit_hotspot(QUIT_NO_RECT, s, _close_quit))
+	add_child(root)
+	_quit_overlay = root
+
+## Like _img_hotspot but with a visible hover highlight, standing in for
+## the QUITBTN.CFA frame the DOS box drew under the pointer.
+func _quit_hotspot(rect: Rect2, s: float, cb: Callable) -> Button:
+	var b := _img_hotspot(rect, s, cb)
+	var mark := ColorRect.new()
+	mark.color = Color(0.9, 0.95, 1.0, 0.18)
+	mark.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	mark.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	mark.visible = false
+	b.add_child(mark)
+	b.mouse_entered.connect(func() -> void: mark.visible = true)
+	b.mouse_exited.connect(func() -> void: mark.visible = false)
+	return b
+
+func _close_quit() -> void:
+	if _quit_overlay != null and is_instance_valid(_quit_overlay):
+		_quit_overlay.queue_free()
+	_quit_overlay = null
 
 func _on_bar_item(label: String) -> void:
 	match label:
@@ -1617,7 +1819,7 @@ func _on_bar_item(label: String) -> void:
 		"OPTIONS":
 			_show_screen(_screen_options)
 		"QUIT":
-			get_tree().quit()
+			_confirm_quit()
 
 func _on_map_chosen(m: String) -> void:
 	SkynetPaths.selected_map = m

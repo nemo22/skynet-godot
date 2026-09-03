@@ -37,8 +37,16 @@ const Explosion := preload("res://scripts/explosion.gd")
 signal teleport_requested(target_map: int, marker_set: int)
 ## A destroyed object drops an item (FUN_00124293 → FUN_00124119).
 signal drop_requested(pos: Vector3, drop_type: int)
-## A mission-objective act (0x1C..0x2A) fired; index = act - 0x1C.
+## A MISSION OBJECTIVE act (0x26..0x2A) fired; index = act - 0x26, which
+## selects the [M1]..[M5] line of the mission's briefing script. The DOS
+## engine (handler 0x1377d0) decrements the "objectives remaining"
+## counter here, prints that line, and disables the node.
 signal objective_complete(index: int)
+## A hint act (0x1C..0x25) fired; index = act - 0x1C → [G1]..[G9].
+## Handler 0x13779d: prints the line, changes no counter.
+signal hint_message(index: int)
+## Act 0x2B (handler 0x13782d): the mission is lost, at once.
+signal mission_failed()
 
 const MapFile := preload("res://scripts/loaders/map_file.gd")
 const PickupData := preload("res://scripts/pickup_data.gd")
@@ -100,6 +108,15 @@ const ACT_PROX_CHAIN_A: int = 0xF1  # radius 256 (table +4)
 const ACT_PROX_CHAIN_B: int = 0xF2  # radius 1024 (table +4)
 const ACT_TELEPORT: int = 0xF0
 const ACT_VOICE: int = 0xED         # voice line (VOICE.PRS id at sub+2, 0x137dfd)
+## Message / mission-progress acts, split exactly as the DOS handler
+## table does (0x59b00). Only the OBJECTIVE band moves the counter that
+## ends a mission — treating the hints as objectives (the port did until
+## 2026-09-03) makes missions end at the first flavour line.
+const ACT_HINT_FIRST: int = 0x1C    # [G1].. handler 0x13779d, message only
+const ACT_HINT_LAST: int = 0x25
+const ACT_OBJECTIVE_FIRST: int = 0x26   # [M1].. handler 0x1377d0, counter--
+const ACT_OBJECTIVE_LAST: int = 0x2A
+const ACT_FAIL: int = 0x2B          # handler 0x13782d: MISSION FAILED now
 
 ## One-shot play-sound-and-disable nodes (handler 0x137dbd) — chains
 ## route through these to give doors/gates their sounds. The table's
@@ -144,7 +161,7 @@ var _prox: Array = []             # entities with a proximity act type
 var _teleports: Array = []        # entities with act 0xF0
 var _sound_nodes: Array = []      # entities with a SOUND_ONESHOT act
 var _voice_nodes: Array = []      # entities with act 0xED
-var _objective_nodes: Array = []  # entities with acts 0x1C..0x2A
+var _objective_nodes: Array = []  # entities with acts 0x1C..0x2B
 ## Physics access for reachability tests (set by the level controller).
 var space: PhysicsDirectSpaceState3D = null
 var player_body: CollisionObject3D = null
@@ -169,7 +186,7 @@ func setup(map: MapFile.MapFile) -> void:
 			_sound_nodes.append(e)
 		elif act == ACT_VOICE:
 			_voice_nodes.append(e)
-		elif act >= 0x1C and act <= 0x2A:
+		elif act >= ACT_HINT_FIRST and act <= ACT_FAIL:
 			_objective_nodes.append(e)
 		if (e.flags & 3) == 1 and e.hp > 0:
 			_hp[e.file_off] = float(e.hp)
@@ -377,7 +394,7 @@ func _do_action(e: MapFile.Entity) -> void:
 	if is_mover(act) or act == ACT_PROX_GATE \
 			or act == ACT_PROX_CHAIN_A or act == ACT_PROX_CHAIN_B \
 			or act == ACT_TELEPORT or is_destructible(act) \
-			or (act >= 0x1C and act <= 0x2A) or act == ACT_VOICE:
+			or (act >= ACT_HINT_FIRST and act <= ACT_FAIL) or act == ACT_VOICE:
 		return                                  # handled in tick()/hit path
 	if not _unhandled_logged.has(act):
 		_unhandled_logged[act] = true
@@ -403,8 +420,10 @@ func tick(delta: float, player_pos: Vector3) -> void:
 	# state bit 3 (the wall buttons, state 0x09) — walking past a button
 	# must not press it.
 	for e in _prox:
-		if e.link_act_type != ACT_PROX_GATE:
-			continue
+		# 0xEF gates and the 0xF1 / 0xF2 chain triggers all watch the
+		# player (handlers 0x137e2e and 0x1379c4); the radii differ.
+		# MAP.220's mission objective hangs off an 0xF2 button 1024 units
+		# from the road, which is how that jeep mission ends.
 		if (e.flags & 3) == 1 and (e.state_byte & 8) != 0 and e.name_index >= 0:
 			continue                         # wall button: use key only
 		# (An UNNAMED variant-1 gate with the same state byte is an
@@ -436,16 +455,24 @@ func tick(delta: float, player_pos: Vector3) -> void:
 		if (e.state_byte & 1) != 0:
 			e.state_byte &= ~1
 			Audio.play_voice(e.exit_map)
-	# Mission objectives (0x1C..0x2A, handler 0x13779d): fire once when a
+	# Messages and mission progress (0x1C..0x2B): fire once when a
 	# chain enables them, then the act disarms itself (DOS writes 0xFF
 	# into the act byte). FUN_0012f53d confirms with sound 0x51.
 	for e in _objective_nodes:
-		if (e.state_byte & 1) != 0 and e.link_act_type >= 0x1C and e.link_act_type <= 0x2A:
-			var idx: int = e.link_act_type - 0x1C
-			e.state_byte &= ~1
-			e.link_act_type = 0xFF
+		if (e.state_byte & 1) == 0:
+			continue
+		var act: int = e.link_act_type
+		if act < ACT_HINT_FIRST or act > ACT_FAIL:
+			continue
+		e.state_byte &= ~1
+		e.link_act_type = 0xFF               # DOS writes 0xFF: one-shot
+		if act == ACT_FAIL:
+			mission_failed.emit()
+		elif act >= ACT_OBJECTIVE_FIRST:
 			Audio.play_id(0x51, -4.0)
-			objective_complete.emit(idx)
+			objective_complete.emit(act - ACT_OBJECTIVE_FIRST)
+		else:
+			hint_message.emit(act - ACT_HINT_FIRST)
 	# Teleports ---------------------------------------------------
 	# A chain (0xEF gate → sound node → 0xF0) or touching the doorway
 	# sprite ARMS the exit (state bit 0); the map change itself needs

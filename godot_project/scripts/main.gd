@@ -52,6 +52,15 @@ var _weapon_label: Label = null
 var _ammo_label: Label = null
 var _hud_panel: TextureRect = null     # PANEL0.IMG bottom HUD bar
 var _health_fill: ColorRect = null     # HEALTH gauge fill
+var _rad_fill: ColorRect = null        # RADIATION gauge fill
+var _hud_layer: CanvasLayer = null     # the whole gameplay HUD
+## AUTOMAP (Tab): the paused 3D map view, and the set of entity nodes the
+## player has actually seen — DOS marks flag 0x80 on everything it drew
+## and the automap shows only those (fog of war).
+var _automap: Node3D = null
+var _seen_meshes: Dictionary = {}
+var _seen_poll: float = 0.0
+var _armor_fill: ColorRect = null      # ARMOR gauge fill
 var _hud_font: FontFile = null         # FONT0003.FNT — HUD read-outs
 var _status_font: FontFile = null      # FONT0005.FNT — status messages
 var _game_over: CanvasLayer = null
@@ -112,6 +121,15 @@ var _briefing_overlay: CanvasLayer = null
 var _briefing_pages: Array = []            # [{img:Texture, text:String, title:String}]
 var _briefing_page: int = 0
 var _briefing_scene: TextureRect = null    # BRIEF*.IMG centre picture
+## The mission screen's three tabs. BRIEFING pages through the script,
+## TACTICAL spins the [TA] enemy dossiers, STATISTICS shows the four
+## percentages the DOS screen drew (FUN_001346e5).
+var _briefing_mode: String = "BRIEFING"
+var _mission_tactical: Array = []          # [TA] dossier names
+var _briefing_backdrop: Texture2D = null   # TACTBAK.IMG
+var _tactical: Control = null
+var _stats_box: Control = null
+var _briefing_tabs: Dictionary = {}        # name -> the tab Button
 var _briefing_text: Label = null           # objectives / dialogue text
 var _briefing_toast_label: Label = null    # transient "tab unavailable" note
 var _briefing_scroll: ScrollContainer = null
@@ -463,6 +481,14 @@ func _cli_after_level() -> void:
 		# Re-apply the requested view: the first captured mouse event
 		# and gravity can drift the camera during the delay.
 		_cli_place()
+		if _cli.has("tab") and _briefing_overlay != null:
+			_briefing_set_tab(String(_cli["tab"]).to_upper())
+			await get_tree().process_frame
+			await get_tree().process_frame
+		if _cli.has("automap"):
+			_toggle_automap()
+			await get_tree().process_frame
+			await get_tree().process_frame
 		await RenderingServer.frame_post_draw
 		await RenderingServer.frame_post_draw
 		var img: Image = get_viewport().get_texture().get_image()
@@ -593,16 +619,29 @@ func _load_current() -> void:
 	# Mission "main" maps open with the briefing screen; the level itself
 	# loads only when the player presses BEGIN. Other maps load directly.
 	# Automation runs (screenshots) skip the briefing.
-	if _cli.has("screenshot") or _cli.has("no-briefing") or Net.active:
+	if (_cli.has("screenshot") and not _cli.has("tab")) or _cli.has("no-briefing") or Net.active:
 		_begin_level(name)
 	elif not _maybe_show_briefing(name):
 		_begin_level(name)
+	elif _cli.has("screenshot"):
+		# --tab=TACTICAL --screenshot=…: capture the mission screen itself.
+		await get_tree().create_timer(float(_cli.get("shot-delay", 1.5))).timeout
+		if _cli.has("tab"):
+			_briefing_set_tab(String(_cli["tab"]).to_upper())
+		await RenderingServer.frame_post_draw
+		await RenderingServer.frame_post_draw
+		var bimg: Image = get_viewport().get_texture().get_image()
+		print("[skynet] screenshot %s (%s) — mission screen"
+			% [_cli["screenshot"], error_string(bimg.save_png(String(_cli["screenshot"])))])
+		if _cli.has("quit-after-shot"):
+			get_tree().quit()
 
 ## Load and show the level geometry for `name` — called directly for
 ## non-mission maps, or from the briefing's BEGIN button once the player
 ## has read the mission briefing.
 func _begin_level(name: String) -> void:
 	_set_status("Loading %s ..." % name)
+	_ensure_mission_script(name)
 	await get_tree().process_frame
 
 	var loader := LevelLoader.new()
@@ -648,6 +687,8 @@ func _begin_level(name: String) -> void:
 		level.action.teleport_requested.connect(_on_teleport_requested)
 		level.action.drop_requested.connect(_on_drop_requested)
 		level.action.objective_complete.connect(_on_objective_complete)
+		level.action.hint_message.connect(_on_hint_message)
+		level.action.mission_failed.connect(_on_mission_failed)
 		level.action.space = get_world_3d().direct_space_state
 		level.action.player_body = player
 		if not player.pickup_message.is_connected(_set_status):
@@ -707,12 +748,15 @@ func _begin_level(name: String) -> void:
 	_mission_hostiles = 0
 	if _is_campaign_main(name):
 		_mission_hostiles = get_tree().get_nodes_in_group("enemy").size()
+	if _dm == null and not Net.active:
+		Stats.add_enemies(get_tree().get_nodes_in_group("enemy").size())
 	# Vehicle missions (Skynet.exe mission table 0x34846, +8 = player
 	# mode): mission 2 and 6 are driven in the jeep, mission 7 flown in
 	# the HK, for the whole mission including its sub-maps.
 	if _dm == null and is_instance_valid(player):
 		player.set_vehicle(_vehicle_for_map(name))
 	_apply_pending_player()
+	_collect_radiation(level)
 	_set_hud_mode(player.vehicle if is_instance_valid(player) else 0)
 	if _dm != null:
 		_dm.on_level_ready(level)
@@ -987,8 +1031,10 @@ func _set_sky_fill(level: LevelLoader.Level, map_name: String = "") -> void:
 		env.fog_light_energy = 1.0
 		env.fog_sun_scatter = 0.0
 		env.fog_density = 1.0
-		env.fog_depth_begin = FOG_BEGIN
-		env.fog_depth_end = FOG_END
+		# RENDER DETAIL pulls the haze in (Settings.fog_scale, from the
+		# DOS far-clip table 1408 / 2176 / 2432).
+		env.fog_depth_begin = FOG_BEGIN * Settings.fog_scale()
+		env.fog_depth_end = FOG_END * Settings.fog_scale()
 		env.fog_depth_curve = 1.0
 		env.fog_aerial_perspective = 0.0
 		env.fog_sky_affect = 0.0
@@ -1215,8 +1261,8 @@ func _apply_render_env(level: LevelLoader.Level, env: Environment, fill: Color) 
 	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 	# Haze that takes the sky colour, plus volumetric light for the rays.
 	env.fog_light_color = fill.lerp(Color(0.05, 0.05, 0.1), 0.6) if night else fill.lerp(Color(1.0, 0.6, 0.35), 0.5)
-	env.fog_depth_begin = FOG_BEGIN * 1.5
-	env.fog_depth_end = FOG_END * 1.4
+	env.fog_depth_begin = FOG_BEGIN * 1.5 * Settings.fog_scale()
+	env.fog_depth_end = FOG_END * 1.4 * Settings.fog_scale()
 	env.fog_sky_affect = 0.0
 	env.volumetric_fog_enabled = not night
 	env.volumetric_fog_density = 0.00022
@@ -1351,6 +1397,24 @@ func _process(delta: float) -> void:
 					sun.light_energy = 0.15
 				print("[skynet] the moon is gone")
 		_update_moon()
+	# AUTOMAP fog of war: a few times a second, mark the entity meshes in
+	# front of the player as seen (DOS sets flag 0x80 on everything it
+	# drew that frame — same idea, cheaper).
+	if _current_level != null and _current_level.entities != null \
+			and camera != null and is_instance_valid(player) and _dm == null:
+		_seen_poll -= delta
+		if _seen_poll <= 0.0:
+			_seen_poll = 0.25
+			var here: Vector3 = player.global_position
+			for c in _current_level.entities.get_children():
+				if not (c is Node3D):
+					continue
+				var n: Node3D = c
+				if _seen_meshes.has(n.get_instance_id()):
+					continue
+				if here.distance_to(n.global_position) < 6000.0 \
+						and camera.is_position_in_frustum(n.global_position):
+					_seen_meshes[n.get_instance_id()] = true
 	# Entity action system — movers, proximity triggers, teleports.
 	if _current_level != null and _current_level.action != null \
 			and is_instance_valid(player):
@@ -1368,72 +1432,174 @@ func _process(delta: float) -> void:
 			_health_fill.anchor_right = frac
 			_health_fill.color = Color(0.9, 0.3, 0.22) if low \
 				else Color(0.3, 0.85, 0.4)
+		if _armor_fill != null:
+			_armor_fill.anchor_right = clampf(player.armor, 0.0, 1.0)
+		# Radiation: dose from the marker-4 sources, charged per second.
+		if not _rad_sources.is_empty() and _game_over == null:
+			_rad_dose = _radiation_dose(player.global_position + Vector3(0.0, 37.5, 0.0))
+			if _rad_dose > 0.0:
+				player.take_damage(_rad_dose * delta, false)
+		else:
+			_rad_dose = 0.0
+		if _rad_fill != null:
+			_rad_fill.anchor_right = clampf(_rad_dose / RAD_MAX_DOSE, 0.0, 1.0)
 		_weapon_label.text = str(player.weapon_name)
 		if _hud_mode != player.vehicle:
 			_set_hud_mode(player.vehicle)
 		if _hud_mode != 0:
 			_update_vehicle_hud()
-			# Driving into the goal ends the mission by itself.
-			if not _mission_done and _game_over == null:
-				_evac_poll -= delta
-				if _evac_poll <= 0.0:
-					_evac_poll = 0.4
-					_try_evac(player.global_position)
 		var am: int = int(player.ammo)
 		_ammo_label.text = "%d" % am
 		_ammo_label.add_theme_color_override("font_color",
 			Color(1, 0.4, 0.32) if am <= 0 else Color(0.55, 0.95, 0.62))
 		if hp <= 0 and _game_over == null and _dm == null:
 			_show_game_over()
-	# No DOS mission ends by body count: missions end at the extraction
-	# zone (marker type 4, _try_evac on the use key). `_mission_hostiles`
-	# is only a counter for the HUD/tests.
+	# No DOS mission ends by body count: they end when the objective
+	# counter runs out (_on_objective_complete). `_mission_hostiles` is
+	# only a counter for the HUD / tests.
 
 ## Use key with nothing under the crosshair: fire an armed exit here.
 func _on_use_pressed(pos: Vector3) -> void:
 	if _current_level != null and _current_level.action != null:
 		var a = _current_level.action
-		if not a.activate_teleport(pos) and not a.use_nearby(pos):
-			_try_evac(pos)
+		if not a.activate_teleport(pos):
+			a.use_nearby(pos)
 
-## A mission-objective act fired (silo opened, missile away …).
-func _on_objective_complete(idx: int) -> void:
-	_set_status("OBJECTIVE %d COMPLETE." % (idx + 1))
+## --- Radiation (DOS RadInit 0x13b149 / dose 0x13b1e0) ----------------
+## Marker type 4 is a RADIATION SOURCE, not an extraction zone: the u16
+## at sub+2 is its strength (80..1024 in the shipped maps). Every frame
+## the engine sums a dose from the sources near the player, subtracts it
+## as damage (the armour soaks first) and shows it on the PANEL0
+## RADIATION gauge. MAP.210 has eight sources.
+##
+## DOS per source, with the player at eye height:
+##   skip when (dist3 * 3) >> 2 > strength     (a 1.33x strength 3D gate)
+##   r = strength - dist_horizontal; skip when r <= 0
+##   dose += min(r * 50, 12800)
+## then dose >>= 8, so one source gives at most 50 and saturates about
+## 256 units inside its edge. DOS then charged at least 1 HP per FRAME,
+## which makes the damage frame-rate dependent; the port takes the same
+## dose as a rate per SECOND and scales it by delta instead.
+const RAD_MAX_DOSE: float = 50.0        # per source, DOS min(r*50, 12800) >> 8
+var _rad_sources: Array = []            # [{pos: Vector3, strength: float}]
+var _rad_dose: float = 0.0              # current dose, HP per second
 
-## Marker-type-4 entities are evacuation zones (sub+2 = the radius:
-## 1024 at the jeep at the canyon end, 300 at secondary spots). The
-## use key inside one ends the mission and moves the campaign on.
-func _try_evac(pos: Vector3) -> bool:
-	var lvl := _current_level
-	if lvl == null or lvl.map == null or _game_over != null or _dm != null:
-		return false
-	for e in lvl.map.entities:
+func _collect_radiation(level: LevelLoader.Level) -> void:
+	_rad_sources = []
+	_rad_dose = 0.0
+	if level == null or level.map == null:
+		return
+	for e in level.map.entities:
 		if (e.flags & 3) != 3 or e.marker_type != 4:
 			continue
-		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
-		if absf(pos.y - epos.y) > 512.0:
+		var strength: float = float(e.exit_map)   # u16 at sub+2
+		if strength <= 0.0:
 			continue
-		if Vector2(pos.x - epos.x, pos.z - epos.z).length() > maxf(float(e.exit_map), 300.0):
-			continue
-		print("[skynet] evacuation at marker 4 (%d u zone) — mission complete" % e.exit_map)
-		_mission_done = true
-		_show_mission_complete()
-		return true
-	# Vehicle missions end by simply reaching the goal (no use key from
-	# a cockpit): the marker-4 zones on MAP.220; MAP.260 / MAP.270 carry
-	# no marker 4 — their highest marker pair (94/95, 44/45) is taken as
-	# the goal (ASSUMPTION, 700 u).
-	if is_instance_valid(player) and player.vehicle != 0 and _is_campaign_main(_level_name()):
-		for goal_id in [94, 44]:
-			for gp in lvl.markers.get(goal_id, []):
-				if Vector2(pos.x - gp.x, pos.z - gp.z).length() < 700.0 and absf(pos.y - gp.y) < 900.0:
-					print("[skynet] vehicle mission goal marker %d reached — mission complete" % goal_id)
-					_mission_done = true
-					_show_mission_complete()
-					return true
-	return false
+		_rad_sources.append({
+			"pos": Vector3(float(e.x), -float(e.y), -float(e.z)),
+			"strength": strength})
+	if not _rad_sources.is_empty():
+		print("[skynet] %d radiation sources" % _rad_sources.size())
 
-var _evac_poll: float = 0.0
+## Dose at `at` in HP per second (0 when clear).
+func _radiation_dose(at: Vector3) -> float:
+	var dose: float = 0.0
+	for src in _rad_sources:
+		var p: Vector3 = src["pos"]
+		var strength: float = src["strength"]
+		var d3: float = at.distance_to(p)
+		if d3 * 0.75 > strength:
+			continue
+		var r: float = strength - Vector2(at.x - p.x, at.z - p.z).length()
+		if r <= 0.0:
+			continue
+		dose += minf(r * 50.0, 12800.0) / 256.0
+	return dose
+
+## --- Mission objectives (DOS FUN_0012ce73 + handler 0x1377d0) --------
+## A mission is over when its objective counter reaches zero, NOT by
+## reaching a place. The counter is the number of [M1]..[M5] entries in
+## the mission's briefing script (<start map>.TXT in MDMDBRIF.BSA);
+## MAP.210 has three, the jeep and HK missions one each. An entity whose
+## act byte is 0x26+n decrements it once and prints that [M] line; acts
+## 0x1C+n print a [G] hint and change nothing; act 0x2B fails the
+## mission outright. The counter belongs to the MISSION, so it survives
+## the trips into the interiors and back.
+##
+## (Until 2026-09-03 the port instead ended a mission at a marker-4
+## "extraction zone". Marker 4 is a RADIATION SOURCE — see _rad_sources —
+## which is why mission 1 could not be finished at all and mission 2
+## finished a few seconds after the start.)
+var _mission_key: int = -1            # start-map number the script came from
+var _mission_objectives: Array = []   # [M1]..[M5] text, "" where absent
+var _mission_hints: Array = []        # [G1]..[G9] text
+var _objectives_left: int = 0
+
+## Mission number a map belongs to (its start map): the sub-maps of
+## mission 1 are 211..218, mission 5 starts on MAP.252 but scripts from
+## 250.TXT.
+static func _mission_of(map_name: String) -> int:
+	var sfx: int = _suffix(map_name)
+	return (sfx / 10) * 10 if sfx >= 200 else -1
+
+## Load the mission script when the mission changes; keep the counter
+## while moving between the maps of one mission.
+func _ensure_mission_script(map_name: String) -> void:
+	var key: int = _mission_of(map_name)
+	# Deathmatch and the loose non-campaign maps have no script.
+	if key < 0 or _dm != null or Net.active:
+		return
+	if key == _mission_key:
+		return
+	_mission_key = key
+	_mission_objectives = []
+	_mission_hints = []
+	_objectives_left = 0
+	var bsa := BSAReader.new()
+	if not bsa.open(SkynetPaths.gamedata_path("MDMDBRIF.BSA"), SkynetPaths.variant):
+		return
+	var txt := bsa.read("%d.TXT" % key)
+	bsa.close()
+	if txt.is_empty():
+		return
+	var brief: Dictionary = Briefing.parse(txt)
+	_mission_objectives = brief.get("missions", [])
+	_mission_hints = brief.get("hints", [])
+	_mission_tactical = brief.get("tactical", [])
+	Stats.begin_mission()
+	for t in _mission_objectives:
+		if not String(t).is_empty():
+			_objectives_left += 1
+	print("[skynet] mission %d: %d objectives" % [key, _objectives_left])
+
+func _on_objective_complete(idx: int) -> void:
+	var text: String = ""
+	if idx >= 0 and idx < _mission_objectives.size():
+		text = String(_mission_objectives[idx])
+	if _objectives_left > 0:
+		_objectives_left -= 1
+	print("[skynet] objective %d done, %d left" % [idx + 1, _objectives_left])
+	_set_status(text if not text.is_empty() else "OBJECTIVE COMPLETE.", 6.0)
+	if _objectives_left <= 0 and not _mission_done and _game_over == null:
+		_mission_done = true
+		# Let the line be read before the banner covers it (the DOS engine
+		# holds the end screen back while a message is on screen).
+		await get_tree().create_timer(2.5).timeout
+		if _game_over == null:
+			_show_mission_complete()
+
+## [G1]..[G9] — flavour radio lines, no bearing on the mission.
+func _on_hint_message(idx: int) -> void:
+	if idx >= 0 and idx < _mission_hints.size():
+		var t: String = String(_mission_hints[idx])
+		if not t.is_empty():
+			_set_status(t, 6.0)
+
+## Act 0x2B: the mission is lost.
+func _on_mission_failed() -> void:
+	if _game_over == null:
+		_show_game_over()
+
 
 ## A destroyed object's drop (crate → ammo, locker → medkit).
 func _on_drop_requested(pos: Vector3, drop_type: int) -> void:
@@ -1767,11 +1933,12 @@ func _apply_map_state(level: LevelLoader.Level, name: String) -> void:
 		% [name, dead.size(), taken.size()])
 
 func _show_game_over() -> void:
-	_show_end_screen("MISSION FAILED", Color(0.9, 0.22, 0.16), true)
+	_show_end_screen("MISSION FAILED", Color(0.9, 0.22, 0.16), true,
+		"", "FAILED.IMG")
 
 func _show_mission_complete() -> void:
 	_show_end_screen("MISSION COMPLETE", Color(0.42, 0.92, 0.48),
-		false, _next_campaign_map())
+		false, _next_campaign_map(), "WELLDONE.IMG")
 
 ## Next campaign map after the current one, or "" at the end of the
 ## campaign. Works whether the current map is a mission map or a sub-map.
@@ -1787,7 +1954,7 @@ func _next_campaign_map() -> String:
 ## Show a paused end-of-mission screen. `respawnable` adds a RESPAWN
 ## button (death); a non-empty `next_map` adds a NEXT MISSION button (win).
 func _show_end_screen(title: String, color: Color, respawnable: bool,
-		next_map: String = "") -> void:
+		next_map: String = "", banner_img: String = "") -> void:
 	if _game_over != null:
 		return
 	var cl := CanvasLayer.new()
@@ -1807,12 +1974,28 @@ func _show_end_screen(title: String, color: Color, respawnable: bool,
 	vb.alignment = BoxContainer.ALIGNMENT_CENTER
 	vb.add_theme_constant_override("separation", 22)
 	center.add_child(vb)
-	var ttl := Label.new()
-	ttl.text = title
-	ttl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	ttl.add_theme_font_size_override("font_size", 56)
-	ttl.add_theme_color_override("font_color", color)
-	vb.add_child(ttl)
+	# The DOS banner art — WELLDONE.IMG "WELL DONE, SOLDIER!" (189x18) or
+	# FAILED.IMG "MISSION FAILED, SOLDIER!" (228x18), index 0 transparent —
+	# blown up to most of the screen width, the way the original announced
+	# it. Falls back to a plain caption when the archive is missing.
+	var banner: ImageTexture = _load_panel_texture(banner_img, true)
+	if banner != null:
+		var tr := TextureRect.new()
+		tr.texture = banner
+		tr.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+		tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		var vw: float = get_viewport().get_visible_rect().size.x
+		var bw: float = clampf(vw * 0.62, 320.0, 1400.0)
+		tr.custom_minimum_size = Vector2(bw,
+			bw * float(banner.get_height()) / float(banner.get_width()))
+		vb.add_child(tr)
+	else:
+		var ttl := Label.new()
+		ttl.text = title
+		ttl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		ttl.add_theme_font_size_override("font_size", 56)
+		ttl.add_theme_color_override("font_color", color)
+		vb.add_child(ttl)
 	if respawnable:
 		vb.add_child(_game_over_button("RESPAWN", _game_over_respawn))
 	if next_map != "":
@@ -1861,6 +2044,7 @@ func _maybe_show_briefing(map_name: String) -> bool:
 	if txt.is_empty():
 		return false
 	var brief: Dictionary = Briefing.parse(txt)
+	_mission_tactical = brief.get("tactical", [])
 	var obj: String = brief.get("objectives", "")
 	var lines: Array = brief.get("lines", [])
 	if obj.is_empty() and lines.is_empty():
@@ -1922,6 +2106,7 @@ func _show_briefing(map_num: int, objectives: String, lines: Array) -> void:
 	var tex: Dictionary = _load_brief_textures(map_num, lines)
 	var intro: Texture2D = tex.get("_intro", null)
 	var backdrop: Texture2D = tex.get("_backdrop", null)
+	_briefing_backdrop = backdrop
 	var scene_default: Texture2D = intro if intro != null else backdrop
 
 	# Pages: mission objectives first, then one per dialogue turn.
@@ -1977,12 +2162,11 @@ func _show_briefing(map_num: int, objectives: String, lines: Array) -> void:
 		match tname:
 			"BEGIN":
 				cb = _briefing_begin
-			"BRIEFING":
-				cb = Callable()                       # active tab — no-op
 			_:
-				cb = _briefing_tab_unavailable.bind(tname)
+				cb = _briefing_set_tab.bind(tname)
 		var t := _br_tab(tab[1], ui.get(tab[2]), ui.get(tab[3]),
 			tname == "BRIEFING", cb)
+		_briefing_tabs[tname] = t
 		screen.add_child(t)
 
 	# Scrolling objectives / dialogue text inside the MENU000 panel.
@@ -1996,6 +2180,8 @@ func _show_briefing(map_num: int, objectives: String, lines: Array) -> void:
 	_briefing_text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_briefing_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_briefing_text.add_theme_color_override("font_color", Color(0.83, 0.93, 0.84))
+	if _hud_font != null:
+		_briefing_text.add_theme_font_override("font", _hud_font)
 	_briefing_scroll.add_child(_briefing_text)
 
 	# Transparent hotspots over the MENU000 up/down arrows — they scroll
@@ -2011,6 +2197,24 @@ func _show_briefing(map_num: int, objectives: String, lines: Array) -> void:
 	# the menu (the DOS bar has no EXIT button: the four tabs fill it).
 	screen.add_child(_br_keybtn([KEY_ENTER, KEY_KP_ENTER], _briefing_begin))
 	screen.add_child(_br_keybtn([KEY_ESCAPE], _briefing_exit))
+
+	# TACTICAL: the rotating dossier model, over the picture slot.
+	_tactical = preload("res://scripts/tactical_view.gd").new()
+	_br_anchor(_tactical, BR_SCENE_RECT)
+	_tactical.visible = false
+	_tactical.call("setup", _mission_tactical)
+	_tactical.connect("changed", func() -> void: _briefing_refresh_tab())
+	screen.add_child(_tactical)
+
+	# STATISTICS: four percentages on the same slot.
+	_stats_box = VBoxContainer.new()
+	_stats_box.alignment = BoxContainer.ALIGNMENT_CENTER
+	_stats_box.add_theme_constant_override("separation", 10)
+	# DOS puts the labels at x=15 and right-aligns the values at x=235.
+	_br_anchor(_stats_box, Rect2(15, 30, 220, 104))
+	_stats_box.visible = false
+	_stats_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	screen.add_child(_stats_box)
 
 	get_tree().paused = true
 	if not get_viewport().size_changed.is_connected(_briefing_layout):
@@ -2100,12 +2304,23 @@ func _br_tab(rect: Rect2, grey: Variant, green: Variant, active: bool,
 	btn.add_theme_stylebox_override("pressed", empty)
 	btn.add_theme_stylebox_override("focus", empty)
 	btn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	holder.set_meta("active", active)
 	btn.mouse_entered.connect(func() -> void: hl.visible = true)
-	btn.mouse_exited.connect(func() -> void: hl.visible = active)
+	btn.mouse_exited.connect(func() -> void: hl.visible = bool(holder.get_meta("active", false)))
+	holder.set_meta("highlight", hl)
 	if cb.is_valid():
 		btn.pressed.connect(cb)
 	holder.add_child(btn)
 	return holder
+
+## Light a mission-screen tab up as the active one.
+func _br_tab_active(holder: Control, on: bool) -> void:
+	if holder == null or not is_instance_valid(holder):
+		return
+	holder.set_meta("active", on)
+	var hl = holder.get_meta("highlight", null)
+	if hl != null and is_instance_valid(hl):
+		hl.visible = on
 
 ## An invisible, zero-size Button that only carries a keyboard Shortcut —
 ## the DOS briefing bar has no on-screen EXIT, so Esc is keyboard-only.
@@ -2176,11 +2391,73 @@ func _briefing_exit() -> void:
 	_briefing_teardown()
 	_return_to_menu()
 
-## TACTICAL / STATISTICS tab — drawn from the real art, but the view
-## behind it is not ported yet, so clicking just flashes a note.
-func _briefing_tab_unavailable(tab_name: String) -> void:
+## Switch the mission screen between BRIEFING, TACTICAL and STATISTICS.
+func _briefing_set_tab(tab_name: String) -> void:
 	Audio.play_sfx("BUTTON1.RAW")
-	_briefing_toast("%s display is not available in this port yet." % tab_name)
+	_briefing_mode = tab_name
+	for nm in _briefing_tabs:
+		_br_tab_active(_briefing_tabs[nm], nm == tab_name)
+	if _tactical != null and is_instance_valid(_tactical):
+		_tactical.visible = tab_name == "TACTICAL"
+	if _stats_box != null and is_instance_valid(_stats_box):
+		_stats_box.visible = tab_name == "STATISTICS"
+	if _briefing_scene != null and is_instance_valid(_briefing_scene):
+		_briefing_scene.texture = _briefing_backdrop if tab_name != "BRIEFING" \
+			else _briefing_page_img()
+	_briefing_refresh_tab()
+
+## Text under the picture for the tab on screen.
+func _briefing_refresh_tab() -> void:
+	if _briefing_text == null or not is_instance_valid(_briefing_text):
+		return
+	match _briefing_mode:
+		"TACTICAL":
+			var unit: String = String(_tactical.call("unit_name"))
+			_briefing_text.text = "%s\n\n%s\n\n(CLICK THE PICTURE FOR THE NEXT UNIT)" \
+				% [unit, String(_tactical.call("text"))]
+		"STATISTICS":
+			_build_stats_rows()
+			_briefing_text.text = "MISSION AND CAREER PERFORMANCE."
+		_:
+			_briefing_show_page(_briefing_page)
+	if _briefing_scroll != null and is_instance_valid(_briefing_scroll):
+		_briefing_scroll.scroll_vertical = 0
+
+## The four percentages of the DOS STATISTICS page: this mission's shot
+## hit-ratio and share of enemies destroyed, then the career totals.
+func _build_stats_rows() -> void:
+	if _stats_box == null or not is_instance_valid(_stats_box):
+		return
+	for c in _stats_box.get_children():
+		c.queue_free()
+	var rows: Array = [
+		["SHOTS HIT-RATIO:", Stats.pct(Stats.hits, Stats.shots)],
+		["ENEMIES DESTROYED:", Stats.pct(Stats.kills, Stats.enemies)],
+		["HIT-RATIO TOTAL:", Stats.pct(Stats.total_hits, Stats.total_shots)],
+		["ENEMIES TOTAL:", Stats.pct(Stats.total_kills, Stats.total_enemies)],
+	]
+	for r in rows:
+		var line := HBoxContainer.new()
+		line.add_theme_constant_override("separation", 24)
+		var l := Label.new()
+		l.text = String(r[0])
+		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var v := Label.new()
+		v.text = String(r[1])
+		v.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		for lab in [l, v]:
+			lab.add_theme_color_override("font_color", Color(0.83, 0.93, 0.84))
+			lab.add_theme_font_size_override("font_size",
+				int(clampf(get_viewport().get_visible_rect().size.y / 22.0, 14.0, 44.0)))
+			if _hud_font != null:
+				lab.add_theme_font_override("font", _hud_font)
+			line.add_child(lab)
+		_stats_box.add_child(line)
+
+func _briefing_page_img() -> Texture2D:
+	if _briefing_page >= 0 and _briefing_page < _briefing_pages.size():
+		return _briefing_pages[_briefing_page].get("img", null)
+	return null
 
 ## Briefly flash a note across the briefing scene picture.
 func _briefing_toast(msg: String) -> void:
@@ -2245,6 +2522,9 @@ func _game_over_menu() -> void:
 func _clear_level() -> void:
 	# The hostile counter belongs to the map being torn down.
 	_mission_hostiles = 0
+	_seen_meshes.clear()
+	if _automap != null and is_instance_valid(_automap):
+		_automap.call("close_map")
 	_mission_done = true
 	if _current_level == null: return
 	_save_map_state()
@@ -2275,6 +2555,9 @@ func _input(event: InputEvent) -> void:
 		if _briefing_overlay == null:
 			open_pause_menu()
 			get_viewport().set_input_as_handled()
+	elif Controls.matches(event, "automap"):
+		_toggle_automap()
+		get_viewport().set_input_as_handled()
 	elif GameConsole.is_toggle_key(event) \
 			or (k == KEY_BACKSLASH and event.alt_pressed):
 		# `~` = the console; Alt+\ = the DOS cheat prompt, same thing.
@@ -2296,6 +2579,24 @@ func _input(event: InputEvent) -> void:
 		save_to_slot(SaveGame.QUICK_SLOT)
 	elif k == KEY_F7:                       # quickload
 		load_from_slot(SaveGame.QUICK_SLOT)
+
+## AUTOMAP (the bound key, Tab by default). Pauses the game and shows the
+## world from an orbiting camera; see automap.gd.
+func _toggle_automap() -> void:
+	if _current_level == null or not is_instance_valid(player) or _dm != null:
+		return
+	if _automap != null and is_instance_valid(_automap) and bool(_automap.get("open")):
+		_automap.call("close_map")
+		return
+	if _briefing_overlay != null or _game_over != null:
+		return
+	if _automap == null or not is_instance_valid(_automap):
+		_automap = preload("res://scripts/automap.gd").new()
+		add_child(_automap)
+		_automap.connect("closed", func() -> void:
+			if is_instance_valid(player) and player.has_method("_capture"):
+				player.call("_capture", true))
+	_automap.call("show_map", self, _current_level, player, _seen_meshes)
 
 func _step_map(d: int) -> void:
 	if _maps.is_empty(): return
@@ -2623,7 +2924,9 @@ func _build_status_ui() -> void:
 
 	var canvas := CanvasLayer.new()
 	canvas.layer = 50
+	canvas.name = "HUD"
 	add_child(canvas)
+	_hud_layer = canvas
 	_status_label = Label.new()
 	_status_label.position = Vector2(8, 36)
 	_status_label.add_theme_color_override("font_color", Color(1, 1, 1))
@@ -2681,6 +2984,23 @@ func _build_status_ui() -> void:
 	_panel_rect(panel, 50, 20, 83, 17).add_child(_weapon_label)
 	_ammo_label = _hud_box_label()               # ammo count
 	_panel_rect(panel, 96, 3, 37, 14).add_child(_ammo_label)
+
+	# RADIATION and ARMOR gauges — the two PANEL0 slots the port left
+	# empty. Rects measured off the art (320x40).
+	var rad_slot := _panel_rect(panel, 50, 5, 41, 10)
+	_rad_fill = ColorRect.new()
+	_rad_fill.anchor_bottom = 1.0
+	_rad_fill.anchor_right = 0.0
+	_rad_fill.color = Color(0.95, 0.85, 0.25)
+	_rad_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	rad_slot.add_child(_rad_fill)
+	var armor_slot := _panel_rect(panel, 172, 9, 41, 5)
+	_armor_fill = ColorRect.new()
+	_armor_fill.anchor_bottom = 1.0
+	_armor_fill.anchor_right = 0.0
+	_armor_fill.color = Color(0.45, 0.72, 1.0)
+	_armor_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	armor_slot.add_child(_armor_fill)
 
 	get_viewport().size_changed.connect(_layout_hud)
 	_layout_hud()

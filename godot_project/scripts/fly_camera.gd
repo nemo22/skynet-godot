@@ -75,6 +75,9 @@ const STUCK_RESET_TIME: float = 1.8
 ## by itself — MAP.231's corridor sill (72 u) and its stairs stopped the
 ## player dead. Classic step-up: rise, advance, drop back onto a floor.
 const STEP_HEIGHT: float = 80.0
+## Keyboard turning / looking (TURN LEFT-RIGHT, LOOK UP-DOWN), rad/s.
+const KEY_TURN_RATE: float = 2.4
+const KEY_LOOK_RATE: float = 1.5
 ## A hand-thrown grenade (RMB) leaves the hand far slower than the
 ## launcher's round (Grenade.SPEED) — a lob, not a shot.
 const HAND_GRENADE_SPEED: float = 1500.0
@@ -488,8 +491,12 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
 			_capture(false)
-		elif event.keycode == int(Controls.binds.get("activate", KEY_F)):
+		elif Controls.matches(event, "activate"):
 			_try_activate()
+		elif Controls.matches(event, "throw"):
+			_throw_grenade()
+		elif Controls.matches(event, "center_view"):
+			set_view(_yaw, 0.0)           # CENTER VIEW: level the horizon
 		elif event.keycode >= KEY_1 and event.keycode <= KEY_9:
 			_select_weapon(event.keycode - KEY_1)
 	elif event is InputEventMouseMotion and _captured and vehicle == VEH_JEEP:
@@ -527,20 +534,41 @@ func _physics_process(delta: float) -> void:
 	if _fire_cd > 0.0:
 		_fire_cd -= delta
 	_regen_vehicle_energy(delta)
+	# The DOS shield recharges by itself, faster on the easier levels
+	# (difficulty table field 4, 0.025 / 0.015 / 0.0125 per second).
+	if armor < 1.0 and health > 0.0:
+		armor = minf(armor + Settings.armor_regen() * delta, 1.0)
 	if ui_fire:
 		ui_fire = false
 		_shoot()
 	elif _captured and not _mobile \
-			and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+			and (Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+				or Controls.is_pressed("fire")):
 		_shoot()                          # held trigger — DOS auto-fire
 
 	# --- movement input (horizontal intent) ---------------------------
 	var fwd_in: float = 0.0
 	var str_in: float = 0.0
-	if Controls.is_pressed("forward") or Input.is_key_pressed(KEY_UP):    fwd_in += 1.0
-	if Controls.is_pressed("back")    or Input.is_key_pressed(KEY_DOWN):  fwd_in -= 1.0
-	if Controls.is_pressed("right")   or Input.is_key_pressed(KEY_RIGHT): str_in += 1.0
-	if Controls.is_pressed("left")    or Input.is_key_pressed(KEY_LEFT):  str_in -= 1.0
+	if Controls.is_pressed("forward"): fwd_in += 1.0
+	if Controls.is_pressed("back"):    fwd_in -= 1.0
+	if Controls.is_pressed("right"):   str_in += 1.0
+	if Controls.is_pressed("left"):    str_in -= 1.0
+	# TURN LEFT / TURN RIGHT steer the view, unless SLIDE is held — the
+	# DOS strafe modifier, which turns them into sidesteps instead.
+	var turn: float = 0.0
+	if Controls.is_pressed("turn_left"):  turn += 1.0
+	if Controls.is_pressed("turn_right"): turn -= 1.0
+	if turn != 0.0:
+		if Controls.is_pressed("slide"):
+			str_in -= turn
+		else:
+			_yaw = wrapf(_yaw + turn * KEY_TURN_RATE * delta, -PI, PI)
+	# LOOK UP / LOOK DOWN tilt the view (the mouse does it too).
+	var tilt: float = 0.0
+	if Controls.is_pressed("look_up"):   tilt += 1.0
+	if Controls.is_pressed("look_down"): tilt -= 1.0
+	if tilt != 0.0:
+		_pitch = clampf(_pitch + tilt * KEY_LOOK_RATE * delta, -PI * 0.49, PI * 0.49)
 	fwd_in += ui_move.y
 	str_in += ui_move.x
 
@@ -712,9 +740,9 @@ func _hover(delta: float, fwd_in: float, str_in: float) -> void:
 	if _cam != null:
 		look = _cam.global_transform.basis
 	var vert: float = ui_vert
-	if Input.is_key_pressed(KEY_E) or Input.is_key_pressed(KEY_SPACE) or Controls.is_pressed("up"):
+	if Controls.is_pressed("up"):
 		vert += 1.0
-	if Input.is_key_pressed(KEY_Q) or Controls.is_pressed("down"):
+	if Controls.is_pressed("down"):
 		vert -= 1.0
 	var want: Vector3 = -look.z * fwd_in * HK_SPEED * speed_boost \
 		+ look.x * str_in * HK_STRAFE + Vector3.UP * vert * HK_CLIMB
@@ -749,8 +777,7 @@ func _walk(delta: float, fwd_in: float, str_in: float) -> void:
 	velocity.z = horiz.z * speed
 
 	if is_on_floor():
-		var jump := Input.is_key_pressed(KEY_SPACE) \
-			or Controls.is_pressed("up") or ui_vert > 0.0
+		var jump: bool = Controls.is_pressed("up") or ui_vert > 0.0
 		velocity.y = jump_speed if jump else 0.0
 	else:
 		velocity.y -= gravity * delta
@@ -844,10 +871,9 @@ func _fly(_delta: float, fwd_in: float, str_in: float) -> void:
 	if _cam != null:
 		look = _cam.global_transform.basis
 	var vert: float = ui_vert
-	if Input.is_key_pressed(KEY_E) or Input.is_key_pressed(KEY_SPACE) \
-			or Controls.is_pressed("up"):
+	if Controls.is_pressed("up"):
 		vert += 1.0
-	if Input.is_key_pressed(KEY_Q) or Controls.is_pressed("down"):
+	if Controls.is_pressed("down"):
 		vert -= 1.0
 	var dir := -look.z * fwd_in + look.x * str_in + Vector3.UP * vert
 	var speed := fly_speed
@@ -908,6 +934,8 @@ func _shoot() -> void:
 		ammo = int(_pools[pool])
 		if pool == VEH_ENERGY_POOL:
 			_veh_since_shot = 0.0
+	if not Net.active:
+		Stats.shot()                        # STATISTICS: shots fired
 	var snd: String = String(w.get("snd", ""))
 	if not snd.is_empty():
 		Audio.play_sfx(snd, -5.0)
@@ -1109,11 +1137,16 @@ func _try_activate() -> void:
 
 ## Take damage from an enemy shot. On death the player just dies — the
 ## level controller shows a game-over screen and calls respawn().
-func take_damage(amount: float) -> void:
+## `scaled` applies the DIFFICULTY multiplier (Settings.dmg_to_player).
+## DOS scales weapon damage in the projectile-impact path only, so
+## radiation and other environmental damage pass false.
+func take_damage(amount: float, scaled: bool = true) -> void:
 	if health <= 0.0:
 		return
 	if god_mode:
 		return                                   # debug invincibility
+	if scaled:
+		amount *= Settings.dmg_to_player()
 	if Net.active:
 		# Deathmatch: the server owns our health — this is our own splash
 		# (rocket at the feet); other people's shots reach us as reports

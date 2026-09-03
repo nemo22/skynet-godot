@@ -43,7 +43,7 @@ func _ready() -> void:
 						markers[key] = markers.get(key, 0) + 1
 						if e.marker_type == 2:
 							enemies[e.enemy_type] = enemies.get(e.enemy_type, 0) + 1
-						if e.marker_type != 2 and e.marker_type > 6:
+						if e.marker_type != 2:
 							print("   marker %d at (%d,%d,%d) sub2=%d et=%d" % [e.marker_type, e.x, e.y, e.z, e.exit_map, e.enemy_type])
 					elif e.sprite_index >= 0:
 						var b: int = e.sprite_index >> 7
@@ -51,6 +51,14 @@ func _ready() -> void:
 			print("%s: grid %dx%d outdoor=%s meshes=%d markers=%s enemies=%s sprite_banks=%s"
 				% [name, m.grid_width, m.grid_height, outdoor, meshes, markers, enemies, banks])
 		bsa.close()
+	if cli.has("brief"):
+		var bb := BSAReader.new()
+		if bb.open(SkynetPaths.gamedata_path("MDMDBRIF.BSA"), SkynetPaths.variant):
+			for sfx in String(cli["brief"]).split(","):
+				var raw := bb.read("%d.TXT" % int(sfx))
+				print("===== %s.TXT (%d bytes) =====" % [sfx, raw.size()])
+				print(raw.get_string_from_ascii())
+			bb.close()
 	if cli.has("makepack"):
 		make_pack(String(cli["makepack"]))
 	if cli.has("links"):

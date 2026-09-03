@@ -735,7 +735,8 @@ func _tick_legacy(delta: float) -> void:
 			or absf(wrapf(target_yaw - aim_yaw, -PI, PI)) < 0.35
 		_fire_cd -= delta
 		if _fire_cd <= 0.0 and aimed:
-			_fire_cd = fire_interval * randf_range(0.8, 1.3)
+			# DIFFICULTY scales the rate of fire (LOW = a quarter as often).
+			_fire_cd = fire_interval * randf_range(0.8, 1.3) / maxf(Settings.enemy_fire_scale(), 0.01)
 			_fire_at_player()
 
 func _step_clip(delta: float) -> void:
@@ -839,10 +840,15 @@ func _has_los() -> bool:
 	return (hit["collider"] as Object).has_method("take_damage")
 
 ## Receive damage from a player shot.
-func take_damage(amount: float) -> void:
+## `by_player` marks a hit that came from the player's own weapon — the
+## STATISTICS tab counts those against the shots fired.
+func take_damage(amount: float, by_player: bool = true) -> void:
 	if _state == State.DEAD:
 		return
-	_health -= amount
+	if by_player and not Net.active:
+		Stats.hit()
+	# DIFFICULTY scales damage dealt to entities (LOW hits 1.5x harder).
+	_health -= amount * Settings.dmg_to_enemy()
 	Audio.play_sfx_3d("HIT2.RAW", global_position + Vector3(0.0, 40.0, 0.0), -4.0)
 	if _dormant_dist > 0.0:
 		if _health <= 0.0:
@@ -872,6 +878,8 @@ func _die() -> void:
 	if _state == State.DEAD:
 		return
 	_state = State.DEAD
+	if not Net.active:
+		Stats.kill()
 	if _engine != null:
 		_engine.stop()
 	var centre := global_position + Vector3(0.0, _body_height * 0.5, 0.0)

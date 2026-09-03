@@ -3,7 +3,7 @@
 ## enemy shoot, then walks the MAP.210 → MAP.218 → MAP.210 exit round trip
 ## and checks marker spawns, HP/ammo carry-over, the per-map state
 ## overlay, a save/load round trip and that no end screen fires by
-## itself (missions end only at the evacuation zone).
+## itself (a mission ends when its [M1]..[M5] objective counter hits 0).
 ##
 ##   godot --headless --path . res://scenes/game_smoke_test.tscn
 
@@ -601,25 +601,47 @@ func _run() -> void:
 		for f in 240:
 			await get_tree().physics_frame
 		_check(hades.global_position.distance_to(hbase) > 200.0, "HADES missile rises (%.0f u)" % hades.global_position.distance_to(hbase))
-		_check(objs.has(0x27 - 0x1C), "missile chain fires mission objective 0x27 (%s)" % str(objs))
+		# Objective acts are 0x26..0x2A → index 0..4 ([M1]..[M5]); the
+		# 0x1C..0x25 band is hints and moves no counter.
+		_check(objs.has(0x27 - 0x26), "missile chain fires mission objective 0x27 (%s)" % str(objs))
 		var btn_node: Node3D = lvl.action._nodes.get(0x2f8f)
 		_check(btn_node.has_meta("switch_base"), "pressed button flips to its lit face")
-	# Evacuation: back to 210, use inside the jeep's marker-4 zone.
+	# Mission end: back on MAP.210 to check the objective counter and
+	# that marker 4 is a RADIATION source, not an extraction zone (the
+	# port read it as one until 2026-09-03: mission 1 could not be
+	# finished and mission 2 ended seconds after its start).
 	_main.call("_on_teleport_requested", 210, 0)
 	ok = await _wait(func() -> bool: return _level_is("210") and _settled(), 180.0)
-	_check(ok, "back on MAP.210 for the evacuation")
+	_check(ok, "back on MAP.210 for the mission-end checks")
 	if ok:
 		lvl = _main.get("_current_level")
-		var evac = null
+		_check(int(_main.get("_mission_key")) == 210,
+			"mission script is still 210's after the interior trip")
+		var rad: Array = _main.get("_rad_sources")
+		_check(rad.size() == 8, "MAP.210 has 8 radiation sources (%d)" % rad.size())
+		var hot = null
 		for e in lvl.map.entities:
 			if (e.flags & 3) == 3 and e.marker_type == 4 and e.exit_map >= 1024:
-				evac = e
+				hot = e
 				break
-		_check(evac != null, "MAP.210 has a 1024 u evacuation zone")
-		if evac != null:
-			var at := Vector3(float(evac.x), -float(evac.y), -float(evac.z))
+		_check(hot != null, "a 1024-strength radiation source exists")
+		if hot != null:
+			var at := Vector3(float(hot.x), -float(hot.y), -float(hot.z))
 			_main.call("_on_use_pressed", at + Vector3(200.0, 0.0, 0.0))
-			_check(_main.get("_game_over") != null, "use inside the evacuation zone ends the mission")
+			_check(_main.get("_game_over") == null,
+				"the use key inside a radiation source does NOT end the mission")
+			_check(float(_main.call("_radiation_dose", at)) > 0.0,
+				"standing on the source gives a dose (%.1f HP/s)" % float(_main.call("_radiation_dose", at)))
+			_check(float(_main.call("_radiation_dose", at + Vector3(9000.0, 0.0, 9000.0))) == 0.0,
+				"far from every source the dose is zero")
+		# The counter is what ends a mission: run it down and the end
+		# screen comes up by itself.
+		var todo: int = int(_main.get("_objectives_left"))
+		_check(todo > 0, "mission 1 still has objectives left (%d)" % todo)
+		for i in todo:
+			_main.call("_on_objective_complete", i)
+		ok = await _wait(func() -> bool: return _main.get("_game_over") != null, 12.0)
+		_check(ok, "the last objective ends the mission")
 	_finish()
 
 ## Gate geometry dump: leaf node/body transforms and a capsule sweep

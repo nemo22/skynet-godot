@@ -1,4 +1,7 @@
-## Segmented volume slider drawn over the OPTIONS.IMG SOUND track.
+## Segmented volume slider drawn over an OPTIONS.IMG slider track.
+##
+## `channel` picks which level it drives: "sound" (the master bus, the
+## SOUND row) or "music" (the Music bus, the MUSIC row).
 ##
 ## The original DOS slider shows the level as a row of discrete filled
 ## squares (not a continuous bar), so this draws N blocks from the left
@@ -10,9 +13,10 @@ extends Control
 const SEGMENTS: int = 16
 
 var value: float = 1.0
+var channel: String = "sound"
 
 func _ready() -> void:
-	value = Audio.master_volume
+	value = Audio.music_volume if channel == "music" else Audio.master_volume
 	queue_redraw()
 
 func _gui_input(event: InputEvent) -> void:
@@ -27,7 +31,10 @@ func _gui_input(event: InputEvent) -> void:
 		var seg := clampi(
 			int(round((event.position.x / size.x) * SEGMENTS)), 0, SEGMENTS)
 		value = float(seg) / float(SEGMENTS)
-		Audio.set_master_volume(value)
+		if channel == "music":
+			Audio.set_music_volume(value)
+		else:
+			Audio.set_master_volume(value)
 		queue_redraw()
 		accept_event()
 
@@ -40,4 +47,5 @@ func _draw() -> void:
 		return
 	for i in filled:
 		var x := float(i) * (seg_w + gap)
-		draw_rect(Rect2(x, 0.0, seg_w, size.y), Color(0.55, 0.95, 0.70), true)
+		draw_rect(Rect2(x, 0.0, seg_w, size.y),
+			Color(0.55, 0.80, 0.95) if channel == "music" else Color(0.55, 0.95, 0.70), true)
