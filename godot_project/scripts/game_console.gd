@@ -170,6 +170,8 @@ func run(cmd: String) -> void:
 	if handler == null or not handler.has_method("run_command"):
 		say("no command handler")
 		return
-	var reply: String = String(handler.call("run_command", cmd))
+	# run_command may be a coroutine (the "shoot" command steps frames);
+	# awaiting a plain value is a no-op in GDScript 2, so this is safe.
+	var reply: String = String(await handler.call("run_command", cmd))
 	if not reply.is_empty():
 		say(reply)

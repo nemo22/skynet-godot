@@ -35,6 +35,7 @@ const DETAIL_FOG_SCALE: Array = [1408.0 / 2432.0, 2176.0 / 2432.0, 1.0]
 
 signal difficulty_changed(level: int)
 signal detail_changed(level: int)
+signal weapon_view_changed(model: bool)
 
 ## RESOLUTION on the DOS screen is the video mode: 320x200 or 640x480.
 ## This port always opens a modern window, so the setting drives the 3D
@@ -49,6 +50,10 @@ var difficulty: int = MED
 var detail: int = HIGH
 var reverse_stereo: bool = false
 var resolution: int = RES_NATIVE
+## The weapon in the player's hands: false = the DOS hand-drawn CFA
+## animation (with the soldier's gloves), true = the ENHANCED 3D model.
+## The art is the better-looking of the two, so it stays the default.
+var weapon_3d: bool = false
 
 func _ready() -> void:
 	var cfg := ConfigFile.new()
@@ -57,6 +62,7 @@ func _ready() -> void:
 		detail = clampi(int(cfg.get_value("video", "detail", HIGH)), LOW, HIGH)
 		reverse_stereo = bool(cfg.get_value("audio", "reverse_stereo", false))
 		resolution = clampi(int(cfg.get_value("video", "resolution", RES_NATIVE)), 0, 2)
+		weapon_3d = bool(cfg.get_value("video", "weapon_3d", false))
 	get_tree().root.size_changed.connect(apply_resolution)
 	apply_resolution()
 
@@ -66,6 +72,7 @@ func save() -> void:
 	cfg.set_value("video", "detail", detail)
 	cfg.set_value("audio", "reverse_stereo", reverse_stereo)
 	cfg.set_value("video", "resolution", resolution)
+	cfg.set_value("video", "weapon_3d", weapon_3d)
 	cfg.save(CFG_PATH)
 
 func set_difficulty(level: int) -> void:
@@ -94,6 +101,11 @@ func apply_resolution() -> void:
 		vp.scaling_3d_scale = 1.0
 	else:
 		vp.scaling_3d_scale = clampf(want / float(vp.size.x), 0.1, 1.0)
+
+func set_weapon_3d(on: bool) -> void:
+	weapon_3d = on
+	save()
+	weapon_view_changed.emit(on)
 
 func set_reverse_stereo(on: bool) -> void:
 	reverse_stereo = on

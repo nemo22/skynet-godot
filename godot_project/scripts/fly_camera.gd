@@ -31,6 +31,7 @@ const CFAFile := preload("res://scripts/loaders/cfa_file.gd")
 const BSAReader := preload("res://scripts/loaders/bsa_reader.gd")
 const Palette := preload("res://scripts/loaders/palette.gd")
 const Explosion := preload("res://scripts/explosion.gd")
+const WeaponModels := preload("res://scripts/weapon_models.gd")
 
 @onready var _cam: Camera3D = $Camera3D
 
@@ -982,6 +983,29 @@ func _shoot() -> void:
 	# the gun's muzzle; from 90 u a 36 u sprite filled a third of the
 	# screen, so it sits further out and smaller (a 2026-09-02 report).
 	mf.setup(muzzle + fwd * 70.0, tint, 26.0 if kind == "shotgun" else 18.0)
+	# ENHANCED: what a shot leaves behind — a spent case out of the port
+	# for the slugthrowers, smoke at the muzzle, a coloured flare for the
+	# energy weapons.
+	if Render.enhanced():
+		var scene: Node = get_tree().current_scene
+		var right: Vector3 = global_transform.basis.x
+		if _cam != null:
+			right = _cam.global_transform.basis.x
+		var muzzle_at: Vector3 = muzzle + fwd * 70.0
+		match kind:
+			"bullet":
+				FxParticles.casings(scene, muzzle + right * 14.0, right, fwd, 1)
+				FxParticles.muzzle_smoke(scene, muzzle_at, fwd, 30.0)
+			"shotgun":
+				FxParticles.casings(scene, muzzle + right * 14.0, right, fwd, 1)
+				FxParticles.muzzle_smoke(scene, muzzle_at, fwd, 52.0,
+					Color(0.6, 0.58, 0.55, 0.5))
+			"laser", "plasma":
+				FxParticles.muzzle_smoke(scene, muzzle_at, fwd, 40.0,
+					Color(tint.r, tint.g, tint.b, 0.55), true)
+			"rocket", "grenade":
+				FxParticles.muzzle_smoke(scene, muzzle_at, fwd, 60.0,
+					Color(0.5, 0.48, 0.46, 0.5))
 
 	# Ballistic / straight projectiles take a separate path.
 	if kind == "grenade":
@@ -1322,6 +1346,21 @@ func _capture(on: bool) -> void:
 
 ## Build the first-person weapon viewmodel overlay and load each weapon's
 ## .CFA animation frames.
+## The optional 3D weapon in the hands (DETAIL → WEAPON VIEW). It hangs
+## off the camera at the same screen corner the DOS art occupies, kicks
+## back when it fires and sways a little as the player walks. The DOS
+## CFA art stays the default: it is hand-drawn WITH the soldier's
+## gloves, which a primitive model cannot match.
+## How far the viewmodel is allowed to sink behind the HUD bar, in DOS
+## pixels — the grip and the hands read better tucked slightly under it.
+const HUD_OVERLAP: float = 14.0
+const VM3D_LEN: float = 34.0            # model length in world units
+const VM3D_POS := Vector3(11.0, -6.5, -26.0)
+const VM3D_YAW: float = 0.17
+var _vm3d: Node3D = null
+var _vm3d_idx: int = -1
+var _vm3d_kick: float = 0.0
+
 func _build_viewmodel() -> void:
 	_vm_layer = CanvasLayer.new()
 	_vm_layer.layer = 2                       # above the 3D view, below the HUD
@@ -1349,8 +1388,9 @@ func _load_viewmodels() -> void:
 func _process(delta: float) -> void:
 	if _viewmodel == null:
 		return
+	_update_viewmodel_3d(delta)
 	var frames: Array = _vm_cache.get(_weapon_idx, []) if vehicle == VEH_FOOT else []
-	if frames.is_empty():
+	if frames.is_empty() or _vm3d != null:
 		_viewmodel.visible = false
 		return
 	_viewmodel.visible = true
@@ -1371,6 +1411,52 @@ func _process(delta: float) -> void:
 	_viewmodel.texture = frames[_vm_idx]
 	_layout_viewmodel()
 
+## Build / place the 3D weapon in the hands when the option is on.
+func _update_viewmodel_3d(delta: float) -> void:
+	var want: bool = Settings.weapon_3d and Render.enhanced() \
+		and vehicle == VEH_FOOT and _cam != null and health > 0.0
+	if not want:
+		if _vm3d != null and is_instance_valid(_vm3d):
+			_vm3d.queue_free()
+		_vm3d = null
+		_vm3d_idx = -1
+		return
+	if _vm3d_idx != _weapon_idx or _vm3d == null or not is_instance_valid(_vm3d):
+		if _vm3d != null and is_instance_valid(_vm3d):
+			_vm3d.queue_free()
+		_vm3d = WeaponModels.for_weapon(_weapon_idx, VM3D_LEN, VM3D_LEN * 0.34)
+		_vm3d_idx = _weapon_idx
+		if _vm3d == null:
+			return
+		# Barrel forward (models are built along +X), grip toward the
+		# player, and never clipped by the world.
+		# Models are built along +X; a +90 deg yaw sends +X to -Z, i.e.
+		# the barrel away from the camera.
+		_vm3d.rotation = Vector3(0.0, PI * 0.5 + VM3D_YAW, 0.0)
+		# Draw it over the world: a gun held at 22 units would otherwise
+		# be sliced by any wall or slope the player stands near.
+		for c in _vm3d.get_children():
+			if not (c is MeshInstance3D):
+				continue
+			var mi: MeshInstance3D = c
+			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			var src: Material = mi.get_active_material(0)
+			if src is BaseMaterial3D:
+				var dup: BaseMaterial3D = (src as BaseMaterial3D).duplicate()
+				dup.no_depth_test = true
+				dup.render_priority = 8
+				mi.material_override = dup
+		_cam.add_child(_vm3d)
+	# Recoil: a kick back and up that eases out, plus a walking sway.
+	if _vm_firing and _vm3d_kick < 0.2:
+		_vm3d_kick = 1.0
+	_vm3d_kick = maxf(_vm3d_kick - delta * 6.0, 0.0)
+	var speed: float = Vector2(velocity.x, velocity.z).length() / maxf(walk_speed, 1.0)
+	var t: float = float(Time.get_ticks_msec()) * 0.004
+	var sway := Vector3(sin(t) * 0.6, absf(cos(t)) * 0.5, 0.0) * clampf(speed, 0.0, 1.2)
+	_vm3d.position = VM3D_POS + sway + Vector3(0.0, _vm3d_kick * 1.2, _vm3d_kick * 3.0)
+	_vm3d.rotation.x = _vm3d_kick * 0.22
+
 ## Pin the viewmodel sprite to the bottom-centre of the screen, scaled to
 ## the viewport like the DOS 320×200 screen.
 func _layout_viewmodel() -> void:
@@ -1386,5 +1472,11 @@ func _layout_viewmodel() -> void:
 	var vx: float = float(_weapons[_weapon_idx].get("vx", 80))
 	_viewmodel.size = ts
 	_viewmodel.scale = Vector2(s, s)
+	# The gun stands ON the HUD bar, not behind it. DOS draws the world
+	# in a 320x160 viewport with the 40 px panel below; the port's panel
+	# is the same art scaled by WIDTH (main._layout_hud), so its top edge
+	# is where the weapon's bottom belongs. Anchoring to the window
+	# bottom (as this did) hid all but the muzzle behind the panel.
+	var hud_h: float = clampf(vp.x / 8.0, 64.0, 160.0)
 	_viewmodel.position = Vector2(
-		x_origin + vx * s, vp.y - ts.y * s)
+		x_origin + vx * s, vp.y - hud_h - ts.y * s + HUD_OVERLAP * s)

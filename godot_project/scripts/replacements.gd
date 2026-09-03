@@ -19,15 +19,22 @@ extends RefCounted
 
 const CFG_NAME: String = "replace.cfg"
 const PickupModels := preload("res://scripts/pickup_models.gd")
+const WeaponModels := preload("res://scripts/weapon_models.gd")
 const FireEffect := preload("res://scripts/fire_effect.gd")
 
 ## ENHANCED: give a Pickup (a Sprite3D) a small 3D model instead of its
 ## billboard — the node keeps its logic, the texture is dropped.
 ## `world_w`/`world_h` = the DOS sprite's world size.
 static func dress_pickup(p: Node3D, sprite_index: int, world_w: float, world_h: float) -> void:
-	if not Render.enhanced() or not PickupModels.has(sprite_index):
+	if not Render.enhanced():
 		return
-	var model: Node3D = PickupModels.build(sprite_index, world_w, world_h)
+	# Guns get their own builder (weapon_models.gd); everything else is
+	# the small-item one.
+	var model: Node3D = null
+	if WeaponModels.has(sprite_index):
+		model = WeaponModels.build(sprite_index, world_w, world_h)
+	elif PickupModels.has(sprite_index):
+		model = PickupModels.build(sprite_index, world_w, world_h)
 	if model == null:
 		return
 	p.set("texture", null)

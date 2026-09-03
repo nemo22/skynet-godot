@@ -2,10 +2,11 @@
 ## system at all — its effects are cel-animated billboards. In ENHANCED
 ## mode these GPUParticles3D helpers add what a modern renderer can:
 ## sparks and dust at bullet impacts, sparks and a smoke column in
-## explosions, a smoke trail behind rockets and burning debris, dust
-## behind the jeep's wheels, smoke over fires, and ash drifting through
-## the night air on the outdoor maps. Every helper returns null in DOS
-## mode so callers can stay unconditional.
+## explosions, a smoke trail behind rockets and burning debris, spent
+## cases and muzzle smoke at the gun, dust behind the jeep's wheels,
+## smoke over fires, and ash drifting through the night air on the
+## outdoor maps. Every helper returns null in DOS mode so callers can
+## stay unconditional.
 extends RefCounted
 
 static var _dot: Texture2D = null          # soft round sprite
@@ -167,6 +168,82 @@ static func trail(node: Node3D, size: float = 40.0,
 	p.process_material = pm
 	p.draw_pass_1 = _quad(size, _mat(Color(1, 1, 1), burning, 2.0 if burning else 0.0))
 	node.add_child(p)
+	return p
+
+## Spent cases flicking out of the ejection port, tumbling, bouncing off
+## nothing and gone in a second and a half. `right` is the gun's right
+## hand side; they leave with a bit of up and back, like a real ejection.
+static func casings(scene: Node, at: Vector3, right: Vector3, fwd: Vector3,
+		count: int = 1) -> GPUParticles3D:
+	if not on() or scene == null:
+		return null
+	var p := GPUParticles3D.new()
+	p.amount = maxi(count, 1)
+	p.lifetime = 1.5
+	p.one_shot = true
+	p.explosiveness = 1.0
+	p.randomness = 0.55
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = (right * 1.6 + Vector3.UP * 0.9 - fwd * 0.25).normalized()
+	pm.spread = 18.0
+	pm.initial_velocity_min = 190.0
+	pm.initial_velocity_max = 330.0
+	pm.gravity = Vector3(0.0, -2600.0, 0.0)
+	pm.damping_min = 20.0
+	pm.damping_max = 60.0
+	pm.angle_min = -180.0
+	pm.angle_max = 180.0
+	pm.angular_velocity_min = -900.0
+	pm.angular_velocity_max = 900.0
+	pm.scale_min = 0.8
+	pm.scale_max = 1.15
+	pm.color_ramp = _ramp(Color(0.85, 0.66, 0.28, 1.0), Color(0.7, 0.55, 0.24, 0.0))
+	p.process_material = pm
+	# A stubby brass case: a small quad is enough at the speed it moves.
+	var qm := QuadMesh.new()
+	qm.size = Vector2(4.0, 9.0)
+	var m := _mat(Color(1, 1, 1), false, 0.6)
+	m.albedo_texture = null                   # a solid case, not a soft dot
+	qm.material = m
+	p.draw_pass_1 = qm
+	p.position = at
+	scene.add_child(p)
+	_free_after(p, 1.9)
+	return p
+
+## The wisp left hanging at the muzzle after a shot. `hot` (energy
+## weapons) makes it a bright coloured flare instead of grey smoke.
+static func muzzle_smoke(scene: Node, at: Vector3, fwd: Vector3,
+		size: float = 34.0, tint: Color = Color(0.55, 0.53, 0.5, 0.42),
+		hot: bool = false) -> GPUParticles3D:
+	if not on() or scene == null:
+		return null
+	var p := GPUParticles3D.new()
+	p.amount = 5 if hot else 4
+	p.lifetime = 0.45 if hot else 1.1
+	p.one_shot = true
+	p.explosiveness = 1.0
+	p.randomness = 0.5
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = size * 0.12
+	pm.direction = fwd
+	pm.spread = 28.0
+	pm.initial_velocity_min = size * 0.8
+	pm.initial_velocity_max = size * 2.0
+	pm.gravity = Vector3(0.0, size * (0.0 if hot else 0.5), 0.0)
+	pm.damping_min = size * 1.2
+	pm.damping_max = size * 2.4
+	pm.scale_min = 0.6
+	pm.scale_max = 1.4
+	pm.angle_min = -180.0
+	pm.angle_max = 180.0
+	pm.color_ramp = _ramp(tint, Color(tint.r, tint.g, tint.b, 0.0))
+	p.process_material = pm
+	p.draw_pass_1 = _quad(size, _mat(Color(1, 1, 1), hot, 2.0 if hot else 0.0))
+	p.position = at
+	scene.add_child(p)
+	_free_after(p, 1.4)
 	return p
 
 ## Dust kicked up behind the jeep; drive `amount_ratio` by speed.

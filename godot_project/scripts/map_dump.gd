@@ -57,6 +57,21 @@ func _ready() -> void:
 			print("%s: grid %dx%d outdoor=%s meshes=%d lights=%d(%d on) markers=%s enemies=%s sprite_banks=%s"
 				% [name, m.grid_width, m.grid_height, outdoor, meshes, lights, lights_on, markers, enemies, banks])
 		bsa.close()
+	if cli.has("cfa"):
+		# --cfa=WEAPON01.CFA --out=DIR: every frame of a CFA as PNG.
+		for nm in String(cli["cfa"]).split(","):
+			var fp: Array = Assets.cfa_frames(nm.to_upper())
+			if fp.is_empty():
+				print("[cfa] %s: not found" % nm)
+				continue
+			for i in fp.size():
+				var t: Texture2D = fp[i]
+				if t == null:
+					continue
+				var img: Image = t.get_image()
+				var out2: String = "%s/%s_%02d.png" % [out_dir, nm.get_basename().to_upper(), i]
+				print("[cfa] %s frame %d %dx%d -> %s (%s)"
+					% [nm, i, img.get_width(), img.get_height(), out2, error_string(img.save_png(out2))])
 	if cli.has("radiation"):
 		dump_radiation(String(cli["radiation"]))
 	if cli.has("brief"):

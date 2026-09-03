@@ -442,7 +442,7 @@ func _cli_after_level() -> void:
 		# (`--console=win;next`), each reply goes to the log.
 		for c in String(_cli["console"]).split(";"):
 			if not c.strip_edges().is_empty():
-				print("[cli] ] %s → %s" % [c.strip_edges(), run_command(c.strip_edges())])
+				print("[cli] ] %s → %s" % [c.strip_edges(), await run_command(c.strip_edges())])
 	if _cli.has("quit-after"):
 		# Automation: leave after N seconds (a headless client in a test).
 		get_tree().create_timer(float(_cli["quit-after"])).timeout.connect(func() -> void:
@@ -485,6 +485,12 @@ func _cli_after_level() -> void:
 			_briefing_set_tab(String(_cli["tab"]).to_upper())
 			await get_tree().process_frame
 			await get_tree().process_frame
+		if _cli.has("console2"):
+			# Console commands run right BEFORE the capture, so short-lived
+			# effects (muzzle smoke, cases) are still on screen.
+			for c in String(_cli["console2"]).split(";"):
+				if not c.strip_edges().is_empty():
+					print("[cli] ] %s → %s" % [c.strip_edges(), await run_command(c.strip_edges())])
 		if _cli.has("automap"):
 			_toggle_automap()
 			await get_tree().process_frame
@@ -2819,6 +2825,23 @@ func run_command(line: String) -> String:
 			for _i in MOON_HITS_TO_FALL + 1:
 				moon_shot()
 			return "moon: %d hits, %s" % [_moon_hits, "falling" if _moon_fall_v > 0.0 else "still up"]
+		"shoot":
+			# Agent aid: fire the held weapon N times (default 6).
+			if not is_instance_valid(player):
+				return "no player"
+			var n: int = int(args[0]) if args.size() > 0 and args[0].is_valid_int() else 6
+			for _i in n:
+				player.set("_fire_cd", 0.0)
+				player.call("_shoot")
+				await get_tree().physics_frame
+			return "fired %d" % n
+		"weapon":
+			if not is_instance_valid(player):
+				return "no player"
+			var wi: int = int(args[0]) if args.size() > 0 and args[0].is_valid_int() else 1
+			player.call("give_weapon", wi)
+			player.call("_select_weapon", wi)
+			return "weapon %d: %s" % [wi, player.get("weapon_name")]
 		"win", "cslut":
 			if _current_level == null:
 				return "no level"

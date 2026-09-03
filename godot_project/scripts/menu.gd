@@ -1287,6 +1287,22 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 	_res_buttons.append(native)
 	vb.add_child(native)
 
+	vb.add_child(_section_label("Weapon view"))
+	var wv := HBoxContainer.new()
+	wv.alignment = BoxContainer.ALIGNMENT_CENTER
+	wv.add_theme_constant_override("separation", 14)
+	_weapon_view_buttons.clear()
+	for m in [["DOS ART", false], ["3D MODEL", true]]:
+		var on: bool = m[1]
+		var wb := _option_button(String(m[0]), func() -> void:
+			Settings.set_weapon_3d(on)
+			_refresh_display_marks())
+		wb.custom_minimum_size = Vector2(210, 48)
+		wb.set_meta("weapon3d", on)
+		_weapon_view_buttons.append(wb)
+		wv.add_child(wb)
+	vb.add_child(wv)
+
 	vb.add_child(_section_label("Window"))
 	var modes := HBoxContainer.new()
 	modes.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -1327,6 +1343,7 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 	return pair[0]
 
 var _render_buttons: Array[Button] = []
+var _weapon_view_buttons: Array[Button] = []
 
 ## Resolutions for the DISPLAY dialog: common sizes matching the
 ## monitor's aspect ratio and fitting within its native resolution,
@@ -1360,6 +1377,9 @@ func _refresh_display_marks() -> void:
 	for rb in _res_buttons:
 		var mode: int = int(rb.get_meta("res_mode", -1))
 		rb.text = ("> " if mode == Settings.resolution else "") + "NATIVE (FULL WINDOW)"
+	for wb in _weapon_view_buttons:
+		var on2: bool = bool(wb.get_meta("weapon3d"))
+		wb.text = ("> " if on2 == Settings.weapon_3d else "") + ("3D MODEL" if on2 else "DOS ART")
 	for i in _res_marks.size():
 		var m: ColorRect = _res_marks[i]
 		if is_instance_valid(m):
