@@ -22,6 +22,10 @@ var _log: RichTextLabel = null
 var _line: LineEdit = null
 var _history: Array[String] = []
 var _hist_pos: int = 0
+var _log_shown: int = 0          # engine log lines already in the panel
+## Engine output (Log autoload) is echoed while the console is down;
+## `log off` in the console silences it.
+var echo_engine: bool = true
 
 func _ready() -> void:
 	layer = 90
@@ -56,7 +60,30 @@ func _ready() -> void:
 	vb.add_child(_line)
 	get_viewport().size_changed.connect(_layout)
 	_layout()
-	say("[color=#88dd99]SkyNET console[/color] — type [b]help[/b]; Esc or ~ closes.")
+	say("[color=#88dd99]SkyNET console[/color] — type [b]help[/b]; Esc or ~ closes. Engine output is echoed here ([b]log off[/b] to hide).")
+	Log.line.connect(_on_engine_line)
+
+## Engine log lines: buffered ones are flushed when the console opens,
+## live ones appended while it is down.
+func _on_engine_line(text: String, error: bool) -> void:
+	if not is_open or not echo_engine:
+		return
+	_flush_engine_log()
+
+func _flush_engine_log() -> void:
+	var all: Array = Log.lines
+	if _log_shown > all.size():
+		_log_shown = 0
+	while _log_shown < all.size():
+		var e: Array = all[_log_shown]
+		_log_shown += 1
+		if not echo_engine:
+			continue
+		var t: String = String(e[0]).replace("[", "[lb]")
+		if bool(e[1]):
+			say("[color=#ff8a70]%s[/color]" % t)
+		else:
+			say("[color=#9fb4a8]%s[/color]" % t)
 
 func _layout() -> void:
 	var vp: Vector2 = get_viewport().get_visible_rect().size
@@ -71,6 +98,7 @@ func open(preset: String = "") -> void:
 	visible = true
 	get_tree().paused = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	_flush_engine_log()
 	_line.text = preset
 	_line.grab_focus()
 	_line.caret_column = preset.length()
@@ -130,6 +158,11 @@ func _on_submit(text: String) -> void:
 		_history.append(cmd)
 	_hist_pos = _history.size()
 	say("[color=#ffd27a]] %s[/color]" % cmd)
+	if cmd == "log off" or cmd == "log on":
+		echo_engine = cmd == "log on"
+		_log_shown = Log.lines.size()
+		say("engine output %s" % ("on" if echo_engine else "off"))
+		return
 	run(cmd)
 
 ## Execute a line through the handler and print the reply.

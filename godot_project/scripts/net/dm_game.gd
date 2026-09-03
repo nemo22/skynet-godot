@@ -400,9 +400,12 @@ func _spawn_pickup_node(key: int) -> void:
 	var p: Sprite3D = Pickup.new()
 	p.setup_item(si)
 	p.set_meta("dm_key", key)
-	LevelLoader._style_sprite(p, tex)
+	var px: float = Assets.sprite_pixel_size(si >> 7, si & 0x7F, tex, SPRITE_PIXEL_SIZE)
+	LevelLoader._style_sprite(p, tex, px)
 	var pos: Vector3 = pk["pos"]
-	p.position = Vector3(pos.x, pos.y + float(tex.get_height()) * SPRITE_PIXEL_SIZE * 0.5, pos.z)
+	var world_h: float = float(tex.get_height()) * px
+	p.position = Vector3(pos.x, pos.y + world_h * 0.5, pos.z)
+	LevelLoader.Replacements.dress_pickup(p, si, float(tex.get_width()) * px, world_h)
 	_pickups_root.add_child(p)
 	_pickup_nodes[key] = p
 

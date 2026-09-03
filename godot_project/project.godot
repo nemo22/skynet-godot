@@ -22,6 +22,8 @@ general/3d_panning_strength=1.0
 [autoload]
 
 SkynetPaths="*res://scripts/skynet_paths.gd"
+Log="*res://scripts/log_sink.gd"
+Render="*res://scripts/render_mode.gd"
 SceneSwitcher="*res://scripts/scene_switcher.gd"
 Controls="*res://scripts/controls.gd"
 Audio="*res://scripts/audio.gd"

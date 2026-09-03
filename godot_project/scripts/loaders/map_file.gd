@@ -190,7 +190,7 @@ static func _slot_looks_like_name(bytes: PackedByteArray, off: int) -> bool:
 			   or c == 0x5F or c == 0x2D or c == 0x2E
 		if not ok: return false
 		n += 1
-	return n >= 3
+	return n >= 1
 
 static func parse(bytes: PackedByteArray) -> MapFile:
 	if bytes == null or bytes.size() < PAYLOAD_OFFSET:
@@ -207,14 +207,16 @@ static func parse(bytes: PackedByteArray) -> MapFile:
 	m.grid_width = gw
 	m.grid_height = gh
 
-	# Names: 8-byte slots from offset 0x14 until a slot fails the check.
-	var off: int = DICT_OFFSET
-	while off + NAME_LEN <= PAYLOAD_OFFSET and _slot_looks_like_name(bytes, off):
-		var name_bytes := bytes.slice(off, off + NAME_LEN)
-		var nul_at := name_bytes.find(0)
-		if nul_at < 0: nul_at = NAME_LEN
-		m.names.append(name_bytes.slice(0, nul_at).get_string_from_ascii())
-		off += NAME_LEN
+	# Names: 8-byte slots from offset 0x14. The header carries no count
+	# and the slots are not NUL-padded (leftover bytes follow short
+	# names — MAP.231 slot 51 is "PC", NUL, "ZZYYX"), and the region after the
+	# last name holds other data that can look like text ("XXXXXXXX"),
+	# so the table cannot be walked with a shape heuristic alone: the
+	# old "3+ name characters" rule stopped MAP.231 at that "PC" and
+	# dropped 38 names — every mesh past it vanished (the -28 hall had
+	# no east wall, the rec room floated in black). The entities are
+	# the authority: read exactly max(name_index) + 1 slots, filled in
+	# after the entity walk below (_read_names).
 
 	# Per-name defaults (Map_SetDefault, skynet_gh.c:37960): every
 	# variant-1 entity WITHOUT a link record of its own (sub+0x13 < 1)
@@ -345,7 +347,29 @@ static func parse(bytes: PackedByteArray) -> MapFile:
 				m.entities_by_off[e_off] = e
 				if nxt_for_continue == e_off: break  # defensive self-loop
 				e_off = nxt_for_continue
+	_read_names(m, bytes)
 	return m
+
+## Fill m.names with as many 8-byte slots as the variant-1 entities
+## reference. A slot that does not start with a name character (the
+## data past the table) is stored empty so its entities stay unnamed.
+static func _read_names(m: MapFile, bytes: PackedByteArray) -> void:
+	var count: int = 0
+	for e in m.entities:
+		if (e.flags & 3) == 1 and e.name_index >= 0 and e.name_index < 1024:
+			count = maxi(count, e.name_index + 1)
+	var off: int = DICT_OFFSET
+	for i in count:
+		if off + NAME_LEN > PAYLOAD_OFFSET:
+			break
+		var nm := ""
+		if _slot_looks_like_name(bytes, off):
+			var name_bytes := bytes.slice(off, off + NAME_LEN)
+			var nul_at := name_bytes.find(0)
+			if nul_at < 0: nul_at = NAME_LEN
+			nm = name_bytes.slice(0, nul_at).get_string_from_ascii()
+		m.names.append(nm)
+		off += NAME_LEN
 
 ## Resolve an entity's name (or empty string).
 static func entity_name(m: MapFile, e: Entity) -> String:

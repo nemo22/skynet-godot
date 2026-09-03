@@ -51,6 +51,33 @@ func _ready() -> void:
 			print("%s: grid %dx%d outdoor=%s meshes=%d markers=%s enemies=%s sprite_banks=%s"
 				% [name, m.grid_width, m.grid_height, outdoor, meshes, markers, enemies, banks])
 		bsa.close()
+	if cli.has("links"):
+		dump_links(String(cli["links"]))
+	if cli.has("names"):
+		dump_names(String(cli["names"]))
+	if cli.has("inventory"):
+		dump_inventory(String(cli["inventory"]), String(cli.get("maps", "")))
+	if cli.has("texusage"):
+		dump_texusage(String(cli["texusage"]))
+	if cli.has("bankdump"):
+		# --bankdump=302,437 --out=DIR: every record of the banks as PNG.
+		DirAccess.make_dir_recursive_absolute(out_dir)
+		for b in String(cli["bankdump"]).split(","):
+			var bank: int = int(b)
+			var n: int = 0
+			for rec in 128:
+				var sz: Vector2i = Assets.record_size(bank, rec)
+				var tex: Texture2D = Assets.texture(bank, rec, false)
+				if tex == null or sz.x <= 1:
+					continue
+				var img: Image = tex.get_image()
+				if img == null:
+					continue
+				img.save_png("%s/T%03d_%03d.png" % [out_dir, bank, rec])
+				n += 1
+				if rec >= Assets.record_count(bank) - 1:
+					break
+			print("[bankdump] TEXTURE.%03d: %d records" % [bank, n])
 	if cli.has("bsa"):
 		dump_bsa(String(cli["bsa"]), String(cli.get("filter", "")))
 	if cli.has("strings"):
@@ -75,6 +102,147 @@ func _ready() -> void:
 			print("%s -> %s (%dx%d)" % [nm, p, tex.get_width(), tex.get_height()])
 		imgs.close()
 	get_tree().quit()
+
+## --inventory=DIR [--maps=210,220]: what the maps are made of, for the
+## ENHANCED replacement pack — every billboard sprite as a PNG
+## (DIR/sprites/T<bank>_<rec>.png) with its use count, every placed .3D
+## name with count and AABB, every enemy type. Writes DIR/inventory.txt.
+static func dump_inventory(dir: String, maps_arg: String) -> void:
+	DirAccess.make_dir_recursive_absolute(dir + "/sprites")
+	var bsa := BSAReader.new()
+	bsa.open(SkynetPaths.gamedata_path("MDMDMAP2.BSA"), SkynetPaths.variant)
+	var names: Array = []
+	if maps_arg.is_empty():
+		for e in bsa.entries():
+			if e.name.to_upper().begins_with("MAP."):
+				names.append(e.name.to_upper())
+	else:
+		for s in maps_arg.split(","):
+			names.append("MAP.%03d" % int(s))
+	names.sort()
+	var sprites: Dictionary = {}     # index -> {count, maps}
+	var meshes: Dictionary = {}      # name -> {count, maps}
+	var enemies: Dictionary = {}
+	for name in names:
+		var bytes := bsa.read(name)
+		if bytes.is_empty():
+			continue
+		var m := MapFile.parse(bytes)
+		for e in m.entities:
+			var v: int = e.flags & 3
+			if v == 1:
+				var nm: String = MapFile.entity_name(m, e).to_upper()
+				if nm.is_empty():
+					continue
+				var d: Dictionary = meshes.get(nm, {"count": 0, "maps": {}})
+				d["count"] += 1
+				d["maps"][name] = true
+				meshes[nm] = d
+			elif v == 3:
+				if e.marker_type == 2:
+					enemies[e.enemy_type] = enemies.get(e.enemy_type, 0) + 1
+				elif e.marker_type == -1 and e.sprite_index >= 0:
+					var d: Dictionary = sprites.get(e.sprite_index, {"count": 0, "maps": {}})
+					d["count"] += 1
+					d["maps"][name] = true
+					sprites[e.sprite_index] = d
+	bsa.close()
+	var lines: PackedStringArray = []
+	lines.append("# SPRITES (bank rec  count  wxh  maps)")
+	var keys: Array = sprites.keys()
+	keys.sort()
+	for si in keys:
+		var bank: int = si >> 7
+		var rec: int = si & 0x7F
+		var tex: Texture2D = Assets.texture(bank, rec, true)
+		var size := "?"
+		if tex != null:
+			var img: Image = tex.get_image()
+			if img != null:
+				img.save_png("%s/sprites/T%03d_%03d.png" % [dir, bank, rec])
+				size = "%dx%d" % [img.get_width(), img.get_height()]
+		var mk: Array = sprites[si]["maps"].keys()
+		mk.sort()
+		lines.append("T%03d_%03d  %4d  %s  %s" % [bank, rec, sprites[si]["count"], size, ",".join(mk).replace("MAP.", "")])
+	lines.append("")
+	lines.append("# MESHES (name  count  aabb size  maps)")
+	var mkeys: Array = meshes.keys()
+	mkeys.sort()
+	for nm in mkeys:
+		var am: ArrayMesh = Assets.mesh(nm + ".3D")
+		var sz := "?"
+		if am != null:
+			var b: AABB = am.get_aabb()
+			sz = "%.0fx%.0fx%.0f" % [b.size.x, b.size.y, b.size.z]
+		var mk: Array = meshes[nm]["maps"].keys()
+		mk.sort()
+		lines.append("%-10s %4d  %-16s %s" % [nm, meshes[nm]["count"], sz, ",".join(mk).replace("MAP.", "")])
+	lines.append("")
+	lines.append("# ENEMIES (type  count)")
+	var ek: Array = enemies.keys()
+	ek.sort()
+	for t in ek:
+		lines.append("%3d  %4d" % [t, enemies[t]])
+	var f := FileAccess.open(dir + "/inventory.txt", FileAccess.WRITE)
+	f.store_string("\n".join(lines))
+	f.close()
+	print("[inventory] %d sprites, %d meshes, %d enemy types -> %s" % [sprites.size(), meshes.size(), enemies.size(), dir])
+
+## --texusage=DIR: which TEXTURE records the placed meshes of every map
+## use, weighted by placements (DIR/inventory.txt from --inventory must
+## exist). Writes DIR/texusage.txt: bank rec  weight  meshes.
+static func dump_texusage(dir: String) -> void:
+	var Mesh3D = load("res://scripts/loaders/mesh_3d.gd")
+	var f := FileAccess.open(dir + "/inventory.txt", FileAccess.READ)
+	if f == null:
+		print("[texusage] no %s/inventory.txt" % dir)
+		return
+	var in_meshes := false
+	var usage: Dictionary = {}          # type_id -> [weight, {mesh: true}]
+	while not f.eof_reached():
+		var line: String = f.get_line()
+		if line.begins_with("# MESHES"):
+			in_meshes = true
+			continue
+		if line.begins_with("# ENEMIES"):
+			break
+		if not in_meshes or line.strip_edges().is_empty():
+			continue
+		var parts: PackedStringArray = line.split(" ", false)
+		if parts.size() < 2:
+			continue
+		var nm: String = parts[0]
+		var count: int = int(parts[1])
+		var bytes: PackedByteArray = Assets.read_3d(nm + ".3D")
+		if bytes.is_empty():
+			continue
+		var m = Mesh3D.parse(bytes, nm)
+		if m == null:
+			continue
+		var seen: Dictionary = {}
+		for face in m.faces:
+			seen[face.type] = seen.get(face.type, 0) + 1
+		for t in seen:
+			var u: Array = usage.get(t, [0, {}])
+			u[0] += count * int(seen[t])
+			u[1][nm] = true
+			usage[t] = u
+	f.close()
+	var keys: Array = usage.keys()
+	keys.sort_custom(func(a, b): return usage[a][0] > usage[b][0])
+	var lines: PackedStringArray = ["# bank rec  weight(faces x placements)  size  meshes"]
+	for t in keys:
+		var bank: int = t >> 7
+		var rec: int = t & 0x7F
+		var sz: Vector2i = Assets.record_size(bank, rec)
+		var ms: Array = usage[t][1].keys()
+		ms.sort()
+		lines.append("T%03d_%03d  %7d  %dx%d  %s" % [bank, rec, usage[t][0], sz.x, sz.y, ",".join(ms.slice(0, 12))])
+	var o := FileAccess.open(dir + "/texusage.txt", FileAccess.WRITE)
+	o.store_string("
+".join(lines))
+	o.close()
+	print("[texusage] %d records -> %s/texusage.txt" % [keys.size(), dir])
 
 ## --frames=SPIDBOT.3D,T800RFL.3D: per-frame AABB of an animated .3D.
 static func dump_frames(names: String) -> void:
@@ -113,11 +281,91 @@ static func dump_faces(names: String) -> void:
 static func find_entities(m, name_part: String) -> void:
 	var MapFile = load("res://scripts/loaders/map_file.gd")
 	for e in m.entities:
+		if (e.flags & 3) == 3 and name_part.to_lower() == "sprites" and e.sprite_index >= 0 				and e.marker_type < 0:
+			print("   sprite %d/%d at godot (%d, %d, %d) act=%02x" % [e.sprite_index >> 7,
+				e.sprite_index & 0x7F, e.x, -e.y, -e.z, e.link_act_type])
+			continue
 		if (e.flags & 3) != 1:
 			continue
 		var nm: String = MapFile.entity_name(m, e)
 		if nm.to_upper().contains(name_part.to_upper()):
 			print("   %s at godot (%d, %d, %d)" % [nm, e.x, -e.y, -e.z])
+
+## --links=231: every entity that takes part in an action chain (state
+## byte, act type, HP, link target) — movers, gates, switches,
+## teleports — with the chain walked from each head. Godot coords.
+static func dump_links(spec: String) -> void:
+	var MapFile = load("res://scripts/loaders/map_file.gd")
+	var bsa := BSAReader.new()
+	bsa.open(SkynetPaths.gamedata_path("MDMDMAP2.BSA"), SkynetPaths.variant)
+	for s in spec.split(","):
+		var name := "MAP.%03d" % int(s)
+		var bytes := bsa.read(name)
+		if bytes.is_empty():
+			print("%s: missing" % name)
+			continue
+		var m = MapFile.parse(bytes)
+		print("%s links:" % name)
+		var targets: Dictionary = {}
+		for e in m.entities:
+			if e.link_next > 0:
+				targets[e.link_next] = true
+		for e in m.entities:
+			var v: int = e.flags & 3
+			if e.state_byte == 0 and e.link_next <= 0 and e.link_act_type == 0 					and not targets.has(e.file_off):
+				continue
+			var label: String
+			match v:
+				1: label = MapFile.entity_name(m, e)
+				2: label = "LIGHT"
+				3: label = ("marker %d" % e.marker_type) if e.marker_type >= 0 					else ("sprite %d/%d" % [e.sprite_index >> 7, e.sprite_index & 0x7F])
+				_: label = "v%d" % v
+			var extra := ""
+			if e.link_act_type == 0xF0:
+				extra = " -> map %d set %d" % [e.exit_map, e.exit_marker_id]
+			print("  @%05x %-14s v%d (%6d,%6d,%6d) st=%02x act=%02x hp=%d next=%05x%s%s"
+				% [e.file_off, label, v, e.x, -e.y, -e.z, e.state_byte, e.link_act_type,
+					e.hp, maxi(e.link_next, 0), extra, "  <head" if not targets.has(e.file_off) and e.link_next > 0 else ""])
+	bsa.close()
+
+## --names=231: the raw 8-byte name slots of the MAP header (index, bytes)
+## next to what the parser accepted, and every variant-1 entity whose
+## name index the parser could not resolve.
+static func dump_names(spec: String) -> void:
+	var MapFile = load("res://scripts/loaders/map_file.gd")
+	var bsa := BSAReader.new()
+	bsa.open(SkynetPaths.gamedata_path("MDMDMAP2.BSA"), SkynetPaths.variant)
+	for s in spec.split(","):
+		var name := "MAP.%03d" % int(s)
+		var bytes := bsa.read(name)
+		if bytes.is_empty():
+			continue
+		var m = MapFile.parse(bytes)
+		print("%s: parser accepted %d names; header u32 @0..0x10: %d %d %d %d %d" % [name, m.names.size(),
+			bytes.decode_u32(0), bytes.decode_u32(4), bytes.decode_u32(8), bytes.decode_u32(12), bytes.decode_u32(16)])
+		var off: int = 20
+		var idx: int = 0
+		var blank_run: int = 0
+		while off + 8 <= 0x253C and blank_run < 4:
+			var slot: PackedByteArray = bytes.slice(off, off + 8)
+			var txt := ""
+			var nonzero := false
+			for b in slot:
+				nonzero = nonzero or b != 0
+				txt += char(b) if b >= 0x20 and b < 0x7F else ("." if b == 0 else "?")
+			if nonzero:
+				blank_run = 0
+				print("  slot %3d @%04x: %s  %s" % [idx, off, txt, "" if idx < m.names.size() else "<< NOT accepted"])
+			else:
+				blank_run += 1
+			off += 8
+			idx += 1
+		var missing: Dictionary = {}
+		for e in m.entities:
+			if (e.flags & 3) == 1 and MapFile.entity_name(m, e).is_empty():
+				missing[e.name_index] = missing.get(e.name_index, 0) + 1
+		print("  unresolved name indices (index: entities): %s" % missing)
+	bsa.close()
 
 ## --tex=266:1,0:60: does TEXTURE.<bank> record <rec> resolve?
 static func dump_tex(spec: String) -> void:

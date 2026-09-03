@@ -385,7 +385,7 @@ func _run_map_scene_checks() -> void:
 	var mesh_res: ArrayMesh = ResourceLoader.load(Assets.mesh("BIGDOOR.3D").resource_path, "", ResourceLoader.CACHE_MODE_IGNORE)
 	var mat: BaseMaterial3D = mesh_res.surface_get_material(0) if mesh_res else null
 	_check(mat != null and mat.albedo_texture != null
-		and mat.albedo_texture.resource_path.begins_with(Assets.root + "/tex/")
+		and mat.albedo_texture.resource_path.begins_with(Assets.root + "/") and mat.albedo_texture.resource_path.contains("/tex/")
 		and mat.albedo_texture.get_width() > 0,
 		"cached mesh references a cache texture file (%s)" % (mat.albedo_texture.resource_path if mat and mat.albedo_texture else "none"))
 

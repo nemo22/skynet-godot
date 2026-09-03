@@ -20,8 +20,17 @@ func set_hud_visible(v: bool) -> void:
 	if _canvas != null:
 		_canvas.visible = v
 
+## The F-key viewer switcher and its overlay are development tools:
+## only `--dev` on the command line enables them.
+var dev: bool = false
+
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	var args: PackedStringArray = OS.get_cmdline_args()
+	args.append_array(OS.get_cmdline_user_args())
+	dev = "--dev" in args
+	if not dev:
+		return
 	# Lightweight overlay shown above every scene.
 	var canvas := CanvasLayer.new()
 	canvas.layer = 100
@@ -36,6 +45,8 @@ func _ready() -> void:
 	canvas.add_child(_label)
 
 func _input(event: InputEvent) -> void:
+	if not dev:
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		var k: int = event.keycode
 		if SCENES.has(k):

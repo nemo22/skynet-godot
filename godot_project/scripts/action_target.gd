@@ -22,6 +22,14 @@ func setup_action(action: RefCounted, file_off: int) -> void:
 func file_off() -> int:
 	return _file_off
 
+## True for targets that lose HP or step through destruction stages —
+## what a grenade should burst on. Doors, gates and buttons are wired
+## into the action system too but only react to hits, they do not break.
+func is_damageable() -> bool:
+	if _action == null:
+		return false
+	return bool(_action.call("is_damageable_off", _file_off))
+
 func take_damage(amount: float) -> void:
 	if _action != null:
 		_action.on_player_hit(_file_off, amount)

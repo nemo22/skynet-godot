@@ -1,0 +1,264 @@
+## ENHANCED particle effects (docs §P.6). The DOS game has no particle
+## system at all — its effects are cel-animated billboards. In ENHANCED
+## mode these GPUParticles3D helpers add what a modern renderer can:
+## sparks and dust at bullet impacts, sparks and a smoke column in
+## explosions, a smoke trail behind rockets and burning debris, dust
+## behind the jeep's wheels, smoke over fires, and ash drifting through
+## the night air on the outdoor maps. Every helper returns null in DOS
+## mode so callers can stay unconditional.
+extends RefCounted
+
+static var _dot: Texture2D = null          # soft round sprite
+
+static func on() -> bool:
+	return Render.enhanced()
+
+## A 32×32 radial soft dot, the one sprite every particle uses.
+static func dot() -> Texture2D:
+	if _dot != null:
+		return _dot
+	var n: int = 32
+	var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
+	for y in n:
+		for x in n:
+			var d: float = Vector2(x + 0.5 - n * 0.5, y + 0.5 - n * 0.5).length() / (n * 0.5)
+			var a: float = clampf(1.0 - d, 0.0, 1.0)
+			a = a * a
+			img.set_pixel(x, y, Color(1, 1, 1, a))
+	img.generate_mipmaps()
+	_dot = ImageTexture.create_from_image(img)
+	return _dot
+
+static func _mat(color: Color, additive: bool, emission: float = 0.0) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD if additive else BaseMaterial3D.BLEND_MODE_MIX
+	m.albedo_texture = dot()
+	m.albedo_color = color
+	m.vertex_color_use_as_albedo = true
+	m.disable_receive_shadows = true
+	if emission > 0.0:
+		m.emission_enabled = true
+		m.emission = color
+		m.emission_energy_multiplier = emission
+	return m
+
+static func _quad(size: float, mat: Material) -> QuadMesh:
+	var qm := QuadMesh.new()
+	qm.size = Vector2(size, size)
+	qm.material = mat
+	return qm
+
+## A colour ramp (alpha fades out, optional colour shift).
+static func _ramp(c0: Color, c1: Color) -> GradientTexture1D:
+	var g := Gradient.new()
+	g.set_color(0, c0)
+	g.set_color(1, c1)
+	var t := GradientTexture1D.new()
+	t.gradient = g
+	return t
+
+static func _free_after(p: Node, secs: float) -> void:
+	p.get_tree().create_timer(secs).timeout.connect(func() -> void:
+		if is_instance_valid(p):
+			p.queue_free())
+
+## Sparks flying from `at`, biased along `dir`; gravity pulls them down.
+static func sparks(scene: Node, at: Vector3, dir: Vector3, count: int = 18,
+		speed: float = 700.0, color: Color = Color(1.0, 0.75, 0.35)) -> GPUParticles3D:
+	if not on() or scene == null:
+		return null
+	var p := GPUParticles3D.new()
+	p.amount = count
+	p.lifetime = 0.55
+	p.one_shot = true
+	p.explosiveness = 1.0
+	p.randomness = 0.6
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = dir.normalized() if dir.length() > 0.01 else Vector3.UP
+	pm.spread = 70.0
+	pm.initial_velocity_min = speed * 0.4
+	pm.initial_velocity_max = speed
+	pm.gravity = Vector3(0.0, -2600.0, 0.0)
+	pm.damping_min = 100.0
+	pm.damping_max = 400.0
+	pm.scale_min = 0.5
+	pm.scale_max = 1.0
+	pm.color_ramp = _ramp(color, Color(color.r, color.g * 0.5, 0.0, 0.0))
+	p.process_material = pm
+	p.draw_pass_1 = _quad(6.0, _mat(color, true, 3.0))
+	p.position = at
+	scene.add_child(p)
+	_free_after(p, 1.2)
+	return p
+
+## A soft dust / smoke puff rising slowly from `at`.
+static func puff(scene: Node, at: Vector3, size: float = 80.0,
+		color: Color = Color(0.45, 0.4, 0.36, 0.55), life: float = 1.4, count: int = 8) -> GPUParticles3D:
+	if not on() or scene == null:
+		return null
+	var p := GPUParticles3D.new()
+	p.amount = count
+	p.lifetime = life
+	p.one_shot = true
+	p.explosiveness = 0.9
+	p.randomness = 0.5
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = size * 0.2
+	pm.direction = Vector3.UP
+	pm.spread = 60.0
+	pm.initial_velocity_min = size * 0.4
+	pm.initial_velocity_max = size * 0.9
+	pm.gravity = Vector3(0.0, size * 0.15, 0.0)
+	pm.damping_min = size * 0.3
+	pm.damping_max = size * 0.6
+	pm.scale_min = 0.6
+	pm.scale_max = 1.3
+	pm.angle_min = -180.0
+	pm.angle_max = 180.0
+	pm.color_ramp = _ramp(color, Color(color.r, color.g, color.b, 0.0))
+	p.process_material = pm
+	p.draw_pass_1 = _quad(size, _mat(Color(1, 1, 1), false))
+	p.position = at
+	scene.add_child(p)
+	_free_after(p, life + 0.3)
+	return p
+
+## A smoke column after an explosion of `radius`.
+static func smoke_column(scene: Node, at: Vector3, radius: float) -> GPUParticles3D:
+	return puff(scene, at + Vector3(0.0, radius * 0.3, 0.0), radius * 1.4,
+		Color(0.1, 0.09, 0.09, 0.5), 2.6, 12)
+
+## A bullet impact: sparks along the surface normal and a dust puff.
+static func impact(scene: Node, at: Vector3, normal: Vector3) -> void:
+	if not on():
+		return
+	sparks(scene, at + normal * 4.0, normal, 14, 600.0)
+	puff(scene, at + normal * 6.0, 50.0, Color(0.5, 0.45, 0.4, 0.45), 0.9, 5)
+
+## A continuous emitter that follows `node` and leaves its particles in
+## the world (a rocket's smoke, a burning chunk's trail).
+static func trail(node: Node3D, size: float = 40.0,
+		color: Color = Color(0.35, 0.33, 0.32, 0.5), burning: bool = false) -> GPUParticles3D:
+	if not on() or node == null:
+		return null
+	var p := GPUParticles3D.new()
+	p.amount = 40 if burning else 32
+	p.lifetime = 0.7 if burning else 1.3
+	p.local_coords = false
+	p.randomness = 0.4
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = size * 0.1
+	pm.direction = Vector3.UP
+	pm.spread = 40.0
+	pm.initial_velocity_min = size * 0.3
+	pm.initial_velocity_max = size * 0.7
+	pm.gravity = Vector3(0.0, size * 0.4, 0.0)
+	pm.scale_min = 0.5
+	pm.scale_max = 1.2
+	if burning:
+		pm.color_ramp = _ramp(Color(1.0, 0.6, 0.2, 0.9), Color(0.3, 0.1, 0.05, 0.0))
+	else:
+		pm.color_ramp = _ramp(color, Color(color.r, color.g, color.b, 0.0))
+	p.process_material = pm
+	p.draw_pass_1 = _quad(size, _mat(Color(1, 1, 1), burning, 2.0 if burning else 0.0))
+	node.add_child(p)
+	return p
+
+## Dust kicked up behind the jeep; drive `amount_ratio` by speed.
+static func wheel_dust(node: Node3D) -> GPUParticles3D:
+	if not on() or node == null:
+		return null
+	var p := GPUParticles3D.new()
+	p.amount = 48
+	p.lifetime = 1.6
+	p.local_coords = false
+	p.randomness = 0.5
+	p.amount_ratio = 0.0
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(70.0, 5.0, 40.0)
+	pm.direction = Vector3(0.0, 0.6, 1.0)
+	pm.spread = 35.0
+	pm.initial_velocity_min = 120.0
+	pm.initial_velocity_max = 260.0
+	pm.gravity = Vector3(0.0, 25.0, 0.0)
+	pm.damping_min = 60.0
+	pm.damping_max = 140.0
+	pm.scale_min = 0.8
+	pm.scale_max = 1.6
+	pm.color_ramp = _ramp(Color(0.5, 0.42, 0.36, 0.5), Color(0.5, 0.42, 0.36, 0.0))
+	p.process_material = pm
+	p.draw_pass_1 = _quad(90.0, _mat(Color(1, 1, 1), false))
+	p.position = Vector3(0.0, -60.0, 110.0)      # behind the cab, at the wheels
+	node.add_child(p)
+	return p
+
+## Thin smoke rising over a fire of `w` × `h`.
+static func fire_smoke(node: Node3D, w: float, h: float, base: float) -> GPUParticles3D:
+	if not on() or node == null:
+		return null
+	var p := GPUParticles3D.new()
+	p.amount = 10
+	p.lifetime = 2.8
+	p.randomness = 0.5
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = w * 0.15
+	pm.direction = Vector3.UP
+	pm.spread = 15.0
+	pm.initial_velocity_min = h * 0.5
+	pm.initial_velocity_max = h * 0.8
+	pm.gravity = Vector3(0.0, h * 0.12, 0.0)
+	pm.scale_min = 0.8
+	pm.scale_max = 1.8
+	pm.angle_min = -180.0
+	pm.angle_max = 180.0
+	pm.color_ramp = _ramp(Color(0.25, 0.22, 0.2, 0.35), Color(0.25, 0.22, 0.2, 0.0))
+	p.process_material = pm
+	p.draw_pass_1 = _quad(w * 0.5, _mat(Color(1, 1, 1), false))
+	p.position = Vector3(0.0, base + h * 0.9, 0.0)
+	node.add_child(p)
+	return p
+
+## Ash drifting through the night air around the camera (outdoor maps).
+static func ambient_ash(node: Node3D) -> GPUParticles3D:
+	if not on() or node == null:
+		return null
+	var p := GPUParticles3D.new()
+	p.amount = 220
+	p.lifetime = 9.0
+	p.local_coords = false
+	p.randomness = 0.8
+	p.preprocess = 6.0
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(2200.0, 700.0, 2200.0)
+	pm.direction = Vector3(0.3, -0.2, 0.1)
+	pm.spread = 90.0
+	pm.initial_velocity_min = 20.0
+	pm.initial_velocity_max = 70.0
+	pm.gravity = Vector3(0.0, -12.0, 0.0)
+	pm.turbulence_enabled = true
+	pm.turbulence_noise_strength = 40.0
+	pm.turbulence_noise_scale = 3.0
+	pm.scale_min = 0.5
+	pm.scale_max = 1.2
+	pm.color_ramp = _ramp(Color(0.6, 0.58, 0.55, 0.0), Color(0.6, 0.58, 0.55, 0.0))
+	# Fade in and out over the life (alpha 0 → 0.7 → 0).
+	var g := Gradient.new()
+	g.set_color(0, Color(0.6, 0.58, 0.55, 0.0))
+	g.add_point(0.2, Color(0.6, 0.58, 0.55, 0.7))
+	g.add_point(0.8, Color(0.6, 0.58, 0.55, 0.7))
+	g.set_color(g.get_point_count() - 1, Color(0.6, 0.58, 0.55, 0.0))
+	var gt := GradientTexture1D.new()
+	gt.gradient = g
+	pm.color_ramp = gt
+	p.process_material = pm
+	p.draw_pass_1 = _quad(5.0, _mat(Color(1, 1, 1), false))
+	node.add_child(p)
+	return p

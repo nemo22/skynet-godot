@@ -17,6 +17,46 @@ const Paths := preload("res://scripts/skynet_paths.gd")
 static func _cache() -> String:
 	return Paths.converted_dir_for(Paths.locate_gamedata())
 
+## The editor only works with resources inside res://, so the cache is
+## reached through a directory link `res://converted` → the cache dir
+## (a Windows junction / a symlink elsewhere). Map scenes built through
+## the link reference res:// paths and open in the editor directly.
+const LINK := "res://converted"
+
+static func _link_ok() -> bool:
+	return DirAccess.dir_exists_absolute(LINK) and FileAccess.file_exists(LINK + "/VERSION")
+
+func _ensure_link() -> bool:
+	if _link_ok():
+		return true
+	var target: String = _cache()
+	if target.begins_with("res://") or target.begins_with("user://"):
+		_say("the cache is inside the project (%s) — nothing to link" % target)
+		return target.begins_with("res://")
+	if not DirAccess.dir_exists_absolute(target):
+		_say("no cache at %s — run the game once (it converts the data) or press Import" % target)
+		return false
+	var link_os: String = ProjectSettings.globalize_path(LINK)
+	var out: Array = []
+	var code: int = -1
+	if OS.get_name() == "Windows":
+		code = OS.execute("cmd.exe", ["/c", "mklink", "/J", link_os.replace("/", "\\"), target.replace("/", "\\")], out, true)
+	else:
+		code = OS.execute("ln", ["-s", target, link_os], out, true)
+	if _link_ok():
+		_say("linked %s → %s" % [LINK, target])
+		# Scenes built before the link reference absolute paths the
+		# editor refuses — drop them, Open rebuilds in a few seconds.
+		var d := DirAccess.open(target + "/maps")
+		if d != null:
+			for f in d.get_files():
+				if f.ends_with(".scn"):
+					d.remove(f)
+		EditorInterface.get_resource_filesystem().scan()
+		return true
+	_say("could not link %s → %s (%d: %s)" % [LINK, target, code, "".join(out).strip_edges()])
+	return false
+
 const KINDS := ["Mesh (name from map table)", "Sprite (bank,record)", "Enemy (type id)", "Marker (type id)", "Light (intensity)"]
 
 var _dock: VBoxContainer
@@ -37,10 +77,11 @@ func _enter_tree() -> void:
 	refresh.pressed.connect(_fill_maps)
 	row.add_child(refresh)
 	_dock.add_child(row)
-	_dock.add_child(_button("Open scene", _open))
+	_dock.add_child(_button("Open map (builds the scene when needed)", _open))
 	_dock.add_child(_button("Export edited scene → mods/maps/", _export))
-	_dock.add_child(_button("Rebuild scene from MAP (headless)", _rebuild))
+	_dock.add_child(_button("Rebuild scene from MAP", _rebuild))
 	_dock.add_child(_button("Play map", _play))
+	_dock.add_child(_button("Import / convert game data", _import))
 	_dock.add_child(HSeparator.new())
 	_kind = OptionButton.new()
 	for k in KINDS:
@@ -57,6 +98,7 @@ func _enter_tree() -> void:
 	_dock.add_child(_log)
 	add_control_to_dock(DOCK_SLOT_RIGHT_UL, _dock)
 	_fill_maps()
+	_ensure_link.call_deferred()
 
 func _exit_tree() -> void:
 	remove_control_from_docks(_dock)
@@ -72,29 +114,75 @@ func _say(msg: String) -> void:
 	_log.append_text(msg + "\n")
 	print("[skynet-maps] " + msg)
 
+## Every MAP in MDMDMAP2.BSA (the ones with a built scene are marked).
 func _fill_maps() -> void:
 	_maps.clear()
-	var d := DirAccess.open(_cache() + "/maps")
-	if d == null:
-		_say("no %s/maps — run the game once with -- --import" % _cache())
-		return
 	var names: Array = []
-	for f in d.get_files():
-		if f.ends_with(".scn"):
-			names.append(f.get_basename())
+	var gd: String = Paths.locate_gamedata()
+	if gd.is_empty():
+		_say("original game data not found (SKYNET.EXE dir) — set it in the game's first-start dialog or --gamedata=")
+		return
+	var bsa = load("res://scripts/loaders/bsa_reader.gd").new()
+	if bsa.open(gd + "/MDMDMAP2.BSA", 0):
+		for e in bsa.entries():
+			var nm: String = e.name.to_upper()
+			if nm.begins_with("MAP."):
+				names.append(nm)
+		bsa.close()
 	names.sort()
+	var have: Dictionary = {}
+	var d := DirAccess.open(_cache() + "/maps")
+	if d != null:
+		for f in d.get_files():
+			if f.ends_with(".scn"):
+				have[f.get_basename()] = true
 	for n in names:
-		_maps.add_item(n)
+		_maps.add_item(("%s  ✓" % n) if have.has(n) else n)
+	if names.is_empty():
+		_say("no maps in %s/MDMDMAP2.BSA" % gd)
 
 func _selected() -> String:
-	return _maps.get_item_text(_maps.selected) if _maps.selected >= 0 else ""
+	if _maps.selected < 0:
+		return ""
+	return _maps.get_item_text(_maps.selected).split(" ")[0]
+
+## Build the map's scene with a headless game run (the loaders need the
+## game's autoloads). Blocks for a few seconds. Returns the .scn path.
+func _build_scene(m: String) -> String:
+	var out: Array = []
+	_say("building %s scene …" % m)
+	var code: int = OS.execute(OS.get_executable_path(),
+		_godot_args(["--headless", "--", "--map-scene=%s" % m]), out, true)
+	var scn := "%s/maps/%s.scn" % [LINK, m]
+	if code != 0 or not FileAccess.file_exists(ProjectSettings.globalize_path(scn)):
+		var tail: String = "".join(out)
+		_say("build failed (%d): %s" % [code, tail.right(600)])
+		return ""
+	EditorInterface.get_resource_filesystem().scan()
+	return scn
 
 func _open() -> void:
 	var m := _selected()
 	if m.is_empty():
 		return
-	EditorInterface.open_scene_from_path("%s/maps/%s.scn" % [_cache(), m])
-	_say("opened %s" % m)
+	if not _ensure_link():
+		return
+	var scn := "%s/maps/%s.scn" % [LINK, m]
+	if not FileAccess.file_exists(ProjectSettings.globalize_path(scn)):
+		scn = _build_scene(m)
+		if scn.is_empty():
+			return
+		_fill_maps()
+	EditorInterface.open_scene_from_path(scn)
+	_say("opened %s" % scn)
+
+func _import() -> void:
+	var out: Array = []
+	_say("converting game data (a few minutes) …")
+	var code: int = OS.execute(OS.get_executable_path(), _godot_args(["--headless", "--", "--import"]), out, true)
+	_say("import finished (%d)" % code)
+	_ensure_link()
+	_fill_maps()
 
 func _export() -> void:
 	var root := EditorInterface.get_edited_scene_root()
@@ -133,7 +221,7 @@ func _add() -> void:
 			rec.variant = 1
 			rec.flags = 1
 			rec.mesh_name = nm
-			node.set("mesh", _res("%s/mesh/%s.res" % [_cache(), nm]))
+			node.set("mesh", _res("%s/mesh/%s.res" % [LINK, nm]))
 			group = "Entities"
 		1:
 			var parts := p.split(",")
@@ -146,7 +234,7 @@ func _add() -> void:
 			rec.variant = 3
 			rec.flags = 3
 			rec.sprite_index = (bank << 7) | (ri & 0x7F)
-			var tex := _res("%s/tex/T%03d_%03d_A.res" % [_cache(), bank, ri])
+			var tex := _res("%s/tex/T%03d_%03d_A.res" % [LINK, bank, ri])
 			if tex != null:
 				node.set("texture", tex)
 			node.set("pixel_size", 2.0)
@@ -164,7 +252,7 @@ func _add() -> void:
 			rec.marker_type = 2
 			rec.enemy_type = t
 			rec.sprite_index = (299 << 7) | 2
-			node.set("mesh", _res("%s/mesh/%s.res" % [_cache(), String(AIData.TYPES[t]["n"]).to_upper()]))
+			node.set("mesh", _res("%s/mesh/%s.res" % [LINK, String(AIData.TYPES[t]["n"]).to_upper()]))
 			group = "Enemies"
 		3:
 			var t := int(p)
@@ -214,11 +302,15 @@ func _rebuild() -> void:
 	var m := _selected()
 	if m.is_empty():
 		return
-	var scn := "%s/maps/%s.scn" % [_cache(), m]
-	DirAccess.remove_absolute(scn)
-	var pid := OS.create_process(OS.get_executable_path(),
-		_godot_args(["--headless", "--", "--map-scene=%s" % m]))
-	_say("rebuilding %s (pid %d) — reopen the scene when it finishes" % [m, pid])
+	if not _ensure_link():
+		return
+	var scn := "%s/maps/%s.scn" % [LINK, m]
+	if FileAccess.file_exists(ProjectSettings.globalize_path(scn)):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(scn))
+	scn = _build_scene(m)
+	if not scn.is_empty():
+		EditorInterface.reload_scene_from_path(scn)
+		_say("rebuilt %s" % scn)
 
 func _play() -> void:
 	var m := _selected()

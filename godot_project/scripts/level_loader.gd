@@ -13,6 +13,7 @@
 
 extends RefCounted
 
+const Replacements := preload("res://scripts/replacements.gd")
 const BSAReader    := preload("res://scripts/loaders/bsa_reader.gd")
 const Mesh3D       := preload("res://scripts/loaders/mesh_3d.gd")
 const MapFile      := preload("res://scripts/loaders/map_file.gd")
@@ -39,6 +40,7 @@ const SPRITE_HEALTH_BANKS := [214]        # TEXTURE.214 "equipment"
 ## FUN_0014f4xx: `tex_w * puVar1[0x11]`); the texture dimensions already
 ## carry each prop's relative size, so a single world-scale suffices.
 const SPRITE_PIXEL_SIZE: float = 2.0
+const INDOOR_SPRITE_LIFT: float = 16.0
 
 ## Enemy-type ID → mesh base name (no extension). Extracted from the
 ## static enemy table at Skynet.exe virtual 0x44d00 (record stride 0x1C,
@@ -821,6 +823,7 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 	var bank_hist: Dictionary = {}
 	var placed: int = 0
 	var pickups: int = 0
+	var models: int = 0
 	for e in level.map.entities:
 		if (e.flags & 3) != 3: continue
 		if e.marker_type != -1: continue          # markers handled elsewhere
@@ -836,10 +839,14 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 		if tex == null:
 			continue
 
-		var world_h: float = float(tex.get_height()) * SPRITE_PIXEL_SIZE
+		var px: float = Assets.sprite_pixel_size(bank, rec_id, tex, SPRITE_PIXEL_SIZE)
+		var world_h: float = float(tex.get_height()) * px
 		# Ground level: outdoor sprites rest on the terrain surface;
 		# indoor sprites use the placement Y.
-		var base_y: float = -float(e.y)
+		# Indoors the record's Y sits 16 u above the floor (the same +0x10
+		# the enemy markers carry; a 2026-09-03 probe measured 13–26 u), so
+		# the billboard's foot goes down to the floor.
+		var base_y: float = -float(e.y) - INDOOR_SPRITE_LIFT
 		if level.is_outdoor and level.wld != null:
 			base_y = WldTerrain.height_at_world(
 				level.wld, float(e.x), float(e.z))
@@ -847,19 +854,37 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 		# Sprites listed in the DOS item table become collectible nodes
 		# (FUN_0011d600 gives them act 0xFD at map start); the rest are
 		# scenery — including the weapon-bank records the table omits.
-		var spr: Sprite3D
+		var spr: Node3D
 		if PickupData.ITEMS.has(e.sprite_index):
 			var p := Pickup.new()
 			p.setup_item(e.sprite_index)
 			p.set_meta("pickup_off", e.file_off)
 			level.pickup_offs.append(e.file_off)
+			_style_sprite(p, tex, px)
+			p.position = Vector3(float(e.x), base_y + world_h * 0.5, -float(e.z))
+			Replacements.dress_pickup(p, e.sprite_index, float(tex.get_width()) * px, world_h)
 			spr = p
 			pickups += 1
+		elif Replacements.is_fire(e.sprite_index):
+			# ENHANCED: a shader flame with its own light.
+			spr = Replacements.fire_node(e.sprite_index, float(tex.get_width()) * px, world_h, e.file_off)
+			spr.position = Vector3(float(e.x), base_y, -float(e.z))
+			models += 1
+		elif Replacements.has_sprite(bank, rec_id):
+			# ENHANCED pack: a 3D model stands in for the scenery billboard.
+			var world_w: float = float(tex.get_width()) * px
+			spr = Replacements.sprite_node(bank, rec_id, world_w, world_h, e.file_off)
+			if spr == null:
+				spr = Sprite3D.new()
+				_style_sprite(spr, tex, px)
+				spr.position = Vector3(float(e.x), base_y + world_h * 0.5, -float(e.z))
+			else:
+				spr.position = Vector3(float(e.x), base_y, -float(e.z))
+				models += 1
 		else:
 			spr = Sprite3D.new()
-		_style_sprite(spr, tex)
-		spr.position = Vector3(
-			float(e.x), base_y + world_h * 0.5, -float(e.z))
+			_style_sprite(spr, tex, px)
+			spr.position = Vector3(float(e.x), base_y + world_h * 0.5, -float(e.z))
 		level.sprites.add_child(spr)
 		placed += 1
 		# Looping ambient sound: the 0x4cc00 sprite→sound table (fires,
@@ -872,21 +897,22 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 			amb = int(PickupData.AMBIENT[e.sprite_index])
 		if amb >= 0:
 			Audio.attach_loop_3d(amb, spr, -10.0)
-	print("[level] placed %d billboard sprites (%d pickups)"
-		% [placed, pickups])
+	print("[level] placed %d billboard sprites (%d pickups, %d as models)"
+		% [placed, pickups, models])
 	var keys := bank_hist.keys()
 	keys.sort()
 	for b in keys:
 		print("[sprite] bank %d x%d" % [b, bank_hist[b]])
 
-static func _style_sprite(spr: Sprite3D, tex: Texture2D) -> void:
+static func _style_sprite(spr: Sprite3D, tex: Texture2D, pixel_size: float = SPRITE_PIXEL_SIZE) -> void:
 	spr.texture = tex
-	spr.pixel_size = SPRITE_PIXEL_SIZE
+	spr.pixel_size = pixel_size
 	spr.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
 	spr.shaded = false
 	spr.double_sided = true
 	spr.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
-	spr.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	# ENHANCED: filtered billboards (the upscaled sprite has mipmaps).
+	spr.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS if Render.enhanced() else BaseMaterial3D.TEXTURE_FILTER_NEAREST
 
 ## Spawn a destruction drop (FUN_00124119): one of the drop type's
 ## sprites at random (0 = nothing), placed on the ground under `pos`
@@ -912,12 +938,15 @@ static func spawn_drop(level: Level, pos: Vector3, drop_type: int) -> Sprite3D:
 		spr = p
 	else:
 		spr = Sprite3D.new()
-	_style_sprite(spr, tex)
+	var px: float = Assets.sprite_pixel_size(si >> 7, si & 0x7F, tex, SPRITE_PIXEL_SIZE)
+	_style_sprite(spr, tex, px)
 	var ground: float = pos.y
 	if level.is_outdoor and level.wld != null:
 		ground = WldTerrain.height_at_world(level.wld, pos.x, -pos.z)
-	var world_h: float = float(tex.get_height()) * SPRITE_PIXEL_SIZE
+	var world_h: float = float(tex.get_height()) * px
 	spr.position = Vector3(pos.x, ground + world_h * 0.5, pos.z)
+	if spr is Pickup:
+		Replacements.dress_pickup(spr, si, float(tex.get_width()) * px, world_h)
 	level.sprites.add_child(spr)
 	if PickupData.AMBIENT.has(si):
 		Audio.attach_loop_3d(int(PickupData.AMBIENT[si]), spr, -10.0)

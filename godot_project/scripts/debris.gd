@@ -5,9 +5,14 @@
 extends Node3D
 
 const Explosion := preload("res://scripts/explosion.gd")
+const FxParticles := preload("res://scripts/fx_particles.gd")
 
 const GRAVITY: float = 2600.0
-const MAX_LIFE: float = 3.5
+const MAX_LIFE: float = 2.5
+## The impact blast hurts a player standing next to it (DOS: the
+## ballistic parts detonate like small grenades).
+const HURT_RANGE: float = 240.0
+const HURT_DAMAGE: float = 14.0
 
 var _vel: Vector3 = Vector3.ZERO
 var _life: float = MAX_LIFE
@@ -36,6 +41,7 @@ func setup(at: Vector3, vel: Vector3, part: Mesh = null) -> void:
 		mat.albedo_color = Color(0.32, 0.30, 0.34)      # scorched metal
 		_mi.material_override = mat
 	add_child(_mi)
+	FxParticles.trail(self, 34.0, Color(0.3, 0.28, 0.27, 0.5), true)
 
 func _physics_process(delta: float) -> void:
 	_life -= delta
@@ -61,4 +67,9 @@ func _detonate(at: Vector3) -> void:
 		scene.add_child(ex)
 		ex.setup(at, randf_range(140.0, 240.0))
 	Audio.play_sfx_3d("EXPLO1.RAW", at, -9.0)
+	var pl: Node = get_tree().get_first_node_in_group("player")
+	if pl is Node3D and pl.has_method("take_damage"):
+		var d: float = (pl as Node3D).global_position.distance_to(at)
+		if d < HURT_RANGE:
+			pl.call("take_damage", HURT_DAMAGE * (1.0 - d / HURT_RANGE))
 	queue_free()

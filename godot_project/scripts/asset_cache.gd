@@ -60,11 +60,53 @@ func _ready() -> void:
 		print("[assets] cache disabled (--no-cache)")
 		return
 	root = SkynetPaths.converted_dir()
+	# A development checkout links res://converted → the cache so the
+	# editor can open map scenes; address the cache through the link
+	# then, so every saved resource references res:// paths.
+	if not root.begins_with("res://") and DirAccess.dir_exists_absolute("res://converted") 			and FileAccess.file_exists("res://converted/VERSION"):
+		root = "res://converted"
 	# Outside the editor a PortableCompressedTexture2D drops its source
 	# buffer right after decoding it — and then saves as an EMPTY texture.
 	PortableCompressedTexture2D.set_keep_all_compressed_buffers(true)
 	_check_version()
 	print("[assets] cache at %s" % root)
+	if Render.enhanced():
+		_refresh_overrides()
+
+## Cached meshes reference their texture .res files by path, so a
+## replacement PNG/WebP dropped into <converted>/enhanced/pack/textures only shows
+## up if the cached texture (and normal map) is rebuilt IN PLACE before
+## any mesh loads. Runs once at start: every pack file newer than its
+## cache entry rewrites it.
+func _refresh_overrides() -> void:
+	var dir: String = Render.override_dir() + "/textures"
+	var d := DirAccess.open(dir)
+	if d == null:
+		return
+	var n := 0
+	for f in d.get_files():
+		var base: String = f.get_basename()
+		if base.ends_with("_n"):
+			base = base.substr(0, base.length() - 2)
+		if not base.begins_with("T") or base.length() != 8 or base[4] != "_":
+			continue
+		var bank: int = int(base.substr(1, 3))
+		var rec: int = int(base.substr(5, 3))
+		var src_time: int = FileAccess.get_modified_time(dir + "/" + f)
+		var stale := false
+		for k in [["tex", "T%03d_%03d" % [bank, rec]], ["tex", "T%03d_%03d_A" % [bank, rec]], ["nrm", "N%03d_%03d" % [bank, rec]]]:
+			var p := _path(k[0], k[1])
+			if FileAccess.file_exists(p) and FileAccess.get_modified_time(p) < src_time:
+				DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+				_mem.erase(p)
+				stale = true
+		if stale:
+			texture(bank, rec, false)
+			texture(bank, rec, true)
+			normal_map(bank, rec)
+			n += 1
+	if n > 0:
+		print("[assets] %d replacement textures rebuilt into the cache" % n)
 
 ## The data directory changed (first-start prompt): move to its cache.
 func relocate() -> void:
@@ -139,8 +181,12 @@ func palette() -> PackedColorArray:
 # ---------------------------------------------------------------------
 # Generic load-or-build
 # ---------------------------------------------------------------------
+## ENHANCED assets live in their own tree (converted/enhanced/<kind>) —
+## a mesh .res references its textures by path, so the two looks must
+## never share a file.
 func _path(kind: String, key: String) -> String:
-	return "%s/%s/%s.res" % [root, kind, key.to_upper().replace("/", "_")]
+	var sub: String = ("enhanced/" + kind) if Render.enhanced() and kind in ["tex", "nrm", "mesh", "frames", "terrain"] else kind
+	return "%s/%s/%s.res" % [root, sub, key.to_upper().replace("/", "_")]
 
 ## Return the cached resource for `kind/key`, building it with
 ## `builder` (→ Resource or null) and saving it on a miss.
@@ -186,16 +232,102 @@ func _tex_file(bank: int) -> TextureNNN.TexFile:
 ## transparent when `transparent0` (billboard sprites).
 func texture(bank: int, rec: int, transparent0: bool = false) -> Texture2D:
 	var key := "T%03d_%03d%s" % [bank, rec, "_A" if transparent0 else ""]
+	_drop_stale(bank, rec, "tex", key, "textures/T%03d_%03d.png" % [bank, rec])
 	var r: Resource = fetch("tex", key, func() -> Resource:
-		var t := _tex_file(bank)
-		if t == null or t.records.is_empty():
-			return null
-		var ri: int = clampi(rec, 0, t.records.size() - 1)
-		var img: Image = TextureNNN.to_image(t.records[ri], palette(), transparent0)
+		var img: Image = _texture_image(bank, rec, transparent0)
 		if img == null:
 			return null
 		return _portable(img))
 	return r as Texture2D
+
+## The DOS record as an Image — in ENHANCED mode the hand-made
+## replacement <converted>/enhanced/pack/textures/T<bank>_<rec>.png when there is
+## one, else the pixel-art upscale (Render.enhance_image), mipmapped.
+func _texture_image(bank: int, rec: int, transparent0: bool) -> Image:
+	if Render.enhanced():
+		var p: String = Render.override_path("textures/T%03d_%03d.png" % [bank, rec])
+		if not p.is_empty():
+			var over := Image.load_from_file(p)
+			if over != null:
+				over.convert(Image.FORMAT_RGBA8)
+				over.generate_mipmaps()
+				return over
+	var t := _tex_file(bank)
+	if t == null or t.records.is_empty():
+		return null
+	var ri: int = clampi(rec, 0, t.records.size() - 1)
+	var img: Image = TextureNNN.to_image(t.records[ri], palette(), transparent0)
+	if img == null:
+		return null
+	if Render.enhanced() and img.get_width() > 1 and img.get_height() > 1:
+		# Billboards (transparent0) keep hard pixel edges: two EPX passes
+		# and no resample, so a 4× tree does not turn into a blob.
+		return Render.enhance_image(img, transparent0)
+	return img
+
+## World size per texel for a billboard of this record: the DOS sprite
+## is SPRITE_PIXEL_SIZE units per DOS pixel whatever the texture's
+## (upscaled / replaced) resolution.
+func sprite_pixel_size(bank: int, rec: int, tex: Texture2D, dos_pixel: float) -> float:
+	if tex == null or tex.get_height() <= 0:
+		return dos_pixel
+	return dos_pixel * float(record_size(bank, rec).y) / float(tex.get_height())
+
+## ENHANCED: a replacement file in <converted>/enhanced/pack newer than the cached
+## resource built from it (or from the DOS record) drops the cache entry,
+## so dropping a PNG into the pack takes effect on the next load.
+func _drop_stale(bank: int, rec: int, kind: String, key: String, rel: String) -> void:
+	if not Render.enhanced() or not enabled:
+		return
+	var over: String = Render.override_path(rel)
+	if over.is_empty():
+		return
+	var p := _path(kind, key)
+	if not FileAccess.file_exists(p):
+		return
+	if FileAccess.get_modified_time(over) > FileAccess.get_modified_time(p):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+		_mem.erase(p)
+
+## ENHANCED: a normal map derived from the texture (bump from luminance).
+func normal_map(bank: int, rec: int) -> Texture2D:
+	if not Render.enhanced():
+		return null
+	var key := "N%03d_%03d" % [bank, rec]
+	_drop_stale(bank, rec, "nrm", key, "textures/T%03d_%03d.png" % [bank, rec])
+	_drop_stale(bank, rec, "nrm", key, "textures/T%03d_%03d_n.png" % [bank, rec])
+	var r: Resource = fetch("nrm", key, func() -> Resource:
+		# A hand-made normal map next to a replacement texture
+		# (<converted>/enhanced/pack/textures/T<bank>_<rec>_n.png, OpenGL +Y).
+		var np: String = Render.override_path("textures/T%03d_%03d_n.png" % [bank, rec])
+		if not np.is_empty():
+			var nimg := Image.load_from_file(np)
+			if nimg != null:
+				nimg.convert(Image.FORMAT_RGBA8)
+				nimg.generate_mipmaps()
+				return _portable(nimg)
+		var img: Image = _texture_image(bank, rec, false)
+		if img == null or img.get_width() <= 1:
+			return null
+		return _portable(Render.normal_from(img)))
+	return r as Texture2D
+
+## Number of records in TEXTURE.<bank> (0 when the file is missing).
+func record_count(bank: int) -> int:
+	var t := _tex_file(bank)
+	return t.records.size() if t != null else 0
+
+## Native DOS pixel size of a record (the UV divisor — upscaled or
+## replaced images must not change the mapping).
+func record_size(bank: int, rec: int) -> Vector2i:
+	var t := _tex_file(bank)
+	if t == null or t.records.is_empty():
+		return Vector2i(64, 64)
+	var ri: int = clampi(rec, 0, t.records.size() - 1)
+	var rr: TextureNNN.Record = t.records[ri]
+	if rr == null or rr.width <= 0:
+		return Vector2i(64, 64)
+	return Vector2i(rr.width, rr.height)
 
 ## A saveable texture from an Image. (Never go through ImageTexture:
 ## on the headless renderer get_image() comes back empty.)
@@ -210,7 +342,12 @@ func provide(bank: int, rec: int) -> Dictionary:
 	var tex := texture(bank, rec, false)
 	if tex == null:
 		return {}
-	return {"texture": tex, "size": Vector2i(tex.get_width(), tex.get_height())}
+	var out := {"texture": tex, "size": record_size(bank, rec)}
+	if Render.enhanced():
+		var n := normal_map(bank, rec)
+		if n != null:
+			out["normal"] = n
+	return out
 
 # ---------------------------------------------------------------------
 # Meshes
@@ -270,11 +407,14 @@ func terrain(suffix: String, wld: WldTerrain.WLD) -> ArrayMesh:
 			return null
 		var tiles: Array = []
 		var t302 := _tex_file(302)
+		var normals: Array = []
 		if t302 != null:
 			for i in t302.records.size():
 				var rec: TextureNNN.Record = t302.records[i]
-				tiles.append(texture(302, i, false) if rec != null and not rec.pixels.is_empty() else null)
-		return WldTerrain.build_terrain_mesh(wld, tiles)) as ArrayMesh
+				var ok: bool = rec != null and not rec.pixels.is_empty()
+				tiles.append(texture(302, i, false) if ok else null)
+				normals.append(normal_map(302, i) if ok else null)
+		return WldTerrain.build_terrain_mesh(wld, tiles, normals)) as ArrayMesh
 
 # ---------------------------------------------------------------------
 # Sounds / CFA
@@ -307,13 +447,47 @@ func cfa_frames(name: String) -> Array:
 	return []
 
 ## Editor scene of a map (built on demand, saved under converted/maps/).
+## The editor cannot use resources outside res://, so the project keeps
+## a link `res://converted` → the cache directory (a directory junction
+## the SkyNET Maps dock creates). Map scenes are built through that
+## link: every mesh/texture they reference is then a res:// path.
+func use_project_link() -> bool:
+	if root.begins_with("res://"):
+		return true
+	if not DirAccess.dir_exists_absolute("res://converted"):
+		return false
+	var probe := "res://converted/VERSION"
+	if not FileAccess.file_exists(probe):
+		return false
+	root = "res://converted"
+	_mem.clear()
+	print("[assets] cache via project link %s" % ProjectSettings.globalize_path(root))
+	return true
+
 func map_scene(map_name: String) -> String:
+	var old_root: String = root
+	var linked: bool = use_project_link()
 	var p := MapScene.scene_path(map_name)
+	if linked and root != old_root:
+		root = old_root
+		_mem.clear()
 	if ResourceLoader.exists(p):
 		hits += 1
 		return p
 	misses += 1
 	return MapScene.save(map_name)
+
+## Run `what` with the cache addressed through the project link (when
+## there is one) so every resource it touches gets a res:// path, then
+## return to the direct path for the rest of this process.
+func with_project_link(what: Callable) -> Variant:
+	var old_root: String = root
+	var linked: bool = use_project_link()
+	var out: Variant = what.call()
+	if linked and root != old_root:
+		root = old_root
+		_mem.clear()
+	return out
 
 # ---------------------------------------------------------------------
 # Full conversion pass

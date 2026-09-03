@@ -205,6 +205,12 @@ func register_node(e: MapFile.Entity, node: Node3D) -> void:
 
 ## Register the damage-stage meshes for a destructible entity (built by
 ## the level loader from TRANSFRM.PRS; may be empty → vanish on kill).
+## Does the entity at `off` take damage (HP pool or destruction stages)?
+func is_damageable_off(off: int) -> bool:
+	if _spent.has(off):
+		return false
+	return _hp.has(off) or _destr.has(off)
+
 ## True when the entity at `off` is a mover (door/gate/lift/rotator).
 func is_mover_off(off: int) -> bool:
 	return _movers.has(off)
@@ -399,8 +405,11 @@ func tick(delta: float, player_pos: Vector3) -> void:
 	for e in _prox:
 		if e.link_act_type != ACT_PROX_GATE:
 			continue
-		if (e.flags & 3) == 1 and (e.state_byte & 8) != 0:
+		if (e.flags & 3) == 1 and (e.state_byte & 8) != 0 and e.name_index >= 0:
 			continue                         # wall button: use key only
+		# (An UNNAMED variant-1 gate with the same state byte is an
+		# invisible floor trigger — MAP.231's elevator call points sit
+		# at the back wall of the cab, state 0x09, no mesh at all.)
 		if _spent.has(e.file_off):
 			continue
 		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
@@ -408,6 +417,7 @@ func tick(delta: float, player_pos: Vector3) -> void:
 		var latched: bool = _prox_latched.get(e.file_off, false)
 		if inside and not latched:
 			_prox_latched[e.file_off] = true
+			print("[action] gate @%05x (act %02x) tripped at %s" % [e.file_off, e.link_act_type, epos])
 			_flip_link(e)
 		elif not inside and latched:
 			_prox_latched[e.file_off] = false
@@ -641,6 +651,9 @@ func _step_mover(off: int, e: MapFile.Entity, delta: float) -> void:
 			speed = SWING_SPEED
 	var target: float = span if m["dir"] > 0.0 else 0.0
 	var p: float = move_toward(m["progress"], target, speed * delta)
+	if m["progress"] == 0.0 or m["progress"] == span:
+		print("[action] mover @%05x %s %s starts (%s, span %.0f)" % [off, node.name, fam,
+			"forward" if m["dir"] > 0.0 else "back", span])
 	m["progress"] = p
 	_apply_mover_transform(node, m)
 	if p == target:

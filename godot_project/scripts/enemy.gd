@@ -909,9 +909,11 @@ func _spawn_debris(at: Vector3, part: Mesh) -> void:
 		return
 	var d := Debris.new()
 	scene.add_child(d)
-	var dir := Vector3(randf_range(-1.0, 1.0), randf_range(1.5, 2.8),
+	# DOS (FUN_00129b59) tosses the parts a few metres, not across the
+	# street (a 2026-09-03 report): a steep, short lob.
+	var dir := Vector3(randf_range(-1.0, 1.0), randf_range(1.4, 2.4),
 		randf_range(-1.0, 1.0)).normalized()
-	d.setup(at, dir * randf_range(950.0, 1750.0), part)
+	d.setup(at, dir * randf_range(380.0, 780.0), part)
 
 ## Put the feet on the floor directly below. The ray starts one step
 ## above the FEET (not the model origin — inside the tower deck a ray

@@ -130,7 +130,12 @@ static func build(map_name: String) -> Node3D:
 	return root
 
 ## Build, pack and save `map_name`; returns the .scn path ("" on failure).
+## Built through the project link (res://converted) when it exists, so
+## the editor can open the result.
 static func save(map_name: String) -> String:
+	return String(Assets.with_project_link(func() -> String: return _save_now(map_name)))
+
+static func _save_now(map_name: String) -> String:
 	var root := build(map_name)
 	if root == null:
 		return ""

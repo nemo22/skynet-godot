@@ -131,7 +131,7 @@ func set_vehicle(v: int) -> void:
 		_engine.queue_free()
 		_engine = null
 	if v != 0:
-		_engine = Audio.attach_loop_3d(68 if v == 1 else 48, self, -8.0)
+		_engine = Audio.attach_loop_3d(69 if v == 1 else 48, self, -8.0)
 	var cap: CapsuleShape3D = (_shape.shape as CapsuleShape3D) if _shape != null else null
 	if v == 0:
 		if cap != null:

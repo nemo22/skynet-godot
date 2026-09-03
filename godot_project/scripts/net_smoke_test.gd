@@ -116,10 +116,15 @@ func _run() -> void:
 		var hp0: float = float(Net.players[tid]["hp"])
 		player.call("_select_weapon", 1)
 		# The bot keeps walking: re-aim and fire a few times, stop on the first hit.
+		# Stand on a different side each try: the bot may hug a wall
+		# (a BLDG20J face sat between +200 X and a T-800 once).
+		var sides: Array = [Vector3(200.0, 0.0, 0.0), Vector3(-200.0, 0.0, 0.0),
+			Vector3(0.0, 0.0, 200.0), Vector3(0.0, 0.0, -200.0),
+			Vector3(140.0, 0.0, 140.0), Vector3(-140.0, 0.0, -140.0)]
 		for _shot in 6:
 			if not is_instance_valid(target) or float(Net.players[tid]["hp"]) < hp0 or not Net.is_alive(tid):
 				break
-			player.set_spawn(target.global_position + Vector3(200.0, 0.0, 0.0), 0.0, false)
+			player.set_spawn(target.global_position + sides[_shot % sides.size()], 0.0, false)
 			var aim: Vector3 = (target as Node3D).global_position + Vector3(0.0, 44.0, 0.0) - (player.global_position + Vector3(0.0, 75.0, 0.0))
 			player.set_view(atan2(-aim.x, -aim.z), atan2(aim.y, Vector2(aim.x, aim.z).length()))
 			await get_tree().physics_frame

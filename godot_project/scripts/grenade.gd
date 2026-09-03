@@ -1,6 +1,8 @@
-## A grenade fired from the GRENADE LAUNCHER. Travels under gravity in a
-## parabolic arc, bounces off solid surfaces, and detonates on contact
-## with an enemy or when its fuse runs out.
+## A grenade fired from the GRENADE LAUNCHER. Flies fast and fairly flat
+## (the DOS launcher lobbed only a shallow arc), bounces off level
+## geometry, and detonates the moment it touches anything that can take
+## damage — a robot, a car, a crate, a generator, another player — or
+## when its fuse runs out on the ground.
 ##
 ## DOS models this as a generic projectile (FUN_00122a64, skynet_gh.c:
 ## 25675) whose ammo type (t3 at 0x40728 + 3*0x32) installs the gravity
@@ -17,10 +19,13 @@ const TextureNNN := preload("res://scripts/loaders/texture_nnn.gd")
 const Palette    := preload("res://scripts/loaders/palette.gd")
 const BSAReader  := preload("res://scripts/loaders/bsa_reader.gd")
 
-const GRAVITY: float = 2400.0
+## Playtest 2026-09-03 (Marek): the DOS grenade flew "more in a straight
+## line than a ballistic curve" — 2400/2400 dropped 1200 u per 2400 u of
+## travel, a visible lob. Faster and lighter: 3400 u/s, 1400 u/s².
+const GRAVITY: float = 1400.0
 const FUSE_TIME: float = 2.5
 const RESTITUTION: float = 0.35              # bounce energy retained
-const SPEED: float = 2400.0                  # initial muzzle velocity
+const SPEED: float = 3400.0                  # initial muzzle velocity
 const SPRITE_BANK: int = 217
 const SPRITE_RECORD: int = 2
 const IMPACT_BANK: int = 356
@@ -65,10 +70,10 @@ static func _load_sprite() -> Texture2D:
 ## Launch from `from` heading `dir` (unit vector). Initial speed is
 ## constant; `damage` and `splash` set the detonation payload.
 func setup(from: Vector3, dir: Vector3, damage: float, splash: float,
-		shooter: Node) -> void:
+		shooter: Node, speed: float = SPEED) -> void:
 	add_to_group("projectile")               # cleared on a map change
 	global_position = from
-	_vel = dir.normalized() * SPEED
+	_vel = dir.normalized() * speed
 	_damage = damage
 	_splash = splash
 	_owner = shooter
@@ -108,13 +113,14 @@ func _physics_process(delta: float) -> void:
 			q.exclude = [(_owner as CollisionObject3D).get_rid()]
 		var hit := space.intersect_ray(q)
 		if hit.has("position"):
-			# Detonate on enemies; bounce off level geometry.
+			# Detonate on anything damageable (DOS: the projectile's impact
+			# callback fires on the first object hit — a robot, a car, a
+			# crate, the player's own jeep …); bounce off level geometry.
 			var c: Node = hit.get("collider") as Node
 			var n: Node = c
-			while n != null and not n.has_method("take_damage"):
+			while n != null and not n.has_method("take_damage") and not n.has_method("net_damage") and not n.is_in_group("dm_vehicle"):
 				n = n.get_parent()
-			if n != null and n != _owner and n is Node3D \
-					and (n.is_in_group("enemy") or n.is_in_group("dm_actor")):
+			if n != null and n != _owner and n is Node3D and _is_target(n):
 				_detonate(hit["position"])
 				return
 			# Bounce: reflect velocity around the hit normal, lose energy.
@@ -125,6 +131,16 @@ func _physics_process(delta: float) -> void:
 	global_position = to
 	if _life <= 0.0:
 		_detonate(global_position)
+
+## Something the grenade should burst on rather than bounce off: enemies,
+## deathmatch actors and vehicles, and action targets that actually take
+## damage (cars, crates, generators — not door leaves or wall buttons).
+static func _is_target(n: Node) -> bool:
+	if n.is_in_group("enemy") or n.is_in_group("dm_actor") or n.is_in_group("dm_vehicle"):
+		return true
+	if n.is_in_group("hittable") and n.has_method("is_damageable"):
+		return bool(n.call("is_damageable"))
+	return false
 
 func _detonate(at: Vector3) -> void:
 	_exploded = true

@@ -21,6 +21,7 @@ extends CharacterBody3D
 @export var mouse_sensitivity: float = 0.003
 @export var touch_look_speed: float = 2.2
 
+const FxParticles := preload("res://scripts/fx_particles.gd")
 const Tracer := preload("res://scripts/tracer.gd")
 const Projectile := preload("res://scripts/projectile.gd")
 const Grenade := preload("res://scripts/grenade.gd")
@@ -67,6 +68,17 @@ var _good_t: float = 0.0
 var _last_good: Vector3 = Vector3.ZERO
 const STUCK_TIME: float = 0.35
 const STUCK_RESET_TIME: float = 1.8
+## DOS stair climbing: the player is a cylinder that re-finds the floor
+## within ±80 units of its feet every move (the same ±80 the enemy floor
+## search uses), so door sills and stair risers up to that height are
+## simply walked over. A capsule of radius 26 climbs only a few units
+## by itself — MAP.231's corridor sill (72 u) and its stairs stopped the
+## player dead. Classic step-up: rise, advance, drop back onto a floor.
+const STEP_HEIGHT: float = 80.0
+## A hand-thrown grenade (RMB) leaves the hand far slower than the
+## launcher's round (Grenade.SPEED) — a lob, not a shot.
+const HAND_GRENADE_SPEED: float = 1500.0
+const STEP_PROBE: float = 14.0                 # minimum forward advance
 
 # Weapon roster — DOS records 0..12 from `DAT_0004361c` in their
 # mouse-wheel cycle order (skynet_gh.c:27789-27828, cycle struct at VA
@@ -133,7 +145,10 @@ const VEH_NAMES: Array = ["", "JEEP", "HK"]
 const VEH_EYE: Array = [75.0, 92.0, 110.0]
 ## Capsule (radius, height) per vehicle — the HUMMER is 106×75×227, the
 ## HK_FTR 357×205×501; a rounder body slides over terrain and rubble.
-const VEH_CAPSULE: Array = [[26.0, 88.0], [55.0, 110.0], [110.0, 220.0]]
+## On foot the DOS player is a cylinder that ignores ceilings; interior
+## doorways are as small as 70 × 105 u (MAP.231 ROM4 → corridor), so
+## the capsule stays well inside that with the safe margin added.
+const VEH_CAPSULE: Array = [[22.0, 80.0], [55.0, 110.0], [110.0, 220.0]]
 ## Jeep: DOS mission 2/6 driving — throttle with inertia, mouse steers.
 const JEEP_MAX_SPEED: float = 1800.0
 const JEEP_REVERSE_SPEED: float = 700.0
@@ -220,7 +235,7 @@ func _ready() -> void:
 	# The world is in DOS units (thousands), so the default 0.001 collision
 	# margin is microscopic — the solver cannot depenetrate and the capsule
 	# wedges against walls. Scale the margin up and always slide along walls.
-	safe_margin = 6.0
+	safe_margin = 4.0
 	wall_min_slide_angle = 0.0
 	_yaw = rotation.y
 	if _cam != null:
@@ -283,7 +298,15 @@ func _reset_owned() -> void:
 ## with the body: a jeep mounts only its plasma guns and rockets, the
 ## HK its laser and rockets; the eye height and the collision capsule
 ## follow the vehicle. Health is the driver's — DOS keeps one bar.
+func _reset_aim() -> void:
+	_aim_yaw = 0.0
+	_aim_pitch = 0.0
+
 func set_vehicle(v: int) -> void:
+	_reset_aim()
+	if _dust != null and is_instance_valid(_dust):
+		_dust.queue_free()
+	_dust = null
 	v = clampi(v, VEH_FOOT, VEH_HK)
 	if v == vehicle:
 		return
@@ -292,7 +315,12 @@ func set_vehicle(v: int) -> void:
 		_foot_weapon = _weapon_idx
 	vehicle = v
 	_veh_speed = 0.0
+	_wheel = 0.0
+	_tilt_pitch = 0.0
+	_tilt_roll = 0.0
 	velocity = Vector3.ZERO
+	if _cam != null:
+		_cam.rotation.z = 0.0
 	if v == VEH_FOOT:
 		_owned = _foot_owned.duplicate() if not _foot_owned.is_empty() else _owned
 		_weapon_idx = _foot_weapon
@@ -325,10 +353,10 @@ func set_vehicle(v: int) -> void:
 	_sync_hud()
 	print("[player] vehicle: %s" % (VEH_NAMES[v] if v > 0 else "on foot"))
 
-## Engine loops from the DOS sound table: careng1 (id 68) for the jeep,
+## Engine loops from the DOS sound table: careng1 (id 69) for the jeep,
 ## hk2 (id 48, the same loop the enemy HKs run) for the HK; the jeep
 ## revs with its speed (DOS action 0xd6-0xda ramps the vehicle pitch).
-const ENGINE_SOUND_ID: Array = [-1, 68, 48]
+const ENGINE_SOUND_ID: Array = [-1, 69, 48]
 const CAR_START_ID: int = 123
 var _engine: AudioStreamPlayer3D = null
 
@@ -344,6 +372,32 @@ func _start_engine(v: int) -> void:
 	if _engine != null:
 		_engine.position = Vector3(0.0, 40.0, 60.0)     # under the bonnet / behind the seat
 		_engine.pitch_scale = 0.85
+
+## Vehicle guns never run dry — they overheat. Pool 10 (the cockpit
+## ENERGY read-out, DOS 1000/2000) drains 100 per bolt and recharges
+## once the trigger rests; an emptied gun stays cold until it is back
+## to VEH_COOL_LEVEL, so a long burst forces a pause.
+const VEH_ENERGY_POOL: int = 10
+const VEH_REGEN_PER_S: float = 450.0
+const VEH_REGEN_DELAY: float = 0.35
+const VEH_COOL_LEVEL: int = 400
+var _veh_since_shot: float = 10.0
+var _veh_overheated: bool = false
+
+func _regen_vehicle_energy(delta: float) -> void:
+	if vehicle == VEH_FOOT:
+		return
+	_veh_since_shot += delta
+	if _veh_since_shot < VEH_REGEN_DELAY:
+		return
+	var mx: int = int(POOL_TABLE[VEH_ENERGY_POOL][1])
+	var cur: int = int(_pools.get(VEH_ENERGY_POOL, 0))
+	if cur < mx:
+		_pools[VEH_ENERGY_POOL] = mini(cur + int(VEH_REGEN_PER_S * delta), mx)
+		if _veh_overheated and int(_pools[VEH_ENERGY_POOL]) >= VEH_COOL_LEVEL:
+			_veh_overheated = false
+		if int(_weapons[_weapon_idx].get("pool", -1)) == VEH_ENERGY_POOL:
+			ammo = int(_pools[VEH_ENERGY_POOL])
 
 func _update_engine() -> void:
 	if _engine == null:
@@ -438,6 +492,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			_try_activate()
 		elif event.keycode >= KEY_1 and event.keycode <= KEY_9:
 			_select_weapon(event.keycode - KEY_1)
+	elif event is InputEventMouseMotion and _captured and vehicle == VEH_JEEP:
+		# In the jeep the mouse moves the gun crosshair; the keys drive.
+		_aim_yaw = clampf(_aim_yaw - event.relative.x * mouse_sensitivity, -JEEP_AIM_YAW, JEEP_AIM_YAW)
+		_aim_pitch = clampf(_aim_pitch - event.relative.y * mouse_sensitivity, JEEP_AIM_PITCH_DOWN, JEEP_AIM_PITCH_UP)
+		_pitch = 0.0
 	elif event is InputEventMouseMotion and _captured:
 		_yaw -= event.relative.x * mouse_sensitivity
 		_pitch = clamp(_pitch - event.relative.y * mouse_sensitivity, -1.5, 1.5)
@@ -467,6 +526,7 @@ func _physics_process(delta: float) -> void:
 	# --- weapon -------------------------------------------------------
 	if _fire_cd > 0.0:
 		_fire_cd -= delta
+	_regen_vehicle_energy(delta)
 	if ui_fire:
 		ui_fire = false
 		_shoot()
@@ -493,16 +553,106 @@ func _physics_process(delta: float) -> void:
 	else:
 		_walk(delta, fwd_in, str_in)
 
-## Jeep (DOS mode 4): the mouse steers the heading, W/S throttle with
-## inertia, A/D lean the wheel; no strafing, no jumping, gravity keeps
-## the wheels on the terrain.
+## Jeep (DOS mode 4): a car, not a hovercraft — the mouse and A/D turn
+## a steering WHEEL, the heading only changes while the wheels roll
+## (faster at speed, self-centring), the cab pitches and rolls with the
+## ground under it, bumps shake the view at speed, hard turns skid.
+var _wheel: float = 0.0               # -1..1 steering wheel
+var _tilt_pitch: float = 0.0
+var _tilt_roll: float = 0.0
+var _bump_t: float = 0.0
+var _skid_cd: float = 0.0
+const JEEP_WHEEL_RETURN: float = 2.5   # wheel self-centre rate (per s)
+const JEEP_TILT_RATE: float = 6.0
+
+## Jeep turret aim (DOS: the keys drive, the mouse moves an independent
+## crosshair the guns follow). Relative to the car's heading.
+var _aim_yaw: float = 0.0
+var _aim_pitch: float = 0.0
+const JEEP_AIM_YAW: float = 1.1
+const JEEP_AIM_PITCH_DOWN: float = -0.45
+const JEEP_AIM_PITCH_UP: float = 0.6
+## Ramming (DOS: the jeep bounces off robots, both take damage).
+const RAM_MIN_SPEED: float = 250.0
+const RAM_RADIUS: float = 120.0
+const RAM_DAMAGE_PER_SPEED: float = 0.045
+const RAM_SELF_PER_SPEED: float = 0.012
+var _ram_cd: Dictionary = {}       # enemy instance id -> cooldown
+var _dust: GPUParticles3D = null   # ENHANCED wheel dust
+
+## Direction the guns fire: the turret aim in the jeep, the view else.
+func aim_dir() -> Vector3:
+	if vehicle == VEH_JEEP:
+		return -(Basis(Vector3.UP, _yaw + _aim_yaw) * Basis(Vector3.RIGHT, _aim_pitch)).z
+	return -_cam.global_transform.basis.z
+
+## Where the crosshair belongs on screen (the turret aim in the jeep).
+func aim_screen_pos() -> Vector2:
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	if vehicle != VEH_JEEP or _cam == null:
+		return vp * 0.5
+	var pt: Vector3 = _cam.global_position + aim_dir() * 4000.0
+	if _cam.is_position_behind(pt):
+		return vp * 0.5
+	return _cam.unproject_position(pt)
+
+## Drive into a robot: it takes the hit, the car bounces, the driver
+## feels it too (FUN_00125caf-era DOS behaviour recalled by the player).
+func _ram_check(fwd: Vector3) -> void:
+	for k in _ram_cd.keys():
+		_ram_cd[k] -= get_physics_process_delta_time()
+		if _ram_cd[k] <= 0.0:
+			_ram_cd.erase(k)
+	if absf(_veh_speed) < RAM_MIN_SPEED:
+		return
+	var space := get_world_3d().direct_space_state
+	var q := PhysicsShapeQueryParameters3D.new()
+	var sh := SphereShape3D.new()
+	sh.radius = RAM_RADIUS
+	q.shape = sh
+	q.transform = Transform3D(Basis(), global_position + fwd * (90.0 * signf(_veh_speed)) + Vector3(0.0, 50.0, 0.0))
+	q.collide_with_areas = true
+	q.collide_with_bodies = true
+	q.exclude = [get_rid()]
+	for hit in space.intersect_shape(q, 8):
+		var n: Node = hit.get("collider") as Node
+		while n != null and not (n.is_in_group("enemy") and n.has_method("take_damage")):
+			n = n.get_parent()
+		if n == null:
+			continue
+		var id: int = n.get_instance_id()
+		if _ram_cd.has(id):
+			continue
+		_ram_cd[id] = 0.6
+		var sp: float = absf(_veh_speed)
+		n.call("take_damage", sp * RAM_DAMAGE_PER_SPEED)
+		take_damage(sp * RAM_SELF_PER_SPEED)
+		_veh_speed = -_veh_speed * 0.35
+		Audio.play_id(30, -3.0)
+		return
+
 func _drive(delta: float, fwd_in: float, str_in: float) -> void:
-	# Steering keys turn the heading; faster at speed, like a wheel.
+	# Keys hold the wheel; without input it returns to centre (the mouse
+	# nudges it in _unhandled_input).
 	if absf(str_in) > 0.1:
-		var k: float = clampf(absf(_veh_speed) / JEEP_MAX_SPEED, 0.25, 1.0)
-		var dir: float = 1.0 if _veh_speed >= 0.0 else -1.0
-		_yaw -= str_in * JEEP_TURN_RATE * k * dir * delta
-		rotation.y = _yaw
+		_wheel = clampf(_wheel + str_in * 3.0 * delta, -1.0, 1.0)
+	else:
+		_wheel = move_toward(_wheel, 0.0, JEEP_WHEEL_RETURN * delta)
+	# Heading follows the wheel only while rolling.
+	var roll_k: float = clampf(absf(_veh_speed) / 500.0, 0.0, 1.0)
+	var dir: float = 1.0 if _veh_speed >= 0.0 else -1.0
+	var yaw_rate: float = _wheel * JEEP_TURN_RATE * roll_k * dir
+	_yaw -= yaw_rate * delta
+	rotation.y = _yaw
+	# A hard turn at speed scrubs speed off and squeals.
+	if absf(yaw_rate) > 1.0 and absf(_veh_speed) > 900.0:
+		_veh_speed *= 1.0 - 0.6 * delta
+		_skid_cd -= delta
+		if _skid_cd <= 0.0:
+			_skid_cd = 0.9
+			Audio.play_id(29, -8.0)
+	else:
+		_skid_cd = 0.0
 	if fwd_in > 0.1:
 		if _veh_speed < 0.0:
 			_veh_speed = minf(_veh_speed + JEEP_BRAKE * delta, 0.0)
@@ -524,11 +674,34 @@ func _drive(delta: float, fwd_in: float, str_in: float) -> void:
 		velocity.y -= gravity * delta
 	var before := global_position
 	move_and_slide()
+	_ram_check(fwd)
+	if _dust == null and FxParticles.on():
+		_dust = FxParticles.wheel_dust(self)
+	if _dust != null:
+		_dust.amount_ratio = clampf(absf(_veh_speed) / JEEP_MAX_SPEED, 0.0, 1.0) if is_on_floor() else 0.0
 	# A wall stops the jeep dead (and the momentum with it) — carcoll2.
 	if absf(_veh_speed) > 50.0 and global_position.distance_to(before) < absf(_veh_speed) * delta * 0.2:
 		if absf(_veh_speed) > 500.0:
 			Audio.play_id(30, -4.0)
 		_veh_speed *= 0.3
+	# Cab tilt with the ground: pitch along the heading, roll across it.
+	var want_pitch: float = 0.0
+	var want_roll: float = 0.0
+	if is_on_floor():
+		var n: Vector3 = get_floor_normal()
+		var right: Vector3 = Basis(Vector3.UP, _yaw).x
+		want_pitch = asin(clampf(n.dot(-fwd), -1.0, 1.0)) * 0.85
+		want_roll = asin(clampf(n.dot(right), -1.0, 1.0)) * 0.7
+	var tk: float = clampf(delta * JEEP_TILT_RATE, 0.0, 1.0)
+	_tilt_pitch = lerpf(_tilt_pitch, want_pitch, tk)
+	_tilt_roll = lerpf(_tilt_roll, want_roll, tk)
+	# Bumps: the faster, the shakier.
+	var sk: float = clampf(absf(_veh_speed) / JEEP_MAX_SPEED, 0.0, 1.0)
+	_bump_t += delta * (6.0 + 14.0 * sk)
+	if _cam != null:
+		_cam.rotation.x = _pitch + _tilt_pitch + sin(_bump_t) * 0.004 * sk
+		_cam.rotation.z = _tilt_roll + cos(_bump_t * 0.7) * 0.006 * sk
+		_cam.position.y = float(VEH_EYE[VEH_JEEP]) + sin(_bump_t * 1.3) * 3.0 * sk
 	_update_engine()
 
 ## HK (DOS mode 8): a hovering gunship — thrust along the view with W/S,
@@ -582,8 +755,53 @@ func _walk(delta: float, fwd_in: float, str_in: float) -> void:
 	else:
 		velocity.y -= gravity * delta
 	var before := global_position
+	var on_floor_before: bool = is_on_floor()
 	move_and_slide()
+	if on_floor_before and horiz.length() > 0.1 and is_on_wall():
+		_step_up(horiz, speed * delta)
 	_track_stuck(delta, horiz.length() > 0.1, global_position.distance_to(before))
+
+## Stair step: when a wall stops grounded movement, try the same motion
+## from up to STEP_HEIGHT higher and settle back down onto a walkable
+## floor. Only steps UP to STEP_HEIGHT are taken; nothing happens when
+## the raised probe is blocked too (a real wall) or finds no floor.
+func _step_up(horiz: Vector3, advance: float) -> void:
+	var fwd: Vector3 = horiz.normalized() * maxf(advance, STEP_PROBE)
+	var start: Transform3D = global_transform
+	# 1. Rise as far as STEP_HEIGHT allows.
+	var up := Vector3(0.0, STEP_HEIGHT, 0.0)
+	var kc: KinematicCollision3D = move_and_collide(up, true)
+	var rise: Vector3 = up if kc == null else kc.get_travel()
+	if rise.y < 4.0:
+		return
+	var t := start.translated(rise)
+	# 2. Advance from up there; a blocked probe means a wall, not a step.
+	kc = _probe(t, fwd)
+	var adv: Vector3 = fwd if kc == null else kc.get_travel()
+	if adv.length() < STEP_PROBE * 0.5:
+		return
+	t = t.translated(adv)
+	# 3. Drop back onto the floor; it must be a walkable slope above the
+	#    starting height (a step), not the ground we started from.
+	kc = _probe(t, Vector3(0.0, -rise.y - 2.0, 0.0))
+	if kc == null:
+		return
+	if kc.get_normal().y < cos(floor_max_angle):
+		return
+	var landing: Vector3 = t.origin + kc.get_travel()
+	if landing.y - start.origin.y < 2.0:
+		return
+	global_position = landing
+	velocity.y = 0.0
+
+## test-only motion from an explicit transform (move_and_collide uses
+## the body's own transform).
+func _probe(from: Transform3D, motion: Vector3) -> KinematicCollision3D:
+	var saved: Transform3D = global_transform
+	global_transform = from
+	var kc: KinematicCollision3D = move_and_collide(motion, true)
+	global_transform = saved
+	return kc
 
 ## Trimesh collision on detailed props can wedge the capsule (a step
 ## under an overhang, a gate leaf, two meshes overlapping) — DOS never
@@ -673,7 +891,14 @@ func _shoot() -> void:
 	var kind: String = String(w.get("kind", "bullet"))
 	var pool: int = int(w.get("pool", -1))
 	var cost: int = int(w.get("cost", 0))
-	if pool >= 0 and int(_pools.get(pool, 0)) < cost:
+	if pool == VEH_ENERGY_POOL:
+		if int(_pools.get(pool, 0)) < cost:
+			_veh_overheated = true               # cold start needs VEH_COOL_LEVEL
+		if _veh_overheated:
+			_fire_cd = DRY_FIRE_DELAY
+			Audio.play_id(int(w.get("dry", -1)), -6.0)
+			return
+	elif pool >= 0 and int(_pools.get(pool, 0)) < cost:
 		_fire_cd = DRY_FIRE_DELAY
 		Audio.play_id(int(w.get("dry", -1)), -6.0)
 		return
@@ -681,6 +906,8 @@ func _shoot() -> void:
 	if pool >= 0:
 		_pools[pool] = int(_pools[pool]) - cost
 		ammo = int(_pools[pool])
+		if pool == VEH_ENERGY_POOL:
+			_veh_since_shot = 0.0
 	var snd: String = String(w.get("snd", ""))
 	if not snd.is_empty():
 		Audio.play_sfx(snd, -5.0)
@@ -691,7 +918,7 @@ func _shoot() -> void:
 	_vm_idx = 0
 	_vm_t = 0.0
 
-	var fwd: Vector3 = -_cam.global_transform.basis.z
+	var fwd: Vector3 = aim_dir()
 	var muzzle: Vector3 = _cam.global_position + fwd * 90.0 \
 		- _cam.global_transform.basis.y * 26.0
 	if vehicle != VEH_FOOT:
@@ -702,6 +929,12 @@ func _shoot() -> void:
 	# Deathmatch: everybody else draws this shot.
 	if Net.active:
 		Net.send_fire(_weapon_idx, muzzle, fwd)
+	# The DOS moon joke (FUN_00125caf): any weapon fired with the
+	# crosshair on the moon makes it complain.
+	if kind != "melee":
+		var sc: Node = get_tree().current_scene
+		if sc != null and sc.has_method("moon_aimed") and sc.call("moon_aimed", fwd):
+			sc.call("moon_shot")
 
 	# Melee: short-range hitscan, no tracer, no muzzle flash. The
 	# viewmodel swing animation (CFA frames) is the only visible cue.
@@ -750,15 +983,20 @@ func _shoot() -> void:
 	# big tan wedge across the view (2026-09-02 report).
 	# Shotgun: a smoke puff lingering at the muzzle after the shot.
 	if kind == "shotgun":
-		var sm := SmokePuff.new()
-		get_tree().current_scene.add_child(sm)
-		sm.setup(muzzle + fwd * 30.0, 180.0)
+		if FxParticles.on():
+			FxParticles.puff(get_tree().current_scene, muzzle + fwd * 40.0, 60.0, Color(0.6, 0.55, 0.5, 0.4), 1.0, 6)
+		else:
+			var sm := SmokePuff.new()
+			get_tree().current_scene.add_child(sm)
+			sm.setup(muzzle + fwd * 30.0, 180.0)
 	if hit.has("collider"):
 		var n: Node = hit["collider"] as Node
 		while n != null and not n.has_method("take_damage"):
 			n = n.get_parent()
 		if n != null and n != self:
 			_deal(n, dmg)
+		elif FxParticles.on():
+			FxParticles.impact(get_tree().current_scene, endpoint, hit.get("normal", Vector3.UP))
 		else:
 			var puff := Explosion.new()
 			get_tree().current_scene.add_child(puff)
@@ -815,7 +1053,7 @@ func _throw_grenade() -> void:
 		Net.send_fire(5, muzzle, arc)            # drawn as a launcher shot
 	var g := Grenade.new()
 	get_tree().current_scene.add_child(g)
-	g.setup(muzzle, arc, 200.0, 256.0, self)
+	g.setup(muzzle, arc, 200.0, 256.0, self, HAND_GRENADE_SPEED)
 
 ## Short-range melee swing (the pipe). One ray cast forward from the
 ## camera up to MELEE_RANGE; if it lands on a damageable node we apply

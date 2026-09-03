@@ -39,6 +39,7 @@
 
 extends RefCounted
 
+const Mesh3DLoader := preload("res://scripts/loaders/mesh_3d.gd")
 const CHUNK_TABLE_OFFSET: int = 0x90
 const CHUNK_HEADER_SIZE: int = 22
 const CHUNK_CELLS: int = 128
@@ -358,7 +359,7 @@ static func corner_blended_color(w: WLD, col: int, row: int,
 ## `tile_textures` is an Array of Texture2D indexed by material id (built
 ## from TEXTURE.302). When empty, a vertex-colour fallback is used.
 static func build_terrain_mesh(w: WLD, tile_textures: Array = [],
-		avg_colors: Array = []) -> ArrayMesh:
+		tile_normals: Array = [], avg_colors: Array = []) -> ArrayMesh:
 	if w == null:
 		return null
 	var has_tex: bool = not tile_textures.is_empty()
@@ -464,7 +465,22 @@ static func build_terrain_mesh(w: WLD, tile_textures: Array = [],
 		arrays.resize(Mesh.ARRAY_MAX)
 		arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array(bk[0])
 		arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array(bk[1])
+		if Render.enhanced():
+			# Rolling hills instead of faceted cells: normals averaged over
+			# the shared grid corners (within the bucket).
+			arrays[Mesh.ARRAY_NORMAL] = Mesh3DLoader.smooth_normals(arrays[Mesh.ARRAY_VERTEX], arrays[Mesh.ARRAY_NORMAL], 80.0)
+			arrays[Mesh.ARRAY_TANGENT] = Mesh3DLoader._tangents_for(arrays[Mesh.ARRAY_VERTEX], arrays[Mesh.ARRAY_NORMAL], PackedVector2Array(bk[2]))
 		arrays[Mesh.ARRAY_TEX_UV] = PackedVector2Array(bk[2])
+		if Render.enhanced():
+			# UV2 from the world position: the ENHANCED detail layer
+			# (photo grain + normals) tiles evenly whatever the tile's
+			# own orientation.
+			var uv2 := PackedVector2Array()
+			var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+			uv2.resize(verts.size())
+			for vi in verts.size():
+				uv2[vi] = Vector2(verts[vi].x, verts[vi].z) / Render.DETAIL_WORLD_SIZE
+			arrays[Mesh.ARRAY_TEX_UV2] = uv2
 		arrays[Mesh.ARRAY_COLOR]  = PackedColorArray(bk[3])
 		var si: int = am.get_surface_count()
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
@@ -481,6 +497,8 @@ static func build_terrain_mesh(w: WLD, tile_textures: Array = [],
 			# fallback below). Depth comes from the fog instead.
 			smat.vertex_color_use_as_albedo = false
 			smat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			var nrm: Texture2D = tile_normals[mat_id] if mat_id < tile_normals.size() else null
+			Render.style(smat, "terrain", nrm)
 		else:
 			# No tile — vertex colour IS the albedo.
 			smat.vertex_color_use_as_albedo = true

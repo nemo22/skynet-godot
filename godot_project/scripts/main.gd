@@ -19,6 +19,9 @@ const Briefing    := preload("res://scripts/loaders/briefing.gd")
 const FntFont     := preload("res://scripts/loaders/fnt_font.gd")
 const SaveGame    := preload("res://scripts/save_game.gd")
 const GameConsole := preload("res://scripts/game_console.gd")
+const Explosion := preload("res://scripts/explosion.gd")
+const FxParticles := preload("res://scripts/fx_particles.gd")
+var _ash: GPUParticles3D = null
 const PauseMenu   := preload("res://scripts/pause_menu.gd")
 const DmGame      := preload("res://scripts/net/dm_game.gd")
 const WldTerrain  := preload("res://scripts/loaders/wld_terrain.gd")
@@ -265,15 +268,124 @@ static func _make_animatable(mi: MeshInstance3D) -> void:
 			mi.add_child(ab)
 			return
 
+## --floormap=x0,z0,x1,z1,step,y: ASCII plan of the collision floor at
+## level `y` (agent aid for "can't get there" reports). Per cell a ray
+## from y+90 down 700 u: '.' floor within 40 u of y, '#' wall/obstacle
+## higher than y+40, digits = floor n×100 u below, ' ' = nothing.
+func _floormap(spec: String) -> void:
+	var v: PackedStringArray = spec.split(",")
+	if v.size() < 6:
+		print("[floormap] need x0,z0,x1,z1,step,y")
+		return
+	var x0 := float(v[0]); var z0 := float(v[1]); var x1 := float(v[2]); var z1 := float(v[3])
+	var step := maxf(float(v[4]), 8.0); var y := float(v[5])
+	var space := get_world_3d().direct_space_state
+	print("[floormap] x %d..%d z %d..%d step %d at y %d (rows = z, columns = x)" % [x0, x1, z0, z1, step, y])
+	var ceil_mode: bool = v.size() > 6 and v[6].begins_with("ceil")
+	var fine: bool = v.size() > 6 and v[6] == "ceilfine"
+	if ceil_mode:
+		print("[floormap] ceiling: ray from y+30 up 600 — digit = clearance/40 above the FEET (9 = 360+), ' ' = none")
+	var z := minf(z0, z1)
+	while z <= maxf(z0, z1):
+		var row := ""
+		var x := minf(x0, x1)
+		while x <= maxf(x0, x1):
+			var ch := " "
+			if ceil_mode:
+				var cfrom := Vector3(x, y + 30.0, z)
+				var cq := PhysicsRayQueryParameters3D.create(cfrom, cfrom + Vector3(0.0, 600.0, 0.0))
+				cq.hit_back_faces = true
+				var chit := space.intersect_ray(cq)
+				if not chit.is_empty():
+					var cl: float = chit["position"].y - y
+					# 'a' = 0..9 u, 'b' = 10..19 … 'z' = 250+ (10-u letters
+					# read finer than the 40-u digits for doorways).
+					ch = str(mini(int(cl / 40.0), 9)) if not fine else char(97 + mini(int(cl / 10.0), 25))
+			else:
+				var from := Vector3(x, y + 90.0, z)
+				var q := PhysicsRayQueryParameters3D.create(from, from + Vector3(0.0, -700.0, 0.0))
+				q.hit_back_faces = true
+				var hit := space.intersect_ray(q)
+				if not hit.is_empty():
+					var hy: float = hit["position"].y
+					if hy > y + 40.0: ch = "#"
+					elif hy > y - 40.0: ch = "."
+					else:
+						var d: int = int((y - hy) / 100.0) + 1
+						ch = str(mini(d, 9))
+			row += ch
+			x += step
+		print("%7d %s" % [z, row])
+		z += step
+
+## --slice=x,z0,z1,y0,y1,step (or z,x0,x1,y0,y1,step,x): a vertical
+## cross-section of the collision geometry through the plane x = const
+## (rows = y top-down, columns = z). '#' where a short ray from the
+## cell centre hits a surface, '.' for open space. Stairs, floors,
+## ceilings and low lintels read directly.
+func _slice(spec: String) -> void:
+	var v: PackedStringArray = spec.split(",")
+	if v.size() < 6:
+		print("[slice] need x,z0,z1,y0,y1,step[,x]")
+		return
+	var along_x: bool = v.size() > 6 and v[6] == "x"
+	var fixed := float(v[0])
+	var a0 := minf(float(v[1]), float(v[2])); var a1 := maxf(float(v[1]), float(v[2]))
+	var y0 := minf(float(v[3]), float(v[4])); var y1 := maxf(float(v[3]), float(v[4]))
+	var step := maxf(float(v[5]), 4.0)
+	var space := get_world_3d().direct_space_state
+	print("[slice] plane %s=%d, %s %d..%d, y %d..%d, step %d" % ["z" if along_x else "x", fixed,
+		"x" if along_x else "z", a0, a1, y0, y1, step])
+	var dirs: Array = [Vector3.UP, Vector3.DOWN,
+		Vector3(1, 0, 0) if along_x else Vector3(0, 0, 1),
+		Vector3(-1, 0, 0) if along_x else Vector3(0, 0, -1)]
+	var y := y1
+	while y >= y0:
+		var row := ""
+		var a := a0
+		while a <= a1:
+			var c := Vector3(a, y, fixed) if along_x else Vector3(fixed, y, a)
+			var hit := false
+			for d in dirs:
+				var q := PhysicsRayQueryParameters3D.create(c, c + d * (step * 0.5))
+				q.hit_back_faces = true
+				if not space.intersect_ray(q).is_empty():
+					hit = true
+					break
+			row += "#" if hit else "."
+			a += step
+		print("%6d %s" % [y, row])
+		y -= step
+
 ## --pos (camera position, like the DOS markers) / --yaw / --pitch /
 ## --noclip: place the player for an automated run.
 func _cli_place() -> void:
 	if _cli.has("pos"):
 		player.set_spawn(_cli_vec3(String(_cli["pos"])) - Vector3(0.0, EYE_HEIGHT, 0.0),
 			player.rotation.y, false)
-	if _cli.has("noclip") or _cli.has("pos"):
+	if (_cli.has("noclip") or _cli.has("pos")) and not _cli.has("walk"):
 		player.noclip = true
 		player.velocity = Vector3.ZERO
+	if _cli.has("walk") and _walk_t < 0.0:
+		# --walk=x,z[,secs]: collisions on, walk toward the point and log
+		# the body every half second (agent reproduction of "can't pass").
+		# Route: "x,z;x,z;...[;secs]" — waypoints in order.
+		_walk_route = []
+		_walk_limit = 12.0
+		for wp in String(_cli["walk"]).split(";"):
+			var parts: PackedStringArray = wp.split(",")
+			if parts.size() >= 2:
+				_walk_route.append(Vector2(float(parts[0]), float(parts[1])))
+			elif parts.size() == 1 and parts[0].is_valid_float():
+				_walk_limit = float(parts[0])
+		if _walk_route.is_empty():
+			return
+		_walk_target = _walk_route.pop_front()
+		_walk_t = 0.0
+		_walk_stuck = 0.0
+		player.noclip = false
+		player.velocity = Vector3.ZERO
+		print("[walk] start at %s toward %s for %.1f s" % [player.global_position, _walk_target, _walk_limit])
 	if _cli.has("yaw") or _cli.has("pitch"):
 		var yaw := deg_to_rad(float(_cli.get("yaw", rad_to_deg(player.rotation.y))))
 		var pitch := deg_to_rad(float(_cli.get("pitch", 0.0)))
@@ -307,13 +419,44 @@ func _cli_after_level() -> void:
 		return
 	if _cli.has("god"):
 		player.set("god_mode", true)
+	if _cli.has("console"):
+		# Automation: run console commands once the level is up
+		# (`--console=win;next`), each reply goes to the log.
+		for c in String(_cli["console"]).split(";"):
+			if not c.strip_edges().is_empty():
+				print("[cli] ] %s → %s" % [c.strip_edges(), run_command(c.strip_edges())])
 	if _cli.has("quit-after"):
 		# Automation: leave after N seconds (a headless client in a test).
 		get_tree().create_timer(float(_cli["quit-after"])).timeout.connect(func() -> void:
 			print("[skynet] --quit-after elapsed")
 			Net.leave()
 			get_tree().quit())
+	if _cli.has("near"):
+		# Agent diagnostics: stand 260 u from the first node of a group
+		# ("pickup", "fire", "enemy"; "group:N" picks the N-th) facing it.
+		var parts: PackedStringArray = String(_cli["near"]).split(":")
+		var nodes: Array = get_tree().get_nodes_in_group(parts[0])
+		var ni: int = int(parts[1]) if parts.size() > 1 else 0
+		if ni < nodes.size() and nodes[ni] is Node3D:
+			var tgt: Vector3 = (nodes[ni] as Node3D).global_position
+			var eye: Vector3 = tgt + Vector3(-260.0, 120.0, 0.0)
+			_cli["pos"] = "%f,%f,%f" % [eye.x, eye.y, eye.z]
+			var d: Vector3 = tgt + Vector3(0.0, 30.0, 0.0) - eye
+			_cli["yaw"] = str(rad_to_deg(atan2(-d.x, -d.z)))
+			_cli["pitch"] = str(rad_to_deg(atan2(d.y, Vector2(d.x, d.z).length())))
+			print("[cli] near %s #%d at %s" % [parts[0], ni, tgt])
+		else:
+			print("[cli] near: no node %s #%d" % [parts[0], ni])
 	_cli_place()
+	if _cli.has("floormap") or _cli.has("slice"):
+		await get_tree().physics_frame
+		await get_tree().physics_frame
+		for spec in String(_cli.get("floormap", "")).split(";"):
+			if not spec.is_empty():
+				_floormap(spec)
+		for spec in String(_cli.get("slice", "")).split(";"):
+			if not spec.is_empty():
+				_slice(spec)
 	if _cli.has("screenshot"):
 		var delay := float(_cli.get("shot-delay", 1.5))
 		await get_tree().create_timer(delay).timeout
@@ -329,6 +472,31 @@ func _cli_after_level() -> void:
 			player.global_position, rad_to_deg(player.rotation.y), rad_to_deg(player.get("_pitch"))])
 		if _cli.has("quit-after-shot"):
 			get_tree().quit()
+	elif _cli.has("sprite-probe"):
+		# Agent diagnostics: how far above the floor each billboard's
+		# bottom edge sits (anchoring checks).
+		await get_tree().physics_frame
+		await get_tree().physics_frame
+		var space := get_world_3d().direct_space_state
+		var lvl := _current_level
+		if lvl != null and lvl.sprites != null:
+			var gaps: Array = []
+			for s in lvl.sprites.get_children():
+				if not (s is Sprite3D) or (s as Sprite3D).texture == null:
+					continue
+				var sp := s as Sprite3D
+				var half: float = float(sp.texture.get_height()) * sp.pixel_size * 0.5
+				var bottom: Vector3 = sp.global_position - Vector3(0.0, half, 0.0)
+				var q := PhysicsRayQueryParameters3D.create(bottom + Vector3(0, 8, 0), bottom - Vector3(0, 4000, 0))
+				var hit := space.intersect_ray(q)
+				var gap: float = -1.0
+				if hit.has("position"):
+					gap = bottom.y - (hit["position"] as Vector3).y
+				gaps.append(gap)
+				print("[sprite-probe] %s h=%.0f bottom=%.0f gap=%.0f" % [sp.name, half * 2.0, bottom.y, gap])
+			gaps.sort()
+			if not gaps.is_empty():
+				print("[sprite-probe] %d sprites, median gap %.0f" % [gaps.size(), gaps[gaps.size() / 2]])
 	elif _cli.has("floor-probe"):
 		# Agent diagnostics: what is under the spawn (fall-through reports).
 		await get_tree().physics_frame
@@ -348,11 +516,11 @@ func _cli_after_level() -> void:
 						(hit["position"] as Vector3).y, hit.get("normal", Vector3.ZERO)]
 				print("[probe] from %s +%.0f: %s" % [a, top, what])
 		var shape := CapsuleShape3D.new()
-		shape.radius = 26.0
-		shape.height = 88.0
+		shape.radius = 22.0
+		shape.height = 80.0
 		var sq := PhysicsShapeQueryParameters3D.new()
 		sq.shape = shape
-		sq.transform = Transform3D(Basis(), p + Vector3(0.0, 44.0, 0.0))
+		sq.transform = Transform3D(Basis(), p + Vector3(0.0, 40.0, 0.0))
 		var overl := space.intersect_shape(sq, 8)
 		var names: Array = []
 		for o in overl:
@@ -503,7 +671,7 @@ func _begin_level(name: String) -> void:
 	if level.sky:
 		add_child(level.sky)
 		level.sky.position = player.global_position
-	_set_sky_fill(level)
+	_set_sky_fill(level, name)
 	_light_level(level)
 	# Re-apply this map's state overlay when we have been here before.
 	_apply_map_state(level, name)
@@ -526,8 +694,9 @@ func _begin_level(name: String) -> void:
 		Audio.stop_ambient()
 	# Score: the maptype marker (type 6, sub+2) picks the HMI track.
 	Audio.play_music_for_maptype(_maptype(level))
-	_set_status("[%d/%d] %s   %s   meshes=%d   enemies=%d   PgUp/PgDn=switch  click=fly (WASD/QE, Esc=release)"
-		% [_map_idx + 1, _maps.size(), name,
+	_set_status("")
+	print("[skynet] %s ready (%d/%d, %s, %d meshes, %d enemies)"
+		% [name, _map_idx + 1, _maps.size(),
 		   "outdoor" if level.is_outdoor else "indoor",
 		   level.entity_count, level.enemy_count])
 
@@ -635,8 +804,8 @@ func _find_clear_spawn(pos: Vector3) -> Vector3:
 	if space == null:
 		return pos
 	var shape := CapsuleShape3D.new()
-	shape.radius = 26.0
-	shape.height = 88.0
+	shape.radius = 22.0
+	shape.height = 80.0
 	var q := PhysicsShapeQueryParameters3D.new()
 	q.shape = shape
 	for ring in [0.0, 50.0, 100.0, 200.0, 320.0, 460.0, 640.0]:
@@ -710,8 +879,14 @@ func _light_level(level: LevelLoader.Level) -> void:
 	if sun != null:
 		sun.visible = false
 	var cache: Dictionary = {}
-	_shade_recursive(level.entities, cache)
-	_shade_recursive(level.enemies, cache)
+	if Render.enhanced():
+		# Materials are already per-pixel lit; a lower ambient lets the
+		# lamps carry the room.
+		env.ambient_light_color = INDOOR_AMBIENT
+		env.ambient_light_energy = 0.75
+	else:
+		_shade_recursive(level.entities, cache)
+		_shade_recursive(level.enemies, cache)
 	if level.sprites != null:
 		for s in level.sprites.get_children():
 			if s is SpriteBase3D:
@@ -725,7 +900,10 @@ func _light_level(level: LevelLoader.Level) -> void:
 		l.omni_range = clampf(float(e.light_enable) * LIGHT_RANGE_PER_UNIT, 400.0, 6000.0)
 		l.omni_attenuation = 1.0
 		l.light_energy = clampf(float(e.light_intensity) / LIGHT_ENERGY_DIV, 0.4, 3.5)
-		l.shadow_enabled = false
+		if Render.enhanced():
+			l.light_energy *= 1.6
+		# ENHANCED: the first few lamps cast shadows (each costs a cubemap).
+		l.shadow_enabled = Render.enhanced() and n < 6
 		level.entities.add_child(l)
 		n += 1
 	print("[level] interior: %d lights, %d shaded materials" % [n, cache.size()])
@@ -752,13 +930,30 @@ static func _shade_recursive(n: Node, cache: Dictionary) -> void:
 ## DOS fills the frame with a flat sky colour before drawing the
 ## SKY_SKY.3D band, so nothing black shows above the dome. Sample the
 ## dome texture's top rows for that colour; interiors get black.
-func _set_sky_fill(level: LevelLoader.Level) -> void:
+func _set_sky_fill(level: LevelLoader.Level, map_name: String = "") -> void:
 	var we: WorldEnvironment = get_node_or_null("WorldEnvironment")
 	if we == null or we.environment == null:
 		return
 	var env: Environment = we.environment
 	var fill := Color(0.0, 0.0, 0.0)
-	if level.is_outdoor and level.sky != null and level.sky.mesh != null:
+	var night: bool = level.is_outdoor and _is_night_map(map_name)
+	_clear_moon()
+	if _ash != null and is_instance_valid(_ash):
+		_ash.queue_free()
+	_ash = null
+	if level.is_outdoor and camera != null:
+		_ash = FxParticles.ambient_ash(camera)
+	if night:
+		# No dome on night maps: the flat palette-0x11 sky and the moon.
+		if level.sky != null and is_instance_valid(level.sky):
+			level.sky.visible = false
+		var pal: PackedColorArray = Assets.palette()
+		if pal.size() > NIGHT_SKY_INDEX:
+			fill = pal[NIGHT_SKY_INDEX]
+			fill.a = 1.0
+		_make_moon()
+		print("[skynet] %s: night sky (fill %s) with the moon" % [map_name, fill])
+	elif level.is_outdoor and level.sky != null and level.sky.mesh != null:
 		var am: Mesh = level.sky.mesh
 		var mat: Material = am.surface_get_material(0) if am.get_surface_count() > 0 else null
 		if mat is BaseMaterial3D and (mat as BaseMaterial3D).albedo_texture != null:
@@ -797,14 +992,365 @@ func _set_sky_fill(level: LevelLoader.Level) -> void:
 		env.fog_depth_curve = 1.0
 		env.fog_aerial_perspective = 0.0
 		env.fog_sky_affect = 0.0
+	_apply_render_env(level, env, fill)
+
+## --- ENHANCED rendering environment (docs §P) ------------------------------
+## The DOS dome (SKY_SKY.3D, painted mountains + moon) is replaced by a
+## real sky: a physical sunset / dusk sky when the dome is bright, a
+## generated star field with a moon when it is dark (a night map), or a
+## hand-made panorama from <converted>/enhanced/pack/sky/{sunset,night}.png. The
+## sun becomes a shadow-casting light that matches the sky, plus glow,
+## ACES tonemapping and volumetric light for the rays.
+const NIGHT_LUMA: float = 0.14
+
+## Time of day is per mission, not per texture: the DOS sky code
+## (FUN_00133b67) draws the SKY_SKY.3D dusk dome only for the maps in the
+## list at DAT_00052d51 = {250, 260, 270, 280} (missions 5-8, sub-maps
+## included here); every other outdoor map — missions 1-4 and the NETLEVEL
+## arenas — is NIGHT: a flat sky of palette index 0x11 and a MOON sprite
+## (TEXTURE.359 record 2, FUN_00139932) at a fixed bearing, drawn only
+## when the dome is not.
+const DUSK_MISSIONS: Array = [250, 260, 270, 280]
+const NIGHT_SKY_INDEX: int = 0x11
+const MOON_BANK: int = 359
+const MOON_REC: int = 2
+## FUN_00139932 aims the moon along atan2(-6400, 4000) (DOS x, z) — Godot
+## flips z — and a fixed elevation; 32° reads like the original screen
+## position. Distance keeps it inside the far plane behind everything.
+const MOON_ELEVATION_DEG: float = 32.0
+const MOON_DIST: float = 100000.0
+## DOS blits the 57 px sprite on a 320 px frame (~18 % of the width).
+const MOON_SCREEN_FRAC: float = 0.17
+## The joke (FUN_00125caf): a shot with the crosshair within 15 px of the
+## moon prints "OW!"; the 25th such hit gives it a fall velocity
+## (DAT_0005ba10 = 0x18800) and it drops below the horizon for the rest
+## of the map (FUN_00139a10 integrates, FUN_001399e7 resets on load).
+const MOON_AIM_DEG: float = 4.5
+const MOON_HITS_TO_FALL: int = 24
+const MOON_MESSAGE: String = "OW!"
+
+var _moon: MeshInstance3D = null
+var _moon_hits: int = 0
+var _moon_fall_v: float = 0.0
+var _moon_fall: float = 0.0            # radians dropped so far
+
+static func _is_dusk_map(map_name: String) -> bool:
+	var n: int = _suffix(map_name)
+	return ((n / 10) * 10) in DUSK_MISSIONS
+
+static func _is_night_map(map_name: String) -> bool:
+	return not _is_dusk_map(map_name)
+
+## Unit vector toward the moon (horizontal bearing from DOS, elevation
+## minus whatever it has fallen).
+func _moon_dir() -> Vector3:
+	var flat := Vector3(-6400.0, 0.0, -4000.0).normalized()
+	var el: float = deg_to_rad(MOON_ELEVATION_DEG) - _moon_fall
+	return (flat * cos(el) + Vector3.UP * sin(el)).normalized()
+
+## Is `fwd` (a shot direction) on the moon?
+func moon_aimed(fwd: Vector3) -> bool:
+	if _moon == null or not _moon.visible:
+		return false
+	return fwd.normalized().angle_to(_moon_dir()) < deg_to_rad(MOON_AIM_DEG)
+
+## A shot landed on the moon.
+func moon_shot() -> void:
+	if _moon == null or not _moon.visible:
+		return
+	_set_status(MOON_MESSAGE, 1.5)
+	_moon_hits += 1
+	if _moon_hits > MOON_HITS_TO_FALL and _moon_fall_v == 0.0:
+		_moon_fall_v = 0.02
+		print("[skynet] the moon has had enough (%d hits) — falling" % _moon_hits)
+
+func _clear_moon() -> void:
+	if _moon != null and is_instance_valid(_moon):
+		_moon.queue_free()
+	_moon = null
+	_moon_hits = 0
+	_moon_fall_v = 0.0
+	_moon_fall = 0.0
+
+## The night moon: the DOS sprite pinned to the camera (both modes; in
+## ENHANCED it glows a little so the bloom picks it up).
+func _make_moon() -> void:
+	_clear_moon()
+	var tex: Texture2D = Assets.texture(MOON_BANK, MOON_REC, true)
+	if tex == null:
+		return
+	# A camera-facing quad with its own material: unshaded, fog off
+	# (it sits far past the fog end), alpha-scissored like a DOS blit.
+	_moon = MeshInstance3D.new()
+	_moon.name = "Moon"
+	var qm := QuadMesh.new()
+	var fov_w: float = 2.0 * MOON_DIST * tan(deg_to_rad(camera.fov * 0.5)) * (16.0 / 9.0)
+	var w: float = fov_w * MOON_SCREEN_FRAC
+	qm.size = Vector2(w, w * float(tex.get_height()) / float(tex.get_width()))
+	_moon.mesh = qm
+	var mat := StandardMaterial3D.new()
+	mat.albedo_texture = tex
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+	mat.alpha_scissor_threshold = 0.5
+	mat.disable_fog = true
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS if Render.enhanced() else BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	if Render.enhanced():
+		mat.albedo_color = Color(1.25, 1.25, 1.2)
+	_moon.material_override = mat
+	_moon.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(_moon)
+	_update_moon()
+
+func _update_moon() -> void:
+	if _moon == null or not is_instance_valid(_moon) or camera == null:
+		return
+	_moon.global_position = camera.global_position + _moon_dir() * MOON_DIST
+## Seconds the MISSION COMPLETE screen stays before the next mission.
+const AUTO_ADVANCE_SEC: float = 6.0
+
+## The DOS sky dome's top band tells the time of day: a red-dominant
+## fill is the sunset dome however dark, anything dim and neutral/blue
+## is night.
+static func _is_night_fill(fill: Color) -> bool:
+	var luma: float = fill.r * 0.3 + fill.g * 0.59 + fill.b * 0.11
+	if luma >= NIGHT_LUMA:
+		return false
+	var red_dominant: bool = fill.r > 0.12 and fill.r > (fill.g + fill.b) * 1.5
+	return not red_dominant
+var _star_sky_tex: Texture2D = null
+const DUSK_SKY_SHADER := preload("res://shaders/dusk_sky.gdshader")
+## Sun for the ENHANCED dusk: just above the horizon, south-west-ish.
+const DUSK_SUN_ROT := Vector3(-7.0, 200.0, 0.0)
+const NIGHT_SUN_ROT := Vector3(-38.0, 155.0, 0.0)
+
+func _apply_render_env(level: LevelLoader.Level, env: Environment, fill: Color) -> void:
+	var enhanced: bool = Render.enhanced()
+	var night: bool = level.is_outdoor and _moon != null
+	if level.sky != null and is_instance_valid(level.sky):
+		level.sky.visible = not enhanced and not night
+	if not enhanced:
+		env.glow_enabled = false
+		env.volumetric_fog_enabled = false
+		env.tonemap_mode = Environment.TONE_MAPPER_LINEAR
+		env.ssao_enabled = false
+		if sun != null:
+			sun.light_energy = 1.2
+			sun.light_color = Color(1, 1, 1)
+		return
+	env.tonemap_mode = Environment.TONE_MAPPER_ACES
+	env.tonemap_exposure = 1.0
+	env.glow_enabled = true
+	env.glow_intensity = 0.35
+	env.glow_bloom = 0.08
+	env.glow_hdr_threshold = 1.4
+	# SSAO in game units (1 u ≈ 2 cm — the default 1 u radius did
+	# nothing); on everywhere, it is most of the "depth" of the look.
+	env.ssao_enabled = true
+	env.ssao_radius = 70.0
+	env.ssao_intensity = 2.2
+	env.ssao_power = 1.6
+	env.ssao_detail = 0.6
+	if not level.is_outdoor:
+		env.volumetric_fog_enabled = false
+		return
+	# Sun (or moon) — low over the horizon for the dusk, dim and blue at
+	# night. Shadows on: the ENHANCED materials are lit per pixel.
+	if sun != null:
+		sun.visible = true
+		sun.shadow_enabled = true
+		sun.directional_shadow_max_distance = 12000.0
+		sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+		if night:
+			# Moonlight from the moon's bearing.
+			sun.rotation_degrees = NIGHT_SUN_ROT
+			sun.look_at_from_position(Vector3.ZERO, -_moon_dir(), Vector3.UP)
+			sun.light_color = Color(0.7, 0.76, 0.95)
+			sun.light_energy = 0.85
+		else:
+			sun.rotation_degrees = DUSK_SUN_ROT
+			sun.light_color = Color(1.0, 0.68, 0.42)
+			sun.light_energy = 2.0
+		sun.shadow_opacity = 0.85
+		sun.shadow_blur = 1.5
+	var sky := Sky.new()
+	sky.radiance_size = Sky.RADIANCE_SIZE_128
+	var over: String = ""
+	for nm in ["sky", "night" if night else "sunset"]:
+		over = Render.override_path("sky/%s.png" % nm)
+		if not over.is_empty():
+			break
+	if not over.is_empty():
+		# A hand-made equirectangular panorama replaces the whole sky.
+		var pm := PanoramaSkyMaterial.new()
+		var img := Image.load_from_file(over)
+		if img != null:
+			img.generate_mipmaps()
+			pm.panorama = ImageTexture.create_from_image(img)
+		sky.sky_material = pm
+	else:
+		var sm := ShaderMaterial.new()
+		sm.shader = DUSK_SKY_SHADER
+		if _star_sky_tex == null:
+			_star_sky_tex = _make_star_sky()
+		sm.set_shader_parameter("stars", _star_sky_tex)
+		if night:
+			sm.set_shader_parameter("horizon_color", Color(0.05, 0.06, 0.12))
+			sm.set_shader_parameter("zenith_color", Color(0.01, 0.01, 0.03))
+			sm.set_shader_parameter("glow_color", Color(0.3, 0.36, 0.55))
+			sm.set_shader_parameter("sun_energy", 0.0)       # the moon sprite is the disc
+			sm.set_shader_parameter("glow_strength", 0.45)   # its halo
+		sky.sky_material = sm
+	env.background_mode = Environment.BG_SKY
+	env.sky = sky
+	# Ambient: a fixed dusk tint rather than the (mostly black) sky —
+	# the shadow side of every hill and building stays readable.
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	# Ambient low, key light high: the shadow side must read darker than
+	# the lit side or everything looks flat.
+	env.ambient_light_color = Color(0.2, 0.22, 0.34) if night else Color(0.5, 0.4, 0.42)
+	env.ambient_light_energy = 0.55 if night else 0.8
+	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
+	# Haze that takes the sky colour, plus volumetric light for the rays.
+	env.fog_light_color = fill.lerp(Color(0.05, 0.05, 0.1), 0.6) if night else fill.lerp(Color(1.0, 0.6, 0.35), 0.5)
+	env.fog_depth_begin = FOG_BEGIN * 1.5
+	env.fog_depth_end = FOG_END * 1.4
+	env.fog_sky_affect = 0.0
+	env.volumetric_fog_enabled = not night
+	env.volumetric_fog_density = 0.00022
+	env.volumetric_fog_albedo = Color(1.0, 0.85, 0.7)
+	env.volumetric_fog_emission_energy = 0.0
+	env.volumetric_fog_length = 12000.0
+	env.volumetric_fog_anisotropy = 0.45
+	env.volumetric_fog_sky_affect = 0.0
+	env.volumetric_fog_ambient_inject = 0.05
+
+## The star layer of the ENHANCED sky (added by shaders/dusk_sky.gdshader
+## above the horizon glow): a few thousand stars of varying size and
+## warmth, a faint milky band, and a full moon (the DOS dome painted one
+## too). Black where there is nothing.
+func _make_star_sky() -> Texture2D:
+	var w: int = 2048
+	var h: int = 1024
+	var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.0, 0.0, 0.0))
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 1996
+	# Milky band: a soft diagonal glow.
+	for y in h:
+		var v: float = float(y) / float(h)
+		for x in range(0, w, 2):
+			var u: float = float(x) / float(w)
+			var band: float = exp(-pow((v - 0.42 - 0.18 * sin(u * TAU)) * 9.0, 2.0))
+			if band > 0.05:
+				var c := Color(0.05, 0.06, 0.1) * band * 0.6
+				img.set_pixel(x, y, img.get_pixel(x, y) + c)
+				img.set_pixel(x + 1, y, img.get_pixel(x + 1, y) + c)
+	for _i in 6000:
+		var x: int = rng.randi() % w
+		var y: int = int(pow(rng.randf(), 0.6) * float(h) * 0.55)   # denser above the horizon
+		var mag: float = rng.randf()
+		var warm: float = rng.randf()
+		var c := Color(0.75 + 0.25 * warm, 0.8, 0.85 + 0.15 * (1.0 - warm)) * (0.35 + 0.65 * mag * mag)
+		img.set_pixel(x, y, c)
+		if mag > 0.85:
+			for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+				var px: int = (x + d.x + w) % w
+				var py: int = clampi(y + d.y, 0, h - 1)
+				img.set_pixel(px, py, c * 0.45)
+	# (The moon is a separate sprite — see _make_moon.)
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
 
 ## Pin the sky mesh to the camera position each frame (DOS FUN_00133bbb
 ## re-centres SKY_SKY.3D on the camera). Orientation stays fixed so the
 ## moon/stars remain world-anchored as the player looks around.
+var _walk_target := Vector2.ZERO
+var _walk_route: Array = []
+var _walk_stuck: float = 0.0
+var _walk_last := Vector3.ZERO
+var _walk_limit: float = 0.0
+var _walk_t: float = -1.0
+var _walk_log: float = 0.0
+
+## --walk driver: steer the player's UI intent at the target point.
+func _walk_step(delta: float) -> void:
+	if _walk_t < 0.0 or not is_instance_valid(player):
+		return
+	_walk_t += delta
+	var p: Vector3 = player.global_position
+	var to := _walk_target - Vector2(p.x, p.z)
+	var arrived: bool = to.length() < 24.0
+	if arrived and not _walk_route.is_empty():
+		print("[walk] waypoint %s reached at t=%.1f, y=%.0f" % [_walk_target, _walk_t, p.y])
+		_walk_target = _walk_route.pop_front()
+		arrived = false
+	# Stuck diagnosis: no motion while pushing → print the contacts.
+	if not arrived:
+		if p.distance_to(_walk_last) < 0.5:
+			_walk_stuck += delta
+			if _walk_stuck > 1.0:
+				_walk_stuck = -3.0
+				var desc := ""
+				for i in player.get_slide_collision_count():
+					var kc: KinematicCollision3D = player.get_slide_collision(i)
+					var col: Object = kc.get_collider()
+					var cname: String = "?"
+					if col is Node:
+						var cn: Node = col
+						var par: Node = cn.get_parent()
+						cname = String(par.get_meta("mesh_name", par.name)) if par != null else cn.name
+						if par is MeshInstance3D:
+							var pmi: MeshInstance3D = par
+							cname += " pos=%s aabb=%s under %s" % [pmi.global_position.snapped(Vector3.ONE),
+								pmi.mesh.get_aabb().size.snapped(Vector3.ONE) if pmi.mesh != null else "-",
+								pmi.get_parent().name if pmi.get_parent() != null else "-"]
+					desc += " n=%s@%s %s" % [kc.get_normal().snapped(Vector3(0.01, 0.01, 0.01)),
+						kc.get_position().snapped(Vector3.ONE), cname]
+				print("[walk] STUCK at %s floor=%s wall=%s ceiling=%s%s" % [p, player.is_on_floor(),
+					player.is_on_wall(), player.is_on_ceiling(), desc])
+		else:
+			_walk_stuck = maxf(_walk_stuck, 0.0) if _walk_stuck >= 0.0 else _walk_stuck + delta
+	_walk_last = p
+	if _walk_t > _walk_limit:
+		player.ui_move = Vector2.ZERO
+		print("[walk] end after %.1f s at %s (%s)" % [_walk_t, p,
+			"on floor" if player.is_on_floor() else "airborne"])
+		_walk_t = -1.0
+		return
+	if arrived:
+		player.ui_move = Vector2.ZERO        # stand there and keep logging
+	else:
+		player.set_view(atan2(-to.x, -to.y), 0.0)
+		player.ui_move = Vector2(0.0, 1.0)
+	_walk_log += delta
+	if _walk_log >= (1.0 if arrived else 0.5):
+		_walk_log = 0.0
+		print("[walk] t=%.1f pos=%s %s vy=%.0f%s" % [_walk_t, p,
+			"floor" if player.is_on_floor() else "air", player.velocity.y,
+			" (at target)" if arrived else ""])
+
 func _process(delta: float) -> void:
+	_walk_step(delta)
 	if _current_level != null and _current_level.sky != null \
 			and is_instance_valid(_current_level.sky):
 		_current_level.sky.position = camera.global_position
+	if _moon != null and is_instance_valid(_moon):
+		if _moon_fall_v > 0.0 and _moon.visible:
+			# FUN_00139a10: velocity feeds an accumulator that feeds the
+			# offset — a quadratic drop.
+			_moon_fall_v += 0.28 * delta
+			_moon_fall += _moon_fall_v * delta
+			if sun != null and Render.enhanced():
+				sun.look_at_from_position(Vector3.ZERO, -_moon_dir(), Vector3.UP)
+			if _moon_fall > deg_to_rad(MOON_ELEVATION_DEG + 12.0):
+				_moon.visible = false
+				if sun != null and Render.enhanced():
+					sun.light_energy = 0.15
+				print("[skynet] the moon is gone")
+		_update_moon()
 	# Entity action system — movers, proximity triggers, teleports.
 	if _current_level != null and _current_level.action != null \
 			and is_instance_valid(player):
@@ -827,6 +1373,12 @@ func _process(delta: float) -> void:
 			_set_hud_mode(player.vehicle)
 		if _hud_mode != 0:
 			_update_vehicle_hud()
+			# Driving into the goal ends the mission by itself.
+			if not _mission_done and _game_over == null:
+				_evac_poll -= delta
+				if _evac_poll <= 0.0:
+					_evac_poll = 0.4
+					_try_evac(player.global_position)
 		var am: int = int(player.ammo)
 		_ammo_label.text = "%d" % am
 		_ammo_label.add_theme_color_override("font_color",
@@ -867,7 +1419,21 @@ func _try_evac(pos: Vector3) -> bool:
 		_mission_done = true
 		_show_mission_complete()
 		return true
+	# Vehicle missions end by simply reaching the goal (no use key from
+	# a cockpit): the marker-4 zones on MAP.220; MAP.260 / MAP.270 carry
+	# no marker 4 — their highest marker pair (94/95, 44/45) is taken as
+	# the goal (ASSUMPTION, 700 u).
+	if is_instance_valid(player) and player.vehicle != 0 and _is_campaign_main(_level_name()):
+		for goal_id in [94, 44]:
+			for gp in lvl.markers.get(goal_id, []):
+				if Vector2(pos.x - gp.x, pos.z - gp.z).length() < 700.0 and absf(pos.y - gp.y) < 900.0:
+					print("[skynet] vehicle mission goal marker %d reached — mission complete" % goal_id)
+					_mission_done = true
+					_show_mission_complete()
+					return true
 	return false
+
+var _evac_poll: float = 0.0
 
 ## A destroyed object's drop (crate → ammo, locker → medkit).
 func _on_drop_requested(pos: Vector3, drop_type: int) -> void:
@@ -1254,6 +1820,18 @@ func _show_end_screen(title: String, color: Color, respawnable: bool,
 			_advance_to.bind(next_map)))
 	vb.add_child(_game_over_button("MAIN MENU", _game_over_menu))
 	get_tree().paused = true
+	# The mouse is captured while playing — free it or the buttons cannot
+	# be clicked (a 2026-09-03 report: "mission complete and it just hung").
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	if is_instance_valid(player) and player.has_method("_capture"):
+		player.call("_capture", false)
+	# A won mission moves on by itself after a few seconds, like the DOS
+	# game's debrief → next briefing flow (the buttons still work sooner).
+	if next_map != "":
+		var my: CanvasLayer = cl
+		get_tree().create_timer(AUTO_ADVANCE_SEC, true, false, true).timeout.connect(func() -> void:
+			if _game_over == my and is_instance_valid(my):
+				_advance_to(next_map))
 
 ## Clear the end screen and load `map_name` (the next campaign mission).
 func _advance_to(map_name: String) -> void:
@@ -1896,6 +2474,19 @@ func run_command(line: String) -> String:
 			_close_overlays()
 			_advance_to(nxt)
 			return "next mission: %s" % nxt
+		"boom":
+			if not is_instance_valid(player):
+				return "no player"
+			var ex := Explosion.new()
+			add_child(ex)
+			ex.setup(player.global_position + Vector3(0, 60, 0) - player.global_transform.basis.z * 420.0, 220.0)
+			return "boom"
+		"moon":
+			if _moon == null:
+				return "no moon on this map (dusk missions 5-8 have the dome instead)"
+			for _i in MOON_HITS_TO_FALL + 1:
+				moon_shot()
+			return "moon: %d hits, %s" % [_moon_hits, "falling" if _moon_fall_v > 0.0 else "still up"]
 		"win", "cslut":
 			if _current_level == null:
 				return "no level"
@@ -1948,6 +2539,18 @@ func run_command(line: String) -> String:
 			_close_overlays()
 			_return_to_menu()
 			return ""
+		"render":
+			if args.is_empty():
+				return "render: %s (dos | enhanced)" % Render.NAMES[Render.mode]
+			var want: int = Render.ENHANCED if args[0].to_lower().begins_with("e") else Render.DOS
+			if want == Render.mode:
+				return "already %s" % Render.NAMES[want]
+			Render.set_mode(want)
+			var cur: String = _level_name()
+			if not cur.is_empty():
+				_close_overlays()
+				_transition(cur)
+			return "render %s — reloading" % Render.NAMES[want]
 		"bots":
 			if not Net.is_server():
 				return "only the host can change bots"
@@ -2222,6 +2825,17 @@ func _update_vehicle_hud() -> void:
 		var frac: float = 1.0 - clampf(player.health / maxf(player.max_health, 1.0), 0.0, 1.0)
 		_veh_labels["damage"].text = "%d" % int(round(frac * 100.0))
 
-func _set_status(text: String) -> void:
-	if _status_label != null:
-		_status_label.text = text
+## Transient status line (loading, saved/loaded, errors). It clears
+## itself after `ttl` seconds — the HUD carries no permanent debug text.
+var _status_serial: int = 0
+func _set_status(text: String, ttl: float = 4.0) -> void:
+	if _status_label == null:
+		return
+	_status_label.text = text
+	_status_serial += 1
+	if text.is_empty() or ttl <= 0.0:
+		return
+	var my: int = _status_serial
+	get_tree().create_timer(ttl, true, false, true).timeout.connect(func() -> void:
+		if _status_serial == my and _status_label != null:
+			_status_label.text = "")

@@ -26,6 +26,7 @@
 
 extends Node3D
 
+const FxParticles := preload("res://scripts/fx_particles.gd")
 const BSAReader    := preload("res://scripts/loaders/bsa_reader.gd")
 const Mesh3D       := preload("res://scripts/loaders/mesh_3d.gd")
 const Palette      := preload("res://scripts/loaders/palette.gd")
@@ -99,6 +100,10 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 	_splash = float(cfg.get("splash", 0.0))
 	_hits = String(cfg.get("hits", "enemy"))
 	_trail = bool(cfg.get("trail", false))
+	if _trail and FxParticles.on():
+		# ENHANCED: one particle emitter instead of a puff every 30 ms.
+		FxParticles.trail(self, 44.0)
+		_trail = false
 	_impact_bank = int(cfg.get("impact_bank", 0))
 	_impact_sound = String(cfg.get("impact_sound", ""))
 	_color = cfg.get("color", _color)

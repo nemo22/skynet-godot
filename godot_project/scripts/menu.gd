@@ -1142,10 +1142,31 @@ func _build_display_screen() -> Control:
 		modes.add_child(mb)
 	vb.add_child(modes)
 
+	# DOS (faithful software look) / ENHANCED (filtered upscaled textures,
+	# real lighting and sky) — Render autoload, docs §P.
+	vb.add_child(_section_label("Rendering"))
+	var renders := HBoxContainer.new()
+	renders.alignment = BoxContainer.ALIGNMENT_CENTER
+	renders.add_theme_constant_override("separation", 14)
+	_render_buttons.clear()
+	for m in [["DOS / RETRO", Render.DOS], ["ENHANCED", Render.ENHANCED]]:
+		var rm: int = m[1]
+		var rb := _option_button(m[0], func() -> void:
+			Render.set_mode(rm)
+			_refresh_display_marks()
+			_show_toast("Rendering: %s — takes effect when a map loads." % Render.NAMES[rm]))
+		rb.custom_minimum_size = Vector2(210, 48)
+		rb.set_meta("render", rm)
+		_render_buttons.append(rb)
+		renders.add_child(rb)
+	vb.add_child(renders)
+
 	vb.add_child(_spacer(4))
 	vb.add_child(_menu_button("BACK", func() -> void: _show_screen(_screen_options)))
 	_refresh_display_marks()
 	return pair[0]
+
+var _render_buttons: Array[Button] = []
 
 ## Resolutions for the DISPLAY dialog: common sizes matching the
 ## monitor's aspect ratio and fitting within its native resolution,
@@ -1184,6 +1205,9 @@ func _refresh_display_marks() -> void:
 		var fs: bool = mb.get_meta("fs")
 		var nm: String = "FULLSCREEN" if fs else "WINDOWED"
 		mb.text = ("> " if fs == _disp_fullscreen else "") + nm
+	for rb in _render_buttons:
+		var rm: int = rb.get_meta("render")
+		rb.text = ("> " if rm == Render.mode else "") + ("DOS / RETRO" if rm == Render.DOS else "ENHANCED")
 
 func _set_resolution(r: Vector2i) -> void:
 	_disp_res = r

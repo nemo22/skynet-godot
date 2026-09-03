@@ -335,11 +335,18 @@ static func build_textured_array_mesh(m: Mesh3D, provider: Callable,
 
 		if positions.is_empty(): continue
 
+		# ENHANCED: smooth-shade across faces that meet at a soft angle
+		# (rounded hulls, pipes, wheels) while keeping hard edges hard.
+		if Render.enhanced():
+			normals = smooth_normals(positions, normals, Render.SMOOTH_ANGLE_DEG)
+
 		var arrays: Array = []
 		arrays.resize(Mesh.ARRAY_MAX)
 		arrays[Mesh.ARRAY_VERTEX] = positions
 		arrays[Mesh.ARRAY_NORMAL] = normals
 		arrays[Mesh.ARRAY_TEX_UV] = uvs
+		if Render.enhanced():
+			arrays[Mesh.ARRAY_TANGENT] = _tangents_for(positions, normals, uvs)
 
 		var mat := StandardMaterial3D.new()
 		mat.cull_mode = BaseMaterial3D.CULL_BACK
@@ -351,11 +358,76 @@ static func build_textured_array_mesh(m: Mesh3D, provider: Callable,
 			mat.albedo_texture = tex
 		else:
 			mat.albedo_color = Color.from_hsv(float(type_id & 0xFF) / 255.0, 0.5, 0.85)
+		Render.style(mat, "model", info.get("normal", null))
 
 		var surf_idx: int = am.get_surface_count()
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		am.surface_set_material(surf_idx, mat)
 	return am
+
+## Average the normals of every triangle corner sharing a position when
+## the faces meet at less than `angle_deg` (a smoothing group per
+## vertex); sharper corners keep their flat normal.
+static func smooth_normals(positions: PackedVector3Array, normals: PackedVector3Array,
+		angle_deg: float) -> PackedVector3Array:
+	var out := PackedVector3Array()
+	out.resize(normals.size())
+	var by_pos: Dictionary = {}          # quantised position → [indices]
+	for i in positions.size():
+		var p: Vector3 = positions[i]
+		var key := Vector3i(int(round(p.x * 4.0)), int(round(p.y * 4.0)), int(round(p.z * 4.0)))
+		if not by_pos.has(key):
+			by_pos[key] = PackedInt32Array()
+		by_pos[key].append(i)
+	var cos_limit: float = cos(deg_to_rad(angle_deg))
+	for key in by_pos:
+		var idx: PackedInt32Array = by_pos[key]
+		for i in idx:
+			var n: Vector3 = normals[i]
+			var acc: Vector3 = Vector3.ZERO
+			for j in idx:
+				var m: Vector3 = normals[j]
+				if n.dot(m) >= cos_limit:
+					acc += m
+			out[i] = acc.normalized() if acc.length_squared() > 0.0 else n
+	return out
+
+## Per-triangle tangents (normal mapping needs them) from the UV gradient.
+static func _tangents_for(positions: PackedVector3Array, normals: PackedVector3Array,
+		uvs: PackedVector2Array) -> PackedFloat32Array:
+	var t := PackedFloat32Array()
+	t.resize(positions.size() * 4)
+	var i: int = 0
+	while i + 2 < positions.size():
+		var p0 := positions[i]
+		var p1 := positions[i + 1]
+		var p2 := positions[i + 2]
+		var uv0 := uvs[i]
+		var uv1 := uvs[i + 1]
+		var uv2 := uvs[i + 2]
+		var e1 := p1 - p0
+		var e2 := p2 - p0
+		var d1 := uv1 - uv0
+		var d2 := uv2 - uv0
+		var det: float = d1.x * d2.y - d2.x * d1.y
+		var tan: Vector3
+		if absf(det) < 1e-8:
+			tan = e1.normalized() if e1.length_squared() > 0.0 else Vector3.RIGHT
+		else:
+			tan = ((e1 * d2.y - e2 * d1.y) / det).normalized()
+		for k in 3:
+			var n: Vector3 = normals[i + k]
+			# Gram-Schmidt against the (possibly smoothed) normal.
+			var tt: Vector3 = (tan - n * n.dot(tan))
+			if tt.length_squared() < 1e-8:
+				tt = n.cross(Vector3.UP) if absf(n.y) < 0.9 else n.cross(Vector3.RIGHT)
+			tt = tt.normalized()
+			t[(i + k) * 4] = tt.x
+			t[(i + k) * 4 + 1] = tt.y
+			t[(i + k) * 4 + 2] = tt.z
+			t[(i + k) * 4 + 3] = 1.0
+		i += 3
+	return t
 
 ## Build one textured ArrayMesh per animation frame. For a static mesh
 ## this returns a single-element array. Used for animated enemies — the
