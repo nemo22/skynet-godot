@@ -998,7 +998,7 @@ func _set_sky_fill(level: LevelLoader.Level, map_name: String = "") -> void:
 ## The DOS dome (SKY_SKY.3D, painted mountains + moon) is replaced by a
 ## real sky: a physical sunset / dusk sky when the dome is bright, a
 ## generated star field with a moon when it is dark (a night map), or a
-## hand-made panorama from <converted>/enhanced/pack/sky/{sunset,night}.png. The
+## hand-made panorama from <converted>/enhanced_pack/sky/{sunset,night}.png. The
 ## sun becomes a shadow-casting light that matches the sky, plus glow,
 ## ACES tonemapping and volumetric light for the rays.
 const NIGHT_LUMA: float = 0.14

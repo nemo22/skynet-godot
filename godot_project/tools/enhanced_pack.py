@@ -3,8 +3,8 @@
 
 Downloads CC0 models from Poly Haven (https://polyhaven.com, license
 CC0 1.0 — free for any use, no attribution required; we credit anyway)
-into <game>/converted/enhanced/pack/models/<id>/ (glTF 1k) and writes
-<game>/converted/enhanced/pack/replace.cfg, the mapping the game reads in ENHANCED mode
+into <game>/converted/enhanced_pack/models/<id>/ (glTF 1k) and writes
+<game>/converted/enhanced_pack/replace.cfg, the mapping the game reads in ENHANCED mode
 (scripts/replacements.gd): which DOS billboard sprite (TEXTURE.<bank>
 record <rec>) is drawn as which model.
 
@@ -205,7 +205,7 @@ def get_texture(tid, out_root, res):
         entry = fam[r].get("jpg") or fam[r].get("png")
         if not entry:
             continue
-        path = os.path.join(out_root, "src_textures", tid, os.path.basename(entry["url"]))
+        path = os.path.join(src_root, "textures", tid, os.path.basename(entry["url"]))
         download(entry["url"], path, entry.get("md5"))
         out[tag] = path
     try:
@@ -333,13 +333,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--game", default=os.path.join(os.path.dirname(__file__), "..", "..", "gamedata", ".."))
     ap.add_argument("--res", default="1k")
+    ap.add_argument("--src", default="", help="build-time source cache (default <game>/assets_src)")
     ap.add_argument("--only", default="")
     ap.add_argument("--textures", action="store_true", help="build the texture replacements (needs --dos)")
     ap.add_argument("--dos", default="", help="directory with the DOS records as PNG (map_dump --bankdump)")
     ap.add_argument("--no-models", action="store_true")
     a = ap.parse_args()
     game = os.path.abspath(a.game)
-    out_root = os.path.join(game, "converted", "enhanced", "pack")
+    # What the GAME reads at run time (shipped, packed into enhanced.pck).
+    out_root = os.path.join(game, "converted", "enhanced_pack")
+    # Downloaded originals the colour matching works from: build-time
+    # only, outside the game data so they are never shipped or cached.
+    src_root = args.src or os.path.join(game, "assets_src")
     os.makedirs(os.path.join(out_root, "models"), exist_ok=True)
     if a.textures:
         build_detail(out_root, a.res, set(x for x in a.only.split(",") if x))

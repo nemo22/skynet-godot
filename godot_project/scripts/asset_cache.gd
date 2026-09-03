@@ -24,7 +24,9 @@
 ##
 ## Everything is lazy — a miss builds and saves — and `import_all()`
 ## runs the whole conversion up front (`--import` on the command line,
-## or the first-start prompt in the menu).
+## or the first-start prompt in the menu). A release can ship the whole
+## thing as `converted.pck`; SkynetPaths mounts it at res://converted and
+## the cache then runs `read_only` (see there for the release layout).
 
 extends Node
 
@@ -44,6 +46,10 @@ const SAVE_FLAGS: int = ResourceSaver.FLAG_COMPRESS | ResourceSaver.FLAG_CHANGE_
 ## Cache root ("" when disabled with --no-cache).
 var root: String = ""
 var enabled: bool = true
+## The cache came from a mounted converted.pck: everything is there and
+## nothing can be written back. Misses still build in memory, they just
+## are not saved (and the version check only reports a mismatch).
+var read_only: bool = false
 ## Statistics for the log / progress UI.
 var hits: int = 0
 var misses: int = 0
@@ -65,16 +71,21 @@ func _ready() -> void:
 	# then, so every saved resource references res:// paths.
 	if not root.begins_with("res://") and DirAccess.dir_exists_absolute("res://converted") 			and FileAccess.file_exists("res://converted/VERSION"):
 		root = "res://converted"
+	# A release mounts the whole cache as converted.pck (SkynetPaths
+	# .PACKS) — same res://converted path, but read-only.
+	if SkynetPaths.pack_mounted("converted"):
+		root = "res://converted"
+		read_only = true
 	# Outside the editor a PortableCompressedTexture2D drops its source
 	# buffer right after decoding it — and then saves as an EMPTY texture.
 	PortableCompressedTexture2D.set_keep_all_compressed_buffers(true)
 	_check_version()
-	print("[assets] cache at %s" % root)
-	if Render.enhanced():
+	print("[assets] cache at %s%s" % [root, " (read-only pack)" if read_only else ""])
+	if Render.enhanced() and not read_only:
 		_refresh_overrides()
 
 ## Cached meshes reference their texture .res files by path, so a
-## replacement PNG/WebP dropped into <converted>/enhanced/pack/textures only shows
+## replacement PNG/WebP dropped into <converted>/enhanced_pack/textures only shows
 ## up if the cached texture (and normal map) is rebuilt IN PLACE before
 ## any mesh loads. Runs once at start: every pack file newer than its
 ## cache entry rewrites it.
@@ -110,7 +121,7 @@ func _refresh_overrides() -> void:
 
 ## The data directory changed (first-start prompt): move to its cache.
 func relocate() -> void:
-	if not enabled:
+	if not enabled or read_only:
 		return
 	var r := SkynetPaths.converted_dir()
 	if r == root:
@@ -135,8 +146,15 @@ func _check_version() -> void:
 		f.close()
 		if v == CACHE_VERSION:
 			return
+		if read_only:
+			# A packed cache from an older build: report it and run on,
+			# the entries that still load are still valid to load.
+			push_warning("[assets] packed cache is version %d, this build wants %d — rebuild it" % [v, CACHE_VERSION])
+			return
 		print("[assets] cache version %d != %d — rebuilding" % [v, CACHE_VERSION])
 		_wipe(root)
+	elif read_only:
+		return
 	DirAccess.make_dir_recursive_absolute(root)
 	var w := FileAccess.open(vpath, FileAccess.WRITE)
 	if w != null:
@@ -160,7 +178,7 @@ func _wipe(dir: String) -> void:
 
 ## Remove the whole cache (OPTIONS → rebuild data).
 func clear() -> void:
-	if root.is_empty():
+	if root.is_empty() or read_only:
 		return
 	_wipe(root)
 	_mem.clear()
@@ -204,7 +222,7 @@ func fetch(kind: String, key: String, builder: Callable) -> Resource:
 			return r
 	misses += 1
 	var built: Resource = builder.call()
-	if built != null:
+	if built != null and not read_only:
 		DirAccess.make_dir_recursive_absolute(p.get_base_dir())
 		var err := ResourceSaver.save(built, p, SAVE_FLAGS)
 		if err != OK:
@@ -241,7 +259,7 @@ func texture(bank: int, rec: int, transparent0: bool = false) -> Texture2D:
 	return r as Texture2D
 
 ## The DOS record as an Image — in ENHANCED mode the hand-made
-## replacement <converted>/enhanced/pack/textures/T<bank>_<rec>.png when there is
+## replacement <converted>/enhanced_pack/textures/T<bank>_<rec>.png when there is
 ## one, else the pixel-art upscale (Render.enhance_image), mipmapped.
 func _texture_image(bank: int, rec: int, transparent0: bool) -> Image:
 	if Render.enhanced():
@@ -273,11 +291,11 @@ func sprite_pixel_size(bank: int, rec: int, tex: Texture2D, dos_pixel: float) ->
 		return dos_pixel
 	return dos_pixel * float(record_size(bank, rec).y) / float(tex.get_height())
 
-## ENHANCED: a replacement file in <converted>/enhanced/pack newer than the cached
+## ENHANCED: a replacement file in <converted>/enhanced_pack newer than the cached
 ## resource built from it (or from the DOS record) drops the cache entry,
 ## so dropping a PNG into the pack takes effect on the next load.
 func _drop_stale(bank: int, rec: int, kind: String, key: String, rel: String) -> void:
-	if not Render.enhanced() or not enabled:
+	if not Render.enhanced() or not enabled or read_only:
 		return
 	var over: String = Render.override_path(rel)
 	if over.is_empty():
@@ -298,7 +316,7 @@ func normal_map(bank: int, rec: int) -> Texture2D:
 	_drop_stale(bank, rec, "nrm", key, "textures/T%03d_%03d_n.png" % [bank, rec])
 	var r: Resource = fetch("nrm", key, func() -> Resource:
 		# A hand-made normal map next to a replacement texture
-		# (<converted>/enhanced/pack/textures/T<bank>_<rec>_n.png, OpenGL +Y).
+		# (<converted>/enhanced_pack/textures/T<bank>_<rec>_n.png, OpenGL +Y).
 		var np: String = Render.override_path("textures/T%03d_%03d_n.png" % [bank, rec])
 		if not np.is_empty():
 			var nimg := Image.load_from_file(np)

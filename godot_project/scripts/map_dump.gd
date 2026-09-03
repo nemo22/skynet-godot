@@ -51,6 +51,8 @@ func _ready() -> void:
 			print("%s: grid %dx%d outdoor=%s meshes=%d markers=%s enemies=%s sprite_banks=%s"
 				% [name, m.grid_width, m.grid_height, outdoor, meshes, markers, enemies, banks])
 		bsa.close()
+	if cli.has("makepack"):
+		make_pack(String(cli["makepack"]))
 	if cli.has("links"):
 		dump_links(String(cli["links"]))
 	if cli.has("names"):
@@ -327,6 +329,28 @@ static func dump_links(spec: String) -> void:
 				% [e.file_off, label, v, e.x, -e.y, -e.z, e.state_byte, e.link_act_type,
 					e.hp, maxi(e.link_next, 0), extra, "  <head" if not targets.has(e.file_off) and e.link_next > 0 else ""])
 	bsa.close()
+
+## --makepack=SRC,PREFIX,OUT.pck: pack a directory into a Godot resource
+## pack the game can mount at run time. Used to build the release
+## `enhanced.pck` out of converted/enhanced_pack, and `converted.pck` out
+## of a finished asset cache (see SkynetPaths.PACKS / build_pack):
+##   --makepack=C:/games/skynet/converted/enhanced_pack,res://enhanced,C:/games/skynet/enhanced.pck
+## A fourth field lists directory names to leave out (";" separated).
+static func make_pack(spec: String) -> void:
+	var v: PackedStringArray = spec.split(",")
+	if v.size() < 3:
+		print("[pack] need SRC,PREFIX,OUT.pck[,skip;skip]")
+		return
+	var skip := PackedStringArray()
+	if v.size() > 3:
+		skip = v[3].split(";", false)
+	var r: Dictionary = SkynetPaths.build_pack(v[0], v[1], v[2], skip)
+	if not bool(r["ok"]):
+		print("[pack] FAILED: %s" % r["error"])
+		return
+	print("[pack] %s: %d files, %.1f MB in, %.1f MB out (%.1f s)"
+		% [v[2], r["files"], float(r["bytes_in"]) / 1048576.0,
+			float(r["bytes_out"]) / 1048576.0, float(r["msec"]) / 1000.0])
 
 ## --names=231: the raw 8-byte name slots of the MAP header (index, bytes)
 ## next to what the parser accepted, and every variant-1 entity whose

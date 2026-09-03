@@ -104,6 +104,12 @@ func _run() -> void:
 			grounded += 1
 	_check(moved >= 2, "%d/3 bots walked under the bot brain" % moved)
 	_check(grounded == 3, "bots stay on the map (none fell through)")
+	# Whether two bots find each other inside a fixed window is luck — on a
+	# loaded machine (this suite runs four Godot processes back to back)
+	# 12 s was not enough and the check failed with "0 shots". Keep the
+	# window for the movement checks above, then WAIT for the first shot.
+	if _bot_fired == 0 and _deaths.is_empty():
+		await _wait(func() -> bool: return _bot_fired > 0 or _deaths.size() > 0, 45.0)
 	_check(_bot_fired > 0 or _deaths.size() > 0, "bots fired %d shots, %d deaths" % [_bot_fired, _deaths.size()])
 	# Teleport beside a bot and shoot it: the hit must reach the server.
 	var target: Node3D = null
@@ -150,18 +156,26 @@ func _run() -> void:
 	var args: PackedStringArray = OS.get_cmdline_user_args()
 	if not args.has("--no-client"):
 		var exe: String = OS.get_executable_path()
+		# --quit-after is the client's WHOLE life: joining, loading MAP.605
+		# and spawning have to fit inside it. 12 s did not on a loaded
+		# machine, and the client then quit before it ever spawned, so the
+		# two checks below failed while waiting 180 s for something that
+		# could no longer happen. 60 s covers a cold cache; the test does
+		# not get slower in the good case, it only waits for the quit.
+		var t_client := Time.get_ticks_msec()
 		var pid: int = OS.create_process(exe, ["--headless", "--path", ProjectSettings.globalize_path("res://"),
-			"--", "--join=127.0.0.1:27015", "--name=CLIENT", "--quit-after=12"], false)
+			"--", "--join=127.0.0.1:27015", "--name=CLIENT", "--quit-after=60"], false)
 		_check(pid > 0, "client process started (pid %d)" % pid)
 		ok = await _wait(func() -> bool: return _joined.size() > 0 and not Net.is_bot(_joined[-1]), 90.0)
 		_check(ok, "client joined the roster (%s)" % (Net.name_of(_joined[-1]) if not _joined.is_empty() else "-"))
 		if ok:
 			var cid: int = _joined[-1]
-			ok = await _wait(func() -> bool: return Net.is_alive(cid), 180.0)
-			_check(ok, "client loaded the arena and was spawned")
+			ok = await _wait(func() -> bool: return Net.is_alive(cid), 120.0)
+			_check(ok, "client loaded the arena and was spawned (%.1f s after launch)"
+				% ((Time.get_ticks_msec() - t_client) / 1000.0))
 			var av = dm.get("_avatars").get(cid)
 			_check(av != null and is_instance_valid(av), "client has an avatar on the host")
-			ok = await _wait(func() -> bool: return _left.has(cid), 60.0)
+			ok = await _wait(func() -> bool: return _left.has(cid), 90.0)
 			_check(ok, "client left cleanly after --quit-after")
 	_finish()
 

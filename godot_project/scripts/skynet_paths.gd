@@ -41,6 +41,130 @@ func _ready() -> void:
 		gamedata_dir = found
 		game_root = found
 	print("[paths] gamedata: %s" % gamedata_dir)
+	_mount_packs()
+
+# --- resource packs (release layout) ---------------------------------
+## A release ships the free ENHANCED asset pack as `enhanced.pck` and may
+## keep the converted-asset cache in `converted.pck`; both are ordinary
+## Godot resource packs (PCKPacker, built with map_dump --makepack) that
+## `load_resource_pack` maps into res://. Verified on 4.7.2: ConfigFile,
+## `Image.load_from_file` on a raw WebP, DirAccess listings and
+## GLTFDocument (model + its .bin + textures) all read out of a mounted
+## pack, and PCKPacker itself runs in an exported build.
+##
+## Mounted here — before Assets and Render read their directories — so
+## `Render.override_dir()` can return res://enhanced and Assets can take
+## res://converted as a ready-made (read-only) cache. Directories on
+## disk always win when no pack is there, which is the dev setup.
+const PACKS: Dictionary = {
+	"enhanced": ["res://enhanced", "res://enhanced/replace.cfg"],
+	"converted": ["res://converted", "res://converted/VERSION"],
+}
+## Names from PACKS that are mounted in this run.
+var mounted_packs: PackedStringArray = PackedStringArray()
+
+func pack_mounted(name: String) -> bool:
+	return name in mounted_packs
+
+## Where a <name>.pck may sit: next to the executable (release), next to
+## the project (dev), in user:// (a cache built at first start) and next
+## to the game data (portable install). `--pack=PATH` forces one,
+## `--no-packs` skips them.
+func _pack_bases() -> Array:
+	var bases: Array = []
+	if OS.has_feature("template"):
+		bases.append(OS.get_executable_path().get_base_dir())
+	bases.append(ProjectSettings.globalize_path("res://").trim_suffix("/"))
+	bases.append(ProjectSettings.globalize_path("user://").trim_suffix("/"))
+	if _has_data(gamedata_dir) and not gamedata_dir.begins_with("res://"):
+		bases.append(gamedata_dir.get_base_dir())
+	return bases
+
+func _mount_packs() -> void:
+	var args: PackedStringArray = OS.get_cmdline_args()
+	args.append_array(OS.get_cmdline_user_args())
+	if "--no-packs" in args:
+		print("[paths] resource packs skipped (--no-packs)")
+		return
+	var forced: Array = []
+	for a in args:
+		if a.begins_with("--pack="):
+			forced.append(a.substr(7).strip_edges())
+	for pack_name in PACKS:
+		var probe: String = PACKS[pack_name][1]
+		var path := ""
+		for f in forced:
+			if f.get_file().get_basename() == pack_name:
+				path = f            # --pack= wins even over a dev directory
+		if path.is_empty() and FileAccess.file_exists(probe):
+			continue                       # already there (dev directory / link)
+		if path.is_empty():
+			for b in _pack_bases():
+				var cand: String = "%s/%s.pck" % [b, pack_name]
+				if FileAccess.file_exists(cand):
+					path = cand
+					break
+		if path.is_empty():
+			continue
+		if not ProjectSettings.load_resource_pack(path):
+			push_warning("[paths] %s could not be mounted" % path)
+			continue
+		if not FileAccess.file_exists(probe):
+			push_warning("[paths] %s mounted but has no %s" % [path, probe])
+			continue
+		mounted_packs.append(pack_name)
+		print("[paths] mounted %s → %s" % [path, PACKS[pack_name][0]])
+
+## Pack `src_dir` into the resource pack `out_path`, its contents mapped
+## under `prefix` (a res:// path). The counterpart of _mount_packs: this
+## is how enhanced.pck is built for a release, and how converted.pck can
+## be built from a finished cache — PCKPacker works in an exported build
+## too, so the game itself can do it after the first-start import.
+## `skip` drops directories by name anywhere in the tree.
+## Returns {ok, error, files, bytes_in, bytes_out, msec}.
+static func build_pack(src_dir: String, prefix: String, out_path: String,
+		skip: PackedStringArray = PackedStringArray()) -> Dictionary:
+	var out: Dictionary = {"ok": false, "error": "", "files": 0,
+		"bytes_in": 0, "bytes_out": 0, "msec": 0}
+	var src: String = src_dir.trim_suffix("/").trim_suffix(BACKSLASH)
+	if not DirAccess.dir_exists_absolute(src):
+		out["error"] = "no such directory: " + src
+		return out
+	var t0 := Time.get_ticks_msec()
+	var p := PCKPacker.new()
+	var err := p.pck_start(out_path)
+	if err != OK:
+		out["error"] = "cannot create %s: %s" % [out_path, error_string(err)]
+		return out
+	var n: Array = [0, 0]
+	_pack_dir(p, src, prefix.trim_suffix("/"), n, skip)
+	err = p.flush(false)
+	if err != OK:
+		out["error"] = "flush: " + error_string(err)
+		return out
+	out["ok"] = true
+	out["files"] = n[0]
+	out["bytes_in"] = n[1]
+	out["bytes_out"] = FileAccess.get_file_as_bytes(out_path).size()
+	out["msec"] = Time.get_ticks_msec() - t0
+	return out
+
+const BACKSLASH := "\\"
+
+static func _pack_dir(p: PCKPacker, abs_dir: String, prefix: String, n: Array,
+		skip: PackedStringArray) -> void:
+	var d := DirAccess.open(abs_dir)
+	if d == null:
+		return
+	for f in d.get_files():
+		var abs: String = abs_dir + "/" + f
+		if p.add_file(prefix + "/" + f, abs) == OK:
+			n[0] += 1
+			n[1] += FileAccess.get_file_as_bytes(abs).size()
+	for sub in d.get_directories():
+		if sub in skip:
+			continue
+		_pack_dir(p, abs_dir + "/" + sub, prefix + "/" + sub, n, skip)
 
 static func _has_data(dir: String) -> bool:
 	return not dir.is_empty() and FileAccess.file_exists("%s/%s" % [dir, PROBE_FILE])

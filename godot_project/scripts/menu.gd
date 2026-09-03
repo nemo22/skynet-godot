@@ -242,18 +242,42 @@ func _maybe_import() -> void:
 	bg.color = Color(0.0, 0.0, 0.0, 0.88)
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	layer.add_child(bg)
+	# Centred column: title, progress bar, current item. The import takes
+	# minutes on a first start, so it needs to show real movement.
+	var box := VBoxContainer.new()
+	box.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	box.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	box.grow_vertical = Control.GROW_DIRECTION_BOTH
+	box.custom_minimum_size = Vector2(560, 0)
+	box.add_theme_constant_override("separation", 14)
+	layer.add_child(box)
 	var lbl := Label.new()
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	lbl.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	lbl.add_theme_font_size_override("font_size", 28)
 	lbl.text = "Converting game data for first use..."
-	layer.add_child(lbl)
+	box.add_child(lbl)
+	var bar := ProgressBar.new()
+	bar.custom_minimum_size = Vector2(560, 26)
+	bar.min_value = 0.0
+	bar.max_value = 1.0
+	bar.value = 0.0
+	bar.show_percentage = true
+	box.add_child(bar)
+	var item_lbl := Label.new()
+	item_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	item_lbl.add_theme_font_size_override("font_size", 16)
+	item_lbl.add_theme_color_override("font_color", Color(0.75, 0.78, 0.8))
+	item_lbl.text = "reading the archives..."
+	box.add_child(item_lbl)
 	await get_tree().process_frame
+	var started := Time.get_ticks_msec()
 	await Assets.import_all(func(done: int, total: int, item: String) -> void:
-		lbl.text = "Converting game data for first use...
-%d / %d
-%s" % [done, total, item])
+		bar.value = float(done) / float(maxi(total, 1))
+		var secs: float = (Time.get_ticks_msec() - started) / 1000.0
+		var left := ""
+		if done > 20:
+			left = "  ~%d s left" % int(secs * (float(total) / float(done) - 1.0))
+		item_lbl.text = "%d / %d   %s%s" % [done, total, item, left])
 	layer.queue_free()
 	if forced:
 		get_tree().quit()

@@ -6,7 +6,7 @@
 ##             depth haze — a faithful software-renderer look.
 ##   ENHANCED  the same data through a modern pipeline: 4× pixel-art
 ##             upscaled textures with mipmaps and anisotropic filtering
-##             (or hand-made replacements from <converted>/enhanced/pack/), normal
+##             (or hand-made replacements from <converted>/enhanced_pack/), normal
 ##             maps derived from the textures, smooth-shaded models,
 ##             per-pixel lighting with sun shadows and dynamic lights,
 ##             a physical sky (sunset / night with stars and moon), glow
@@ -88,16 +88,21 @@ func set_mode(m: int) -> void:
 	print("[render] mode %s" % NAMES[mode])
 	mode_changed.emit(mode)
 
-## <converted>/enhanced/pack — hand-made replacements: textures/T<bank>_<rec>.png,
-## sky/night.png, sky/sunset.png (equirectangular panoramas).
-## The enhanced asset PACK (replace.cfg, models/, textures/, LICENSE) lives
-## INSIDE the converted tree — <game>/converted/enhanced/pack — next to
-## the ENHANCED cache it feeds (<game>/converted/enhanced/tex, mesh …), so
-## everything the ENHANCED mode needs is one directory (Marek, 2026-09-03;
-## the release will ship it as one package). Mind that the pack is NOT
-## regenerable: a cache wipe must spare `enhanced/pack`.
+## Where the ENHANCED assets (replace.cfg, models/, textures/) are read
+## from. Three layers, in order: a mounted enhanced.pck (release), the
+## unpacked directory beside the cache (development — the editor sees it
+## through the res://converted link), nothing (plain DOS look).
+##   <converted>/enhanced_pack/  ==  enhanced.pck  ==  res://enhanced
+## Contents: replace.cfg, models/<id>/*.gltf, textures/T<bank>_<rec>.png
+## (also _n.png normal maps, .webp/.jpg accepted) and sky/{night,sunset}.png.
+## The cache these feed is <converted>/enhanced/ — generated, disposable,
+## a sibling and not a parent, so an input never sits inside an output.
+## The originals the pack was BUILT from (downloaded textures) live
+## outside the game data entirely, in <game>/assets_src (tools only).
 func override_dir() -> String:
-	return SkynetPaths.converted_dir() + "/enhanced/pack"
+	if SkynetPaths.pack_mounted("enhanced"):
+		return "res://enhanced"          # release: shipped enhanced.pck
+	return SkynetPaths.converted_dir() + "/enhanced_pack"
 
 ## `.png` in the name also matches `.webp` / `.jpg` on disk (the pack
 ## ships WebP to stay small).

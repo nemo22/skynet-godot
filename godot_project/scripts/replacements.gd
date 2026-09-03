@@ -1,6 +1,6 @@
 ## ENHANCED replacement models (docs/implementation_plan.md §P.2).
 ##
-## <converted>/enhanced/pack/replace.cfg maps DOS billboard sprites and placed .3D
+## <converted>/enhanced_pack/replace.cfg maps DOS billboard sprites and placed .3D
 ## meshes to glTF models shipped in the pack (tools/enhanced_pack.py
 ## downloads CC0 models from Poly Haven and writes the file):
 ##
