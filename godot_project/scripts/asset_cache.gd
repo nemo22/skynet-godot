@@ -592,7 +592,40 @@ func use_project_link() -> bool:
 	print("[assets] cache via project link %s" % ProjectSettings.globalize_path(root))
 	return true
 
+## Editor map scenes carry a build number; when map_scene.gd changes what
+## it puts in them (sprite sizing, say) every cached one is dropped in
+## one go rather than being checked scene by scene.
+var _map_scenes_checked: bool = false
+
+func _check_map_scenes() -> void:
+	if _map_scenes_checked or root.is_empty() or read_only or not enabled:
+		return
+	_map_scenes_checked = true
+	var stamp := root + "/maps/VERSION"
+	var have: int = -1
+	var f := FileAccess.open(stamp, FileAccess.READ)
+	if f != null:
+		have = int(f.get_line().strip_edges())
+		f.close()
+	if have == MapScene.BUILD_VERSION:
+		return
+	var d := DirAccess.open(root + "/maps")
+	if d != null:
+		var n := 0
+		for fn in d.get_files():
+			if fn.ends_with(".scn") and not fn.ends_with(".level.scn"):
+				d.remove(fn)
+				n += 1
+		if n > 0:
+			print("[assets] %d editor map scenes are from build %d, dropped" % [n, have])
+	DirAccess.make_dir_recursive_absolute(root + "/maps")
+	var w := FileAccess.open(stamp, FileAccess.WRITE)
+	if w != null:
+		w.store_line(str(MapScene.BUILD_VERSION))
+		w.close()
+
 func map_scene(map_name: String) -> String:
+	_check_map_scenes()
 	var old_root: String = root
 	var linked: bool = use_project_link()
 	var p := MapScene.scene_path(map_name)

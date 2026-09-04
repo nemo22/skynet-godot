@@ -4,6 +4,8 @@
 extends Node3D
 
 @export var map_name: String = ""
+## Which build of map_scene.gd wrote this (MapScene.BUILD_VERSION).
+@export var build_version: int = 0
 @export var is_outdoor: bool = false
 @export var grid_size: Vector2i = Vector2i.ZERO
 ## The MAP name table (variant-1 entities index into it).

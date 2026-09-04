@@ -32,7 +32,10 @@ const MapSprite   := preload("res://scripts/editor/map_sprite.gd")
 const MapMarker   := preload("res://scripts/editor/map_marker.gd")
 const MapEntityRec := preload("res://scripts/editor/map_entity_rec.gd")
 
-const SPRITE_PIXEL_SIZE: float = 2.0
+## Bump when the scene's contents change; converted/maps/VERSION holds
+## the number the cached scenes were built with, and Assets.map_scene()
+## drops them all when it moves on.
+const BUILD_VERSION: int = 2
 
 ## Where a map's scene lives in the asset cache.
 static func scene_path(map_name: String) -> String:
@@ -41,7 +44,11 @@ static func scene_path(map_name: String) -> String:
 ## Build the editable scene tree for `map_name` (not yet packed).
 ## Returns null when the map cannot be loaded.
 static func build(map_name: String) -> Node3D:
-	var level: LevelLoader.Level = LevelLoader.new().load_level(map_name)
+	# Straight from the DOS records: this view IS the data, so it must not
+	# take the baked level scene's geometry (nor trigger a bake).
+	var loader := LevelLoader.new()
+	loader.use_baked = false
+	var level: LevelLoader.Level = loader.load_level(map_name)
 	if level == null or level.map == null:
 		return null
 	var root: Node3D = MapRoot.new()
@@ -51,6 +58,7 @@ static func build(map_name: String) -> Node3D:
 	root.grid_size = Vector2i(level.map.grid_width, level.map.grid_height)
 	root.names = PackedStringArray(level.map.names)
 	root.raw = level.map_bytes
+	root.build_version = BUILD_VERSION
 
 	if level.terrain != null and level.terrain.mesh != null:
 		var t := MeshInstance3D.new()
@@ -106,24 +114,38 @@ static func build(map_name: String) -> Node3D:
 					var sp: Sprite3D = MapSprite.new()
 					sp.rec = rec
 					sp.name = "SPRITE%d_%06x" % [e.sprite_index, e.file_off]
-					var tex := Assets.texture(e.sprite_index >> 7, e.sprite_index & 0x7F, true)
-					var h: float = 0.0
-					if tex != null:
-						sp.texture = tex
-						h = float(tex.get_height()) * SPRITE_PIXEL_SIZE
-					sp.pixel_size = SPRITE_PIXEL_SIZE
+					var bank: int = e.sprite_index >> 7
+					var rec_id: int = e.sprite_index & 0x7F
+					var tex := Assets.texture(bank, rec_id, true)
+					if tex == null:
+						continue
+					# EXACTLY the runtime's sizing. This used to be a flat
+					# 2.0 units per texel of the CACHED texture, which in
+					# ENHANCED is upscaled 4x — so every billboard came
+					# out four times too big and eight times for the
+					# pickups, and the rest of the map looked shrunk next
+					# to them (2026-09-04).
+					var px: float = Assets.sprite_pixel_size(bank, rec_id, tex,
+						LevelLoader.pixel_scale_for(e.sprite_index))
+					var h: float = float(tex.get_height()) * px
+					sp.texture = tex
+					sp.pixel_size = px
 					sp.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
 					sp.shaded = false
 					sp.double_sided = true
 					sp.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
-					sp.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-					var base_y: float = -float(e.y)
+					sp.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS \
+						if Render.enhanced() else BaseMaterial3D.TEXTURE_FILTER_NEAREST
+					# Indoors the record sits 16 u above the floor, like
+					# the enemy markers; outdoors it rests on the terrain.
+					var base_y: float = -float(e.y) - LevelLoader.INDOOR_SPRITE_LIFT
 					if level.is_outdoor and level.wld != null:
 						base_y = WldTerrain.height_at_world(level.wld, float(e.x), float(e.z))
 					sp.position = Vector3(float(e.x), base_y + h * 0.5, -float(e.z))
 					sprites.add_child(sp)
 	# The runtime nodes built by the loader are not needed here.
-	for n in [level.terrain, level.entities, level.enemies, level.sprites, level.sky]:
+	for n in [level.terrain, level.entities, level.enemies, level.sprites,
+			level.sky, level.occluders, level.detail, level.overlay]:
 		if n != null and is_instance_valid(n):
 			n.free()
 	_own(root, root)
