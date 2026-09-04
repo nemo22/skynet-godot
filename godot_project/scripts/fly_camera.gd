@@ -32,6 +32,8 @@ const BSAReader := preload("res://scripts/loaders/bsa_reader.gd")
 const Palette := preload("res://scripts/loaders/palette.gd")
 const Explosion := preload("res://scripts/explosion.gd")
 const WeaponModels := preload("res://scripts/weapon_models.gd")
+## How far ahead of the muzzle the player's own tracer starts.
+const TRACER_START: float = 420.0
 
 @onready var _cam: Camera3D = $Camera3D
 
@@ -139,8 +141,36 @@ var _weapons: Array = [
 	{"name": "HK LASER",         "kind": "laser",   "dmg": 75.0,  "rate": 8,  "pool": 10, "cost": 100, "snd": "", "snd_id": 12, "sel": 17, "dry": 16, "cfa": "", "vx": 160, "splash": 64.0,  "veh": 2},
 	{"name": "HK ROCKETS",       "kind": "rocket",  "dmg": 400.0, "rate": 1,  "pool": 11, "cost": 1,   "snd": "", "snd_id": 26, "sel": 9,  "dry": 10, "cfa": "", "vx": 160, "splash": 512.0, "veh": 2},
 ]
-## Weapon slots per vehicle (indices into `_weapons`).
+## Weapon slots per vehicle (indices into `_weapons`): the gun on the
+## fire key, the rocket pod on the throw key (the DOS secondary).
 const VEHICLE_WEAPONS: Dictionary = {1: [13, 14], 2: [15, 16]}
+
+## --- Secondary (thrown) weapons ---------------------------------------
+## DOS keeps TWO selected-weapon registers: WeaponSelectPri (0x1254c6)
+## for the gun and WeaponSelectScn (0x125585) for the thrown item, and
+## the THROW key uses the second one. The campaign start list (0x43470)
+## already owns weapon records 14/15/16/18/19 and the pool table
+## (0x43ff4) stocks them — 25 pipe bombs, 20 molotovs, 2 canister bombs,
+## 1 satchel, 0 grenades — with record 15, the MOLOTOV, selected by
+## default (0x44396). In a vehicle the secondary is the rocket pod, which
+## is why the jeep answers the throw key with a rocket.
+##
+## The DOS CONTROL CONFIGURATION screen has no bind box for changing the
+## secondary — all 17 of its boxes are accounted for — so the original
+## was stuck with whatever it started with. The port cycles it with the
+## `0` key and the middle mouse button.
+const THROWABLES: Array = [
+	{"name": "PIPE BOMB",     "pool": 5, "dmg": 150.0, "splash": 220.0, "fuse": 2.2, "speed": 2600.0},
+	{"name": "MOLOTOV",       "pool": 6, "dmg": 60.0,  "splash": 190.0, "fuse": 3.0, "speed": 2400.0, "burst": true, "fire": true},
+	{"name": "GRENADE",       "pool": 2, "dmg": 200.0, "splash": 256.0, "fuse": 2.5, "speed": 2200.0},
+	{"name": "CANISTER BOMB", "pool": 8, "dmg": 400.0, "splash": 520.0, "fuse": 2.5, "speed": 2000.0},
+	{"name": "SATCHEL",       "pool": 9, "dmg": 700.0, "splash": 760.0, "fuse": 4.0, "speed": 1800.0},
+]
+const THROW_DEFAULT: int = 1          # MOLOTOV, as the DOS default
+var _throw_idx: int = THROW_DEFAULT
+## HUD-facing mirror of the selected thrown item (main.gd reads these).
+var secondary_name: String = ""
+var secondary_ammo: int = 0
 const VEH_FOOT: int = 0
 const VEH_JEEP: int = 1
 const VEH_HK: int = 2
@@ -211,13 +241,17 @@ const IMPACT_BANK_BULLET: int = 365
 # DOS starts grenades and rockets at 0 — they come only from pickups,
 # whose weapon/ammo types (TEXTURE.200/201 records) are not decoded
 # yet — so a handful is seeded here to keep the launchers usable.
+#   5  pipe bombs 25/99  · 6 molotovs 20/99 · 8 canisters 2/99 ·
+#   9  satchel      1/99   — the SECONDARY (thrown) items, see THROWABLES
 const POOL_TABLE: Dictionary = {
-	0: [500, 750], 1: [50, 200], 2: [10, 99], 3: [5, 99],
-	4: [500, 800], 10: [1000, 2000], 11: [40, 50], 12: [9999, 9999],
+	0: [500, 750], 1: [50, 200], 2: [0, 99], 3: [0, 99],
+	4: [500, 800], 5: [25, 99], 6: [20, 99], 7: [0, 99], 8: [2, 99],
+	9: [1, 99], 10: [1000, 2000], 11: [40, 50], 12: [9999, 9999],
 }
 ## Rounds a generic ammo pickup adds per pool (placeholder until the
 ## pickup sprite records are decoded into specific ammo types).
-const PICKUP_AMMO: Dictionary = {0: 50, 1: 10, 2: 5, 3: 2, 4: 50}
+const PICKUP_AMMO: Dictionary = {0: 50, 1: 10, 2: 5, 3: 2, 4: 50,
+	5: 5, 6: 3, 8: 1, 9: 1}
 var _pools: Dictionary = {}          # pool id → rounds left
 
 # --- weapon viewmodel (the gun drawn at the bottom of the screen) -------
@@ -445,6 +479,13 @@ func _ammo_for(idx: int) -> int:
 func _sync_hud() -> void:
 	weapon_name = String(_weapons[_weapon_idx]["name"])
 	ammo = _ammo_for(_weapon_idx)
+	if vehicle != VEH_FOOT:
+		var vw: int = int(VEHICLE_WEAPONS[vehicle][1])
+		secondary_name = String(_weapons[vw]["name"])
+		secondary_ammo = _ammo_for(vw)
+	else:
+		secondary_name = String(THROWABLES[_throw_idx]["name"])
+		secondary_ammo = int(_pools.get(int(THROWABLES[_throw_idx]["pool"]), 0))
 
 ## Switch to weapon `idx` (clamped). Plays the record's select sound
 ## (+0x54: uzicock3 for ballistic, ppcload for energy weapons).
@@ -484,7 +525,10 @@ func _unhandled_input(event: InputEvent) -> void:
 					_capture(true)
 			MOUSE_BUTTON_RIGHT:
 				if _captured:
-					_throw_grenade()
+					_throw_secondary()
+			MOUSE_BUTTON_MIDDLE:
+				if _captured:
+					cycle_throwable(1)
 			MOUSE_BUTTON_WHEEL_UP:
 				_select_weapon(_next_owned(_weapon_idx, -1))
 			MOUSE_BUTTON_WHEEL_DOWN:
@@ -495,11 +539,13 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif Controls.matches(event, "activate"):
 			_try_activate()
 		elif Controls.matches(event, "throw"):
-			_throw_grenade()
+			_throw_secondary()
 		elif Controls.matches(event, "center_view"):
 			set_view(_yaw, 0.0)           # CENTER VIEW: level the horizon
 		elif event.keycode >= KEY_1 and event.keycode <= KEY_9:
 			_select_weapon(event.keycode - KEY_1)
+		elif event.keycode == KEY_0:
+			cycle_throwable(1)          # 0 cycles the thrown item
 	elif event is InputEventMouseMotion and _captured and vehicle == VEH_JEEP:
 		# In the jeep the mouse moves the gun crosshair; the keys drive.
 		_aim_yaw = clampf(_aim_yaw - event.relative.x * mouse_sensitivity, -JEEP_AIM_YAW, JEEP_AIM_YAW)
@@ -530,6 +576,15 @@ func _physics_process(delta: float) -> void:
 				velocity.y = 0.0
 			move_and_slide()
 		return
+
+	# --- water --------------------------------------------------------
+	if water_level < INF and vehicle == VEH_FOOT and not noclip:
+		_water_check()
+		if health > 0.0:
+			_breathe(delta)
+	elif in_water:
+		in_water = false
+		head_under = false
 
 	# --- weapon -------------------------------------------------------
 	if _fire_cd > 0.0:
@@ -766,7 +821,104 @@ func _hover(delta: float, fwd_in: float, str_in: float) -> void:
 	_update_engine()
 
 ## Grounded movement: walk on surfaces, gravity, jump, wall collision.
+## --- Water (DOS 0x120c83 water level, 0x12e56b breath) ---------------
+## `water_level` is the surface Y the level controller found on the map's
+## marker 103/104; INF when the map is dry. Below it the player SWIMS:
+## the fall turns into a slow sink, the up/down keys and the view drive
+## him through the water, and while his head is under, his breath runs
+## down. DOS gives about 24 s of air (0x347 ticks) and then takes 85 HP a
+## second (accumulator step 0x5500 >> 8) until he surfaces or drowns.
+var water_level: float = INF
+const SWIM_SPEED_SCALE: float = 0.62   # slower than walking
+const SWIM_VERTICAL: float = 260.0     # up/down paddle speed
+const SWIM_RISE: float = 170.0         # buoyancy back toward the surface
+const FLOAT_EYE: float = 10.0          # eyes ride this far above the water
+const SWIM_FLOAT_BACK: float = 380.0   # push back under the surface
+const SWIM_DRAG: float = 7.0
+const SWIM_ENTRY_DAMP: float = 0.3     # a fall is broken by the water
+const HEAD_ROOM: float = 5.0           # DOS "-5" head-under margin
+const AIR_SECONDS: float = 24.0        # DOS 0x347 ticks at 35 Hz
+const DROWN_DPS: float = 85.0          # DOS 0x5500 >> 8 per second
+const SND_SPLASH: int = 115
+const SND_DROWN: int = 116
+const SND_BUBBLES: int = 118
+const SND_GETAIR: int = 122
+var air: float = AIR_SECONDS
+var in_water: bool = false
+var head_under: bool = false
+var _bubble_t: float = 0.0
+
+## The camera's world position — the eye, which is what decides whether
+## the player's head is under water.
+func eye_position() -> Vector3:
+	return _cam.global_position if _cam != null else global_position
+
+## Feet below the surface — the swimming test.
+func _water_check() -> void:
+	var was_in: bool = in_water
+	var was_under: bool = head_under
+	in_water = global_position.y < water_level
+	head_under = eye_position().y < water_level - HEAD_ROOM
+	if in_water != was_in:
+		Audio.play_id(SND_SPLASH, -4.0)
+		if in_water:
+			velocity *= SWIM_ENTRY_DAMP     # the water breaks the fall
+	if was_under and not head_under:
+		Audio.play_id(SND_GETAIR, -5.0)
+		air = AIR_SECONDS
+	if not head_under:
+		air = AIR_SECONDS
+
+## Breath and drowning, run every frame the player is alive.
+func _breathe(delta: float) -> void:
+	if not head_under:
+		return
+	air -= delta
+	_bubble_t -= delta
+	if _bubble_t <= 0.0:
+		_bubble_t = randf_range(1.4, 3.2)
+		Audio.play_id(SND_BUBBLES, -12.0)
+	if air > 0.0:
+		return
+	take_damage(DROWN_DPS * delta, false)
+	if _bubble_t < 1.0:
+		Audio.play_id(SND_DROWN, -3.0)
+
+## Swimming: no ground contact, no jump — buoyancy plus paddling. The
+## view aims the stroke, so looking down and holding forward dives.
+func _swim(delta: float, fwd_in: float, str_in: float) -> void:
+	var basis_y := Basis(Vector3.UP, _yaw)
+	var horiz := -basis_y.z * fwd_in + basis_y.x * str_in
+	if horiz.length() > 1.0:
+		horiz = horiz.normalized()
+	var speed: float = walk_speed * speed_boost * class_speed * SWIM_SPEED_SCALE
+	var want := Vector3(horiz.x * speed, 0.0, horiz.z * speed)
+	# Swimming forward while looking up or down carries you that way.
+	if fwd_in > 0.0 and _cam != null:
+		want.y += -_cam.global_transform.basis.z.y * speed * absf(fwd_in)
+	var vert: float = 0.0
+	if Controls.is_pressed("up") or ui_vert > 0.0:
+		vert += 1.0
+	if Controls.is_pressed("down") or ui_vert < 0.0:
+		vert -= 1.0
+	var eye_y: float = eye_position().y
+	if vert != 0.0:
+		# JUMP swims up, CROUCH dives — holding CROUCH is how you get
+		# down to a hatch and stay there while your air lasts.
+		want.y += vert * SWIM_VERTICAL
+	else:
+		# Buoyancy: let go and you rise until your eyes clear the
+		# surface, then bob there. DOS plays getair2 the moment the head
+		# comes out, so the swimmer is meant to float, not to sink.
+		want.y += clampf((water_level + FLOAT_EYE - eye_y) * 3.0,
+			-SWIM_FLOAT_BACK, SWIM_RISE)
+	velocity = velocity.lerp(want, clampf(SWIM_DRAG * delta, 0.0, 1.0))
+	move_and_slide()
+
 func _walk(delta: float, fwd_in: float, str_in: float) -> void:
+	if in_water:
+		_swim(delta, fwd_in, str_in)
+		return
 	var basis_y := Basis(Vector3.UP, _yaw)
 	var horiz := -basis_y.z * fwd_in + basis_y.x * str_in
 	if horiz.length() > 1.0:
@@ -911,10 +1063,16 @@ const MELEE_RANGE: float = 180.0           # close-quarters pipe reach
 ## zero and the pool holds a shot's cost, spawn the projectile
 ## (FUN_00122a64), reset the countdown to 0x10000/rate and play the fire
 ## sound; with too little ammo play the dry-fire sound (+0x58) instead.
-func _shoot() -> void:
+## Fire weapon slot `idx` (the held gun by default). The secondary — the
+## jeep's and the HK's rocket pod — goes through the same path, so it
+## pays its pool, plays its sound and spawns its projectile like any
+## other shot; only the viewmodel stays on the primary.
+func _shoot(idx: int = -1) -> void:
 	if _fire_cd > 0.0 or health <= 0.0 or _cam == null:
 		return
-	var w: Dictionary = _weapons[_weapon_idx]
+	if idx < 0:
+		idx = _weapon_idx
+	var w: Dictionary = _weapons[idx]
 	var kind: String = String(w.get("kind", "bullet"))
 	var pool: int = int(w.get("pool", -1))
 	var cost: int = int(w.get("cost", 0))
@@ -932,7 +1090,9 @@ func _shoot() -> void:
 	_fire_cd = maxf(FIRE_RATE_SCALE / float(w.get("rate", 4)), 0.05)
 	if pool >= 0:
 		_pools[pool] = int(_pools[pool]) - cost
-		ammo = int(_pools[pool])
+		# Through _sync_hud, so the HUD keeps showing the HELD weapon's
+		# ammo even when the shot came from the secondary slot.
+		_sync_hud()
 		if pool == VEH_ENERGY_POOL:
 			_veh_since_shot = 0.0
 	if not Net.active:
@@ -942,10 +1102,11 @@ func _shoot() -> void:
 		Audio.play_sfx(snd, -5.0)
 	elif int(w.get("snd_id", -1)) >= 0:
 		Audio.play_id(int(w["snd_id"]), -5.0)
-	# Kick off the viewmodel fire animation.
-	_vm_firing = true
-	_vm_idx = 0
-	_vm_t = 0.0
+	# Kick off the viewmodel fire animation (the held gun only).
+	if idx == _weapon_idx:
+		_vm_firing = true
+		_vm_idx = 0
+		_vm_t = 0.0
 
 	var fwd: Vector3 = aim_dir()
 	var muzzle: Vector3 = _cam.global_position + fwd * 90.0 \
@@ -957,7 +1118,7 @@ func _shoot() -> void:
 	var dmg: float = float(w["dmg"])
 	# Deathmatch: everybody else draws this shot.
 	if Net.active:
-		Net.send_fire(_weapon_idx, muzzle, fwd)
+		Net.send_fire(idx, muzzle, fwd)
 	# The DOS moon joke (FUN_00125caf): any weapon fired with the
 	# crosshair on the moon makes it complain.
 	if kind != "melee":
@@ -984,8 +1145,10 @@ func _shoot() -> void:
 	# screen, so it sits further out and smaller (a 2026-09-02 report).
 	mf.setup(muzzle + fwd * 70.0, tint, 26.0 if kind == "shotgun" else 18.0)
 	# ENHANCED: what a shot leaves behind — a spent case out of the port
-	# for the slugthrowers, smoke at the muzzle, a coloured flare for the
-	# energy weapons.
+	# for the slugthrowers, a wisp of smoke at the muzzle. The energy
+	# weapons get nothing: their muzzle flash already is the effect, and
+	# the coloured flare on top of it was part of what made the guns look
+	# like they were belching fire (2026-09-04).
 	if Render.enhanced():
 		var scene: Node = get_tree().current_scene
 		var right: Vector3 = global_transform.basis.x
@@ -995,17 +1158,12 @@ func _shoot() -> void:
 		match kind:
 			"bullet":
 				FxParticles.casings(scene, muzzle + right * 14.0, right, fwd, 1)
-				FxParticles.muzzle_smoke(scene, muzzle_at, fwd, 30.0)
+				FxParticles.muzzle_smoke(scene, muzzle_at, fwd, 16.0)
 			"shotgun":
 				FxParticles.casings(scene, muzzle + right * 14.0, right, fwd, 1)
-				FxParticles.muzzle_smoke(scene, muzzle_at, fwd, 52.0,
-					Color(0.6, 0.58, 0.55, 0.5))
-			"laser", "plasma":
-				FxParticles.muzzle_smoke(scene, muzzle_at, fwd, 40.0,
-					Color(tint.r, tint.g, tint.b, 0.55), true)
+				FxParticles.muzzle_smoke(scene, muzzle_at, fwd, 26.0)
 			"rocket", "grenade":
-				FxParticles.muzzle_smoke(scene, muzzle_at, fwd, 60.0,
-					Color(0.5, 0.48, 0.46, 0.5))
+				FxParticles.muzzle_smoke(scene, muzzle_at, fwd, 34.0)
 
 	# Ballistic / straight projectiles take a separate path.
 	if kind == "grenade":
@@ -1030,17 +1188,24 @@ func _shoot() -> void:
 	var endpoint: Vector3 = to
 	if hit.has("position"):
 		endpoint = hit["position"]
-	# No tracer on the player's own bullets: DOS shows only the flash and
-	# the impact puff, and a 16 u beam seen end-on from the muzzle drew a
-	# big tan wedge across the view (2026-09-02 report).
-	# Shotgun: a smoke puff lingering at the muzzle after the shot.
-	if kind == "shotgun":
-		if FxParticles.on():
-			FxParticles.puff(get_tree().current_scene, muzzle + fwd * 40.0, 60.0, Color(0.6, 0.55, 0.5, 0.4), 1.0, 6)
-		else:
-			var sm := SmokePuff.new()
-			get_tree().current_scene.add_child(sm)
-			sm.setup(muzzle + fwd * 30.0, 180.0)
+	# A short tracer well down-range. The player's own shots used to draw
+	# nothing at all: a beam starting at the muzzle filled the view with a
+	# tan wedge (2026-09-02), so it was dropped — and then firing gave no
+	# feedback whatsoever (2026-09-04). Starting it TRACER_START units out
+	# keeps it out of the player's face and still shows where the burst
+	# went.
+	if kind == "bullet" or kind == "shotgun":
+		var beam_from: Vector3 = muzzle + fwd * TRACER_START
+		if beam_from.distance_to(endpoint) > 60.0:
+			var tr: MeshInstance3D = Tracer.new()
+			get_tree().current_scene.add_child(tr)
+			tr.setup(beam_from, endpoint, Color(1.0, 0.85, 0.5), 6.0)
+	# Shotgun: a puff of smoke lingering at the muzzle (DOS mode only —
+	# ENHANCED already got its particle wisp above).
+	if kind == "shotgun" and not FxParticles.on():
+		var sm := SmokePuff.new()
+		get_tree().current_scene.add_child(sm)
+		sm.setup(muzzle + fwd * 30.0, 180.0)
 	if hit.has("collider"):
 		var n: Node = hit["collider"] as Node
 		while n != null and not n.has_method("take_damage"):
@@ -1086,16 +1251,28 @@ func _projectile_cfg(kind: String, w: Dictionary) -> Dictionary:
 				"impact_bank": 364, "hits": "enemy"}
 	return {"speed": 4000.0, "hits": "enemy"}
 
-## Quick hand-grenade throw (right mouse button). Consumes one round
-## from the grenade pool and lobs a Grenade projectile in an upward arc
-## without switching weapons. No dedicated viewmodel animation yet — the
-## throw is silent hands-off, like a quick-use key.
-func _throw_grenade() -> void:
+## The THROW key (and the right mouse button): use the SECONDARY weapon.
+## In a vehicle that is the rocket pod — it fires like any other gun. On
+## foot it lobs the selected thrown item in an upward arc, out of its own
+## pool, without disturbing the gun in the player's hands.
+func _throw_secondary() -> void:
 	if health <= 0.0 or _cam == null or _fire_cd > 0.0:
 		return
-	if int(_pools.get(2, 0)) <= 0:
+	if vehicle != VEH_FOOT:
+		_shoot(int(VEHICLE_WEAPONS[vehicle][1]))
 		return
-	_pools[2] = int(_pools[2]) - 1
+	var t: Dictionary = THROWABLES[_throw_idx]
+	var pool: int = int(t["pool"])
+	if int(_pools.get(pool, 0)) <= 0:
+		# Out of this one: move to the next item that still has stock, so
+		# the key always does something (DOS just played the dry click).
+		if not cycle_throwable(1):
+			_fire_cd = DRY_FIRE_DELAY
+			Audio.play_id(10, -6.0)
+			return
+		t = THROWABLES[_throw_idx]
+		pool = int(t["pool"])
+	_pools[pool] = int(_pools[pool]) - 1
 	_sync_hud()
 	_fire_cd = 0.6
 	var fwd: Vector3 = -_cam.global_transform.basis.z
@@ -1105,7 +1282,23 @@ func _throw_grenade() -> void:
 		Net.send_fire(5, muzzle, arc)            # drawn as a launcher shot
 	var g := Grenade.new()
 	get_tree().current_scene.add_child(g)
-	g.setup(muzzle, arc, 200.0, 256.0, self, HAND_GRENADE_SPEED)
+	g.setup(muzzle, arc, float(t["dmg"]), float(t["splash"]), self,
+		float(t.get("speed", HAND_GRENADE_SPEED)), t)
+
+## Step to the next thrown item that still has rounds. Returns false when
+## the player is carrying none at all. Bound to `0` and the middle mouse
+## button; the pause menu and the console call it too.
+func cycle_throwable(dir: int) -> bool:
+	var n: int = THROWABLES.size()
+	for k in n:
+		var i: int = (_throw_idx + dir * (k + 1) + n * (k + 1)) % n
+		if int(_pools.get(int(THROWABLES[i]["pool"]), 0)) > 0:
+			_throw_idx = i
+			_sync_hud()
+			Audio.play_id(9, -8.0)
+			secondary_changed.emit(secondary_name, secondary_ammo)
+			return true
+	return false
 
 ## Short-range melee swing (the pipe). One ray cast forward from the
 ## camera up to MELEE_RANGE; if it lands on a damageable node we apply
@@ -1136,6 +1329,7 @@ func _melee_hit(from: Vector3, fwd: Vector3, dmg: float) -> void:
 ## ignores anything without `activate()` so enemy hitboxes are inert.
 ## Emitted when the use key finds nothing to operate — the level
 ## controller then checks for an armed map exit around the player.
+signal secondary_changed(name: String, count: int)
 signal use_pressed(pos: Vector3)
 
 func _try_activate() -> void:

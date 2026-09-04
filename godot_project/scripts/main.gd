@@ -701,6 +701,8 @@ func _begin_level(name: String) -> void:
 			player.pickup_message.connect(_set_status)
 		if not player.use_pressed.is_connected(_on_use_pressed):
 			player.use_pressed.connect(_on_use_pressed)
+		if not player.secondary_changed.is_connected(_on_secondary_changed):
+			player.secondary_changed.connect(_on_secondary_changed)
 	if Net.active:
 		# Deathmatch: no map enemies (the 31/32 markers on the arenas are
 		# the DOS jeep/HK vehicle spots) and no map pickups — the server
@@ -763,6 +765,7 @@ func _begin_level(name: String) -> void:
 		player.set_vehicle(_vehicle_for_map(name))
 	_apply_pending_player()
 	_collect_radiation(level)
+	_setup_water(level)
 	_set_hud_mode(player.vehicle if is_instance_valid(player) else 0)
 	if _dm != null:
 		_dm.on_level_ready(level)
@@ -1480,6 +1483,10 @@ func _process(delta: float) -> void:
 			_rad_dose = 0.0
 		if _rad_fill != null:
 			_rad_fill.anchor_right = clampf(_rad_dose / RAD_MAX_DOSE, 0.0, 1.0)
+		if _water != null:
+			_update_water_tint()
+			if player.head_under and player.air < 10.0:
+				_set_status("AIR %d" % maxi(int(ceil(player.air)), 0), 0.4)
 		_weapon_label.text = str(player.weapon_name)
 		if _hud_mode != player.vehicle:
 			_set_hud_mode(player.vehicle)
@@ -1494,6 +1501,12 @@ func _process(delta: float) -> void:
 	# No DOS mission ends by body count: they end when the objective
 	# counter runs out (_on_objective_complete). `_mission_hostiles` is
 	# only a counter for the HUD / tests.
+
+## The thrown item changed (the `0` key / middle mouse button). The DOS
+## panel has no slot for the secondary, so it is announced on the status
+## line the way the engine announced pickups.
+func _on_secondary_changed(name: String, count: int) -> void:
+	_set_status("%s  x%d" % [name, count], 2.5)
 
 ## Use key with nothing under the crosshair: fire an armed exit here.
 func _on_use_pressed(pos: Vector3) -> void:
@@ -1552,6 +1565,88 @@ func _radiation_dose(at: Vector3) -> float:
 			continue
 		dose += minf(r * 50.0, 12800.0) / 256.0
 	return dose
+
+## --- Water (DOS 0x120bf9 / 0x120c83 / 0x12e56b) ----------------------
+## Marker type 103 (or 104) carries the map's WATER LEVEL: the engine
+## takes that marker's Y, subtracts 16 and holds the surface there
+## (0x120c83 can also slide it toward a target — that is how a deck
+## floods). Under it the palette swaps to SKYNTWTR.COL, entering and
+## leaving play splash / getair2, and after about 24 seconds of held
+## breath drowning takes 85 HP a second (fly_camera._breathe).
+##
+## Five maps have one: the harbour on MAP.240 and MAP.250 (surface 786
+## and 784 — the docks stand on stilts out of it and the submarine and
+## the freighter float in it) and the flooded submarine decks on
+## MAP.252/253/254. Without it those maps read as a dry rock basin with
+## the boats sitting on the ground, which is exactly how the port drew
+## them until 2026-09-04.
+const WATER_MARKERS: Array = [103, 104]
+const WATER_DROP: float = 16.0        # DOS: level = marker Y - 0x10
+const WATER_SPAN: float = 65536.0     # the whole map grid
+var _water: MeshInstance3D = null
+var _water_tint: ColorRect = null
+
+## The surface Y, or INF when the map is dry.
+static func _water_level(level: LevelLoader.Level) -> float:
+	if level == null or level.map == null:
+		return INF
+	for e in level.map.entities:
+		if (e.flags & 3) == 3 and WATER_MARKERS.has(e.marker_type):
+			return -float(e.y) - WATER_DROP
+	return INF
+
+func _setup_water(level: LevelLoader.Level) -> void:
+	_water = null
+	var y: float = _water_level(level)
+	if is_instance_valid(player):
+		player.water_level = y
+	if _water_tint != null and is_instance_valid(_water_tint):
+		_water_tint.visible = false
+	if y == INF:
+		return
+	# One flat surface over the whole 65536-unit map grid. It is drawn
+	# transparent and two-sided, so the world above still occludes it and
+	# it is there when you look up from below.
+	var mi := MeshInstance3D.new()
+	mi.name = "Water"
+	var pm := PlaneMesh.new()
+	pm.size = Vector2(WATER_SPAN, WATER_SPAN)
+	mi.mesh = pm
+	mi.position = Vector3(WATER_SPAN * 0.5, y, -WATER_SPAN * 0.5)
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var m := StandardMaterial3D.new()
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.albedo_color = Color(0.06, 0.22, 0.28, 0.82)
+	if Render.enhanced():
+		m.metallic = 0.35
+		m.roughness = 0.06
+		m.rim_enabled = true
+		m.rim = 0.6
+	else:
+		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mi.material_override = m
+	add_child(mi)
+	_water = mi
+	print("[level] water surface at y=%d" % int(y))
+
+## The SKYNTWTR.COL palette swap, as a tint over the 3D view.
+func _update_water_tint() -> void:
+	if not is_instance_valid(player):
+		return
+	var under: bool = bool(player.head_under)
+	if _water_tint == null or not is_instance_valid(_water_tint):
+		if not under:
+			return
+		var cl := CanvasLayer.new()
+		cl.layer = 3                      # under the HUD panel and menus
+		add_child(cl)
+		_water_tint = ColorRect.new()
+		_water_tint.color = Color(0.10, 0.38, 0.48, 0.42)
+		_water_tint.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		_water_tint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		cl.add_child(_water_tint)
+	_water_tint.visible = under
 
 ## --- Mission objectives (DOS FUN_0012ce73 + handler 0x1377d0) --------
 ## A mission is over when its objective counter reaches zero, NOT by
@@ -2578,6 +2673,11 @@ func _clear_level() -> void:
 		_current_level.sprites.queue_free()
 	if _current_level.sky and is_instance_valid(_current_level.sky):
 		_current_level.sky.queue_free()
+	if _water != null and is_instance_valid(_water):
+		_water.queue_free()
+	_water = null
+	if is_instance_valid(player):
+		player.water_level = INF
 	_current_level = null
 
 func _input(event: InputEvent) -> void:
@@ -2678,6 +2778,7 @@ const HELP_TEXT := """[b]commands[/b]
   help · cheats · version · maps · map <MAP.NNN|nnn> · pos · tp x y z
   god [on|off] · noclip [on|off] · give <all|super|slot|name> · ammo
   health [n] · armor [0-100] · speed [x] · nextlevel · win · enemies
+  use (action key) · objectives (what the mission still wants)
   music [0-100|off|t200|title] · save [slot] · load [slot] · menu · quit"""
 
 const CHEATS_TEXT := """[b]DOS cheat codes[/b] (CHEAT.PRS, typed after Alt+\\ in the original)
@@ -2812,6 +2913,29 @@ func run_command(line: String) -> String:
 			_close_overlays()
 			_advance_to(nxt)
 			return "next mission: %s" % nxt
+		"throw", "secondary":
+			if p == null:
+				return "no player"
+			if not args.is_empty() and args[0].to_lower() == "next":
+				p.cycle_throwable(1)
+			elif not args.is_empty() and args[0].to_lower() == "now":
+				p.call("_throw_secondary")
+			return "secondary: %s x%d" % [p.secondary_name, p.secondary_ammo]
+		"use":
+			# The action key, from a script: --console="tp …;use".
+			if p == null:
+				return "no player"
+			_on_use_pressed(p.global_position)
+			return "use at %s" % p.global_position
+		"objectives", "obj":
+			var todo: Array = []
+			for i in _mission_objectives.size():
+				if not String(_mission_objectives[i]).is_empty():
+					todo.append("[M%d] %s" % [i + 1, _mission_objectives[i]])
+			return "mission %d, %d of %d left:
+%s" % [_mission_key,
+				_objectives_left, todo.size(), "
+".join(todo)]
 		"boom":
 			if not is_instance_valid(player):
 				return "no player"

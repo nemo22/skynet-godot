@@ -199,9 +199,11 @@ static func casings(scene: Node, at: Vector3, right: Vector3, fwd: Vector3,
 	pm.scale_max = 1.15
 	pm.color_ramp = _ramp(Color(0.85, 0.66, 0.28, 1.0), Color(0.7, 0.55, 0.24, 0.0))
 	p.process_material = pm
-	# A stubby brass case: a small quad is enough at the speed it moves.
+	# A stubby brass case. It ejects a hand's width from the camera, so it
+	# has to be SMALL: the first cut used a 4x9 quad and filled a corner
+	# of the screen with a cream-coloured blob every shot (2026-09-04).
 	var qm := QuadMesh.new()
-	qm.size = Vector2(4.0, 9.0)
+	qm.size = Vector2(1.6, 3.6)
 	var m := _mat(Color(1, 1, 1), false, 0.6)
 	m.albedo_texture = null                   # a solid case, not a soft dot
 	qm.material = m
@@ -214,13 +216,16 @@ static func casings(scene: Node, at: Vector3, right: Vector3, fwd: Vector3,
 ## The wisp left hanging at the muzzle after a shot. `hot` (energy
 ## weapons) makes it a bright coloured flare instead of grey smoke.
 static func muzzle_smoke(scene: Node, at: Vector3, fwd: Vector3,
-		size: float = 34.0, tint: Color = Color(0.55, 0.53, 0.5, 0.42),
+		size: float = 34.0, tint: Color = Color(0.55, 0.53, 0.5, 0.22),
 		hot: bool = false) -> GPUParticles3D:
 	if not on() or scene == null:
 		return null
 	var p := GPUParticles3D.new()
-	p.amount = 5 if hot else 4
-	p.lifetime = 0.45 if hot else 1.1
+	# Kept deliberately thin: the first cut billowed after every shot and
+	# read as "far too much fire and smoke" (2026-09-04). Two wisps that
+	# are gone in half a second are enough to sell the gun.
+	p.amount = 2
+	p.lifetime = 0.35 if hot else 0.55
 	p.one_shot = true
 	p.explosiveness = 1.0
 	p.randomness = 0.5

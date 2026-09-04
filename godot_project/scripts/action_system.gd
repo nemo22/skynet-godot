@@ -162,6 +162,7 @@ var _teleports: Array = []        # entities with act 0xF0
 var _sound_nodes: Array = []      # entities with a SOUND_ONESHOT act
 var _voice_nodes: Array = []      # entities with act 0xED
 var _objective_nodes: Array = []  # entities with acts 0x1C..0x2B
+var _destruct_nodes: Array = []   # entities with acts 0x18/0x19
 ## Physics access for reachability tests (set by the level controller).
 var space: PhysicsDirectSpaceState3D = null
 var player_body: CollisionObject3D = null
@@ -169,6 +170,18 @@ var _destr: Dictionary = {}       # file_off → destructible runtime state
 var _hp: Dictionary = {}          # file_off → remaining HP
 var _spent: Dictionary = {}       # file_off → true (HP-depleted, inert)
 var _prox_latched: Dictionary = {} # file_off → true while player inside
+## One-shot nodes (message, sound, voice) whose bit 0 went UP during this
+## tick, even if a later flip in the same tick took it back down.
+##
+## ObjFlipLink TOGGLES bit 0, and a map may point several triggers at one
+## chain: eight 0xEF gates ring the jeep in MAP.217, all linked to the
+## HUMMERTK that carries act 0x28 — mission 1's last objective. Walking
+## up to it trips two or four of them in the SAME frame, so the toggles
+## cancelled out and the objective never fired: mission 1 could not be
+## finished. The DOS engine runs each object's handler as the chain is
+## flipped, so an even number of flips still fires it once; the port
+## sweeps by phase, so it remembers the arming instead.
+var _armed: Dictionary = {}       # file_off → armed earlier this tick
 var _touch_latched: Dictionary = {} # teleport file_off → player touching
 var _teleport_fired: bool = false   # one map change per level instance
 var _unhandled_logged: Dictionary = {}
@@ -186,8 +199,16 @@ func setup(map: MapFile.MapFile) -> void:
 			_sound_nodes.append(e)
 		elif act == ACT_VOICE:
 			_voice_nodes.append(e)
+		elif is_destructible(act):
+			_destruct_nodes.append(e)
 		elif act >= ACT_HINT_FIRST and act <= ACT_FAIL:
-			_objective_nodes.append(e)
+			# Placement MARKERS (enemy starts, radiation sources …) keep
+			# other data where a sprite keeps its act byte, and half the
+			# campaign's enemy markers read back as 0x28/0x29/0x2B — a
+			# mission complete or a mission FAILED. Only real entities
+			# carry messages.
+			if e.marker_type < 0:
+				_objective_nodes.append(e)
 		if (e.flags & 3) == 1 and e.hp > 0:
 			_hp[e.file_off] = float(e.hp)
 
@@ -357,6 +378,8 @@ func _flip_link(start: MapFile.Entity) -> void:
 		cur.state_byte ^= 1
 		if cur.link_act_type == ACT_PROX_GATE:
 			cur.state_byte |= 1
+		if (cur.state_byte & 1) != 0:
+			_armed[cur.file_off] = true
 		_refresh_switch_visual(cur)
 		if (cur.flags & 0x40) != 0:
 			break
@@ -445,21 +468,32 @@ func tick(delta: float, player_pos: Vector3) -> void:
 	# self-disable. Door/button chains route through these for their
 	# sounds; a node armed in the MAP data plays once at level start.
 	for e in _sound_nodes:
-		if (e.state_byte & 1) != 0:
+		if _fires(e):
 			e.state_byte &= ~1
 			Audio.play_id_3d(int(SOUND_ONESHOT.get(e.link_act_type, -1)),
 				Vector3(float(e.x), -float(e.y), -float(e.z)), -4.0)
 	# Voice lines (0xED, handler 0x137dfd): play the VOICE.PRS sample
 	# whose id sits at sub+2, then self-disable.
 	for e in _voice_nodes:
-		if (e.state_byte & 1) != 0:
+		if _fires(e):
 			e.state_byte &= ~1
 			Audio.play_voice(e.exit_map)
+	# Destructibles a CHAIN switched on (0x18/0x19). Normally these only
+	# break under fire, but a machine can break one for you: on MAP.248 a
+	# START BOX (0xEF) runs a sound node into the IBEM64 girder (a 0x73
+	# slide) and on into 248WALL — the ram that punches the hole you walk
+	# through. Nothing in the map data starts a destructible enabled, so
+	# bit 0 here always means "a chain just fired me".
+	for e in _destruct_nodes:
+		if not _fires(e):
+			continue
+		e.state_byte &= ~1
+		_break_down(e)
 	# Messages and mission progress (0x1C..0x2B): fire once when a
 	# chain enables them, then the act disarms itself (DOS writes 0xFF
 	# into the act byte). FUN_0012f53d confirms with sound 0x51.
 	for e in _objective_nodes:
-		if (e.state_byte & 1) == 0:
+		if not _fires(e):
 			continue
 		var act: int = e.link_act_type
 		if act < ACT_HINT_FIRST or act > ACT_FAIL:
@@ -483,7 +517,11 @@ func tick(delta: float, player_pos: Vector3) -> void:
 		var touching: bool = _within(epos, player_pos, TELEPORT_TOUCH_RADIUS)
 		if touching and not _touch_latched.get(e.file_off, false):
 			e.state_byte |= 1
+		if _armed.has(e.file_off):
+			e.state_byte |= 1
 		_touch_latched[e.file_off] = touching
+	if not _armed.is_empty():
+		_armed.clear()
 
 ## Use key: fire an armed exit the player stands in. Returns true when
 ## a map change was requested (one per level instance).
@@ -576,6 +614,11 @@ func _prox_radius(e: MapFile.Entity) -> float:
 	return PROX_GATE_RADIUS + PLAYER_RADIUS
 
 ## Horizontal distance test with a vertical window.
+## Enabled now, or enabled at any point earlier in this tick (see
+## `_armed`) — the test the one-shot sweeps use.
+func _fires(e: MapFile.Entity) -> bool:
+	return (e.state_byte & 1) != 0 or _armed.has(e.file_off)
+
 static func _within(epos: Vector3, player_pos: Vector3, radius: float) -> bool:
 	if absf(player_pos.y - epos.y) > PROX_VERTICAL_WINDOW:
 		return false
@@ -757,6 +800,24 @@ func _advance_destructible(e: MapFile.Entity, damage: float) -> bool:
 			node.visible = false
 			_disable_collision(node)
 	return true
+
+## Run a destructible through every one of its TRANSFRM.PRS stages at
+## once — what a machine (or a scripted demolition) does to it, as
+## opposed to the slow chipping away of gunfire.
+func _break_down(e: MapFile.Entity) -> void:
+	if not _destr.has(e.file_off):
+		return
+	print("[action] destructible @%05x broken by a chain" % e.file_off)
+	var guard: int = 0
+	while _advance_destructible(e, DESTRUCT_DAMAGE_PER_STAGE) and guard < 16:
+		guard += 1
+	_hp[e.file_off] = 0.0
+	if not _spent.has(e.file_off):
+		_spent[e.file_off] = true
+		_destroy(e)
+	var node: Node3D = _nodes.get(e.file_off)
+	if node != null and is_instance_valid(node):
+		_disable_collision(node)
 
 ## DOS FUN_00124293 — HP gone. The link record's byte 0 picks the
 ## destruction type (Skynet.exe 0x423d6): effect sprites scattered

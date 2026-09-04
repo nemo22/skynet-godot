@@ -642,7 +642,83 @@ func _run() -> void:
 			_main.call("_on_objective_complete", i)
 		ok = await _wait(func() -> bool: return _main.get("_game_over") != null, 12.0)
 		_check(ok, "the last objective ends the mission")
+	await _check_jeep_objective()
+	await _check_ram_wall()
+	await _check_water()
 	_finish()
+
+## Mission 1 ends at the jeep on MAP.217, where EIGHT 0xEF gates all
+## point at the same HUMMERTK. Walking up trips several of them in one
+## frame; ObjFlipLink toggles, so an even number used to cancel out and
+## act 0x28 never fired — mission 1 could not be finished (2026-09-04).
+func _check_jeep_objective() -> void:
+	if _main.get("_game_over") != null:
+		_main.call("_advance_to", "MAP.217")
+	else:
+		_main.call("_on_teleport_requested", 217, 0)
+	var ok: bool = await _wait(func() -> bool: return _level_is("217") and _settled(), 180.0)
+	_check(ok, "MAP.217 loads for the jeep check")
+	if not ok:
+		return
+	var lvl = _main.get("_current_level")
+	var jeep = lvl.map.entities_by_off.get(0x75cb)
+	_check(jeep != null and jeep.link_act_type == 0x28,
+		"the MAP.217 jeep carries objective act 0x28")
+	if jeep == null:
+		return
+	var objs: Array = []
+	lvl.action.objective_complete.connect(func(i: int) -> void: objs.append(i))
+	# Stand on the jeep: every gate around it trips in the same tick.
+	lvl.action.tick(0.016, Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z)))
+	lvl.action.tick(0.016, Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z)))
+	_check(objs.has(0x28 - 0x26),
+		"eight gates tripping at once still fire objective 0x28 (%s)" % str(objs))
+
+## MAP.248: the START BOX runs the IBEM64 girder into 248WALL. The wall
+## is a 0x19 destructible with no HP of its own — the chain has to break
+## it, which is the only way through (2026-09-04).
+func _check_ram_wall() -> void:
+	_main.call("_on_teleport_requested", 248, 0)
+	var ok: bool = await _wait(func() -> bool: return _level_is("248") and _settled(), 180.0)
+	_check(ok, "MAP.248 loads for the ram check")
+	if not ok:
+		return
+	var lvl = _main.get("_current_level")
+	var wall = lvl.map.entities_by_off.get(0x35a6)
+	var box = lvl.map.entities_by_off.get(0x381d)
+	_check(wall != null and wall.link_act_type == 0x19, "248WALL is a destructible")
+	_check(box != null and box.link_act_type == 0xEF, "STARTBX is a proximity gate")
+	if wall == null or box == null:
+		return
+	var at := Vector3(float(box.x), -float(box.y), -float(box.z))
+	lvl.action.tick(0.016, at)
+	lvl.action.tick(0.016, at)
+	_check(lvl.action._spent.has(wall.file_off),
+		"the START BOX chain breaks the wall open")
+
+## Marker 103/104 is the map's water level (DOS 0x120bf9): the harbour
+## on MAP.250 stands at 784, and the player swims in it instead of
+## walking on a dry sea bed (2026-09-04).
+func _check_water() -> void:
+	_main.call("_on_teleport_requested", 250, 0)
+	var ok: bool = await _wait(func() -> bool: return _level_is("250") and _settled(), 240.0)
+	_check(ok, "MAP.250 loads for the water check")
+	if not ok:
+		return
+	var lvl = _main.get("_current_level")
+	var y: float = float(_main.call("_water_level", lvl))
+	_check(y == 784.0, "MAP.250 water surface is at y=784 (%s)" % str(y))
+	_check(_main.get("_water") != null, "the water surface node exists")
+	var pl = _main.get("player")
+	_check(float(pl.get("water_level")) == y, "the player knows the water level")
+	# Standing on the harbour floor means swimming, not walking.
+	pl.set("global_position", Vector3(5000.0, 300.0, -13300.0))
+	pl.call("_water_check")
+	_check(bool(pl.get("in_water")), "down in the harbour the player is in the water")
+	_check(bool(pl.get("head_under")), "and his head is under it")
+	pl.set("global_position", Vector3(5000.0, 2000.0, -13300.0))
+	pl.call("_water_check")
+	_check(not bool(pl.get("in_water")), "above the surface he is out of it again")
 
 ## Gate geometry dump: leaf node/body transforms and a capsule sweep
 ## along the gate line (x - 400 .. x + 400) — '#' blocked, '.' free.

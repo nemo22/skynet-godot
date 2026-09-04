@@ -1,4 +1,6 @@
-## A grenade fired from the GRENADE LAUNCHER. Flies fast and fairly flat
+## A thrown or launched explosive: the GRENADE LAUNCHER shell, and every
+## item on the THROW key (pipe bomb, molotov, grenade, canister bomb,
+## satchel — see fly_camera.THROWABLES). Flies fast and fairly flat
 ## (the DOS launcher lobbed only a shallow arc), bounces off level
 ## geometry, and detonates the moment it touches anything that can take
 ## damage — a robot, a car, a crate, a generator, another player — or
@@ -18,6 +20,7 @@ const Explosion  := preload("res://scripts/explosion.gd")
 const TextureNNN := preload("res://scripts/loaders/texture_nnn.gd")
 const Palette    := preload("res://scripts/loaders/palette.gd")
 const BSAReader  := preload("res://scripts/loaders/bsa_reader.gd")
+const BurningPool := preload("res://scripts/burning_pool.gd")
 
 ## Playtest 2026-09-03 (Marek): the DOS grenade flew "more in a straight
 ## line than a ballistic curve" — 2400/2400 dropped 1200 u per 2400 u of
@@ -40,6 +43,12 @@ var _damage: float = 200.0
 var _splash: float = 256.0
 var _owner: Node = null
 var _exploded: bool = false
+## Per-item overrides from fly_camera.THROWABLES: `fuse` seconds,
+## `burst` = shatter on the first thing it touches instead of bouncing
+## (the molotov's bottle), `fire` = leave a pool of burning fuel.
+var _fuse: float = FUSE_TIME
+var _burst: bool = false
+var _fire: bool = false
 ## A replicated copy of somebody else's grenade: flies and bangs, hurts
 ## nobody on this machine (the thrower's copy does the damage).
 var visual_only: bool = false
@@ -70,13 +79,17 @@ static func _load_sprite() -> Texture2D:
 ## Launch from `from` heading `dir` (unit vector). Initial speed is
 ## constant; `damage` and `splash` set the detonation payload.
 func setup(from: Vector3, dir: Vector3, damage: float, splash: float,
-		shooter: Node, speed: float = SPEED) -> void:
+		shooter: Node, speed: float = SPEED, cfg: Dictionary = {}) -> void:
 	add_to_group("projectile")               # cleared on a map change
 	global_position = from
 	_vel = dir.normalized() * speed
 	_damage = damage
 	_splash = splash
 	_owner = shooter
+	_fuse = float(cfg.get("fuse", FUSE_TIME))
+	_life = _fuse
+	_burst = bool(cfg.get("burst", false))
+	_fire = bool(cfg.get("fire", false))
 	var tex := _load_sprite()
 	if tex != null:
 		var spr := Sprite3D.new()
@@ -120,7 +133,7 @@ func _physics_process(delta: float) -> void:
 			var n: Node = c
 			while n != null and not n.has_method("take_damage") and not n.has_method("net_damage") and not n.is_in_group("dm_vehicle"):
 				n = n.get_parent()
-			if n != null and n != _owner and n is Node3D and _is_target(n):
+			if _burst or (n != null and n != _owner and n is Node3D and _is_target(n)):
 				_detonate(hit["position"])
 				return
 			# Bounce: reflect velocity around the hit normal, lose energy.
@@ -183,4 +196,8 @@ func _detonate(at: Vector3) -> void:
 		var ex := Explosion.new()
 		scene.add_child(ex)
 		ex.setup(at, 280.0, IMPACT_BANK)
+		if _fire:
+			var bp := BurningPool.new()
+			scene.add_child(bp)
+			bp.setup(at, _splash, _damage, _owner)
 	queue_free()

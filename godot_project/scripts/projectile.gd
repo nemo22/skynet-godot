@@ -36,6 +36,8 @@ const Explosion    := preload("res://scripts/explosion.gd")
 
 ## .3D name → ArrayMesh, or false when the load failed (never retried).
 static var _mesh_cache: Dictionary = {}
+## How much wider a laser bolt is drawn than its 3x7 u model (see setup).
+const BOLT_FATTEN: float = 3.0
 
 var _dir: Vector3 = Vector3.FORWARD
 var _speed: float = 3000.0
@@ -119,6 +121,14 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 		# (x,-y,-z) conversion maps to Godot -Z, which looking_at aims.
 		var up := Vector3.UP if absf(_dir.y) < 0.99 else Vector3.RIGHT
 		_mi.basis = Basis.looking_at(_dir, up)
+		# LASER1/2/3.3D are 120 u long but only 3x7 u thick. On a 320x200
+		# DOS screen that was a bright hairline you could not miss; at a
+		# modern resolution the same bolt is a sub-pixel thread, which is
+		# why incoming fire read as "nothing visible at all" (2026-09-04).
+		# Fatten the bolt and give it a halo instead of speeding it up.
+		if _model_is_bolt(model_name):
+			_mi.basis = _mi.basis.scaled(Vector3(BOLT_FATTEN, BOLT_FATTEN, 1.0))
+		_add_glow(am.get_aabb().size.z)
 	else:
 		var sm := SphereMesh.new()
 		var r: float = float(cfg.get("radius", 18.0))
@@ -134,9 +144,31 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 	if bool(cfg.get("light", false)):
 		_light = OmniLight3D.new()
 		_light.light_color = _color
-		_light.light_energy = 2.0
-		_light.omni_range = maxf(_splash, 300.0)
+		_light.light_energy = 2.6
+		_light.omni_range = maxf(_splash, 420.0)
 		add_child(_light)
+
+## The soft additive halo that makes a bolt readable in flight. One
+## camera-facing quad, the shot's own colour, unshaded and depth-tested
+## normally so a wall still hides it.
+func _add_glow(length: float) -> void:
+	var qm := QuadMesh.new()
+	qm.size = Vector2(maxf(length, 60.0) * 0.55, maxf(length, 60.0) * 0.55)
+	var g := MeshInstance3D.new()
+	g.mesh = qm
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	m.albedo_color = Color(_color.r, _color.g, _color.b, 0.5)
+	m.disable_receive_shadows = true
+	g.material_override = m
+	g.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(g)
+
+static func _model_is_bolt(name: String) -> bool:
+	return name.to_upper().begins_with("LASER")
 
 func _physics_process(delta: float) -> void:
 	if _done:
