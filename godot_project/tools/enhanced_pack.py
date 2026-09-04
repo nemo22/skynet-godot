@@ -34,12 +34,17 @@ SPRITES = {
     # barrel loses the marking, and radiation is a real hazard in the
     # port now, so the DOS sprite stays.
     "T201_007": ("old_military_crate", {"fit": "w"}),
-    # dead vegetation
-    "T208_000": ("dead_quiver_branch_01", {}),
-    "T215_007": ("dead_quiver_branch_02", {}),
+    # Dead vegetation. The DOS sprites are a bare THIN tree (208_000), a
+    # dead branch (215_007), dry branches on the ground (215_006,
+    # 242_002), a burnt bush (242_003) and a charred stump (213_012).
+    # The quiver-tree models that were here first are Aloe dichotoma —
+    # fat, pale, forked limbs: "it looks like a baobab and does not fit
+    # at all" (2026-09-04). Dead pine trunks and branches do.
+    "T208_000": ("dead_tree_trunk_02", {}),
+    "T215_007": ("dry_branches_medium_01", {}),
     "T215_006": ("dry_branches_medium_01", {"fit": "w"}),
     "T242_002": ("dry_branches_medium_01", {"fit": "w"}),
-    "T242_003": ("dead_quiver_branch_02", {"fit": "w"}),
+    "T242_003": ("bark_debris_01", {"fit": "w"}),
     "T213_012": ("tree_stump_01", {}),
     # rocks / rubble
     "T211_003": ("rock_09", {"fit": "w"}),

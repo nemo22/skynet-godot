@@ -12,6 +12,7 @@
 extends Node3D
 
 const LevelLoader := preload("res://scripts/level_loader.gd")
+const Replacements := preload("res://scripts/replacements.gd")
 const BSAReader   := preload("res://scripts/loaders/bsa_reader.gd")
 const ImgFile     := preload("res://scripts/loaders/img_file.gd")
 const Palette     := preload("res://scripts/loaders/palette.gd")
@@ -768,6 +769,7 @@ func _begin_level(name: String) -> void:
 	_apply_pending_player()
 	_collect_radiation(level)
 	_setup_water(level)
+	_scatter_clutter(level)
 	_set_hud_mode(player.vehicle if is_instance_valid(player) else 0)
 	if _dm != null:
 		_dm.on_level_ready(level)
@@ -1027,8 +1029,12 @@ func _set_sky_fill(level: LevelLoader.Level, map_name: String = "") -> void:
 	if _ash != null and is_instance_valid(_ash):
 		_ash.queue_free()
 	_ash = null
+	if _dust != null and is_instance_valid(_dust):
+		_dust.queue_free()
+	_dust = null
 	if level.is_outdoor and camera != null:
 		_ash = FxParticles.ambient_ash(camera)
+		_dust = FxParticles.dust_clouds(camera)
 	if night:
 		# No dome on night maps: the flat palette-0x11 sky and the moon.
 		if level.sky != null and is_instance_valid(level.sky):
@@ -1090,6 +1096,10 @@ func _set_sky_fill(level: LevelLoader.Level, map_name: String = "") -> void:
 ## sun becomes a shadow-casting light that matches the sky, plus glow,
 ## ACES tonemapping and volumetric light for the rays.
 const NIGHT_LUMA: float = 0.14
+## ENHANCED colour grading — the ash-choked look.
+const GRADE_SATURATION: float = 0.68
+const GRADE_CONTRAST: float = 1.07
+const GRADE_BRIGHTNESS: float = 0.96
 ## Exposure for a photographed panorama from the pack (see below).
 const SKY_ENERGY_NIGHT: float = 0.09
 const SKY_ENERGY_DUSK: float = 0.55
@@ -1120,6 +1130,7 @@ const MOON_AIM_DEG: float = 4.5
 const MOON_HITS_TO_FALL: int = 24
 const MOON_MESSAGE: String = "OW!"
 
+var _dust: GPUParticles3D = null       # drifting dust banks (outdoor)
 var _moon: MeshInstance3D = null
 var _moon_hits: int = 0
 var _moon_fall_v: float = 0.0
@@ -1281,6 +1292,14 @@ func _apply_render_env(level: LevelLoader.Level, env: Environment, fill: Color) 
 		return
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
 	env.tonemap_exposure = 1.0
+	# Nuclear winter grading: pull the colour out of the world and lift
+	# the contrast a little. Everything in this game happened after the
+	# bombs, and full-saturation photoscans read like a nature documentary
+	# ("a rather depressing atmosphere", 2026-09-04).
+	env.adjustment_enabled = true
+	env.adjustment_saturation = GRADE_SATURATION
+	env.adjustment_contrast = GRADE_CONTRAST
+	env.adjustment_brightness = GRADE_BRIGHTNESS
 	env.glow_enabled = true
 	env.glow_intensity = 0.35
 	env.glow_bloom = 0.08
@@ -1370,9 +1389,11 @@ func _apply_render_env(level: LevelLoader.Level, env: Environment, fill: Color) 
 	env.fog_depth_begin = FOG_BEGIN * 1.5 * Settings.fog_scale()
 	env.fog_depth_end = FOG_END * 1.4 * Settings.fog_scale()
 	env.fog_sky_affect = 0.0
-	env.volumetric_fog_enabled = not night
-	env.volumetric_fog_density = 0.00022
-	env.volumetric_fog_albedo = Color(1.0, 0.85, 0.7)
+	# Airborne dust, lit by whatever is up there. It used to be dusk only;
+	# a nuclear night is the dustiest of the lot, it is just dimmer.
+	env.volumetric_fog_enabled = Settings.detail > Settings.LOW
+	env.volumetric_fog_density = 0.00030 if night else 0.00022
+	env.volumetric_fog_albedo = Color(0.62, 0.60, 0.58) if night else Color(1.0, 0.85, 0.7)
 	env.volumetric_fog_emission_energy = 0.0
 	env.volumetric_fog_length = 12000.0
 	env.volumetric_fog_anisotropy = 0.45
@@ -1660,6 +1681,128 @@ func _radiation_dose(at: Vector3) -> float:
 			continue
 		dose += minf(r * 50.0, 12800.0) / 256.0
 	return dose
+
+## --- Outdoor clutter (ENHANCED only) ---------------------------------
+## The DOS maps are bare: a 1996 engine could not afford scenery, so the
+## ground between the buildings is empty terrain. It reads as a level,
+## not as a country that lost a nuclear war. This scatters the CC0 props
+## the pack already carries — dead branches, bark debris, boulders,
+## stumps, tyres, the odd dead tree — over the open ground of every
+## outdoor map, on a jittered grid seeded from the map number so the same
+## map always looks the same.
+##
+## Rules: nothing on a slope you could not walk, nothing within
+## CLUTTER_CLEAR of a placed entity (buildings, vehicles, the objective
+## props) or of the player's own start, and nothing at all on LOW detail.
+const CLUTTER_SPACING: Array = [0.0, 1500.0, 1000.0]   # per DETAIL level
+const CLUTTER_SKIP: float = 0.45          # fraction of cells left empty
+const CLUTTER_CLEAR: float = 620.0        # keep away from real entities
+const CLUTTER_MAX_SLOPE: float = 260.0    # height change across a cell
+const CLUTTER_MARGIN: float = 2500.0      # how far past the buildings
+## [bank, record, weight] — every one of these has a model in the pack.
+const CLUTTER_PROPS: Array = [
+	[215, 6, 5.0],    # dry branches
+	[242, 2, 4.0],    # dry branches, spread
+	[242, 3, 4.0],    # bark debris
+	[211, 3, 4.0],    # rock
+	[211, 5, 3.0],    # small sand rocks
+	[210, 9, 3.0],    # stones
+	[210, 2, 2.0],    # moon rock
+	[211, 1, 1.5],    # boulder
+	[213, 12, 1.5],   # burnt stump
+	[213, 9, 1.0],    # old tyre
+	[208, 0, 0.8],    # dead tree
+]
+var _clutter: Node3D = null
+
+func _scatter_clutter(level: LevelLoader.Level) -> void:
+	if _clutter != null and is_instance_valid(_clutter):
+		_clutter.queue_free()
+	_clutter = null
+	if not Render.enhanced() or level == null or not level.is_outdoor:
+		return
+	if level.wld == null or level.map == null or _dm != null:
+		return
+	var spacing: float = float(CLUTTER_SPACING[clampi(Settings.detail, 0, 2)])
+	if spacing <= 0.0:
+		return
+	# The area worth dressing: around everything the map actually placed.
+	var lo := Vector2(1e9, 1e9)
+	var hi := Vector2(-1e9, -1e9)
+	var solid: Array[Vector2] = []
+	for e in level.map.entities:
+		if (e.flags & 3) == 2:
+			continue
+		var q := Vector2(float(e.x), -float(e.z))
+		lo = lo.min(q)
+		hi = hi.max(q)
+		if (e.flags & 3) == 1:
+			solid.append(q)
+	if solid.is_empty():
+		return
+	lo -= Vector2(CLUTTER_MARGIN, CLUTTER_MARGIN)
+	hi += Vector2(CLUTTER_MARGIN, CLUTTER_MARGIN)
+	var total: float = 0.0
+	for c in CLUTTER_PROPS:
+		total += float(c[2])
+	_clutter = Node3D.new()
+	_clutter.name = "Clutter"
+	add_child(_clutter)
+	var rng := RandomNumberGenerator.new()
+	var made: int = 0
+	var start := Vector2(player.global_position.x, player.global_position.z) 		if is_instance_valid(player) else Vector2.ZERO
+	var x: float = lo.x
+	while x < hi.x:
+		var z: float = lo.y
+		while z < hi.y:
+			# Seeded per cell: the same map always dresses the same way.
+			rng.seed = hash(Vector2i(int(x / spacing), int(z / spacing))) 				^ int(_suffix(level.map_suffix.insert(0, "MAP.")))
+			z += spacing
+			if rng.randf() < CLUTTER_SKIP:
+				continue
+			var at := Vector2(x + rng.randf_range(-0.4, 0.4) * spacing,
+				z + rng.randf_range(-0.4, 0.4) * spacing)
+			if at.distance_to(start) < 900.0:
+				continue
+			var near: bool = false
+			for q in solid:
+				if absf(q.x - at.x) < CLUTTER_CLEAR and absf(q.y - at.y) < CLUTTER_CLEAR:
+					near = true
+					break
+			if near:
+				continue
+			# Flat enough to stand on? Sample the cell's corners.
+			var h0: float = WldTerrain.height_at_world(level.wld, at.x, -at.y)
+			var h1: float = WldTerrain.height_at_world(level.wld, at.x + 256.0, -at.y)
+			var h2: float = WldTerrain.height_at_world(level.wld, at.x, -at.y - 256.0)
+			if maxf(absf(h1 - h0), absf(h2 - h0)) > CLUTTER_MAX_SLOPE:
+				continue
+			var node: Node3D = _clutter_prop(rng, total)
+			if node == null:
+				continue
+			node.position = Vector3(at.x, h0, -at.y)
+			_clutter.add_child(node)
+			made += 1
+		x += spacing
+	print("[level] clutter: %d props over %.0fx%.0f u" % [made, hi.x - lo.x, hi.y - lo.y])
+
+## One weighted pick from CLUTTER_PROPS, built through the replacement
+## pack at the DOS sprite's own world size.
+func _clutter_prop(rng: RandomNumberGenerator, total: float) -> Node3D:
+	var r: float = rng.randf() * total
+	for c in CLUTTER_PROPS:
+		r -= float(c[2])
+		if r > 0.0:
+			continue
+		var bank: int = int(c[0])
+		var rec: int = int(c[1])
+		if not Replacements.has_sprite(bank, rec):
+			return null
+		var rs: Vector2i = Assets.record_size(bank, rec)
+		var scale: float = LevelLoader.SPRITE_PIXEL_SIZE * rng.randf_range(0.8, 1.35)
+		return Replacements.sprite_node(bank, rec,
+			float(rs.x) * scale, float(rs.y) * scale, rng.randi())
+	return null
 
 ## --- Water (DOS 0x120bf9 / 0x120c83 / 0x12e56b) ----------------------
 ## Marker type 103 (or 104) carries the map's WATER LEVEL: the engine
@@ -2771,6 +2914,9 @@ func _clear_level() -> void:
 	if _water != null and is_instance_valid(_water):
 		_water.queue_free()
 	_water = null
+	if _clutter != null and is_instance_valid(_clutter):
+		_clutter.queue_free()
+	_clutter = null
 	if is_instance_valid(player):
 		player.water_level = INF
 	_current_level = null

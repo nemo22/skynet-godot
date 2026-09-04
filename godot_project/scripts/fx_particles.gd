@@ -251,6 +251,49 @@ static func muzzle_smoke(scene: Node, at: Vector3, fwd: Vector3,
 	_free_after(p, 1.4)
 	return p
 
+## Dust banks drifting through the outdoor maps: big, very faint sheets
+## low over the ground that the moonlight catches, on top of the ash.
+## This is a nuclear winter — the air itself should look dirty.
+static func dust_clouds(node: Node3D, tint: Color = Color(0.42, 0.38, 0.33)) -> GPUParticles3D:
+	if not on() or node == null:
+		return null
+	var p := GPUParticles3D.new()
+	p.amount = 26
+	p.lifetime = 26.0
+	p.local_coords = false
+	p.randomness = 0.9
+	p.preprocess = 20.0
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(3600.0, 260.0, 3600.0)
+	pm.direction = Vector3(1.0, 0.03, 0.35)
+	pm.spread = 25.0
+	pm.initial_velocity_min = 45.0
+	pm.initial_velocity_max = 130.0
+	pm.gravity = Vector3.ZERO
+	pm.turbulence_enabled = true
+	pm.turbulence_noise_strength = 18.0
+	pm.turbulence_noise_scale = 1.2
+	pm.angle_min = -180.0
+	pm.angle_max = 180.0
+	pm.angular_velocity_min = -3.0
+	pm.angular_velocity_max = 3.0
+	pm.scale_min = 0.7
+	pm.scale_max = 2.0
+	# In and out over the life — a bank must never pop.
+	var g := Gradient.new()
+	g.set_color(0, Color(tint.r, tint.g, tint.b, 0.0))
+	g.add_point(0.25, Color(tint.r, tint.g, tint.b, 0.10))
+	g.add_point(0.75, Color(tint.r, tint.g, tint.b, 0.10))
+	g.set_color(g.get_point_count() - 1, Color(tint.r, tint.g, tint.b, 0.0))
+	var gt := GradientTexture1D.new()
+	gt.gradient = g
+	pm.color_ramp = gt
+	p.process_material = pm
+	p.draw_pass_1 = _quad(1500.0, _mat(Color(1, 1, 1), false))
+	node.add_child(p)
+	return p
+
 ## Dust kicked up behind the jeep; drive `amount_ratio` by speed.
 static func wheel_dust(node: Node3D) -> GPUParticles3D:
 	if not on() or node == null:
