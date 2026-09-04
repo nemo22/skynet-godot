@@ -395,6 +395,23 @@ func attach_loop_3d(id: int, parent: Node, volume_db: float = -10.0) -> AudioStr
 	parent.add_child(p)
 	return p
 
+## The cached looping / one-shot stream of a DOS sound id, for the level
+## bake (scripts/level_behaviour.gd): straight from the asset cache
+## rather than the session dictionary above, so the saved scene
+## references the cache file under whichever root is in force at bake
+## time. null for -1 / bad ids.
+func loop_stream_for(id: int) -> AudioStreamWAV:
+	return _bake_stream(id, true)
+
+func oneshot_stream_for(id: int) -> AudioStreamWAV:
+	return _bake_stream(id, false)
+
+func _bake_stream(id: int, loop: bool) -> AudioStreamWAV:
+	var n := sound_name(id)
+	if n.is_empty() or _bsa == null:
+		return null
+	return Assets.sound(n, loop, func() -> Resource: return _decode(n, loop))
+
 ## Voice line by VOICE.PRS id (0xED nodes: "no.21032 = 210g5.wav").
 func play_voice(id: int, volume_db: float = 0.0) -> void:
 	var f := PrsFile.text("VOICE.PRS", "no.%d" % id)

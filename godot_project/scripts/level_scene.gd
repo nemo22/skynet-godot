@@ -17,11 +17,17 @@
 ##   +- Static      every placed mesh with no behaviour, collision baked
 ##   +- Occluders   OccluderInstance3D — the hills and the big buildings
 ##   +- Detail      ENHANCED only: the scattered clutter and the dust
+##   +- Behaviour   the map's doors, gates, lifts, destructibles,
+##                  triggers, exits, sounds, messages and objectives as
+##                  nodes, chains as NodePaths (scripts/level_behaviour.gd)
 ##
-## What is NOT in it: doors, lifts, destructibles, enemies, pickups,
-## lights and markers. Those are behaviour, they are driven by the MAP
-## records at run time, and the loader keeps building them from the data
-## (it is the cheap half — a few dozen nodes against several hundred).
+## The Behaviour branch is phase F1 of docs/map_format_plan.md: it is
+## generated and saved, the editor shows it, but the runtime does not
+## lift it out yet (take() below) — the game still drives the movers,
+## triggers and the rest from the MAP records through action_system.gd.
+## Enemies, pickups, lights and markers are likewise still built from
+## the records by the loader (they are the cheap half — a few dozen
+## nodes against several hundred).
 ##
 ## Three things this buys, all of them asked for (2026-09-04, "kludne
 ## nech konverzia spracuje tie data do formatu ktory vyhovuje godotu"):
@@ -51,9 +57,11 @@ const WldTerrain   := preload("res://scripts/loaders/wld_terrain.gd")
 const Replacements := preload("res://scripts/replacements.gd")
 const FxParticles  := preload("res://scripts/fx_particles.gd")
 const LevelLoaderRef := preload("res://scripts/level_loader.gd")
+const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
 
 ## Bump when the bake changes shape (invalidates every saved scene).
-const BAKE_VERSION: int = 7
+## 8 = the Behaviour branch (2026-09-05).
+const BAKE_VERSION: int = 8
 
 # ---------------------------------------------------------------------
 # Paths
@@ -99,6 +107,8 @@ static func take(map_name: String, map_bytes: PackedByteArray) -> Dictionary:
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
 		return {}
 	var out: Dictionary = {}
+	# Behaviour stays behind (F1): the runtime still builds those nodes
+	# from the records; it goes with the root below.
 	for key in ["Terrain", "Static", "Occluders", "Detail"]:
 		var n: Node = root.get_node_or_null(NodePath(key))
 		if n == null:
@@ -193,8 +203,19 @@ static func _save_now(level, map_name: String) -> String:
 		root.add_child(n)
 		lent.append([n, old, idx])
 
+	# The map's behaviour as nodes, built fresh from the records (never
+	# lent: the game's own ActionTargets stay where they are).
+	var report: Dictionary = {}
+	var behaviour: Node3D = LevelBehaviour.build(level, report)
+	root.add_child(behaviour)
+	root.behaviour_count = LevelBehaviour.count(behaviour)
+
 	for c in root.get_children():
 		_own(c, root)
+	# The behaviour nodes are instances of scenes/level/*.tscn with their
+	# inner nodes filled in (a Mover's Body, Mesh and Shape); the packer
+	# only records those overrides for instances the root marks editable.
+	_mark_editable(root, root)
 	var ps := PackedScene.new()
 	var err: int = ps.pack(root)
 	var out: String = ""
@@ -203,8 +224,13 @@ static func _save_now(level, map_name: String) -> String:
 		err = ResourceSaver.save(ps, p, ResourceSaver.FLAG_COMPRESS)
 		if err == OK:
 			out = p
-			print("[level] %s: baked %d static meshes and %d detail props into %s"
-				% [map_name, root.static_count, root.detail_count, p.get_file()])
+			print("[level] %s: baked %d static meshes, %d detail props and %d behaviour nodes into %s"
+				% [map_name, root.static_count, root.detail_count, root.behaviour_count, p.get_file()])
+			print("[level] %s: behaviour %s; %d relays, %d cue meshes, %d movers without a mesh, %d links to markers, %d dangling"
+				% [map_name, str(report.get("kinds", {})),
+				   int(report.get("kinds", {}).get("raw", 0)), int(report.get("cues_with_mesh", 0)),
+				   int(report.get("movers_without_mesh", 0)), int(report.get("to_markers", 0)),
+				   int(report.get("dangling", 0))])
 		else:
 			push_warning("[level] cannot save %s (%s)" % [p, error_string(err)])
 	else:
@@ -372,10 +398,22 @@ static func _marker_color(t: int) -> Color:
 		return Color(1.0, 0.2, 0.9)           # exit / MP spawn pairs
 	return Color(0.85, 0.85, 0.85)
 
+## Give the level root every node the bake built. A node that already
+## has an owner is the inside of an instanced scenes/level/ scene (its
+## Body, its Shape) and keeps it — the instance is what gets saved.
 static func _own(n: Node, owner: Node) -> void:
-	n.owner = owner
+	if n.owner == null:
+		n.owner = owner
 	for c in n.get_children():
 		_own(c, owner)
+
+## Every instanced scene under `n` becomes an editable instance of the
+## root, so the properties the bake set on its inner nodes are packed.
+static func _mark_editable(n: Node, root: Node) -> void:
+	for c in n.get_children():
+		if not c.scene_file_path.is_empty():
+			root.set_editable_instance(c, true)
+		_mark_editable(c, root)
 
 static func _count(n: Node) -> int:
 	if n == null or not is_instance_valid(n):

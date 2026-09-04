@@ -30,6 +30,7 @@ const AIData       := preload("res://scripts/enemy_ai_data.gd")
 const Pickup       := preload("res://scripts/pickup.gd")
 const PickupData   := preload("res://scripts/pickup_data.gd")
 const LevelScene   := preload("res://scripts/level_scene.gd")
+const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
 
 ## Variant-3 billboard sprite banks (sprite_index >> 7) → TEXTURE.NNN file.
 ## "weapons flat" banks are weapon/ammo pickups, "equipment" is gear; the
@@ -250,6 +251,9 @@ class Level:
 	## Entity action/link system (doors, movers, destructibles,
 	## proximity triggers, teleports). The level controller ticks it.
 	var action: ActionSystem = null
+	## TRANSFRM.PRS: mesh name → its damage-stage mesh names. Kept for
+	## the bake, which classifies the destructibles by it too.
+	var transfrm: Dictionary = {}
 	## Every placement marker by id → Array of world positions (a map may
 	## carry several markers with one id, e.g. two facing markers). Map
 	## exits spawn the player at marker N facing marker N+1
@@ -332,6 +336,7 @@ func load_level(map_name: String) -> Level:
 			SkynetPaths.variant):
 		transfrm = TransfrmPRS.parse(brif.read("TRANSFRM.PRS"))
 		brif.close()
+	level.transfrm = transfrm
 
 	# WLD (outdoor only) -------------------------------------------
 	if level.is_outdoor:
@@ -434,18 +439,16 @@ func load_level(map_name: String) -> Level:
 		# 1+2, ObjHit skynet_gh.c:39512) needs a hit/activate route.
 		# Everything else is plain static geometry — and static geometry
 		# is what the baked level scene already holds.
-		var act: int = e.link_act_type
 		# Destructibles bind BY NAME to TRANSFRM.PRS (TransformInit
 		# keys templates on the mesh name) — cars carry state bit1 +
 		# HP but act 0x00 in the MAP data.
 		var has_transfrm: bool = transfrm.has(name.to_lower())
 		# Anything with HP is a hit target too (ObjHit drains it whatever
 		# the state bits say — crates, buses, the dish take their HP from
-		# the map's per-name defaults).
-		var wants_action: bool = (ActionSystem.is_mover(act)
-			or ActionSystem.is_destructible(act) or has_transfrm
-			or (e.state_byte & 6) != 0 or e.hp > 0
-			or act == 0xEF or act == 0xF1 or act == 0xF2)
+		# the map's per-name defaults). The rule is shared with the bake
+		# so the Static and Behaviour branches partition the meshes the
+		# same way.
+		var wants_action: bool = LevelBehaviour.wants_action(e, name, transfrm)
 
 		# Position: entity X/Y/Z used VERBATIM from the MAP record. The DOS
 		# engine never samples terrain height nor applies an AABB offset

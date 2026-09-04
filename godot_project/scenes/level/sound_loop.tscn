@@ -1,0 +1,9 @@
+[gd_scene format=3]
+
+[node name="SoundLoop" type="AudioStreamPlayer3D"]
+attenuation_model = 1
+unit_size = 300.0
+max_db = 0.0
+volume_db = -10.0
+max_distance = 5000.0
+autoplay = true

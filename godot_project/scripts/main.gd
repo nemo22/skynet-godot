@@ -29,6 +29,7 @@ const PauseMenu   := preload("res://scripts/pause_menu.gd")
 const DmGame      := preload("res://scripts/net/dm_game.gd")
 const WldTerrain  := preload("res://scripts/loaders/wld_terrain.gd")
 const LevelScene  := preload("res://scripts/level_scene.gd")
+const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
 
 ## Map to load on startup (falls back to first map if missing).
 @export var initial_map: String = "MAP.210"
@@ -224,59 +225,15 @@ static func _is_small_prop(mi: MeshInstance3D, level: LevelLoader.Level) -> bool
 		return false
 	return maxf(s.x, maxf(s.y, s.z)) <= PROP_BOX_MAX
 
-## A mover mesh that is a door/gate LEAF rather than a room segment
-## that happens to move (MAP.214's CORB122I corridor piece rotates as a
-## bulkhead; boxing it sealed the tunnel). Leaves are thin slabs, or
-## carry no walkable floor plate in their lower third; corridor and
-## room pieces always have one.
-static func _is_door_like(mi: MeshInstance3D) -> bool:
-	if mi.mesh == null:
-		return false
-	var aabb: AABB = mi.mesh.get_aabb()
-	var s: Vector3 = aabb.size
-	if minf(s.x, minf(s.y, s.z)) <= DOOR_LEAF_MAX_THICKNESS:
-		return true
-	var floor_top: float = aabb.position.y + s.y / 3.0
-	var floor_area: float = 0.0
-	for si in mi.mesh.get_surface_count():
-		var arrays: Array = mi.mesh.surface_get_arrays(si)
-		var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-		var idx_v = arrays[Mesh.ARRAY_INDEX]          # null for fan-built surfaces
-		var idx: PackedInt32Array = idx_v if idx_v != null else PackedInt32Array()
-		var nrm_v = arrays[Mesh.ARRAY_NORMAL]         # stored = visible side
-		var nrm: PackedVector3Array = nrm_v if nrm_v != null else PackedVector3Array()
-		var n: int = idx.size() if idx.size() > 0 else verts.size()
-		var t: int = 0
-		while t + 2 < n:
-			var i0: int = idx[t] if idx.size() > 0 else t
-			var i1: int = idx[t + 1] if idx.size() > 0 else t + 1
-			var i2: int = idx[t + 2] if idx.size() > 0 else t + 2
-			t += 3
-			var a: Vector3 = verts[i0]
-			var b: Vector3 = verts[i1]
-			var cc: Vector3 = verts[i2]
-			var cr: Vector3 = (b - a).cross(cc - a)
-			var area2: float = cr.length()
-			if area2 < 1.0:
-				continue
-			# mesh_3d.gd emits fans as (0, k+1, k): the raw cross product
-			# points at the BACK; the stored normal is the visible side.
-			var up: float = nrm[i0].y if nrm.size() > i0 else -cr.y / area2
-			if up > 0.8 and maxf(a.y, maxf(b.y, cc.y)) <= floor_top:
-				floor_area += area2 * 0.5
-	return floor_area < DOOR_LEAF_FLOOR_AREA
-
+## The DOS-style solid box of a mover leaf or a prop — the same box the
+## bake gives a Mover (scripts/level_behaviour.gd).
 static func _make_box_collision(mi: MeshInstance3D) -> void:
-	var aabb: AABB = mi.mesh.get_aabb()
+	var box: Dictionary = LevelBehaviour.box_shape(mi.mesh)
 	var sb := StaticBody3D.new()
 	sb.name = mi.name + "_col"
 	var cs := CollisionShape3D.new()
-	var box := BoxShape3D.new()
-	# Flat leaves (DOOR01 is a zero-thickness plane) still need a body.
-	box.size = Vector3(maxf(aabb.size.x, BOX_MIN_THICKNESS),
-		maxf(aabb.size.y, BOX_MIN_THICKNESS), maxf(aabb.size.z, BOX_MIN_THICKNESS))
-	cs.shape = box
-	cs.position = aabb.position + aabb.size * 0.5
+	cs.shape = box["shape"]
+	cs.position = box["centre"]
 	sb.add_child(cs)
 	mi.add_child(sb)
 
@@ -698,7 +655,7 @@ func _begin_level(name: String) -> void:
 				# whose trimesh has holes a player capsule slips through
 				# (closed!) and thin edges to wedge on.
 				var solid_mover: bool = (level.action != null and c.has_method("file_off")
-					and level.action.is_solid_mover(c.file_off()) and _is_door_like(c))
+					and level.action.is_solid_mover(c.file_off()) and LevelBehaviour.is_door_like(c.mesh))
 				if solid_mover or _is_small_prop(c, level):
 					_make_box_collision(c)          # DOS-style solid box
 				else:
@@ -921,11 +878,8 @@ const FOG_END: float = 16000.0
 ## .3D bounding radius, not the AABB; trimesh + the anti-wedge routine
 ## is the safer default.
 const PROP_BOX_MAX: float = 0.0
-## Mover leaves at most this thick are boxed outright (DORB 16, DOOR01 0,
-## 210DOOR 28); thicker movers are boxed only without a floor plate.
-const DOOR_LEAF_MAX_THICKNESS: float = 40.0
-const DOOR_LEAF_FLOOR_AREA: float = 4096.0     # 64 x 64 walkable plate
-const BOX_MIN_THICKNESS: float = 16.0
+## Mover leaves are boxed by LevelBehaviour.is_door_like (thin, or no
+## floor plate) — the bake and the loader share the rule.
 const PROP_BOX_MIN_THICKNESS: float = 24.0
 ## Interior lighting (DOS AddLightSafe point lights over a dim ambient).
 ## Interior light model (variant-2 records: intensity at sub+0 14..72,

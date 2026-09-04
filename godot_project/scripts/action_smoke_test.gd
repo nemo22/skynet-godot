@@ -19,6 +19,8 @@ const MapWriter := preload("res://scripts/editor/map_writer.gd")
 const MapFileC := preload("res://scripts/loaders/map_file.gd")
 const MapMeshN := preload("res://scripts/editor/map_mesh.gd")
 const MapEntityRecR := preload("res://scripts/editor/map_entity_rec.gd")
+const LevelScene := preload("res://scripts/level_scene.gd")
+const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
 
 const CAMPAIGN: Array = [
 	"MAP.210", "MAP.220", "MAP.230", "MAP.240",
@@ -54,6 +56,7 @@ func _ready() -> void:
 	_run_ai_checks()
 	_run_map_scene_checks()
 	_run_map_writer_checks()
+	_run_level_scene_checks()
 	print("[smoke] %s (%d failures)"
 		% ["ALL PASS" if _fails == 0 else "FAILED", _fails])
 	get_tree().quit(1 if _fails > 0 else 0)
@@ -487,6 +490,151 @@ func _run_map_writer_checks() -> void:
 		"created mesh has name 0, DOS y=50, yaw 512, cell 29/29")
 	_check(new_enemy != null and new_enemy.y == -100 - 0x10 and new_enemy.cell_x == 30,
 		"created enemy marker sits at y-0x10 in cell 30")
+	root.free()
+
+## F1 (docs/map_format_plan.md) — the baked level scene carries the
+## map's behaviour as nodes (scripts/level_behaviour.gd). MAP.216, the
+## base after the truck ride with its BIGDOOR gates: it bakes, the node
+## counts match the census, every gate is a Mover with its mesh and a
+## "move" animation, every chain link resolves to a node, and each
+## mover's animation ends (and passes its midpoint) exactly where
+## action_system.gd drives the same record.
+func _run_level_scene_checks() -> void:
+	# A fresh bake every run: this is the code under test.
+	var sp: String = LevelScene.scene_path("MAP.216")
+	if not sp.is_empty() and ResourceLoader.exists(sp):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(sp))
+	var p: String = Assets.level_scene("MAP.216")
+	_check(not p.is_empty() and ResourceLoader.exists(p), "MAP.216 level scene baked (%s)" % p)
+	if p.is_empty() or not ResourceLoader.exists(p):
+		return
+	var ps: PackedScene = ResourceLoader.load(p, "PackedScene", ResourceLoader.CACHE_MODE_IGNORE)
+	var root: Node = ps.instantiate() if ps != null else null
+	_check(root != null and int(root.get("bake_version")) == LevelScene.BAKE_VERSION,
+		"the scene is a v%d bake" % LevelScene.BAKE_VERSION)
+	if root == null:
+		return
+	var beh: Node = root.get_node_or_null("Behaviour")
+	_check(beh != null, "the level scene has a Behaviour branch")
+	if beh == null:
+		root.free()
+		return
+
+	# The records, classified the way the bake classified them.
+	var loader := LevelLoader.new()
+	loader.use_baked = false
+	var level: LevelLoader.Level = loader.load_level("MAP.216")
+	var expected: Dictionary = LevelBehaviour.census(level.map, level.transfrm)
+	var total: int = 0
+	var mismatch: Array = []
+	for kind in LevelBehaviour.KINDS:
+		var want: int = int(expected.get(kind, 0))
+		total += want
+		var c: Node = beh.get_node_or_null(String(LevelBehaviour.CONTAINER[kind]))
+		var got: int = c.get_child_count() if c != null else 0
+		if got != want:
+			mismatch.append("%s %d != %d" % [kind, got, want])
+	_check(mismatch.is_empty(), "node counts match the census %s%s"
+		% [str(expected), "" if mismatch.is_empty() else " — " + ", ".join(mismatch)])
+	_check(int(root.get("behaviour_count")) == total and total > 0,
+		"root.behaviour_count = %d" % total)
+	var mission: Node = beh.get_node_or_null("Mission")
+	_check(mission != null and int(mission.get("key")) == 210 and int(mission.get("objectives_total")) == 3,
+		"MAP.216 carries mission 210 with 3 objectives")
+
+	# Every mover record is a Mover with its mesh and its animation; every
+	# BIGDOOR gate leaf among them.
+	var by_id: Dictionary = {}
+	var movers: Node = beh.get_node_or_null("Movers")
+	if movers != null:
+		for m in movers.get_children():
+			by_id[int(m.get("id"))] = m
+	var mover_ents: Array = []
+	for e in level.map.entities:
+		if (e.flags & 3) == 1 and e.marker_type < 0 and ActionSystem.is_mover(e.link_act_type):
+			mover_ents.append(e)
+	var gates: int = 0
+	var gates_ok: int = 0
+	var bad: Array = []
+	for e in mover_ents:
+		var m: Node = by_id.get(e.file_off)
+		if m == null:
+			bad.append("no Mover for @%05x" % e.file_off)
+			continue
+		var nm: String = LevelLoader.MapFile.entity_name(level.map, e)
+		if nm == "BIGDOOR":
+			gates += 1
+			if String(m.name).begins_with("Mover_BIGDOOR"):
+				gates_ok += 1
+		var mesh: MeshInstance3D = m.get_node_or_null("Body/Mesh")
+		var ap: AnimationPlayer = m.get_node_or_null("AnimationPlayer")
+		if mesh == null or mesh.mesh == null:
+			bad.append("%s has no mesh" % m.name)
+		if ap == null or not ap.has_animation("move") or float(m.get("duration")) <= 0.0:
+			bad.append("%s has no move animation" % m.name)
+		var shape: CollisionShape3D = m.get_node_or_null("Body/Shape")
+		if shape == null or shape.shape == null:
+			bad.append("%s has no collider" % m.name)
+	_check(bad.is_empty() and not mover_ents.is_empty(),
+		"%d mover records → Movers with mesh, collider and animation%s"
+		% [mover_ents.size(), "" if bad.is_empty() else " — " + ", ".join(bad)])
+	_check(gates > 0 and gates_ok == gates, "every BIGDOOR gate of MAP.216 is a Mover (%d)" % gates)
+
+	# Chains: every NodePath in `targets` (or the SoundLoop's meta) resolves.
+	var links: int = 0
+	var broken: int = 0
+	for c in beh.get_children():
+		for n in c.get_children():
+			var paths: Array = []
+			if "targets" in n:
+				paths = n.get("targets")
+			elif n.has_meta("target"):
+				paths = [n.get_meta("target")]
+			for path in paths:
+				links += 1
+				if n.get_node_or_null(path) == null:
+					broken += 1
+	_check(links > 0 and broken == 0, "%d chain links resolve to nodes (%d broken)" % [links, broken])
+	var sounds: Node = beh.get_node_or_null("Sounds")
+	if sounds != null:
+		var silent: int = 0
+		for s in sounds.get_children():
+			if (s as AudioStreamPlayer3D).stream == null:
+				silent += 1
+		_check(silent == 0, "%d looping sounds carry their stream (%d without)" % [sounds.get_child_count(), silent])
+
+	# Parity: the animation at its midpoint and its end lands where the
+	# action system puts the same entity at half and full travel.
+	var action: ActionSystem = level.action
+	var worst_pos: float = 0.0
+	var worst_rot: float = 0.0
+	var compared: int = 0
+	for e in mover_ents:
+		var m: Node = by_id.get(e.file_off)
+		var node: Node3D = action._nodes.get(e.file_off)
+		if m == null or node == null or not action._movers.has(e.file_off):
+			continue
+		var st: Dictionary = action._movers[e.file_off]
+		var prm: Dictionary = LevelBehaviour.mover_params(e.link_act_type)
+		var anim: Animation = (m.get_node("AnimationPlayer") as AnimationPlayer).get_animation("move")
+		var body: Node3D = m.get_node("Body")
+		for f in [0.5, 1.0]:
+			st["progress"] = float(prm["span"]) * f
+			action._apply_mover_transform(node, st)
+			var want: Transform3D = node.transform
+			var t: float = anim.length * f
+			var pos: Vector3 = (m as Node3D).position + body.position
+			var basis: Basis = body.basis
+			if anim.track_get_type(0) == Animation.TYPE_POSITION_3D:
+				pos = (m as Node3D).position + anim.position_track_interpolate(0, t)
+			else:
+				basis = Basis(anim.rotation_track_interpolate(0, t))
+			worst_pos = maxf(worst_pos, want.origin.distance_to(pos))
+			for i in 3:
+				worst_rot = maxf(worst_rot, (want.basis[i] - basis[i]).length())
+			compared += 1
+	_check(compared > 0 and worst_pos < 0.5 and worst_rot < 0.01,
+		"%d mover animations match the action system (pos %.3f u, basis %.4f)" % [compared, worst_pos, worst_rot])
 	root.free()
 
 ## Walk a chain with ObjFlipLink's rules (follow link_next, stop at an

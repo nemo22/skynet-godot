@@ -731,7 +731,7 @@ func _step_mover(off: int, e: MapFile.Entity, delta: float) -> void:
 		m["dir"] = -m["dir"]                     # next activation reverses
 
 ## DOS axis p4 (0=X, 1=Y-down, 2=Z) → Godot world direction.
-static func _dos_axis(axis_i: int) -> Vector3:
+static func dos_axis(axis_i: int) -> Vector3:
 	if axis_i == 1:
 		return Vector3.DOWN
 	if axis_i == 2:
@@ -753,7 +753,7 @@ func _apply_mover_transform(node: Node3D, m: Dictionary) -> void:
 		# Translate along the DOS world axis (handlers 0x137a28/0x137ad0
 		# add to the entity position, not to a local frame).
 		node.transform = Transform3D(base.basis,
-			base.origin + _dos_axis(int(m["axis"])) * (m["progress"] * sign))
+			base.origin + dos_axis(int(m["axis"])) * (m["progress"] * sign))
 		return
 	# Swing/rot: rotate about the DOS axis in entity-local space.
 	# DOS→Godot conjugation keeps X/Y angle signs, negates Z.

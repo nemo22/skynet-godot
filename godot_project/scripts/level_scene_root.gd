@@ -22,3 +22,5 @@ extends Node3D
 ## For the log and the editor inspector.
 @export var static_count: int = 0
 @export var detail_count: int = 0
+## Nodes in the Behaviour branch (scripts/level_behaviour.gd).
+@export var behaviour_count: int = 0

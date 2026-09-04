@@ -1,0 +1,10 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/level/sound_cue.gd" id="1"]
+
+[node name="SoundCue" type="AudioStreamPlayer3D"]
+attenuation_model = 1
+unit_size = 400.0
+volume_db = -4.0
+max_distance = 9000.0
+script = ExtResource("1")
