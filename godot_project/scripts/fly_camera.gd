@@ -32,8 +32,10 @@ const BSAReader := preload("res://scripts/loaders/bsa_reader.gd")
 const Palette := preload("res://scripts/loaders/palette.gd")
 const Explosion := preload("res://scripts/explosion.gd")
 const WeaponModels := preload("res://scripts/weapon_models.gd")
-## How far ahead of the muzzle the player's own tracer starts.
+## How far ahead of the muzzle the player's own tracer starts, and how
+## far it is allowed to reach.
 const TRACER_START: float = 420.0
+const TRACER_MAX: float = 2600.0
 
 @onready var _cam: Camera3D = $Camera3D
 
@@ -1194,10 +1196,17 @@ func _shoot(idx: int = -1) -> void:
 	# went.
 	if kind == "bullet" or kind == "shotgun":
 		var beam_from: Vector3 = muzzle + fwd * TRACER_START
-		if beam_from.distance_to(endpoint) > 60.0:
+		# Stop it well before the horizon. A ray that hits nothing ends
+		# 60,000 units out, and a 6-unit box that long, drawn additive,
+		# is a huge glowing wedge across the view — "the shots render as
+		# if they were flying in from the side" (2026-09-04).
+		var beam_to: Vector3 = beam_from
+		var reach: float = minf(beam_from.distance_to(endpoint), TRACER_MAX)
+		beam_to = beam_from + fwd * reach
+		if reach > 120.0:
 			var tr: MeshInstance3D = Tracer.new()
 			get_tree().current_scene.add_child(tr)
-			tr.setup(beam_from, endpoint, Color(1.0, 0.85, 0.5), 6.0)
+			tr.setup(beam_from, beam_to, Color(1.0, 0.86, 0.55, 0.5), 2.0)
 	# Shotgun: a puff of smoke lingering at the muzzle (DOS mode only —
 	# ENHANCED already got its particle wisp above).
 	if kind == "shotgun" and not FxParticles.on():
@@ -1564,7 +1573,8 @@ const VM3D_POS := Vector3(8.5, -9.0, -50.0)
 const VM3D_YAW: float = 0.34
 const VM3D_ROLL: float = -0.05
 ## An upright pipe needs to sit lower and further out than a rifle.
-const VM3D_PIPE_POS := Vector3(16.0, -22.0, -82.0)
+const VM3D_PIPE_POS := Vector3(17.0, -26.0, -78.0)
+const VM3D_PIPE_LEN: float = 52.0
 var _vm3d: Node3D = null
 var _vm3d_idx: int = -1
 var _vm3d_kick: float = 0.0
@@ -1708,7 +1718,11 @@ func _update_viewmodel_3d(delta: float) -> void:
 	if _vm3d_idx != _weapon_idx or _vm3d == null or not is_instance_valid(_vm3d):
 		if _vm3d != null and is_instance_valid(_vm3d):
 			_vm3d.queue_free()
-		_vm3d = WeaponModels.for_weapon(_weapon_idx, VM3D_LEN, VM3D_LEN * 0.34)
+		var pipe: bool = String(WeaponModels.WEAPON_KINDS[_weapon_idx]) == "pipe"
+		# A length of scaffolding is longer than a rifle and much thinner.
+		_vm3d = WeaponModels.for_weapon(_weapon_idx,
+			VM3D_PIPE_LEN if pipe else VM3D_LEN,
+			(VM3D_PIPE_LEN * 0.16) if pipe else (VM3D_LEN * 0.34))
 		_vm3d_idx = _weapon_idx
 		if _vm3d == null:
 			_vm_tex.visible = false
@@ -1728,13 +1742,27 @@ func _update_viewmodel_3d(delta: float) -> void:
 	_vm_tex.visible = true
 	_layout_vm3d()
 	# Recoil eases out from the kick the shot itself armed (_shoot).
-	_vm3d_kick = maxf(_vm3d_kick - delta * 6.0, 0.0)
+	var decay: float = 3.0 \
+		if String(WeaponModels.WEAPON_KINDS[_weapon_idx]) == "pipe" else 6.0
+	_vm3d_kick = maxf(_vm3d_kick - delta * decay, 0.0)
 	var speed: float = Vector2(velocity.x, velocity.z).length() / maxf(walk_speed, 1.0)
 	var t: float = float(Time.get_ticks_msec()) * 0.004
 	var sway := Vector3(sin(t) * 0.9, absf(cos(t)) * 0.7, 0.0) * clampf(speed, 0.0, 1.2)
-	var home: Vector3 = VM3D_PIPE_POS \
-		if String(WeaponModels.WEAPON_KINDS[_weapon_idx]) == "pipe" else VM3D_POS
-	_vm3d.position = home + sway + Vector3(0.0, _vm3d_kick * 1.6, _vm3d_kick * 4.5)
+	if String(WeaponModels.WEAPON_KINDS[_weapon_idx]) == "pipe":
+		# A swing, not a recoil: the pipe goes up and back, then comes
+		# down and across the view. `_vm3d_kick` runs 1 -> 0 over the
+		# stroke, so (1 - kick) is the progress through it.
+		var swing: float = 1.0 - _vm3d_kick
+		var arc: float = sin(swing * PI)                 # 0 -> 1 -> 0
+		var down: float = smoothstep(0.25, 1.0, swing)
+		_vm3d.position = VM3D_PIPE_POS + sway + Vector3(
+			-arc * 26.0, arc * 16.0 - down * 10.0, arc * 14.0)
+		_vm3d.rotation = Vector3(
+			-arc * 0.55,
+			PI * 0.5 + 0.45 + arc * 0.5,
+			deg_to_rad(74.0) - down * 1.5)
+		return
+	_vm3d.position = VM3D_POS + sway + Vector3(0.0, _vm3d_kick * 1.6, _vm3d_kick * 4.5)
 	_vm3d.rotation.x = _vm3d_kick * 0.20
 
 ## The viewmodel viewport covers the WORLD area only — from the top of

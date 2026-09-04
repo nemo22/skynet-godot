@@ -773,6 +773,7 @@ func _begin_level(name: String) -> void:
 	_collect_radiation(level)
 	_setup_water(level)
 	_scatter_clutter(level)
+	_place_dust(level)
 	_compass_north = _marker_value(level, 7)
 	_set_hud_mode(player.vehicle if is_instance_valid(player) else 0)
 	if _dm != null:
@@ -1039,7 +1040,6 @@ func _set_sky_fill(level: LevelLoader.Level, map_name: String = "") -> void:
 	_dust = null
 	if level.is_outdoor and camera != null:
 		_ash = FxParticles.ambient_ash(camera)
-		_dust = FxParticles.dust_clouds(camera)
 	if night:
 		# No dome on night maps: the flat palette-0x11 sky and the moon.
 		if level.sky != null and is_instance_valid(level.sky):
@@ -1751,11 +1751,18 @@ func _radiation_dose(at: Vector3) -> float:
 ## Rules: nothing on a slope you could not walk, nothing within
 ## CLUTTER_CLEAR of a placed entity (buildings, vehicles, the objective
 ## props) or of the player's own start, and nothing at all on LOW detail.
-const CLUTTER_SPACING: Array = [0.0, 1500.0, 1000.0]   # per DETAIL level
+const CLUTTER_SPACING: Array = [0.0, 2000.0, 1400.0]   # per DETAIL level
 const CLUTTER_SKIP: float = 0.45          # fraction of cells left empty
 const CLUTTER_CLEAR: float = 620.0        # keep away from real entities
 const CLUTTER_MAX_SLOPE: float = 260.0    # height change across a cell
 const CLUTTER_MARGIN: float = 2500.0      # how far past the buildings
+const CLUTTER_MAX_SIZE: float = 240.0     # longest side of any one prop
+const CLUTTER_SINK: float = 12.0          # bed it into the ground
+## How far a scattered prop is drawn. Without a limit every one of them
+## is submitted every frame from anywhere on the map, which is what made
+## looking across the valley from the jeep stutter (2026-09-04). Godot
+## fades a GeometryInstance3D out by distance for free.
+const CLUTTER_DRAW_RANGE: float = 7000.0
 ## [bank, record, weight] — every one of these has a model in the pack.
 const CLUTTER_PROPS: Array = [
 	[215, 6, 5.0],    # dry branches
@@ -1776,6 +1783,9 @@ func _scatter_clutter(level: LevelLoader.Level) -> void:
 	if _clutter != null and is_instance_valid(_clutter):
 		_clutter.queue_free()
 	_clutter = null
+	if _dust_root != null and is_instance_valid(_dust_root):
+		_dust_root.queue_free()
+	_dust_root = null
 	if not Render.enhanced() or level == null or not level.is_outdoor:
 		return
 	if level.wld == null or level.map == null or _dm != null:
@@ -1837,14 +1847,99 @@ func _scatter_clutter(level: LevelLoader.Level) -> void:
 			var node: Node3D = _clutter_prop(rng, total)
 			if node == null:
 				continue
-			node.position = Vector3(at.x, h0, -at.y)
+			# The sprite's world size is the wrong yardstick for a model:
+			# fitting a felled LOG to a tall sprite's height stretched it
+			# into a twenty-metre tree floating over the hill
+			# (2026-09-04). Cap the longest side and sit it in the dirt.
+			var b: AABB = _measure_node(node)
+			var longest: float = maxf(b.size.x, maxf(b.size.y, b.size.z))
+			if longest > CLUTTER_MAX_SIZE:
+				node.scale = Vector3.ONE * (CLUTTER_MAX_SIZE / longest)
+			var ground: float = (h0 + h1 + h2) / 3.0
+			node.position = Vector3(at.x, ground - CLUTTER_SINK, -at.y)
+			_dull(node)
+			_range_limit(node, CLUTTER_DRAW_RANGE)
 			_clutter.add_child(node)
 			made += 1
 		x += spacing
 	print("[level] clutter: %d props over %.0fx%.0f u" % [made, hi.x - lo.x, hi.y - lo.y])
 
+## Volumetric dust over the open ground. Ellipsoid FogVolumes in the same
+## froxel grid as the global haze, so the moon and every muzzle flash
+## light them; they need Environment.volumetric_fog_enabled, which is on
+## above LOW detail.
+const DUST_VOLUMES: int = 6
+const DUST_SIZE := Vector3(5200.0, 900.0, 5200.0)
+var _dust_root: Node3D = null
+
+func _place_dust(level: LevelLoader.Level) -> void:
+	if _dust_root != null and is_instance_valid(_dust_root):
+		_dust_root.queue_free()
+	_dust_root = null
+	if not Render.enhanced() or level == null or not level.is_outdoor:
+		return
+	if level.wld == null or Settings.detail < Settings.HIGH:
+		return
+	_dust_root = Node3D.new()
+	_dust_root.name = "Dust"
+	add_child(_dust_root)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(level.map_suffix)
+	var centre := Vector3.ZERO
+	if is_instance_valid(player):
+		centre = player.global_position
+	for i in DUST_VOLUMES:
+		var a: float = rng.randf() * TAU
+		var r: float = 2000.0 + rng.randf() * 11000.0
+		var at := Vector3(centre.x + cos(a) * r, 0.0, centre.z + sin(a) * r)
+		at.y = WldTerrain.height_at_world(level.wld, at.x, -at.z) + rng.randf_range(150.0, 700.0)
+		FxParticles.dust_volume(_dust_root, at,
+			DUST_SIZE * rng.randf_range(0.6, 1.4), rng.randf_range(0.02, 0.05))
+
 ## One weighted pick from CLUTTER_PROPS, built through the replacement
 ## pack at the DOS sprite's own world size.
+static func _measure_node(n: Node3D) -> AABB:
+	var out := AABB()
+	var first := true
+	for c in n.get_children():
+		if c is MeshInstance3D and (c as MeshInstance3D).mesh != null:
+			var a: AABB = (c as Node3D).transform * (c as MeshInstance3D).get_aabb()
+			out = a if first else out.merge(a)
+			first = false
+		elif c is Node3D:
+			var a2: AABB = (c as Node3D).transform * _measure_node(c)
+			if a2.size != Vector3.ZERO:
+				out = a2 if first else out.merge(a2)
+				first = false
+	return out
+
+## Stop drawing a prop past `far`, fading it out over the last fifth so
+## it never pops.
+static func _range_limit(n: Node, far: float) -> void:
+	if n is GeometryInstance3D:
+		var g := n as GeometryInstance3D
+		g.visibility_range_end = far
+		g.visibility_range_end_margin = far * 0.2
+		g.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+	for c in n.get_children():
+		_range_limit(c, far)
+
+## Photoscans come with a specular response tuned for daylight; under a
+## night sky reflection they glint like wet plastic. Roughen them.
+static func _dull(n: Node) -> void:
+	if n is MeshInstance3D:
+		var mi := n as MeshInstance3D
+		for si in mi.get_surface_override_material_count():
+			var m: Material = mi.get_active_material(si)
+			if m is BaseMaterial3D:
+				var d: BaseMaterial3D = (m as BaseMaterial3D).duplicate()
+				d.roughness = clampf(d.roughness + 0.35, 0.0, 1.0)
+				d.metallic = 0.0
+				d.metallic_specular = 0.15
+				mi.set_surface_override_material(si, d)
+	for c in n.get_children():
+		_dull(c)
+
 func _clutter_prop(rng: RandomNumberGenerator, total: float) -> Node3D:
 	var r: float = rng.randf() * total
 	for c in CLUTTER_PROPS:
@@ -3255,6 +3350,34 @@ func run_command(line: String) -> String:
 				report += "
 " + ", ".join(got)
 			return report
+		"where", "dump":
+			# Everything needed to reproduce a report: where the player
+			# stands, what he is looking at, and what the level is made
+			# of right now. Goes to the log as well as the console.
+			var lines: Array = []
+			if p != null:
+				var gp: Vector3 = p.global_position
+				lines.append("map %s  pos %.0f %.0f %.0f  yaw %.1f  pitch %.1f" % [
+					_level_name(), gp.x, gp.y, gp.z,
+					rad_to_deg(p.rotation.y),
+					rad_to_deg(p.get_node("Camera3D").rotation.x) if p.has_node("Camera3D") else 0.0])
+				lines.append("relaunch:  --map=%s --pos=%.0f,%.0f,%.0f --yaw=%.0f --noclip --god"
+					% [_level_name(), gp.x, gp.y + 75.0, gp.z, rad_to_deg(p.rotation.y)])
+			lines.append("fps %d  draw calls %d  primitives %d  video mem %.1f MB" % [
+				Engine.get_frames_per_second(),
+				Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
+				Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),
+				Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0])
+			lines.append("render %s  detail %s  clutter %d  dust %d  enemies %d" % [
+				"ENHANCED" if Render.enhanced() else "DOS",
+				Settings.LEVEL_NAMES[Settings.detail],
+				_clutter.get_child_count() if _clutter != null and is_instance_valid(_clutter) else 0,
+				_dust_root.get_child_count() if _dust_root != null and is_instance_valid(_dust_root) else 0,
+				get_tree().get_nodes_in_group("enemy").size()])
+			for l in lines:
+				print("[where] %s" % l)
+			return "
+".join(lines)
 		"pause", "options":
 			# Agent aid / quick access: open the in-game menu, on the
 			# OPTIONS page when asked for.
@@ -3544,6 +3667,7 @@ func _build_status_ui() -> void:
 ## exactly this and which Marek likes.
 const MIN_HUD_MARGIN: float = 26.0
 const MIN_HUD_TINT := Color(0.62, 0.94, 0.70)
+const MIN_HUD_WIDTH: float = 430.0
 const COMPASS_SPAN: float = 110.0        # degrees across the strip
 const COMPASS_SIZE := Vector2(430.0, 24.0)
 var _min_hud: Control = null
@@ -3569,11 +3693,16 @@ func _build_hud_minimal(canvas: CanvasLayer) -> void:
 	_min_hud.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_min_hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	canvas.add_child(_min_hud)
-	# --- the plate, bottom left ---
+	# --- bottom left ---
+	# No box around it. The frame was sized by its anchors and not by
+	# what was inside, so the gauges ran straight out through the border
+	# — and it was not earning its place anyway; the drop shadow on the
+	# type keeps everything legible over any scene (2026-09-04).
 	var plate := _min_panel()
 	plate.anchor_top = 1.0
 	plate.anchor_bottom = 1.0
 	plate.offset_left = MIN_HUD_MARGIN
+	plate.offset_right = MIN_HUD_MARGIN + MIN_HUD_WIDTH
 	plate.offset_top = -168.0
 	plate.offset_bottom = -MIN_HUD_MARGIN
 	_min_hud.add_child(plate)
@@ -3648,15 +3777,11 @@ func _min_slot(parent: Control, icon: float, size: int) -> Array:
 func _min_panel() -> PanelContainer:
 	var pc := PanelContainer.new()
 	pc.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.02, 0.03, 0.04, 0.50)
-	sb.border_color = Color(MIN_HUD_TINT.r, MIN_HUD_TINT.g, MIN_HUD_TINT.b, 0.20)
-	sb.set_border_width_all(1)
-	sb.set_corner_radius_all(3)
-	sb.content_margin_left = 13.0
-	sb.content_margin_right = 13.0
-	sb.content_margin_top = 9.0
-	sb.content_margin_bottom = 9.0
+	var sb := StyleBoxEmpty.new()
+	sb.content_margin_left = 2.0
+	sb.content_margin_right = 2.0
+	sb.content_margin_top = 4.0
+	sb.content_margin_bottom = 4.0
 	pc.add_theme_stylebox_override("panel", sb)
 	return pc
 

@@ -251,6 +251,67 @@ static func muzzle_smoke(scene: Node, at: Vector3, fwd: Vector3,
 	_free_after(p, 1.4)
 	return p
 
+## A 3D noise field the fog volumes below take their density from —
+## built once and shared, so a bank of dust actually has structure
+## instead of being one flat value.
+static var _fog_noise: Texture3D = null
+static func fog_noise() -> Texture3D:
+	if _fog_noise != null:
+		return _fog_noise
+	var n := FastNoiseLite.new()
+	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	n.frequency = 0.03
+	n.fractal_octaves = 3
+	var t := NoiseTexture3D.new()
+	t.noise = n
+	t.width = 48
+	t.height = 48
+	t.depth = 48
+	t.seamless = true
+	_fog_noise = t
+	return t
+
+## A REAL volumetric dust bank: a FogVolume the light scatters through,
+## not a transparent quad. The first pass drew big billboards, which read
+## as exactly what they were — "one square polygon with some opacity"
+## (2026-09-04). Godot's volumetric fog does this properly, so the dust
+## and the glow around a fire now live in the same froxel grid as the
+## global haze.
+static func dust_volume(parent: Node3D, at: Vector3, size: Vector3,
+		density: float = 0.035, tint: Color = Color(0.44, 0.40, 0.35)) -> FogVolume:
+	if parent == null:
+		return null
+	var fv := FogVolume.new()
+	fv.shape = RenderingServer.FOG_VOLUME_SHAPE_ELLIPSOID
+	fv.size = size
+	fv.position = at
+	var m := FogMaterial.new()
+	m.density = density
+	m.albedo = tint
+	m.edge_fade = 0.6
+	m.height_falloff = 0.25
+	m.density_texture = fog_noise()
+	fv.material = m
+	parent.add_child(fv)
+	return fv
+
+## The glow a fire throws into the air around it.
+static func fire_volume(parent: Node3D, radius: float) -> FogVolume:
+	if parent == null:
+		return null
+	var fv := FogVolume.new()
+	fv.shape = RenderingServer.FOG_VOLUME_SHAPE_ELLIPSOID
+	fv.size = Vector3(radius * 3.0, radius * 4.0, radius * 3.0)
+	fv.position = Vector3(0.0, radius * 1.2, 0.0)
+	var m := FogMaterial.new()
+	m.density = 0.05
+	m.albedo = Color(0.9, 0.55, 0.25)
+	m.emission = Color(1.0, 0.55, 0.18)
+	m.edge_fade = 0.75
+	fv.material = m
+	parent.add_child(fv)
+	return fv
+
 ## Dust banks drifting through the outdoor maps: big, very faint sheets
 ## low over the ground that the moonlight catches, on top of the ash.
 ## This is a nuclear winter — the air itself should look dirty.

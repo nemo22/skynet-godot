@@ -560,10 +560,24 @@ static func _chamfer_mesh(size: Vector3, bevel: float) -> ArrayMesh:
 	_bevel_cache[key] = am
 	return am
 
+## One flat triangle. The UV is a planar projection along the face's
+## DOMINANT axis — using (x, y) for every face made the +/-X faces
+## degenerate (constant u), and generate_tangents() then produced NaN
+## tangents there, which the normal map turned into a blown-out white
+## panel: "the uzi has bad normals, you can see into the weapon"
+## (2026-09-04).
 static func _tri(st: SurfaceTool, n: Vector3, p0: Vector3, p1: Vector3, p2: Vector3) -> void:
+	var ax: float = absf(n.x)
+	var ay: float = absf(n.y)
+	var az: float = absf(n.z)
 	for p in [p0, p1, p2]:
 		st.set_normal(n)
-		st.set_uv(Vector2(p.x, p.y))
+		if ax >= ay and ax >= az:
+			st.set_uv(Vector2(p.z, p.y))
+		elif ay >= az:
+			st.set_uv(Vector2(p.x, p.z))
+		else:
+			st.set_uv(Vector2(p.x, p.y))
 		st.add_vertex(p)
 
 static func _quad(st: SurfaceTool, n: Vector3, p0: Vector3, p1: Vector3,

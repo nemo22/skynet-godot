@@ -3,7 +3,7 @@
 
 extends MeshInstance3D
 
-const LIFETIME: float = 0.11
+const LIFETIME: float = 0.07
 const WIDTH: float = 16.0
 
 var _life: float = LIFETIME

@@ -79,6 +79,22 @@ static func build(bytes: PackedByteArray, scale: int = 1) -> FontFile:
 		font.set_glyph_offset(0, size2, cp, Vector2(0, -sz))
 		font.set_glyph_advance(0, sz, cp, Vector2((gw + 1) * scale, 0))
 
+	# The DOS fonts stop at 0x60: there are no lowercase glyphs, because
+	# the game only ever printed capitals. Mixed-case text — the mission
+	# lines out of the briefing, for one — therefore came out as stray
+	# letters and dots (2026-09-04). Point every lowercase codepoint at
+	# its capital so any string renders.
+	for i in GLYPH_COUNT:
+		var up: int = FIRST_CODEPOINT + i
+		if up < 0x41 or up > 0x5A:
+			continue
+		var low: int = up + 0x20
+		font.set_glyph_texture_idx(0, size2, low, 0)
+		font.set_glyph_uv_rect(0, size2, low, font.get_glyph_uv_rect(0, size2, up))
+		font.set_glyph_size(0, size2, low, font.get_glyph_size(0, size2, up))
+		font.set_glyph_offset(0, size2, low, font.get_glyph_offset(0, size2, up))
+		font.set_glyph_advance(0, sz, low, font.get_glyph_advance(0, sz, up))
+
 	# Space (0x20) has no entry in the table — synthesise a blank glyph
 	# advanced by the header em_width.
 	var space_w := maxi(bytes.decode_u16(0), 2) * scale
