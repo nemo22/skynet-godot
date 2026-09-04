@@ -703,6 +703,8 @@ func _begin_level(name: String) -> void:
 			player.use_pressed.connect(_on_use_pressed)
 		if not player.secondary_changed.is_connected(_on_secondary_changed):
 			player.secondary_changed.connect(_on_secondary_changed)
+		if not player.hurt.is_connected(_on_hurt):
+			player.hurt.connect(_on_hurt)
 	if Net.active:
 		# Deathmatch: no map enemies (the 31/32 markers on the arenas are
 		# the DOS jeep/HK vehicle spots) and no map pickups — the server
@@ -1483,6 +1485,7 @@ func _process(delta: float) -> void:
 			_rad_dose = 0.0
 		if _rad_fill != null:
 			_rad_fill.anchor_right = clampf(_rad_dose / RAD_MAX_DOSE, 0.0, 1.0)
+		_fade_hurt(delta)
 		if _water != null:
 			_update_water_tint()
 			if player.head_under and player.air < 10.0:
@@ -1501,6 +1504,34 @@ func _process(delta: float) -> void:
 	# No DOS mission ends by body count: they end when the objective
 	# counter runs out (_on_objective_complete). `_mission_hostiles` is
 	# only a counter for the HUD / tests.
+
+## Taking a hit: a red wash over the view that fades in a fraction of a
+## second. It replaces the feedback that was lost when the impact effect
+## stopped being drawn full-screen at the camera (explosion.gd NEAR_SKIP)
+## — you still know you were hit and roughly how hard.
+const HURT_FLASH_MAX: float = 0.42
+var _hurt_flash: ColorRect = null
+var _hurt_level: float = 0.0
+
+func _on_hurt(amount: float) -> void:
+	_hurt_level = minf(_hurt_level + clampf(amount / 45.0, 0.10, 0.5), HURT_FLASH_MAX)
+	if _hurt_flash == null or not is_instance_valid(_hurt_flash):
+		var cl := CanvasLayer.new()
+		cl.layer = 4                      # over the world, under the HUD
+		add_child(cl)
+		_hurt_flash = ColorRect.new()
+		_hurt_flash.color = Color(0.75, 0.05, 0.04, 0.0)
+		_hurt_flash.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		_hurt_flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		cl.add_child(_hurt_flash)
+	_hurt_flash.color.a = _hurt_level
+
+func _fade_hurt(delta: float) -> void:
+	if _hurt_level <= 0.0:
+		return
+	_hurt_level = maxf(_hurt_level - delta * 1.6, 0.0)
+	if _hurt_flash != null and is_instance_valid(_hurt_flash):
+		_hurt_flash.color.a = _hurt_level
 
 ## The thrown item changed (the `0` key / middle mouse button). The DOS
 ## panel has no slot for the secondary, so it is announced on the status
@@ -2921,6 +2952,19 @@ func run_command(line: String) -> String:
 			elif not args.is_empty() and args[0].to_lower() == "now":
 				p.call("_throw_secondary")
 			return "secondary: %s x%d" % [p.secondary_name, p.secondary_ammo]
+		"drop":
+			# Agent aid: spawn a crate drop at the player's feet.
+			if p == null or _current_level == null:
+				return "no level"
+			var dt: int = int(args[0]) if args.size() > 0 and args[0].is_valid_int() else 3
+			var side: float = float(args[1]) if args.size() > 1 and args[1].is_valid_float() else 0.0
+			var b := Basis(Vector3.UP, p.rotation.y)
+			var at: Vector3 = p.global_position - b.z * 200.0 + b.x * side
+			# Over 1000 it is a sprite index, not a drop-table type.
+			var made: Node = LevelLoader.spawn_item(_current_level, at, dt) if dt > 1000 				else LevelLoader.spawn_drop(_current_level, at, dt)
+			if made == null:
+				return "drop %d produced nothing" % dt
+			return "dropped %s at %s" % [made.name, made.position]
 		"use":
 			# The action key, from a script: --console="tp …;use".
 			if p == null:

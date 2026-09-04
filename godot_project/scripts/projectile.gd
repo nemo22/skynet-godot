@@ -38,6 +38,8 @@ const Explosion    := preload("res://scripts/explosion.gd")
 static var _mesh_cache: Dictionary = {}
 ## How much wider a laser bolt is drawn than its 3x7 u model (see setup).
 const BOLT_FATTEN: float = 3.0
+## Halo diameter as a fraction of the bolt's length.
+const GLOW_SCALE: float = 0.32
 
 var _dir: Vector3 = Vector3.FORWARD
 var _speed: float = 3000.0
@@ -148,12 +150,14 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 		_light.omni_range = maxf(_splash, 420.0)
 		add_child(_light)
 
-## The soft additive halo that makes a bolt readable in flight. One
-## camera-facing quad, the shot's own colour, unshaded and depth-tested
-## normally so a wall still hides it.
+## The soft halo that makes a bolt readable in flight. It must be a
+## round FALLOFF, not a flat quad: the first cut had no texture, so a
+## walker's laser read as "a blue semi-transparent square" (2026-09-04).
+## FxParticles.dot() is the same radial dot the particle effects use.
 func _add_glow(length: float) -> void:
 	var qm := QuadMesh.new()
-	qm.size = Vector2(maxf(length, 60.0) * 0.55, maxf(length, 60.0) * 0.55)
+	var d: float = maxf(length, 60.0) * GLOW_SCALE
+	qm.size = Vector2(d, d)
 	var g := MeshInstance3D.new()
 	g.mesh = qm
 	var m := StandardMaterial3D.new()
@@ -161,7 +165,8 @@ func _add_glow(length: float) -> void:
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
 	m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-	m.albedo_color = Color(_color.r, _color.g, _color.b, 0.5)
+	m.albedo_texture = FxParticles.dot()
+	m.albedo_color = Color(_color.r, _color.g, _color.b, 0.45)
 	m.disable_receive_shadows = true
 	g.material_override = m
 	g.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF

@@ -56,6 +56,16 @@ static func _surface() -> void:
 	nimg.generate_mipmaps()
 	_grunge_n = ImageTexture.create_from_image(nimg)
 
+## The shared grime texture and its normal map, for the other procedural
+## model builders (weapon_models.gd) so every item wears the same wear.
+static func grunge() -> Texture2D:
+	_surface()
+	return _grunge
+
+static func grunge_normal() -> Texture2D:
+	_surface()
+	return _grunge_n
+
 ## sprite index → [builder, colour]
 const MODELS: Dictionary = {
 	27399: ["can", WHITE],                       # 214_007 health 50 %

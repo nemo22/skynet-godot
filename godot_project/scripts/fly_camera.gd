@@ -1330,6 +1330,8 @@ func _melee_hit(from: Vector3, fwd: Vector3, dmg: float) -> void:
 ## Emitted when the use key finds nothing to operate — the level
 ## controller then checks for an armed map exit around the player.
 signal secondary_changed(name: String, count: int)
+## A hit landed on the player (after armour) — the HUD flashes for it.
+signal hurt(amount: float)
 signal use_pressed(pos: Vector3)
 
 func _try_activate() -> void:
@@ -1378,6 +1380,7 @@ func take_damage(amount: float, scaled: bool = true) -> void:
 		armor = maxf(armor - soak / max_health, 0.0)
 		amount -= soak
 	health -= amount
+	hurt.emit(amount)
 	Audio.play_sfx("HIT2.RAW", -3.0)
 	if health <= 0.0:
 		health = 0.0

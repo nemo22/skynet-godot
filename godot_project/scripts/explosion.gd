@@ -28,6 +28,11 @@ const BSAReader := preload("res://scripts/loaders/bsa_reader.gd")
 ## comes out near 24 fps on a typical CPU — good visual default.
 const ANIM_FPS: float = 24.0
 
+## Nothing is drawn closer than this to the eye, and no effect may span
+## more than NEAR_SIZE_RATIO * 2 of its distance from it.
+const NEAR_SKIP: float = 70.0
+const NEAR_SIZE_RATIO: float = 0.4
+
 const BANK_ENEMY_DEATH: int = 358
 const BANK_ROCKET: int = 367
 
@@ -104,6 +109,18 @@ func setup(at: Vector3, radius: float,
 		archive_id: int = BANK_ENEMY_DEATH) -> void:
 	global_position = at
 	_radius = maxf(radius, 60.0)
+	# A shot that lands ON the player detonates at the camera, where any
+	# billboard covers the whole screen — "when a robot hits me it blocks
+	# the entire view" (2026-09-04). Cap the effect's apparent size by
+	# what it is allowed to subtend, and drop it altogether when it goes
+	# off inside the player's own head.
+	var cam: Camera3D = get_viewport().get_camera_3d() if is_inside_tree() else null
+	if cam != null:
+		var dist: float = cam.global_position.distance_to(at)
+		if dist < NEAR_SKIP:
+			queue_free()
+			return
+		_radius = minf(_radius, dist * NEAR_SIZE_RATIO)
 	_frames = _load_frames(archive_id)
 	if _frames.is_empty():
 		# Bank failed to load — disappear silently rather than show

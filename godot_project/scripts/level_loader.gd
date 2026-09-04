@@ -40,6 +40,22 @@ const SPRITE_HEALTH_BANKS := [214]        # TEXTURE.214 "equipment"
 ## FUN_0014f4xx: `tex_w * puVar1[0x11]`); the texture dimensions already
 ## carry each prop's relative size, so a single world-scale suffices.
 const SPRITE_PIXEL_SIZE: float = 2.0
+## Collectibles are drawn at the DOS renderer's own 1:1 scale.
+##
+## FUN_0014f208 hands the blitter `record.width * scale`, where `scale`
+## is the entity's 8.8 factor and the distances it works in are the same
+## fixed-point world units — so at scale 1.0 a sprite is exactly as many
+## world units wide as it has pixels. The port's 2.0 was picked to make
+## the SCENERY (trees, rubble, barrels) read at a believable size, and it
+## turned the items into furniture: a 141x24 px ammo belt came out 282 u
+## long, wider than the console desk it lay on ("the items out of the
+## crates are terribly big", 2026-09-04). Items go back to 1:1; scenery
+## keeps the tuned scale until its own factor is recovered.
+const PICKUP_PIXEL_SIZE: float = 1.0
+
+## The scale a variant-3 sprite is drawn at.
+static func pixel_scale_for(sprite_index: int) -> float:
+	return PICKUP_PIXEL_SIZE if PickupData.ITEMS.has(sprite_index) 		else SPRITE_PIXEL_SIZE
 const INDOOR_SPRITE_LIFT: float = 16.0
 
 ## Enemy-type ID → mesh base name (no extension). Extracted from the
@@ -839,7 +855,8 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 		if tex == null:
 			continue
 
-		var px: float = Assets.sprite_pixel_size(bank, rec_id, tex, SPRITE_PIXEL_SIZE)
+		var px: float = Assets.sprite_pixel_size(bank, rec_id, tex,
+			pixel_scale_for(e.sprite_index))
 		var world_h: float = float(tex.get_height()) * px
 		# Ground level: outdoor sprites rest on the terrain surface;
 		# indoor sprites use the placement Y.
@@ -928,6 +945,14 @@ static func spawn_drop(level: Level, pos: Vector3, drop_type: int) -> Sprite3D:
 	var si: int = int(choices[randi() % choices.size()])
 	if si <= 0:
 		return null
+	return spawn_item(level, pos, si)
+
+## One pickup sprite `si` placed on the ground at `pos` — the tail of
+## spawn_drop, also reachable from the console (`drop <sprite index>`)
+## so the ENHANCED models can be looked at without hunting for a crate.
+static func spawn_item(level: Level, pos: Vector3, si: int) -> Sprite3D:
+	if level == null or level.sprites == null:
+		return null
 	var tex: Texture2D = Assets.texture(si >> 7, si & 0x7F, true)
 	if tex == null:
 		return null
@@ -938,7 +963,8 @@ static func spawn_drop(level: Level, pos: Vector3, drop_type: int) -> Sprite3D:
 		spr = p
 	else:
 		spr = Sprite3D.new()
-	var px: float = Assets.sprite_pixel_size(si >> 7, si & 0x7F, tex, SPRITE_PIXEL_SIZE)
+	var px: float = Assets.sprite_pixel_size(si >> 7, si & 0x7F, tex,
+		pixel_scale_for(si))
 	_style_sprite(spr, tex, px)
 	var ground: float = pos.y
 	if level.is_outdoor and level.wld != null:
