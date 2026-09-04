@@ -2965,6 +2965,10 @@ func run_command(line: String) -> String:
 			if made == null:
 				return "drop %d produced nothing" % dt
 			return "dropped %s at %s" % [made.name, made.position]
+		"weaponview", "vm3d":
+			# DETAIL -> WEAPON VIEW, from a script.
+			Settings.set_weapon_3d(_bool_arg(args, not Settings.weapon_3d))
+			return "weapon view: %s" % ("3D MODEL" if Settings.weapon_3d else "DOS ART")
 		"use":
 			# The action key, from a script: --console="tp …;use".
 			if p == null:

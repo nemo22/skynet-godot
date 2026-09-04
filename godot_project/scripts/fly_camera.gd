@@ -1551,12 +1551,26 @@ func _capture(on: bool) -> void:
 ## How far the viewmodel is allowed to sink behind the HUD bar, in DOS
 ## pixels — the grip and the hands read better tucked slightly under it.
 const HUD_OVERLAP: float = 14.0
+##
+## It renders in its OWN viewport with its own camera. A gun held a
+## couple of dozen units from a 75-degree world camera sits deep in the
+## lens: the barrel splays outward, the receiver skews and the near half
+## swells — which is what "it has to be perspective-corrected" means
+## (2026-09-04). Every shooter solves it the same way: a second camera
+## with a narrow field of view and its own light rig, composited over
+## the world. It also retires the no-depth-test hack, because the level
+## is simply not in that viewport, so no wall can slice the gun.
 const VM3D_LEN: float = 34.0            # model length in world units
-const VM3D_POS := Vector3(11.0, -6.5, -26.0)
-const VM3D_YAW: float = 0.17
+const VM3D_FOV: float = 40.0            # narrow: no wide-angle stretch
+const VM3D_POS := Vector3(8.5, -9.0, -50.0)
+const VM3D_YAW: float = 0.34
+const VM3D_ROLL: float = -0.05
 var _vm3d: Node3D = null
 var _vm3d_idx: int = -1
 var _vm3d_kick: float = 0.0
+var _vm_vp: SubViewport = null           # the viewmodel's own render target
+var _vm_cam3d: Camera3D = null
+var _vm_tex: TextureRect = null          # composites it over the world
 
 func _build_viewmodel() -> void:
 	_vm_layer = CanvasLayer.new()
@@ -1608,51 +1622,104 @@ func _process(delta: float) -> void:
 	_viewmodel.texture = frames[_vm_idx]
 	_layout_viewmodel()
 
+## The viewmodel's private viewport: transparent, its own 3D world (so
+## the level's lights and fog never reach the gun) and a three-point rig
+## that shows off the chamfers.
+func _build_vm_viewport() -> void:
+	_vm_vp = SubViewport.new()
+	_vm_vp.transparent_bg = true
+	_vm_vp.own_world_3d = true
+	_vm_vp.handle_input_locally = false
+	_vm_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	_vm_vp.msaa_3d = Viewport.MSAA_4X
+	_vm_layer.add_child(_vm_vp)
+	var we := WorldEnvironment.new()
+	var env := Environment.new()
+	env.background_mode = Environment.BG_CLEAR_COLOR
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(0.26, 0.28, 0.34)
+	env.ambient_light_energy = 1.0
+	we.environment = env
+	_vm_vp.add_child(we)
+	_vm_cam3d = Camera3D.new()
+	_vm_cam3d.fov = VM3D_FOV
+	_vm_cam3d.near = 0.5
+	_vm_cam3d.far = 400.0
+	_vm_vp.add_child(_vm_cam3d)
+	# Key from the upper left front, a cool fill from the right, and a
+	# dim rim from behind to pick the silhouette off the world.
+	var key := DirectionalLight3D.new()
+	key.rotation_degrees = Vector3(-38.0, 34.0, 0.0)
+	key.light_energy = 0.70
+	key.light_color = Color(1.0, 0.96, 0.90)
+	_vm_vp.add_child(key)
+	var fill := DirectionalLight3D.new()
+	fill.rotation_degrees = Vector3(-8.0, -120.0, 0.0)
+	fill.light_energy = 0.55
+	fill.light_color = Color(0.62, 0.72, 0.95)
+	_vm_vp.add_child(fill)
+	var rim := DirectionalLight3D.new()
+	rim.rotation_degrees = Vector3(24.0, 168.0, 0.0)
+	rim.light_energy = 0.20
+	rim.light_color = Color(0.85, 0.88, 1.0)
+	_vm_vp.add_child(rim)
+	_vm_tex = TextureRect.new()
+	_vm_tex.texture = _vm_vp.get_texture()
+	_vm_tex.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_vm_tex.stretch_mode = TextureRect.STRETCH_SCALE
+	_vm_tex.visible = false
+	_vm_layer.add_child(_vm_tex)
+
 ## Build / place the 3D weapon in the hands when the option is on.
 func _update_viewmodel_3d(delta: float) -> void:
-	var want: bool = Settings.weapon_3d and Render.enhanced() \
-		and vehicle == VEH_FOOT and _cam != null and health > 0.0
+	var want: bool = Settings.weapon_3d and Render.enhanced() and vehicle == VEH_FOOT and health > 0.0
 	if not want:
 		if _vm3d != null and is_instance_valid(_vm3d):
 			_vm3d.queue_free()
 		_vm3d = null
 		_vm3d_idx = -1
+		if _vm_tex != null and is_instance_valid(_vm_tex):
+			_vm_tex.visible = false
 		return
+	if _vm_vp == null or not is_instance_valid(_vm_vp):
+		_build_vm_viewport()
 	if _vm3d_idx != _weapon_idx or _vm3d == null or not is_instance_valid(_vm3d):
 		if _vm3d != null and is_instance_valid(_vm3d):
 			_vm3d.queue_free()
 		_vm3d = WeaponModels.for_weapon(_weapon_idx, VM3D_LEN, VM3D_LEN * 0.34)
 		_vm3d_idx = _weapon_idx
 		if _vm3d == null:
+			_vm_tex.visible = false
 			return
-		# Barrel forward (models are built along +X), grip toward the
-		# player, and never clipped by the world.
 		# Models are built along +X; a +90 deg yaw sends +X to -Z, i.e.
 		# the barrel away from the camera.
-		_vm3d.rotation = Vector3(0.0, PI * 0.5 + VM3D_YAW, 0.0)
-		# Draw it over the world: a gun held at 22 units would otherwise
-		# be sliced by any wall or slope the player stands near.
-		for c in _vm3d.get_children():
-			if not (c is MeshInstance3D):
-				continue
-			var mi: MeshInstance3D = c
-			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			var src: Material = mi.get_active_material(0)
-			if src is BaseMaterial3D:
-				var dup: BaseMaterial3D = (src as BaseMaterial3D).duplicate()
-				dup.no_depth_test = true
-				dup.render_priority = 8
-				mi.material_override = dup
-		_cam.add_child(_vm3d)
+		_vm3d.rotation = Vector3(0.0, PI * 0.5 + VM3D_YAW, VM3D_ROLL)
+		_vm_cam3d.add_child(_vm3d)
+	_vm_tex.visible = true
+	_layout_vm3d()
 	# Recoil: a kick back and up that eases out, plus a walking sway.
 	if _vm_firing and _vm3d_kick < 0.2:
 		_vm3d_kick = 1.0
 	_vm3d_kick = maxf(_vm3d_kick - delta * 6.0, 0.0)
 	var speed: float = Vector2(velocity.x, velocity.z).length() / maxf(walk_speed, 1.0)
 	var t: float = float(Time.get_ticks_msec()) * 0.004
-	var sway := Vector3(sin(t) * 0.6, absf(cos(t)) * 0.5, 0.0) * clampf(speed, 0.0, 1.2)
-	_vm3d.position = VM3D_POS + sway + Vector3(0.0, _vm3d_kick * 1.2, _vm3d_kick * 3.0)
-	_vm3d.rotation.x = _vm3d_kick * 0.22
+	var sway := Vector3(sin(t) * 0.9, absf(cos(t)) * 0.7, 0.0) * clampf(speed, 0.0, 1.2)
+	_vm3d.position = VM3D_POS + sway + Vector3(0.0, _vm3d_kick * 1.6, _vm3d_kick * 4.5)
+	_vm3d.rotation.x = _vm3d_kick * 0.20
+
+## The viewmodel viewport covers the WORLD area only — from the top of
+## the screen down to the HUD panel — so the gun's grip runs off the
+## bottom exactly where the panel starts, as the DOS art does.
+func _layout_vm3d() -> void:
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var s: float = vp.y / 200.0
+	var hud_h: float = clampf(vp.x / 8.0, 64.0, 160.0)
+	var size := Vector2i(int(vp.x), int(maxf(vp.y - hud_h + HUD_OVERLAP * s, 64.0)))
+	if _vm_vp.size != size:
+		_vm_vp.size = size
+		_vm_tex.texture = _vm_vp.get_texture()
+	_vm_tex.position = Vector2.ZERO
+	_vm_tex.size = Vector2(size)
 
 ## Pin the viewmodel sprite to the bottom-centre of the screen, scaled to
 ## the viewport like the DOS 320×200 screen.
