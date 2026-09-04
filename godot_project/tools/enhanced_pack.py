@@ -128,6 +128,49 @@ MOON_CREDIT = ("Solar System Scope (https://www.solarsystemscope.com/textures/),
 # --out=DIR`). Options: rot=0|90|180|270, scale=<tile repeats>, keep=<0..1>
 # (how much of the DOS colour statistics to impose, default 1.0).
 TEXTURES = {
+    # --- measured 2026-09-04 (tools/tex_usage.gd) -------------------
+    # Ranked by the world AREA each record covers across all 123 maps.
+    # These are the plain tiling materials from the top 110; the
+    # building facades up there are architectural, not tiling, and
+    # carry the game's look, so they stay as upscaled DOS art.
+    "T186_009": ("concrete_wall_008", {}),
+    "T195_002": ("concrete_wall_003", {}),
+    "T227_003": ("concrete_floor_01", {}),
+    "T231_000": ("concrete_moss", {}),
+    "T235_007": ("brown_planks_03", {}),
+    "T239_002": ("granular_concrete", {}),
+    "T251_001": ("old_planks_02", {}),
+    "T287_000": ("box_profile_metal_sheet", {}),
+    "T330_000": ("rustic_stone_wall", {}),
+    "T347_000": ("concrete_wall_004", {}),
+    "T362_001": ("painted_concrete", {}),
+    "T362_002": ("brown_planks_05", {}),
+    "T383_008": ("concrete_tiles", {}),
+    "T383_010": ("metal_plate", {}),
+    "T392_006": ("castle_brick_02_white", {}),
+    "T406_009": ("brick_wall_006", {}),
+    "T415_003": ("beige_wall_001", {}),
+    "T416_001": ("brushed_concrete_04", {}),
+    "T429_000": ("concrete_block_wall_03", {}),
+    "T429_002": ("concrete_block_wall_02", {}),
+    "T430_000": ("brushed_concrete", {}),
+    "T430_001": ("painted_concrete_02", {}),
+    "T430_002": ("cracked_concrete_wall", {}),
+    "T430_003": ("blue_metal_plate", {}),
+    "T430_007": ("concrete_floor_painted", {}),
+    "T430_008": ("brushed_concrete_2", {}),
+    "T436_000": ("corrugated_iron_02", {}),
+    "T445_000": ("painted_plaster_wall", {}),
+    "T445_001": ("painted_concrete", {}),
+    "T446_003": ("dark_wooden_planks", {}),
+    "T446_004": ("rustic_stone_wall_02", {}),
+    "T469_002": ("factory_wall", {}),
+    "T493_003": ("checkered_pavement_tiles", {}),
+    "T493_004": ("brown_mud_dry", {}),
+    "T495_000": ("chipped_concrete", {}),
+    "T495_001": ("brushed_concrete_03", {}),
+    "T508_002": ("brick_moss_001", {}),
+    # --- picked by eye, earlier passes -------------------------------
     # --- corridors / interiors (TEXTURE.383, 382, 195, 235, 435, 455) ---
     "T383_000": ("rusty_metal", {}),
     "T383_001": ("rusty_metal_02", {}),
