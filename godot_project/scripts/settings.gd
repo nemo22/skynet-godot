@@ -42,6 +42,22 @@ signal weapon_view_changed(model: bool)
 ## RENDER resolution instead — the world is drawn at 320 or 640 pixels
 ## wide and stretched up, which is what gives the chunky software look.
 ## NATIVE (the port's default) renders at the window's own size.
+## --- window ------------------------------------------------------------
+## Separate from the RETRO render scale below: this is the size of the
+## WINDOW, that is how many pixels the game is given. The project ships a
+## 1280x720 base and Godot's default "keep" aspect letterboxes anything
+## that is not 16:9 — which is why a wide monitor showed black bars down
+## the sides. EXPAND gives the viewport the window's real aspect instead.
+enum { WIN_WINDOWED = 0, WIN_BORDERLESS = 1, WIN_FULLSCREEN = 2 }
+const WINDOW_MODE_NAMES: Array = ["WINDOW", "BORDERLESS", "FULLSCREEN"]
+## Offered windowed sizes; anything larger than the monitor is dropped.
+const WINDOW_SIZES: Array = [
+	Vector2i(1280, 720), Vector2i(1366, 768), Vector2i(1600, 900),
+	Vector2i(1680, 1050), Vector2i(1920, 1080), Vector2i(1920, 1200),
+	Vector2i(2560, 1080), Vector2i(2560, 1440), Vector2i(3440, 1440),
+	Vector2i(3840, 2160),
+]
+
 enum { RES_320 = 0, RES_640 = 1, RES_NATIVE = 2 }
 const RES_NAMES: Array = ["320 X 200", "640 X 480", "NATIVE"]
 const RES_WIDTHS: Array = [320.0, 640.0, 0.0]
@@ -50,6 +66,8 @@ var difficulty: int = MED
 var detail: int = HIGH
 var reverse_stereo: bool = false
 var resolution: int = RES_NATIVE
+var window_mode: int = WIN_WINDOWED
+var window_size: int = 0                # index into available_sizes()
 ## The weapon in the player's hands: false = the DOS hand-drawn CFA
 ## animation (with the soldier's gloves), true = the ENHANCED 3D model.
 ## The art is the better-looking of the two, so it stays the default.
@@ -63,7 +81,12 @@ func _ready() -> void:
 		reverse_stereo = bool(cfg.get_value("audio", "reverse_stereo", false))
 		resolution = clampi(int(cfg.get_value("video", "resolution", RES_NATIVE)), 0, 2)
 		weapon_3d = bool(cfg.get_value("video", "weapon_3d", false))
+		window_mode = clampi(int(cfg.get_value("video", "window_mode", WIN_WINDOWED)),
+			WIN_WINDOWED, WIN_FULLSCREEN)
+		window_size = int(cfg.get_value("video", "window_size", 0))
 	get_tree().root.size_changed.connect(apply_resolution)
+	get_window().content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
+	apply_window()
 	apply_resolution()
 
 func save() -> void:
@@ -73,6 +96,8 @@ func save() -> void:
 	cfg.set_value("audio", "reverse_stereo", reverse_stereo)
 	cfg.set_value("video", "resolution", resolution)
 	cfg.set_value("video", "weapon_3d", weapon_3d)
+	cfg.set_value("video", "window_mode", window_mode)
+	cfg.set_value("video", "window_size", window_size)
 	cfg.save(CFG_PATH)
 
 func set_difficulty(level: int) -> void:
@@ -92,6 +117,60 @@ func set_resolution(mode: int) -> void:
 	save()
 	apply_resolution()
 	print("[settings] render resolution %s" % RES_NAMES[resolution])
+
+## The windowed sizes that fit on this monitor, smallest first.
+func available_sizes() -> Array:
+	var screen: Vector2i = DisplayServer.screen_get_size(
+		DisplayServer.window_get_current_screen())
+	var out: Array = []
+	for s in WINDOW_SIZES:
+		if s.x <= screen.x and s.y <= screen.y:
+			out.append(s)
+	if out.is_empty():
+		out.append(Vector2i(1280, 720))
+	if not out.has(screen):
+		out.append(screen)              # the monitor's own resolution
+	return out
+
+func size_name(i: int) -> String:
+	var list: Array = available_sizes()
+	if i < 0 or i >= list.size():
+		return "?"
+	var s: Vector2i = list[i]
+	return "%d X %d" % [s.x, s.y]
+
+func set_window_mode(m: int) -> void:
+	window_mode = clampi(m, WIN_WINDOWED, WIN_FULLSCREEN)
+	save()
+	apply_window()
+
+func set_window_size(i: int) -> void:
+	window_size = clampi(i, 0, available_sizes().size() - 1)
+	save()
+	apply_window()
+
+## Put the window where the settings say. Fullscreen and borderless
+## ignore the size — they take the screen.
+func apply_window() -> void:
+	var w := get_window()
+	match window_mode:
+		WIN_FULLSCREEN:
+			w.mode = Window.MODE_EXCLUSIVE_FULLSCREEN
+		WIN_BORDERLESS:
+			w.mode = Window.MODE_FULLSCREEN
+		_:
+			if w.mode != Window.MODE_WINDOWED:
+				w.mode = Window.MODE_WINDOWED
+			var list: Array = available_sizes()
+			var i: int = clampi(window_size, 0, list.size() - 1)
+			var want: Vector2i = list[i]
+			if w.size != want:
+				w.size = want
+				var screen: Vector2i = DisplayServer.screen_get_size(
+					DisplayServer.window_get_current_screen())
+				w.position = (screen - want) / 2
+	print("[settings] window %s %s" % [WINDOW_MODE_NAMES[window_mode],
+		size_name(window_size) if window_mode == WIN_WINDOWED else ""])
 
 ## Drive Godot's 3D render scaling from the chosen mode.
 func apply_resolution() -> void:

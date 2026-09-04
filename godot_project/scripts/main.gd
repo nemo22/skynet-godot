@@ -13,6 +13,7 @@ extends Node3D
 
 const LevelLoader := preload("res://scripts/level_loader.gd")
 const Replacements := preload("res://scripts/replacements.gd")
+const PickupData := preload("res://scripts/pickup_data.gd")
 const BSAReader   := preload("res://scripts/loaders/bsa_reader.gd")
 const ImgFile     := preload("res://scripts/loaders/img_file.gd")
 const Palette     := preload("res://scripts/loaders/palette.gd")
@@ -52,8 +53,8 @@ var _health_label: Label = null
 var _weapon_label: Label = null
 var _ammo_label: Label = null
 var _hud_panel: TextureRect = null     # PANEL0.IMG bottom HUD bar
-var _health_fill: ColorRect = null     # HEALTH gauge fill
-var _rad_fill: ColorRect = null        # RADIATION gauge fill
+var _health_fill: Control = null     # HEALTH gauge fill
+var _rad_fill: Control = null        # RADIATION gauge fill
 var _hud_layer: CanvasLayer = null     # the whole gameplay HUD
 ## AUTOMAP (Tab): the paused 3D map view, and the set of entity nodes the
 ## player has actually seen — DOS marks flag 0x80 on everything it drew
@@ -61,7 +62,8 @@ var _hud_layer: CanvasLayer = null     # the whole gameplay HUD
 var _automap: Node3D = null
 var _seen_meshes: Dictionary = {}
 var _seen_poll: float = 0.0
-var _armor_fill: ColorRect = null      # ARMOR gauge fill
+var _armor_fill: Control = null      # ARMOR gauge fill
+var _second_label: Label = null        # the thrown item and how many
 var _hud_font: FontFile = null         # FONT0003.FNT — HUD read-outs
 var _status_font: FontFile = null      # FONT0005.FNT — status messages
 var _game_over: CanvasLayer = null
@@ -647,7 +649,7 @@ func _load_current() -> void:
 ## non-mission maps, or from the briefing's BEGIN button once the player
 ## has read the mission briefing.
 func _begin_level(name: String) -> void:
-	_set_status("Loading %s ..." % name)
+	print("[skynet] loading %s" % name)
 	_ensure_mission_script(name)
 	await get_tree().process_frame
 
@@ -655,7 +657,7 @@ func _begin_level(name: String) -> void:
 	var level := loader.load_level(name)
 	if level == null:
 		push_error("[skynet] failed to load %s" % name)
-		_set_status("[%d/%d] %s -- LOAD FAILED"
+		push_error("[skynet] [%d/%d] %s -- LOAD FAILED"
 			% [_map_idx + 1, _maps.size(), name])
 		return
 	_current_level = level
@@ -770,6 +772,7 @@ func _begin_level(name: String) -> void:
 	_collect_radiation(level)
 	_setup_water(level)
 	_scatter_clutter(level)
+	_compass_north = _marker_value(level, 7)
 	_set_hud_mode(player.vehicle if is_instance_valid(player) else 0)
 	if _dm != null:
 		_dm.on_level_ready(level)
@@ -1557,10 +1560,17 @@ func _process(delta: float) -> void:
 			Color(1, 0.4, 0.32) if low else Color(0.55, 0.95, 0.62))
 		if _health_fill != null:
 			_health_fill.anchor_right = frac
-			_health_fill.color = Color(0.9, 0.3, 0.22) if low \
-				else Color(0.3, 0.85, 0.4)
+			# The DOS panel's fill is a flat rect that goes red when the
+			# soldier is nearly done; the ENHANCED gauge is a gradient
+			# texture, so it is tinted instead of recoloured.
+			if _health_fill is ColorRect:
+				(_health_fill as ColorRect).color = Color(0.9, 0.3, 0.22) if low else Color(0.3, 0.85, 0.4)
+			else:
+				_health_fill.modulate = Color(1.3, 0.75, 0.7) if low else Color(1, 1, 1)
 		if _armor_fill != null:
 			_armor_fill.anchor_right = clampf(player.armor, 0.0, 1.0)
+		if _armor_label != null:
+			_armor_label.text = "%d" % int(round(clampf(player.armor, 0.0, 1.0) * 100.0))
 		# Radiation: dose from the marker-4 sources, charged per second.
 		if not _rad_sources.is_empty() and _game_over == null:
 			_rad_dose = _radiation_dose(player.global_position + Vector3(0.0, 37.5, 0.0))
@@ -1570,12 +1580,25 @@ func _process(delta: float) -> void:
 			_rad_dose = 0.0
 		if _rad_fill != null:
 			_rad_fill.anchor_right = clampf(_rad_dose / RAD_MAX_DOSE, 0.0, 1.0)
+		if _rad_row != null:
+			# Only worth the space when there is something to worry about.
+			_rad_row.visible = _rad_dose > 0.0
 		_fade_hurt(delta)
 		if _water != null:
 			_update_water_tint()
 			if player.head_under and player.air < 10.0:
 				_set_status("AIR %d" % maxi(int(ceil(player.air)), 0), 0.4)
 		_weapon_label.text = str(player.weapon_name)
+		if _second_label != null:
+			var sc: int = int(player.secondary_ammo)
+			if _second_icon != null:
+				_second_label.text = "%d" % sc
+			else:
+				_second_label.text = "%s  x%d" % [str(player.secondary_name), sc]
+			_second_label.modulate = Color(1, 1, 1) if sc > 0 else Color(0.55, 0.5, 0.5)
+		_update_hud_icons()
+		if _compass != null:
+			_compass.queue_redraw()
 		if _hud_mode != player.vehicle:
 			_set_hud_mode(player.vehicle)
 		if _hud_mode != 0:
@@ -1649,6 +1672,17 @@ func _on_use_pressed(pos: Vector3) -> void:
 const RAD_MAX_DOSE: float = 50.0        # per source, DOS min(r*50, 12800) >> 8
 var _rad_sources: Array = []            # [{pos: Vector3, strength: float}]
 var _rad_dose: float = 0.0              # current dose, HP per second
+## Marker type 7: how many degrees the map's north is turned.
+var _compass_north: float = 0.0
+
+## The u16 at sub+2 of the first marker of `type`, or 0.
+static func _marker_value(level: LevelLoader.Level, type: int) -> float:
+	if level == null or level.map == null:
+		return 0.0
+	for e in level.map.entities:
+		if (e.flags & 3) == 3 and e.marker_type == type:
+			return float(e.exit_map)
+	return 0.0
 
 func _collect_radiation(level: LevelLoader.Level) -> void:
 	_rad_sources = []
@@ -3381,6 +3415,9 @@ func _build_status_ui() -> void:
 	var crosshair: Control = preload("res://scripts/crosshair.gd").new()
 	canvas.add_child(crosshair)
 
+	if Render.enhanced():
+		_build_hud_minimal(canvas)
+		return
 	# --- bottom HUD bar: authentic DOS PANEL0.IMG (320×40 foot HUD) ---
 	# The art spans the full window width; its height is kept at the
 	# original 8:1 aspect (320:40), reproducing the DOS 20%-of-screen bar.
@@ -3420,6 +3457,11 @@ func _build_status_ui() -> void:
 	_panel_rect(panel, 50, 20, 83, 17).add_child(_weapon_label)
 	_ammo_label = _hud_box_label()               # ammo count
 	_panel_rect(panel, 96, 3, 37, 14).add_child(_ammo_label)
+	# The wide recessed box on the right of PANEL0 was left empty. The
+	# thrown item lives there now — until 2026-09-04 there was no way to
+	# see which grenade the throw key would use.
+	_second_label = _hud_box_label()
+	_panel_rect(panel, 218, 4, 98, 32).add_child(_second_label)
 
 	# RADIATION and ARMOR gauges — the two PANEL0 slots the port left
 	# empty. Rects measured off the art (320x40).
@@ -3440,20 +3482,260 @@ func _build_status_ui() -> void:
 
 	get_viewport().size_changed.connect(_layout_hud)
 	_layout_hud()
+	# (There used to be an on-screen MENU button pinned top-right. Esc
+	# opens the same menu and the button sat over the view.)
 
-	# On-screen MENU button (top-right) — works with mouse and touch.
-	var menu_btn := Button.new()
-	menu_btn.text = "MENU"
-	menu_btn.focus_mode = Control.FOCUS_NONE
-	menu_btn.add_theme_font_size_override("font_size", 20)
-	menu_btn.anchor_left = 1.0
-	menu_btn.anchor_right = 1.0
-	menu_btn.offset_left = -132.0
-	menu_btn.offset_right = -16.0
-	menu_btn.offset_top = 8.0
-	menu_btn.offset_bottom = 56.0
-	menu_btn.pressed.connect(open_pause_menu)
-	canvas.add_child(menu_btn)
+## ENHANCED HUD. Not the 320x40 DOS bar (that stays in DOS mode) and not
+## a row of flat rectangles either — the third attempt, after "it looks
+## like a child drew it with felt-tips" (2026-09-04). It is built like a
+## game's status bar: one plate in the bottom-left holding gradient
+## gauges and, under them, the weapon and the thrown item side by side
+## with their own PICKUP SPRITES as icons; a compass strip along the
+## bottom centre. The reference is the Future Shock HUD, which does
+## exactly this and which Marek likes.
+const MIN_HUD_MARGIN: float = 26.0
+const MIN_HUD_TINT := Color(0.62, 0.94, 0.70)
+const COMPASS_SPAN: float = 110.0        # degrees across the strip
+const COMPASS_SIZE := Vector2(430.0, 24.0)
+var _min_hud: Control = null
+var _armor_label: Label = null
+var _rad_row: Control = null
+var _compass: Control = null
+var _weapon_icon: TextureRect = null
+var _second_icon: TextureRect = null
+## Weapon slot -> the pickup sprite that grants it (built from the DOS
+## item table, so the icon is always the thing you picked up).
+var _weapon_sprites: Dictionary = {}
+## Ammo pool -> the sprite of the thrown item that uses it.
+const THROW_SPRITES: Dictionary = {
+	5: 25728, 6: 25605, 2: 25607, 8: 25603, 9: 25604,
+}
+
+func _build_hud_minimal(canvas: CanvasLayer) -> void:
+	for si in PickupData.ITEMS:
+		var w: int = int(PickupData.ITEMS[si][4])
+		if w >= 0 and not _weapon_sprites.has(w):
+			_weapon_sprites[w] = si
+	_min_hud = Control.new()
+	_min_hud.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_min_hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	canvas.add_child(_min_hud)
+	# --- the plate, bottom left ---
+	var plate := _min_panel()
+	plate.anchor_top = 1.0
+	plate.anchor_bottom = 1.0
+	plate.offset_left = MIN_HUD_MARGIN
+	plate.offset_top = -168.0
+	plate.offset_bottom = -MIN_HUD_MARGIN
+	_min_hud.add_child(plate)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 6)
+	col.alignment = BoxContainer.ALIGNMENT_END
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	plate.add_child(col)
+	var hp: Array = _min_row(col, "HEALTH", Color(0.85, 0.16, 0.13), Color(1.0, 0.55, 0.30), 196.0, 13.0)
+	_health_label = hp[0]
+	_health_fill = hp[1]
+	var ar: Array = _min_row(col, "ARMOUR", Color(0.16, 0.38, 0.85), Color(0.55, 0.85, 1.0), 196.0, 9.0)
+	_armor_label = ar[0]
+	_armor_fill = ar[1]
+	var rad: Array = _min_row(col, "RAD", Color(0.72, 0.55, 0.05), Color(1.0, 0.95, 0.35), 196.0, 9.0)
+	_rad_fill = rad[1]
+	_rad_row = rad[2]
+	_rad_row.visible = false
+	# --- weapon and thrown item, side by side under the gauges ---
+	var guns := HBoxContainer.new()
+	guns.add_theme_constant_override("separation", 18)
+	guns.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(guns)
+	var w_box: Array = _min_slot(guns, 74.0, 22)
+	_weapon_icon = w_box[0]
+	_ammo_label = w_box[1]
+	_weapon_label = w_box[2]
+	var s_box: Array = _min_slot(guns, 52.0, 17)
+	_second_icon = s_box[0]
+	_second_label = s_box[1]
+	s_box[2].visible = false                 # the name lives on one line
+	# --- compass, bottom centre ---
+	_compass = Control.new()
+	_compass.custom_minimum_size = COMPASS_SIZE
+	_compass.size = COMPASS_SIZE
+	_compass.anchor_left = 0.5
+	_compass.anchor_right = 0.5
+	_compass.anchor_top = 1.0
+	_compass.anchor_bottom = 1.0
+	_compass.offset_left = -COMPASS_SIZE.x * 0.5
+	_compass.offset_right = COMPASS_SIZE.x * 0.5
+	_compass.offset_top = -COMPASS_SIZE.y - MIN_HUD_MARGIN
+	_compass.offset_bottom = -MIN_HUD_MARGIN
+	_compass.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_compass.draw.connect(_draw_compass)
+	_min_hud.add_child(_compass)
+
+## An icon with its number beside it, and a caption under the pair.
+func _min_slot(parent: Control, icon: float, size: int) -> Array:
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 1)
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(box)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(row)
+	var ico := TextureRect.new()
+	ico.custom_minimum_size = Vector2(icon, icon * 0.5)
+	ico.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	ico.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	ico.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	ico.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(ico)
+	var num := _min_label(row, HORIZONTAL_ALIGNMENT_RIGHT, size, 1.0)
+	num.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	num.custom_minimum_size = Vector2(52.0, 0.0)
+	var cap := _min_label(box, HORIZONTAL_ALIGNMENT_LEFT, 11, 0.55)
+	return [ico, num, cap]
+
+## A dim, softly framed plate to keep the read-out legible over anything.
+func _min_panel() -> PanelContainer:
+	var pc := PanelContainer.new()
+	pc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.02, 0.03, 0.04, 0.50)
+	sb.border_color = Color(MIN_HUD_TINT.r, MIN_HUD_TINT.g, MIN_HUD_TINT.b, 0.20)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(3)
+	sb.content_margin_left = 13.0
+	sb.content_margin_right = 13.0
+	sb.content_margin_top = 9.0
+	sb.content_margin_bottom = 9.0
+	pc.add_theme_stylebox_override("panel", sb)
+	return pc
+
+## One gauge row: caption, value, and a bar that is a real gradient in a
+## sunken frame rather than a flat block of colour.
+func _min_row(parent: Control, caption: String, c0: Color, c1: Color,
+		width: float, height: float) -> Array:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 9)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(row)
+	var cap := _min_label(row, HORIZONTAL_ALIGNMENT_LEFT, 11, 0.55)
+	cap.text = caption
+	cap.custom_minimum_size = Vector2(60.0, 0.0)
+	cap.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var val := _min_label(row, HORIZONTAL_ALIGNMENT_RIGHT, 17, 1.0)
+	val.custom_minimum_size = Vector2(40.0, 0.0)
+	val.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var trough := PanelContainer.new()
+	trough.custom_minimum_size = Vector2(width, height)
+	trough.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	trough.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var tb := StyleBoxFlat.new()
+	tb.bg_color = Color(0.0, 0.0, 0.0, 0.62)
+	tb.border_color = Color(0.0, 0.0, 0.0, 0.9)
+	tb.set_border_width_all(1)
+	tb.border_color = Color(MIN_HUD_TINT.r, MIN_HUD_TINT.g, MIN_HUD_TINT.b, 0.22)
+	trough.add_theme_stylebox_override("panel", tb)
+	row.add_child(trough)
+	# The fill: a left-to-right gradient with a lighter top edge, so it
+	# has some shape to it instead of reading as a coloured rectangle.
+	var fill := TextureRect.new()
+	fill.texture = _gauge_gradient(c0, c1)
+	fill.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	fill.stretch_mode = TextureRect.STRETCH_SCALE
+	fill.anchor_bottom = 1.0
+	fill.anchor_right = 1.0
+	fill.offset_left = 1.0
+	fill.offset_top = 1.0
+	fill.offset_right = -1.0
+	fill.offset_bottom = -1.0
+	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	trough.add_child(fill)
+	return [val, fill, row]
+
+## Left-to-right colour ramp with a highlight along the top.
+static func _gauge_gradient(c0: Color, c1: Color) -> GradientTexture2D:
+	var g := Gradient.new()
+	g.set_color(0, c0)
+	g.add_point(0.55, c0.lerp(c1, 0.55))
+	g.set_color(g.get_point_count() - 1, c1)
+	var t := GradientTexture2D.new()
+	t.gradient = g
+	t.width = 128
+	t.height = 8
+	t.fill_from = Vector2(0.0, 0.0)
+	t.fill_to = Vector2(1.0, 0.0)
+	return t
+
+func _min_label(parent: Control, align: int, size: int, dim: float) -> Label:
+	var l := Label.new()
+	l.horizontal_alignment = align
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	l.add_theme_color_override("font_color",
+		Color(MIN_HUD_TINT.r, MIN_HUD_TINT.g, MIN_HUD_TINT.b) * dim)
+	l.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.85))
+	l.add_theme_constant_override("shadow_offset_x", 1)
+	l.add_theme_constant_override("shadow_offset_y", 2)
+	l.add_theme_font_size_override("font_size", size)
+	parent.add_child(l)
+	return l
+
+## The compass strip: ticks every 15 degrees, the cardinals lettered,
+## the heading fixed under a marker in the middle. North comes from the
+## map's marker type 7 (the DOS compass offset), so it points where the
+## briefing means.
+func _draw_compass() -> void:
+	if _compass == null or not is_instance_valid(player):
+		return
+	var w: float = _compass.size.x
+	var h: float = _compass.size.y
+	var tint := Color(MIN_HUD_TINT.r, MIN_HUD_TINT.g, MIN_HUD_TINT.b)
+	_compass.draw_rect(Rect2(Vector2.ZERO, Vector2(w, h)), Color(0.02, 0.03, 0.04, 0.42))
+	_compass.draw_rect(Rect2(Vector2.ZERO, Vector2(w, h)), Color(tint.r, tint.g, tint.b, 0.18), false, 1.0)
+	var heading: float = rad_to_deg(-player.rotation.y) + _compass_north
+	var font: Font = _compass.get_theme_default_font()
+	var deg: int = int(floor((heading - COMPASS_SPAN * 0.5) / 15.0)) * 15
+	while float(deg) < heading + COMPASS_SPAN * 0.5:
+		var d: float = wrapf(float(deg) - heading, -180.0, 180.0)
+		var x: float = w * 0.5 + d / COMPASS_SPAN * w
+		deg += 15
+		if x < 2.0 or x > w - 2.0:
+			continue
+		var cardinal: bool = posmod(deg - 15, 90) == 0
+		var tick: float = h * (0.42 if cardinal else 0.24)
+		_compass.draw_line(Vector2(x, h - 2.0), Vector2(x, h - 2.0 - tick),
+			Color(tint.r, tint.g, tint.b, 0.85 if cardinal else 0.45), 1.0)
+		if cardinal and font != null:
+			var letter: String = ["N", "E", "S", "W"][int(posmod(deg - 15, 360) / 90)]
+			_compass.draw_string(font, Vector2(x - 5.0, h * 0.52), letter,
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 13, tint)
+	# The lubber line: where you are actually facing.
+	_compass.draw_line(Vector2(w * 0.5, 1.0), Vector2(w * 0.5, h - 1.0),
+		Color(1.0, 0.55, 0.35, 0.9), 1.0)
+
+## Keep the weapon / thrown-item icons in step with what is in hand.
+var _icon_weapon: int = -1
+var _icon_pool: int = -1
+
+func _update_hud_icons() -> void:
+	if _weapon_icon == null or not is_instance_valid(player):
+		return
+	var wi: int = int(player.get("_weapon_idx"))
+	if wi != _icon_weapon:
+		_icon_weapon = wi
+		var si: int = int(_weapon_sprites.get(wi, -1))
+		_weapon_icon.texture = Assets.texture(si >> 7, si & 0x7F, true) if si > 0 else null
+	var pool: int = int(player.get("secondary_pool"))
+	if pool != _icon_pool:
+		_icon_pool = pool
+		var ti: int = int(THROW_SPRITES.get(pool, -1))
+		_second_icon.texture = Assets.texture(ti >> 7, ti & 0x7F, true) if ti > 0 else null
+
+## How much of the window bottom the HUD covers — 0 with the minimal one.
+func hud_height() -> float:
+	if _hud_panel == null or not _hud_panel.visible:
+		return 0.0
+	return clampf(get_viewport().get_visible_rect().size.x / 8.0, 64.0, 160.0)
 
 ## Keep the PANEL0 bar full-width at its native 8:1 aspect (320:40).
 func _layout_hud() -> void:

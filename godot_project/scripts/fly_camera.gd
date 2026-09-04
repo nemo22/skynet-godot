@@ -171,6 +171,7 @@ var _throw_idx: int = THROW_DEFAULT
 ## HUD-facing mirror of the selected thrown item (main.gd reads these).
 var secondary_name: String = ""
 var secondary_ammo: int = 0
+var secondary_pool: int = -1           # the ammo pool it draws from
 const VEH_FOOT: int = 0
 const VEH_JEEP: int = 1
 const VEH_HK: int = 2
@@ -485,7 +486,8 @@ func _sync_hud() -> void:
 		secondary_ammo = _ammo_for(vw)
 	else:
 		secondary_name = String(THROWABLES[_throw_idx]["name"])
-		secondary_ammo = int(_pools.get(int(THROWABLES[_throw_idx]["pool"]), 0))
+		secondary_pool = int(THROWABLES[_throw_idx]["pool"])
+		secondary_ammo = int(_pools.get(secondary_pool, 0))
 
 ## Switch to weapon `idx` (clamped). Plays the record's select sound
 ## (+0x54: uzicock3 for ballistic, ppcload for energy weapons).
@@ -1566,6 +1568,8 @@ const VM3D_FOV: float = 40.0            # narrow: no wide-angle stretch
 const VM3D_POS := Vector3(8.5, -9.0, -50.0)
 const VM3D_YAW: float = 0.34
 const VM3D_ROLL: float = -0.05
+## An upright pipe needs to sit lower and further out than a rifle.
+const VM3D_PIPE_POS := Vector3(16.0, -22.0, -82.0)
 var _vm3d: Node3D = null
 var _vm3d_idx: int = -1
 var _vm3d_kick: float = 0.0
@@ -1701,8 +1705,16 @@ func _update_viewmodel_3d(delta: float) -> void:
 			_vm_tex.visible = false
 			return
 		# Models are built along +X; a +90 deg yaw sends +X to -Z, i.e.
-		# the barrel away from the camera.
-		_vm3d.rotation = Vector3(0.0, PI * 0.5 + VM3D_YAW, VM3D_ROLL)
+		# the barrel away from the camera. A PIPE is not a gun: nobody
+		# holds a length of scaffolding out in front of them like a
+		# barrel — you hold it UP, ready to swing, which is exactly what
+		# the DOS sprite draws (2026-09-04). Stand it on end and lean it
+		# back over the shoulder.
+		if String(WeaponModels.WEAPON_KINDS[_weapon_idx]) == "pipe":
+			_vm3d.rotation = Vector3(0.0, PI * 0.5 + 0.45, deg_to_rad(74.0))
+			_vm3d.position = VM3D_PIPE_POS
+		else:
+			_vm3d.rotation = Vector3(0.0, PI * 0.5 + VM3D_YAW, VM3D_ROLL)
 		_vm_cam3d.add_child(_vm3d)
 	_vm_tex.visible = true
 	_layout_vm3d()
@@ -1711,7 +1723,9 @@ func _update_viewmodel_3d(delta: float) -> void:
 	var speed: float = Vector2(velocity.x, velocity.z).length() / maxf(walk_speed, 1.0)
 	var t: float = float(Time.get_ticks_msec()) * 0.004
 	var sway := Vector3(sin(t) * 0.9, absf(cos(t)) * 0.7, 0.0) * clampf(speed, 0.0, 1.2)
-	_vm3d.position = VM3D_POS + sway + Vector3(0.0, _vm3d_kick * 1.6, _vm3d_kick * 4.5)
+	var home: Vector3 = VM3D_PIPE_POS \
+		if String(WeaponModels.WEAPON_KINDS[_weapon_idx]) == "pipe" else VM3D_POS
+	_vm3d.position = home + sway + Vector3(0.0, _vm3d_kick * 1.6, _vm3d_kick * 4.5)
 	_vm3d.rotation.x = _vm3d_kick * 0.20
 
 ## The viewmodel viewport covers the WORLD area only — from the top of
@@ -1720,13 +1734,22 @@ func _update_viewmodel_3d(delta: float) -> void:
 func _layout_vm3d() -> void:
 	var vp: Vector2 = get_viewport().get_visible_rect().size
 	var s: float = vp.y / 200.0
-	var hud_h: float = clampf(vp.x / 8.0, 64.0, 160.0)
+	var hud_h: float = _hud_height(vp)
 	var size := Vector2i(int(vp.x), int(maxf(vp.y - hud_h + HUD_OVERLAP * s, 64.0)))
 	if _vm_vp.size != size:
 		_vm_vp.size = size
 		_vm_tex.texture = _vm_vp.get_texture()
 	_vm_tex.position = Vector2.ZERO
 	_vm_tex.size = Vector2(size)
+
+## How much of the window bottom the HUD bar takes. The level asks the
+## scene, because the ENHANCED HUD has no bar at all and the gun then
+## belongs at the very bottom of the window.
+func _hud_height(vp: Vector2) -> float:
+	var sc: Node = get_tree().current_scene
+	if sc != null and sc.has_method("hud_height"):
+		return float(sc.call("hud_height"))
+	return clampf(vp.x / 8.0, 64.0, 160.0)
 
 ## Pin the viewmodel sprite to the bottom-centre of the screen, scaled to
 ## the viewport like the DOS 320×200 screen.
@@ -1748,6 +1771,6 @@ func _layout_viewmodel() -> void:
 	# is the same art scaled by WIDTH (main._layout_hud), so its top edge
 	# is where the weapon's bottom belongs. Anchoring to the window
 	# bottom (as this did) hid all but the muzzle behind the panel.
-	var hud_h: float = clampf(vp.x / 8.0, 64.0, 160.0)
+	var hud_h: float = _hud_height(vp)
 	_viewmodel.position = Vector2(
 		x_origin + vx * s, vp.y - hud_h - ts.y * s + HUD_OVERLAP * s)
