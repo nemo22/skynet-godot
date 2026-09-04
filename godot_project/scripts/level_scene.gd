@@ -50,9 +50,10 @@ const LevelRoot    := preload("res://scripts/level_scene_root.gd")
 const WldTerrain   := preload("res://scripts/loaders/wld_terrain.gd")
 const Replacements := preload("res://scripts/replacements.gd")
 const FxParticles  := preload("res://scripts/fx_particles.gd")
+const LevelLoaderRef := preload("res://scripts/level_loader.gd")
 
 ## Bump when the bake changes shape (invalidates every saved scene).
-const BAKE_VERSION: int = 6
+const BAKE_VERSION: int = 7
 
 # ---------------------------------------------------------------------
 # Paths
@@ -175,7 +176,7 @@ static func _save_now(level, map_name: String) -> String:
 	# on its own and all you get is a warning ("ako toto zapnem v
 	# editore?", 2026-09-04). The runtime never sees this: take() lifts
 	# out the four groups below and frees everything else with the root.
-	root.add_child(_preview_env())
+	root.add_child(_preview_branch(level))
 
 	# What goes in, and where it came from, so it can all go back.
 	var lent: Array = []                     # [node, old_parent, index]
@@ -239,12 +240,22 @@ static func static_children(entities: Node) -> Array:
 			out.append(c)
 	return out
 
-## A night sky, volumetric fog and a moon, so the level previews in the
-## editor roughly as it plays. Deliberately a PROCEDURAL sky: a panorama
-## would be embedded in every level scene.
-static func _preview_env() -> Node3D:
+## Everything the runtime builds from the MAP records, shown in the
+## editor: the enemies where they stand, the placement markers, the map's
+## own lights, and a night sky with the fog turned on.
+##
+## Other engines put the dynamic objects straight in the level file,
+## because there the level file IS the source. Here the source is the DOS
+## MAP — the port converts it and exports edits back to it — so the level
+## scene is a build product and its behaviour has to come from the
+## records. This branch closes the gap for the EYE: open a baked level
+## and the whole map is there, robots included, with the markers drawn as
+## labelled gizmos. The runtime lifts out Terrain/Static/Occluders/Detail
+## and frees this with the root, so none of it reaches the game.
+static func _preview_branch(level) -> Node3D:
 	var root := Node3D.new()
 	root.name = "EditorPreview"
+	_preview_actors(root, level)
 	var sky_mat := ProceduralSkyMaterial.new()
 	sky_mat.sky_top_color = Color(0.015, 0.020, 0.055)
 	sky_mat.sky_horizon_color = Color(0.055, 0.070, 0.125)
@@ -275,6 +286,91 @@ static func _preview_env() -> Node3D:
 	moon.shadow_enabled = true
 	root.add_child(moon)
 	return root
+
+## The enemies, the markers and the map lights, as the editor sees them.
+static func _preview_actors(root: Node3D, level) -> void:
+	if level == null or level.map == null:
+		return
+	var enemies := Node3D.new()
+	enemies.name = "Enemies"
+	root.add_child(enemies)
+	var markers := Node3D.new()
+	markers.name = "Markers"
+	root.add_child(markers)
+	var lights := Node3D.new()
+	lights.name = "MapLights"
+	root.add_child(lights)
+	var gizmos: Dictionary = {}
+	for e in level.map.entities:
+		var variant: int = e.flags & 3
+		if variant == 2:
+			if e.light_enable <= 0:
+				continue
+			var l := OmniLight3D.new()
+			l.name = "LIGHT_%06x" % e.file_off
+			l.position = Vector3(float(e.x), -float(e.y), -float(e.z))
+			l.omni_range = clampf(float(e.light_enable) * 10.0, 400.0, 6000.0)
+			l.light_energy = clampf(float(e.light_intensity) / 14.0, 0.4, 3.5)
+			lights.add_child(l)
+			continue
+		if variant != 3:
+			continue
+		if e.marker_type == 2:
+			# An enemy: its type's mesh, first frame, where it starts.
+			var nm: String = ""
+			if e.enemy_type >= 0 and e.enemy_type < LevelLoaderRef.ENEMY_MESH.size():
+				nm = String(LevelLoaderRef.ENEMY_MESH[e.enemy_type])
+			if nm.is_empty():
+				continue
+			var frames: Array = Assets.mesh_frames(nm.to_upper() + ".3D")
+			if frames.is_empty():
+				continue
+			var mi := MeshInstance3D.new()
+			mi.name = "%s_%06x" % [nm.to_upper(), e.file_off]
+			mi.mesh = frames[0]
+			mi.position = Vector3(float(e.x), -float(e.y + 0x10), -float(e.z))
+			mi.rotation.y = (e.off_y & 0x7FF) * TAU / 2048.0
+			enemies.add_child(mi)
+		elif e.marker_type >= 0:
+			var mk := MeshInstance3D.new()
+			mk.name = "MARKER%d_%06x" % [e.marker_type, e.file_off]
+			mk.mesh = _gizmo_mesh(_marker_color(e.marker_type), gizmos)
+			mk.position = Vector3(float(e.x), -float(e.y + 0x10), -float(e.z))
+			var tag := Label3D.new()
+			tag.name = "Label"
+			tag.text = "M%d" % e.marker_type
+			tag.pixel_size = 1.0
+			tag.font_size = 48
+			tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			tag.no_depth_test = true
+			tag.position = Vector3(0.0, 60.0, 0.0)
+			mk.add_child(tag)
+			markers.add_child(mk)
+
+## A small unshaded box, one per colour.
+static func _gizmo_mesh(color: Color, cache: Dictionary) -> BoxMesh:
+	var key: String = color.to_html()
+	if cache.has(key):
+		return cache[key]
+	var bm := BoxMesh.new()
+	bm.size = Vector3(48.0, 48.0, 48.0)
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = color
+	bm.material = mat
+	cache[key] = bm
+	return bm
+
+## Same colours the editor's data view uses, so a marker reads the same
+## in both places.
+static func _marker_color(t: int) -> Color:
+	match t:
+		0: return Color(0.2, 1.0, 0.2)        # player start
+		1: return Color(0.2, 0.6, 1.0)        # facing
+		100: return Color(1.0, 0.5, 0.1)      # waypoint
+	if t >= 10 and t <= 29:
+		return Color(1.0, 0.2, 0.9)           # exit / MP spawn pairs
+	return Color(0.85, 0.85, 0.85)
 
 static func _own(n: Node, owner: Node) -> void:
 	n.owner = owner
