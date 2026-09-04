@@ -15,3 +15,7 @@ sky = SubResource("Sky_skyne")
 ambient_light_source = 3
 ambient_light_color = Color(0.55, 0.55, 0.65, 1)
 ambient_light_energy = 0.9
+volumetric_fog_enabled = true
+volumetric_fog_density = 0.0001
+volumetric_fog_length = 9000.0
+volumetric_fog_ambient_inject = 0.2

@@ -52,7 +52,7 @@ const Replacements := preload("res://scripts/replacements.gd")
 const FxParticles  := preload("res://scripts/fx_particles.gd")
 
 ## Bump when the bake changes shape (invalidates every saved scene).
-const BAKE_VERSION: int = 5
+const BAKE_VERSION: int = 6
 
 # ---------------------------------------------------------------------
 # Paths
@@ -169,6 +169,14 @@ static func _save_now(level, map_name: String) -> String:
 	root.static_count = moved.size()
 	root.detail_count = _count(level.detail)
 
+	# An environment and a key light, for the EDITOR only. A baked level
+	# has FogVolumes in it and Godot will not draw them without
+	# volumetric fog enabled in the scene's Environment — open the scene
+	# on its own and all you get is a warning ("ako toto zapnem v
+	# editore?", 2026-09-04). The runtime never sees this: take() lifts
+	# out the four groups below and frees everything else with the root.
+	root.add_child(_preview_env())
+
 	# What goes in, and where it came from, so it can all go back.
 	var lent: Array = []                     # [node, old_parent, index]
 	for g in [["Terrain", level.terrain], ["Static", statics],
@@ -230,6 +238,43 @@ static func static_children(entities: Node) -> Array:
 		if c is MeshInstance3D and not c.has_method("file_off"):
 			out.append(c)
 	return out
+
+## A night sky, volumetric fog and a moon, so the level previews in the
+## editor roughly as it plays. Deliberately a PROCEDURAL sky: a panorama
+## would be embedded in every level scene.
+static func _preview_env() -> Node3D:
+	var root := Node3D.new()
+	root.name = "EditorPreview"
+	var sky_mat := ProceduralSkyMaterial.new()
+	sky_mat.sky_top_color = Color(0.015, 0.020, 0.055)
+	sky_mat.sky_horizon_color = Color(0.055, 0.070, 0.125)
+	sky_mat.ground_bottom_color = Color(0.03, 0.03, 0.04)
+	sky_mat.ground_horizon_color = Color(0.055, 0.070, 0.125)
+	var sky := Sky.new()
+	sky.sky_material = sky_mat
+	var env := Environment.new()
+	env.background_mode = Environment.BG_SKY
+	env.sky = sky
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+	env.ambient_light_energy = 0.6
+	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.volumetric_fog_enabled = true
+	env.volumetric_fog_density = 0.0001
+	env.volumetric_fog_length = 9000.0
+	env.volumetric_fog_albedo = Color(0.72, 0.70, 0.66)
+	env.volumetric_fog_ambient_inject = 0.2
+	var we := WorldEnvironment.new()
+	we.name = "PreviewEnvironment"
+	we.environment = env
+	root.add_child(we)
+	var moon := DirectionalLight3D.new()
+	moon.name = "PreviewMoon"
+	moon.rotation_degrees = Vector3(-42.0, 38.0, 0.0)
+	moon.light_color = Color(0.72, 0.78, 0.96)
+	moon.light_energy = 0.9
+	moon.shadow_enabled = true
+	root.add_child(moon)
+	return root
 
 static func _own(n: Node, owner: Node) -> void:
 	n.owner = owner
