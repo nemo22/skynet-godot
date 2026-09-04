@@ -1035,6 +1035,35 @@ func _fly(_delta: float, fwd_in: float, str_in: float) -> void:
 	if dir.length_squared() > 0.0:
 		global_position += dir.normalized() * speed * _delta
 
+## Where the gun's muzzle is in the world. On foot that is the viewmodel
+## in the bottom-right corner; the jeep's plasma gun is a ROOF turret and
+## the HK's is nose-mounted, both well ahead of the cockpit glass.
+func _muzzle_point(fwd: Vector3) -> Vector3:
+	var b: Basis = _cam.global_transform.basis
+	if vehicle == VEH_JEEP:
+		return _cam.global_position + fwd * 150.0 + b.y * 34.0
+	if vehicle != VEH_FOOT:
+		return _cam.global_position + fwd * 260.0 + b.y * 12.0
+	return _cam.global_position + fwd * 60.0 + b.x * 15.0 - b.y * 12.0
+
+## How far down the aim ray to look for the thing the crosshair is on.
+const AIM_REACH: float = 20000.0
+
+## What the crosshair is actually on — the first thing the aim ray meets,
+## or a point far down it. The shot is aimed at this, so a muzzle off to
+## one side still puts the round where the crosshair is.
+func _aim_target(fwd: Vector3) -> Vector3:
+	var from: Vector3 = _cam.global_position
+	var far: Vector3 = from + fwd * AIM_REACH
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return far
+	var q := PhysicsRayQueryParameters3D.create(from, far)
+	q.collide_with_areas = true
+	q.exclude = [get_rid()]
+	var hit := space.intersect_ray(q)
+	return hit["position"] if hit.has("position") else far
+
 ## Tracer + muzzle-flash colour per weapon family. Picked once at fire
 ## time so a single dictionary in the weapons table doesn't have to
 ## carry duplicated Color fields. "melee" has no entry — pipe never
@@ -1109,21 +1138,25 @@ func _shoot(idx: int = -1) -> void:
 		_vm3d_kick = 1.0                  # 3D view model recoil, one shot
 
 	var fwd: Vector3 = aim_dir()
-	# ON the aim line, only a little under it. Dropping the muzzle 26
-	# units below the eye and starting the shot 90 units out puts it 16
-	# degrees below where you are looking, and every bolt then flies in
-	# from the corner of the screen ("vystrely su zasa nakrivo",
-	# 2026-09-04).
-	var muzzle: Vector3 = _cam.global_position + fwd * 90.0 \
-		- _cam.global_transform.basis.y * 7.0
-	if vehicle != VEH_FOOT:
-		# Vehicle guns sit low on the hull, well ahead of the cockpit.
-		muzzle = _cam.global_position + fwd * (160.0 if vehicle == VEH_JEEP else 260.0) \
-			- _cam.global_transform.basis.y * 12.0
+	# Where the shot comes FROM, and which way it actually flies.
+	#
+	# A shot that starts in the middle of your face reads as crooked: you
+	# see a string of bolts climbing out of the bottom of the screen
+	# instead of leaving the gun. The visual origin is the gun where it
+	# really is — the bottom right of the screen on foot, the ROOF TURRET
+	# in the jeep, which is where the DOS game fired from ("v hre to islo
+	# z hora z veze", 2026-09-04) — and the shot is aimed at whatever the
+	# crosshair is on, so it still converges exactly where you point.
+	# `fwd` stays the aim direction: the hitscan ray is cast from the eye
+	# and must not inherit the muzzle's parallax.
+	var muzzle: Vector3 = _muzzle_point(fwd)
+	var shot: Vector3 = (_aim_target(fwd) - muzzle).normalized()
+	if shot.length_squared() < 0.5:
+		shot = fwd
 	var dmg: float = float(w["dmg"])
 	# Deathmatch: everybody else draws this shot.
 	if Net.active:
-		Net.send_fire(idx, muzzle, fwd)
+		Net.send_fire(idx, muzzle, shot)
 	# The DOS moon joke (FUN_00125caf): any weapon fired with the
 	# crosshair on the moon makes it complain.
 	if kind != "melee":
@@ -1134,7 +1167,8 @@ func _shoot(idx: int = -1) -> void:
 	# Melee: short-range hitscan, no tracer, no muzzle flash. The
 	# viewmodel swing animation (CFA frames) is the only visible cue.
 	if kind == "melee":
-		_melee_hit(muzzle, fwd, dmg)
+		# Melee reaches from the eye, not from the gun corner.
+		_melee_hit(_cam.global_position + fwd * 40.0, fwd, dmg)
 		return
 
 	var tint: Color = _KIND_COLOR.get(kind, Color.WHITE)
@@ -1148,7 +1182,7 @@ func _shoot(idx: int = -1) -> void:
 	# TEXTURE.219 is a 17x17 px sprite. DOS draws it as a small flare at
 	# the gun's muzzle; from 90 u a 36 u sprite filled a third of the
 	# screen, so it sits further out and smaller (a 2026-09-02 report).
-	mf.setup(muzzle + fwd * 70.0, tint, 26.0 if kind == "shotgun" else 18.0)
+	mf.setup(muzzle + shot * 70.0, tint, 26.0 if kind == "shotgun" else 18.0)
 	# ENHANCED: what a shot leaves behind — a spent case out of the port
 	# for the slugthrowers, a wisp of smoke at the muzzle. The energy
 	# weapons get nothing: their muzzle flash already is the effect, and
@@ -1159,7 +1193,7 @@ func _shoot(idx: int = -1) -> void:
 		var right: Vector3 = global_transform.basis.x
 		if _cam != null:
 			right = _cam.global_transform.basis.x
-		var muzzle_at: Vector3 = muzzle + fwd * 70.0
+		var muzzle_at: Vector3 = muzzle + shot * 70.0
 		match kind:
 			"bullet":
 				FxParticles.casings(scene, muzzle + right * 14.0, right, fwd, 1)
@@ -1174,12 +1208,12 @@ func _shoot(idx: int = -1) -> void:
 	if kind == "grenade":
 		var g := Grenade.new()
 		get_tree().current_scene.add_child(g)
-		g.setup(muzzle, fwd, dmg, float(w.get("splash", 256.0)), self)
+		g.setup(muzzle, shot, dmg, float(w.get("splash", 256.0)), self)
 		return
 	if kind == "rocket" or kind == "laser" or kind == "plasma":
 		var proj: Node3D = Projectile.new()
 		get_tree().current_scene.add_child(proj)
-		proj.setup(muzzle, fwd, dmg, _projectile_cfg(kind, w), self)
+		proj.setup(muzzle, shot, dmg, _projectile_cfg(kind, w), self)
 		return
 
 	# Hitscan ray for bullet / shotgun.
@@ -1200,14 +1234,14 @@ func _shoot(idx: int = -1) -> void:
 	# keeps it out of the player's face and still shows where the burst
 	# went.
 	if kind == "bullet" or kind == "shotgun":
-		var beam_from: Vector3 = muzzle + fwd * TRACER_START
+		var beam_from: Vector3 = muzzle + shot * TRACER_START
 		# Stop it well before the horizon. A ray that hits nothing ends
 		# 60,000 units out, and a 6-unit box that long, drawn additive,
 		# is a huge glowing wedge across the view — "the shots render as
 		# if they were flying in from the side" (2026-09-04).
 		var beam_to: Vector3 = beam_from
 		var reach: float = minf(beam_from.distance_to(endpoint), TRACER_MAX)
-		beam_to = beam_from + fwd * reach
+		beam_to = beam_from + (endpoint - beam_from).normalized() * reach
 		if reach > 120.0:
 			var tr: MeshInstance3D = Tracer.new()
 			get_tree().current_scene.add_child(tr)

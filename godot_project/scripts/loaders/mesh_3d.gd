@@ -358,7 +358,8 @@ static func build_textured_array_mesh(m: Mesh3D, provider: Callable,
 			mat.albedo_texture = tex
 		else:
 			mat.albedo_color = Color.from_hsv(float(type_id & 0xFF) / 255.0, 0.5, 0.85)
-		Render.style(mat, "model", info.get("normal", null))
+		Render.style(mat, "model", info.get("normal", null),
+			info.get("emission", null))
 
 		var surf_idx: int = am.get_surface_count()
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)

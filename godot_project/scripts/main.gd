@@ -937,6 +937,11 @@ const LIGHT_RANGE_PER_UNIT: float = 10.0    # variant-2 sub+8 → world units
 const LIGHT_ENERGY_DIV: float = 14.0        # variant-2 intensity → energy
 const INDOOR_AMBIENT: Color = Color(0.62, 0.62, 0.68)
 const OUTDOOR_AMBIENT: Color = Color(0.55, 0.55, 0.65)
+## ENHANCED runs much darker and lets the fittings do the work.
+const INDOOR_AMBIENT_ENHANCED: Color = Color(0.36, 0.37, 0.43)
+const INDOOR_ENERGY_ENHANCED: float = 1.0
+## Outdoors the ambient comes from the sky itself, at this energy.
+const OUTDOOR_SKY_AMBIENT: float = 0.32
 ## Sodium-ish tint for the street lamps (the DOS lamp sprite's heads are
 ## white-hot, and the pools they throw read warm against the night).
 const LAMP_COLOR: Color = Color(1.0, 0.86, 0.62)
@@ -959,23 +964,39 @@ func _light_level(level: LevelLoader.Level) -> void:
 	var env: Environment = we.environment
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	if level.is_outdoor:
-		env.ambient_light_color = OUTDOOR_AMBIENT
-		env.ambient_light_energy = 1.0 if Render.enhanced() else 1.45
+		if Render.enhanced():
+			# The SKY is the light. A night HDRI over the hills gives the
+			# ground its colour and its gradient and the moon gives it
+			# shape; a flat grey ambient at full energy did neither, it
+			# just made everything evenly bright whatever the time of day
+			# ("vonkajsok je konstantne osvetleny", 2026-09-04).
+			if env.sky != null:
+				env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+				env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
+			else:
+				env.ambient_light_color = OUTDOOR_AMBIENT
+			env.ambient_light_energy = OUTDOOR_SKY_AMBIENT
+		else:
+			env.ambient_light_color = OUTDOOR_AMBIENT
+			env.ambient_light_energy = 1.45
 		if sun != null:
 			sun.visible = true
 		if Render.enhanced():
-			print("[level] outdoor: %d lamp lights" % _place_map_lights(level, true))
+			print("[level] outdoor: %d lamp lights, %d lit fittings"
+				% [_place_map_lights(level, true), _place_emissive_lights(level)])
 		return
 	env.ambient_light_color = INDOOR_AMBIENT
 	env.ambient_light_energy = 1.0
 	if sun != null:
 		sun.visible = false
 	var cache: Dictionary = {}
+	var fittings: int = 0
 	if Render.enhanced():
-		# Materials are already per-pixel lit; a lower ambient lets the
-		# lamps carry the room.
-		env.ambient_light_color = INDOOR_AMBIENT
-		env.ambient_light_energy = 0.75
+		# Dark, and lit by the room's own fittings: the ceiling strips and
+		# the panels emit (Assets.emission), and each one carries a lamp.
+		env.ambient_light_color = INDOOR_AMBIENT_ENHANCED
+		env.ambient_light_energy = INDOOR_ENERGY_ENHANCED
+		fittings = _place_emissive_lights(level)
 	else:
 		_shade_recursive(level.entities, cache)
 		_shade_recursive(level.enemies, cache)
@@ -983,8 +1004,73 @@ func _light_level(level: LevelLoader.Level) -> void:
 		for s in level.sprites.get_children():
 			if s is SpriteBase3D:
 				(s as SpriteBase3D).shaded = true
-	print("[level] interior: %d lights, %d shaded materials"
-		% [_place_map_lights(level, false), cache.size()])
+	print("[level] interior: %d map lights, %d lit fittings, %d shaded materials"
+		% [_place_map_lights(level, false), fittings, cache.size()])
+
+## --- lights from the art ---------------------------------------------
+## A DOS interior has no light entities worth the name — a corridor gets
+## one or two, and the rest of its light is PAINTED: bright strips down
+## the ceiling, lit panels, glowing consoles. In ENHANCED those texels
+## emit (Assets.emission), and here every mesh that emits also gets a
+## lamp, so the corridor is actually lit by the thing on its ceiling.
+##
+## Biggest fittings first, and only a handful cast shadows — an omni
+## shadow is a cubemap each.
+const EMIT_LIGHT_MAX: int = 32
+const EMIT_LIGHT_SHADOWS: int = 4
+const EMIT_LIGHT_COLOR: Color = Color(1.0, 0.94, 0.84)
+const EMIT_LIGHT_ENERGY: float = 1.9
+const EMIT_RANGE_SCALE: float = 9.0      # x the fitting's own size
+const EMIT_RANGE_MIN: float = 750.0
+const EMIT_RANGE_MAX: float = 3200.0
+
+func _place_emissive_lights(level: LevelLoader.Level) -> int:
+	if not Render.enhanced() or level.entities == null:
+		return 0
+	var cands: Array = []
+	for c in level.entities.get_children():
+		if not (c is MeshInstance3D):
+			continue
+		var mi := c as MeshInstance3D
+		if mi.mesh == null:
+			continue
+		var lit := false
+		for si in mi.mesh.get_surface_count():
+			var m: Material = mi.mesh.surface_get_material(si)
+			if m is BaseMaterial3D and (m as BaseMaterial3D).emission_enabled:
+				lit = true
+				break
+		if not lit:
+			continue
+		var b: AABB = mi.mesh.get_aabb()
+		var span: float = maxf(b.size.x, maxf(b.size.y, b.size.z))
+		# A whole emissive BUILDING is not a lamp.
+		if span > 1400.0:
+			continue
+		cands.append([span, mi, b])
+	cands.sort_custom(func(a, bb) -> bool: return float(a[0]) > float(bb[0]))
+	var made: int = 0
+	for item in cands:
+		if made >= EMIT_LIGHT_MAX:
+			break
+		var mi: MeshInstance3D = item[1]
+		var b: AABB = item[2]
+		var l := OmniLight3D.new()
+		# Just under the fitting, so a ceiling strip throws its light
+		# down the corridor instead of into the slab it is fixed to.
+		# Hung clear of the fitting: an omni sitting inside the slab it is
+		# fixed to just blows that slab out and lights nothing else.
+		l.position = b.get_center() - Vector3(0.0, b.size.y * 0.5 + 70.0, 0.0)
+		l.light_color = EMIT_LIGHT_COLOR
+		l.light_energy = EMIT_LIGHT_ENERGY
+		l.omni_range = clampf(float(item[0]) * EMIT_RANGE_SCALE,
+			EMIT_RANGE_MIN, EMIT_RANGE_MAX)
+		l.omni_attenuation = 1.2
+		l.shadow_enabled = made < EMIT_LIGHT_SHADOWS
+		l.add_to_group("maplight")
+		mi.add_child(l)
+		made += 1
+	return made
 
 ## Build the OmniLight3D for every enabled variant-2 entity. Outdoors the
 ## lamps are warmer and dimmer than an interior fixture, and none of them

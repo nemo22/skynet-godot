@@ -102,6 +102,17 @@ func set_mode(m: int) -> void:
 func override_dir() -> String:
 	if SkynetPaths.pack_mounted("enhanced"):
 		return "res://enhanced"          # release: shipped enhanced.pck
+	# Follow the cache that is actually IN USE. A development checkout
+	# keeps the real cache under the project and links <game>/converted
+	# to it; the cache picks res://converted, but this used to read the
+	# pack from <game>/converted regardless. With two real directories
+	# side by side (a copied install where the link was never made) the
+	# game then read its models and its sky from one and wrote its cache
+	# into the other — which is how the ENHANCED sky quietly went missing
+	# (2026-09-04).
+	for base in ["res://converted", SkynetPaths.converted_dir()]:
+		if FileAccess.file_exists(base + "/enhanced_pack/replace.cfg"):
+			return base + "/enhanced_pack"
 	return SkynetPaths.converted_dir() + "/enhanced_pack"
 
 ## `.png` in the name also matches `.webp` / `.jpg` on disk (the pack
@@ -119,7 +130,12 @@ func override_path(rel: String) -> String:
 
 ## Apply the mode's look to a material. `kind`: "model", "terrain",
 ## "sprite", "sky". `normal` is the derived normal map (ENHANCED).
-func style(mat: BaseMaterial3D, kind: String, normal: Texture2D = null) -> void:
+## How hard a lit texel glows. Enough to read as a light source and to
+## feed the glow pass, not enough to blow the texture out.
+const EMISSION_ENERGY: float = 0.40
+
+func style(mat: BaseMaterial3D, kind: String, normal: Texture2D = null,
+		emission: Texture2D = null) -> void:
 	if mat == null:
 		return
 	if mode == DOS:
@@ -138,6 +154,12 @@ func style(mat: BaseMaterial3D, kind: String, normal: Texture2D = null) -> void:
 				mat.normal_enabled = true
 				mat.normal_texture = normal
 				mat.normal_scale = 1.3 if kind == "terrain" else 1.0
+			if emission != null:
+				# The lit texels of the DOS art, as light.
+				mat.emission_enabled = true
+				mat.emission_texture = emission
+				mat.emission = Color(1, 1, 1)
+				mat.emission_energy_multiplier = EMISSION_ENERGY
 			if kind == "terrain":
 				var det: Array = detail_layer("terrain")
 				if not det.is_empty():

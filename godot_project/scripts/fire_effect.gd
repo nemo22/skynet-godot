@@ -171,8 +171,8 @@ func _scorch(w: float) -> void:
 	burnt.roughness = 1.0
 	var mark := MeshInstance3D.new()
 	var disc := CylinderMesh.new()
-	disc.top_radius = w * 0.85
-	disc.bottom_radius = w * 0.9
+	disc.top_radius = w * 0.50
+	disc.bottom_radius = w * 0.54
 	disc.height = maxf(w * 0.02, 1.0)
 	disc.radial_segments = 14
 	var dm := StandardMaterial3D.new()
@@ -180,7 +180,7 @@ func _scorch(w: float) -> void:
 	dm.roughness = 1.0
 	dm.emission_enabled = true
 	dm.emission = Color(1.0, 0.34, 0.06)
-	dm.emission_energy_multiplier = 0.18
+	dm.emission_energy_multiplier = 0.05
 	disc.material = dm
 	mark.mesh = disc
 	mark.position.y = disc.height * 0.4

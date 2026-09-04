@@ -108,6 +108,49 @@ var _anim_t: float = 0.0
 var _anim_i: int = 0
 var _player: Node3D = null
 var _foot_offset: float = 0.0
+var _hit_area: Area3D = null
+var _hit_shape: CollisionShape3D = null
+## How much bigger than the machine itself the hitbox is, and the least
+## it may ever be. A spider walker's BODY mesh is a small box on long
+## legs, and the legs are separate segments — aiming at the body was the
+## only way to hit it at all ("hitpoint robotov je strasne maly, treba
+## mierit presne do stredu", 2026-09-04).
+const HIT_MARGIN: float = 1.18
+const HIT_MIN: float = 90.0
+
+## Grow the hitbox to cover every mesh under this actor. Called once the
+## child segments are in place.
+func refit_hitbox() -> void:
+	if _hit_shape == null or not is_instance_valid(_hit_shape):
+		return
+	var box: BoxShape3D = _hit_shape.shape as BoxShape3D
+	if box == null:
+		return
+	var b: AABB = _mesh_bounds(self, Transform3D())
+	if b.size == Vector3.ZERO:
+		return
+	var size: Vector3 = b.size * HIT_MARGIN
+	box.size = Vector3(maxf(size.x, HIT_MIN), maxf(size.y, HIT_MIN),
+		maxf(size.z, HIT_MIN))
+	_hit_shape.position = b.position + b.size * 0.5
+
+## Union of every mesh under `n`, in this actor's space.
+static func _mesh_bounds(n: Node, xf: Transform3D) -> AABB:
+	var out := AABB()
+	var first := true
+	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
+		out = xf * (n as MeshInstance3D).mesh.get_aabb()
+		first = false
+	for c in n.get_children():
+		if not (c is Node3D):
+			continue
+		var a: AABB = _mesh_bounds(c, xf * (c as Node3D).transform)
+		if a.size == Vector3.ZERO:
+			continue
+		out = a if first else out.merge(a)
+		first = false
+	return out
+
 var _stationary: bool = false
 var _flying: bool = false
 var _passive: bool = false
@@ -178,15 +221,17 @@ func setup(frame_meshes: Array, aabb: AABB, stationary: bool = false,
 	if not _passive:
 		add_to_group("enemy")
 
-	# Hitbox so the player's shots can register on this actor.
-	var area := Area3D.new()
-	var shape := CollisionShape3D.new()
+	# Hitbox so the player's shots can register on this actor. The box is
+	# kept on the node so refit_hitbox() can grow it once the turret,
+	# legs and gun segments have been attached.
+	_hit_area = Area3D.new()
+	_hit_shape = CollisionShape3D.new()
 	var box := BoxShape3D.new()
 	box.size = aabb.size
-	shape.shape = box
-	shape.position = aabb.position + aabb.size * 0.5
-	area.add_child(shape)
-	add_child(area)
+	_hit_shape.shape = box
+	_hit_shape.position = aabb.position + aabb.size * 0.5
+	_hit_area.add_child(_hit_shape)
+	add_child(_hit_area)
 
 	if sound_name != "" and not _t.has("engine"):
 		_snd = AudioStreamPlayer3D.new()

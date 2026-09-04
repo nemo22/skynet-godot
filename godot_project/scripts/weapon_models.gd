@@ -61,7 +61,7 @@ const WEAPON_KINDS: Array = [
 	"rifle",     # 2  ASSAULT RIFLE
 	"rifle",     # 3  MACHINE GUN
 	"shotgun",   # 4  SHOTGUN
-	"launcher",  # 5  GRENADE LAUNCHER
+	"glauncher", # 5  GRENADE LAUNCHER
 	"launcher",  # 6  ROCKET LAUNCHER
 	"laser",     # 7  LASER RIFLE
 	"laser",     # 8  LASER CANNON
@@ -108,6 +108,7 @@ static func build_kind(kind: String, w: float, h_in: float) -> Node3D:
 		"laser":    _laser(root, w, h)
 		"plasma":   _plasma(root, w, h)
 		"launcher": _launcher(root, w, h)
+		"glauncher": _glauncher(root, w, h)
 		_: return null
 	return root
 
@@ -355,6 +356,49 @@ static func _launcher(r: Node3D, w: float, h: float) -> void:
 	_part(r, Vector3(w * 0.16, h * 0.10, h * 0.34), "rubber", Vector3(-w * 0.30, axis - h * 0.28, 0.0))
 	_swivel(r, h, Vector3(-w * 0.34, axis - h * 0.26, 0.0))
 	_swivel(r, h, Vector3(w * 0.30, axis - h * 0.26, 0.0))
+
+## Grenade launcher. It shared the rocket tube's model, and a grenade
+## launcher does not look remotely like a rocket launcher ("granatomet
+## vyzera ako raketomet", 2026-09-04): no shoulder tube, no venturi, no
+## optic. This is the revolver kind — a short fat rifled barrel, a big
+## drum cylinder across the body, wire furniture and a ladder sight.
+static func _glauncher(r: Node3D, w: float, h: float) -> void:
+	var axis: float = h * 0.14
+	# Frame: a slab receiver the drum sits in.
+	_part(r, Vector3(w * 0.30, h * 0.44, h * 0.28), "olive", Vector3(-w * 0.06, axis, 0.0))
+	# The drum: a wide cylinder lying ACROSS the gun, with six chambers
+	# and a knurled winding cap. This is the shape that says "grenades".
+	var dr: float = h * 0.40
+	_tube(r, dr, dr, h * 0.42, "gunmetal", Vector3(-w * 0.06, axis, 0.0), 22,
+		Color(0, 0, 0, 0), Vector3(0.0, PI * 0.5, 0.0))
+	for i in 6:
+		var a: float = float(i) / 6.0 * TAU
+		_tube(r, h * 0.085, h * 0.085, h * 0.44, "blued",
+			Vector3(-w * 0.06 + cos(a) * dr * 0.60, axis + sin(a) * dr * 0.60, 0.0),
+			10, Color(0, 0, 0, 0), Vector3(0.0, PI * 0.5, 0.0))
+	_knurl(r, dr * 0.30, h * 0.10, "steel", Vector3(-w * 0.06, axis, h * 0.24))
+	_ring(r, dr * 1.04, h * 0.03, "blued", Vector3(-w * 0.06, axis, 0.0))
+	# Barrel: short, fat, stepped down at the muzzle.
+	_tube(r, h * 0.175, h * 0.175, w * 0.36, "blued", Vector3(w * 0.26, axis, 0.0), 18)
+	_tube(r, h * 0.205, h * 0.185, w * 0.06, "gunmetal", Vector3(w * 0.42, axis, 0.0), 18)
+	_ring(r, h * 0.20, h * 0.035, "steel", Vector3(w * 0.11, axis, 0.0))
+	# Ladder sight, folded up over the barrel.
+	_part(r, Vector3(w * 0.02, h * 0.30, h * 0.03), "steel",
+		Vector3(w * 0.06, axis + h * 0.34, 0.0), Vector3(0.0, 0.0, deg_to_rad(-8.0)))
+	for i in 3:
+		_part(r, Vector3(w * 0.03, h * 0.02, h * 0.09), "steel",
+			Vector3(w * 0.06, axis + h * 0.24 + float(i) * h * 0.08, 0.0))
+	_pin(r, h * 0.05, h * 0.05, "steel", Vector3(-w * 0.20, axis + h * 0.24, 0.0))
+	# Grip, trigger and a wire shoulder stock folded along the frame.
+	_grip(r, h * 0.22, h * 0.42, h * 0.24, Vector3(-w * 0.20, -h * 0.24, 0.0), 14.0)
+	_guard(r, h, -w * 0.14, -h * 0.02)
+	for sz in [-1.0, 1.0]:
+		_tube(r, h * 0.030, h * 0.030, w * 0.26, "steel",
+			Vector3(-w * 0.34, axis - h * 0.06, sz * h * 0.15), 8)
+	_tube(r, h * 0.032, h * 0.032, h * 0.34, "steel",
+		Vector3(-w * 0.46, axis - h * 0.06, 0.0), 8, Color(0, 0, 0, 0),
+		Vector3(PI * 0.5, 0.0, 0.0))
+	_swivel(r, h, Vector3(w * 0.18, axis - h * 0.20, 0.0))
 
 # --- shared sub-assemblies --------------------------------------------
 

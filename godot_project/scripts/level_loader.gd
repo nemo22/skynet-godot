@@ -609,6 +609,9 @@ func load_level(map_name: String) -> Level:
 				enemy_frame_cache, provider)
 			if aim_seg != null and STATIONARY_ENEMIES.has(ebase):
 				emi.set_aim_node(aim_seg)
+			# The hitbox starts as the body mesh alone; now that the legs,
+			# turret and guns are on, make it cover the whole machine.
+			emi.refit_hitbox()
 			# Marker sub+2 (u16, parsed into exit_map for variant 3) =
 			# trigger distance: a dormant trap that detonates when the
 			# player comes close (EnemiesStartMarked FUN_00129f39 →

@@ -37,9 +37,14 @@ const Explosion    := preload("res://scripts/explosion.gd")
 ## .3D name → ArrayMesh, or false when the load failed (never retried).
 static var _mesh_cache: Dictionary = {}
 ## How much wider a laser bolt is drawn than its 3x7 u model (see setup).
-const BOLT_FATTEN: float = 3.0
+const BOLT_FATTEN: float = 2.0
 ## Halo diameter as a fraction of the bolt's length.
-const GLOW_SCALE: float = 0.32
+const GLOW_SCALE: float = 0.24
+## A 120-unit bolt passing a metre from the lens fills a quarter of the
+## screen with a solid wedge — which is what the jeep's plasma looked
+## like (2026-09-04). Nothing is drawn until it is this far from the
+## camera; by then it is small enough to read as a bolt.
+const NEAR_CLIP: float = 320.0
 
 var _dir: Vector3 = Vector3.FORWARD
 var _speed: float = 3000.0
@@ -141,6 +146,7 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		mat.albedo_color = _color
 		_mi.material_override = mat
+	_mi.visible = false
 	add_child(_mi)
 
 	if bool(cfg.get("light", false)):
@@ -170,6 +176,7 @@ func _add_glow(length: float) -> void:
 	m.disable_receive_shadows = true
 	g.material_override = m
 	g.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	g.visible = false
 	add_child(g)
 
 static func _model_is_bolt(name: String) -> bool:
@@ -192,6 +199,13 @@ func _physics_process(delta: float) -> void:
 			var sm := SmokePuff.new()
 			get_tree().current_scene.add_child(sm)
 			sm.setup(global_position, 70.0)
+	if _mi != null and not _mi.visible:
+		var cam := get_viewport().get_camera_3d()
+		if cam == null or cam.global_position.distance_to(global_position) > NEAR_CLIP:
+			_mi.visible = true
+			for c in get_children():
+				if c is MeshInstance3D:
+					(c as MeshInstance3D).visible = true
 
 	var to := global_position + _dir * _speed * delta
 	var space := get_world_3d().direct_space_state

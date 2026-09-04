@@ -378,7 +378,84 @@ func provide(bank: int, rec: int) -> Dictionary:
 		var n := normal_map(bank, rec)
 		if n != null:
 			out["normal"] = n
+		var e := emission(bank, rec)
+		if e != null:
+			out["emission"] = e
 	return out
+
+## Which parts of a DOS texture are LIGHT: strip lights, lit panels, the
+## glowing screens on a console, the sodium heads of a street lamp.
+##
+## The DOS artists painted those bright — there is no separate light map
+## and no light entity for most of them, the pixels ARE the lamp. In
+## ENHANCED that means the geometry can emit: a corridor lit by its own
+## ceiling strips instead of a flat ambient ("nech jednotlive panely
+## emituju svetlo a to co je hore zase mozu byt svetla ktore budu tie
+## chodby osvetlovat", 2026-09-04).
+##
+## The mask keeps only texels above EMISSION_CUT and blacks out the rest.
+## A record whose bright area is under EMISSION_MIN is not a lamp (a
+## stray highlight), and one over EMISSION_MAX is not either — it is a
+## pale wall, and making a whole wall glow would wash the room out.
+const EMISSION_CUT: float = 0.84
+const EMISSION_MIN: float = 0.004
+const EMISSION_MAX: float = 0.22
+## Longest side the mask is scanned at.
+const EMISSION_SCAN: int = 96
+@onready var _emission_cut8: int = int(EMISSION_CUT * 255.0)
+
+func emission(bank: int, rec: int) -> Texture2D:
+	if not Render.enhanced():
+		return null
+	var key := "E%03d_%03d" % [bank, rec]
+	var r: Resource = fetch("emi", key, func() -> Resource:
+		var img: Image = _texture_image(bank, rec, false)
+		if img == null:
+			return null
+		if img.is_compressed():
+			img.decompress()
+		img.convert(Image.FORMAT_RGBA8)
+		# A mask, not a texture: half resolution is plenty, and the scan
+		# below is GDScript over every byte — at the ENHANCED 4x upscale
+		# that would be a million iterations per record.
+		if maxi(img.get_width(), img.get_height()) > EMISSION_SCAN:
+			var s: float = float(EMISSION_SCAN) / float(maxi(img.get_width(), img.get_height()))
+			img.resize(maxi(int(img.get_width() * s), 1),
+				maxi(int(img.get_height() * s), 1), Image.INTERPOLATE_BILINEAR)
+		var w: int = img.get_width()
+		var h: int = img.get_height()
+		var src: PackedByteArray = img.get_data()
+		var dst := PackedByteArray()
+		dst.resize(src.size())
+		var lit: int = 0
+		var i: int = 0
+		var n: int = w * h
+		while i < n:
+			var o: int = i * 4
+			var cr: int = src[o]
+			var cg: int = src[o + 1]
+			var cb: int = src[o + 2]
+			# Luminance, but a saturated colour counts for more: a red
+			# warning strip is a lamp at a lower brightness than a white
+			# one. Kept in 0..255 integers — this runs per texel.
+			var l: int = (cr * 77 + cg * 151 + cb * 28) >> 8
+			var top: int = maxi(cr, maxi(cg, cb)) * 85 / 100
+			if top > l:
+				l = top
+			if l >= _emission_cut8:
+				dst[o] = cr
+				dst[o + 1] = cg
+				dst[o + 2] = cb
+				lit += 1
+			dst[o + 3] = 255
+			i += 1
+		var frac: float = float(lit) / float(maxi(n, 1))
+		if frac < EMISSION_MIN or frac > EMISSION_MAX:
+			return null
+		var out := Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, dst)
+		out.generate_mipmaps()
+		return _portable(out))
+	return r as Texture2D
 
 # ---------------------------------------------------------------------
 # Meshes
