@@ -52,7 +52,7 @@ const Replacements := preload("res://scripts/replacements.gd")
 const FxParticles  := preload("res://scripts/fx_particles.gd")
 
 ## Bump when the bake changes shape (invalidates every saved scene).
-const BAKE_VERSION: int = 3
+const BAKE_VERSION: int = 5
 
 # ---------------------------------------------------------------------
 # Paths
@@ -417,8 +417,17 @@ const CLUTTER_PROPS: Array = [
 ## Volumetric dust over the open ground: ellipsoid FogVolumes in the same
 ## froxel grid as the global haze, so the moon and every muzzle flash
 ## light them.
-const DUST_VOLUMES: int = 6
-const DUST_SIZE := Vector3(5200.0, 900.0, 5200.0)
+##
+## A few small banks drifting past, NOT a blanket: six 5200-unit blobs at
+## density 0.02-0.05 on top of a global haze read as "terribly dense and
+## dark… it did not have to be everywhere" (2026-09-04). Each one now
+## drifts and breathes (scripts/dust_bank.gd).
+const DUST_VOLUMES: int = 4
+const DUST_SIZE := Vector3(2600.0, 560.0, 2600.0)
+const DUST_DENSITY: Vector2 = Vector2(0.004, 0.010)
+## Keep them off the spawn: dust you start standing inside is just a
+## grey filter over the whole screen.
+const DUST_CLEAR: float = 4500.0
 
 ## How big a patch of ground one MultiMesh covers. Small enough that the
 ## engine can cull and fade whole patches by distance, big enough that a
@@ -556,14 +565,18 @@ static func build_detail(level) -> Node3D:
 	root.add_child(dust)
 	rng.seed = hash(level.map_suffix)
 	var centre: Vector3 = level.player_start
+	# One prevailing wind for the map, give or take.
+	var wind: float = rng.randf() * TAU
 	for i in DUST_VOLUMES:
 		var a: float = rng.randf() * TAU
-		var r: float = 2000.0 + rng.randf() * 11000.0
+		var r: float = DUST_CLEAR + rng.randf() * 9000.0
 		var at3 := Vector3(centre.x + cos(a) * r, 0.0, centre.z + sin(a) * r)
 		at3.y = WldTerrain.height_at_world(level.wld, at3.x, -at3.z) \
-			+ rng.randf_range(150.0, 700.0)
+			+ rng.randf_range(120.0, 420.0)
 		FxParticles.dust_volume(dust, at3,
-			DUST_SIZE * rng.randf_range(0.6, 1.4), rng.randf_range(0.02, 0.05))
+			DUST_SIZE * rng.randf_range(0.7, 1.3),
+			rng.randf_range(DUST_DENSITY.x, DUST_DENSITY.y),
+			wind + rng.randf_range(-0.5, 0.5))
 	print("[level] detail: %d props in %d batches, %d dust banks over %.0fx%.0f u"
 		% [made, batches.size(), dust.get_child_count(), hi.x - lo.x, hi.y - lo.y])
 	return root
@@ -588,7 +601,8 @@ static func _clutter_prop(rng: RandomNumberGenerator, total: float) -> Dictionar
 			float(rs.x) * px, float(rs.y) * px, rng.randi())
 		if fit.is_empty():
 			return {}
-		return {"bank": bank, "rec": rec, "yaw": fit["yaw"], "scale": fit["scale"]}
+		return {"bank": bank, "rec": rec, "yaw": fit["yaw"], "scale": fit["scale"],
+			"upright": bool(fit.get("upright", false))}
 	return {}
 
 ## The shared mesh for one clutter model, built once and cached
@@ -600,8 +614,13 @@ static func _prop_ref(bank: int, rec: int, cache: Dictionary) -> Dictionary:
 	if cache.has(key):
 		return cache[key]
 	var out: Dictionary = {}
-	var tpl: Node3D = Replacements.sprite_node(bank, rec, 1000.0, 1000.0, 0)
-	var fit: Dictionary = Replacements.sprite_fit(bank, rec, 1000.0, 1000.0, 0)
+	# Built at the same aspect the props are picked at, so the reference
+	# stands up (or does not) exactly like every instance of it.
+	var rs: Vector2i = Assets.record_size(bank, rec)
+	var ref_w: float = 1000.0
+	var ref_h: float = 1000.0 * float(maxi(rs.y, 1)) / float(maxi(rs.x, 1))
+	var tpl: Node3D = Replacements.sprite_node(bank, rec, ref_w, ref_h, 0)
+	var fit: Dictionary = Replacements.sprite_fit(bank, rec, ref_w, ref_h, 0)
 	if tpl != null and not fit.is_empty():
 		tpl.rotation = Vector3.ZERO
 		var s_ref: float = float(fit["scale"])

@@ -1433,14 +1433,22 @@ func _apply_render_env(level: LevelLoader.Level, env: Environment, fill: Color) 
 	env.fog_sky_affect = 0.0
 	# Airborne dust, lit by whatever is up there. It used to be dusk only;
 	# a nuclear night is the dustiest of the lot, it is just dimmer.
+	#
+	# Kept FAINT on purpose. Volumetric fog absorbs as much as it
+	# scatters, so at night a global density that reads as "atmosphere"
+	# in daylight turns the whole map into a dark grey soup
+	# ("strasne husta a tmava", 2026-09-04). The mood comes from the
+	# drifting banks (scripts/dust_bank.gd) and from the depth haze
+	# above; this layer only ties them together and catches the muzzle
+	# flashes and the fires.
 	env.volumetric_fog_enabled = Settings.detail > Settings.LOW
-	env.volumetric_fog_density = 0.00030 if night else 0.00022
-	env.volumetric_fog_albedo = Color(0.62, 0.60, 0.58) if night else Color(1.0, 0.85, 0.7)
+	env.volumetric_fog_density = 0.00007 if night else 0.00006
+	env.volumetric_fog_albedo = Color(0.72, 0.70, 0.66) if night else Color(1.0, 0.85, 0.7)
 	env.volumetric_fog_emission_energy = 0.0
-	env.volumetric_fog_length = 12000.0
-	env.volumetric_fog_anisotropy = 0.45
+	env.volumetric_fog_length = 9000.0
+	env.volumetric_fog_anisotropy = 0.35
 	env.volumetric_fog_sky_affect = 0.0
-	env.volumetric_fog_ambient_inject = 0.05
+	env.volumetric_fog_ambient_inject = 0.18
 
 ## The star layer of the ENHANCED sky (added by shaders/dusk_sky.gdshader
 ## above the horizon glow): a few thousand stars of varying size and
@@ -3575,7 +3583,7 @@ func _build_status_ui() -> void:
 ## exactly this and which Marek likes.
 const MIN_HUD_MARGIN: float = 26.0
 const MIN_HUD_TINT := Color(0.62, 0.94, 0.70)
-const MIN_HUD_WIDTH: float = 430.0
+const MIN_HUD_WIDTH: float = 300.0
 const COMPASS_SPAN: float = 110.0        # degrees across the strip
 const COMPASS_SIZE := Vector2(430.0, 24.0)
 var _min_hud: Control = null
@@ -3619,13 +3627,13 @@ func _build_hud_minimal(canvas: CanvasLayer) -> void:
 	col.alignment = BoxContainer.ALIGNMENT_END
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	plate.add_child(col)
-	var hp: Array = _min_row(col, "HEALTH", Color(0.85, 0.16, 0.13), Color(1.0, 0.55, 0.30), 196.0, 13.0)
+	var hp: Array = _min_row(col, "HEALTH", Color(0.85, 0.16, 0.13), Color(1.0, 0.55, 0.30), 118.0, 10.0)
 	_health_label = hp[0]
 	_health_fill = hp[1]
-	var ar: Array = _min_row(col, "ARMOUR", Color(0.16, 0.38, 0.85), Color(0.55, 0.85, 1.0), 196.0, 9.0)
+	var ar: Array = _min_row(col, "ARMOUR", Color(0.16, 0.38, 0.85), Color(0.55, 0.85, 1.0), 118.0, 7.0)
 	_armor_label = ar[0]
 	_armor_fill = ar[1]
-	var rad: Array = _min_row(col, "RAD", Color(0.72, 0.55, 0.05), Color(1.0, 0.95, 0.35), 196.0, 9.0)
+	var rad: Array = _min_row(col, "RAD", Color(0.72, 0.55, 0.05), Color(1.0, 0.95, 0.35), 118.0, 7.0)
 	_rad_fill = rad[1]
 	_rad_row = rad[2]
 	_rad_row.visible = false
@@ -3701,24 +3709,33 @@ func _min_row(parent: Control, caption: String, c0: Color, c1: Color,
 	row.add_theme_constant_override("separation", 9)
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	parent.add_child(row)
-	var cap := _min_label(row, HORIZONTAL_ALIGNMENT_LEFT, 11, 0.55)
+	var cap := _min_label(row, HORIZONTAL_ALIGNMENT_LEFT, 10, 0.55)
 	cap.text = caption
-	cap.custom_minimum_size = Vector2(60.0, 0.0)
+	cap.custom_minimum_size = Vector2(52.0, 0.0)
 	cap.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	var val := _min_label(row, HORIZONTAL_ALIGNMENT_RIGHT, 17, 1.0)
-	val.custom_minimum_size = Vector2(40.0, 0.0)
+	var val := _min_label(row, HORIZONTAL_ALIGNMENT_RIGHT, 15, 1.0)
+	val.custom_minimum_size = Vector2(34.0, 0.0)
 	val.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	var trough := PanelContainer.new()
+	# A plain Control, NOT a PanelContainer: a container resizes its
+	# child to its own rect every layout pass, which quietly overrode the
+	# fill's anchor_right — every gauge read full whatever the value was
+	# (ARMOUR 8 drew a bar at 85%). It also grew to the width of the
+	# plate, which is why the bars were "zbytocne velke" (2026-09-04).
+	var trough := Control.new()
 	trough.custom_minimum_size = Vector2(width, height)
+	trough.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	trough.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	trough.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(trough)
+	var back := Panel.new()
+	back.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	back.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var tb := StyleBoxFlat.new()
 	tb.bg_color = Color(0.0, 0.0, 0.0, 0.62)
-	tb.border_color = Color(0.0, 0.0, 0.0, 0.9)
 	tb.set_border_width_all(1)
 	tb.border_color = Color(MIN_HUD_TINT.r, MIN_HUD_TINT.g, MIN_HUD_TINT.b, 0.22)
-	trough.add_theme_stylebox_override("panel", tb)
-	row.add_child(trough)
+	back.add_theme_stylebox_override("panel", tb)
+	trough.add_child(back)
 	# The fill: a left-to-right gradient with a lighter top edge, so it
 	# has some shape to it instead of reading as a coloured rectangle.
 	var fill := TextureRect.new()

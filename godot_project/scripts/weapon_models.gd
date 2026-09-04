@@ -26,9 +26,9 @@ const PickupData := preload("res://scripts/pickup_data.gd")
 # --- materials ---------------------------------------------------------
 ## kind → [albedo, metallic, roughness, emission energy, clearcoat]
 const MATERIALS: Dictionary = {
-	"gunmetal": [Color(0.115, 0.120, 0.135), 0.62, 0.58, 0.0, 0.0],
-	"steel":    [Color(0.28, 0.29, 0.32), 0.70, 0.44, 0.0, 0.04],
-	"blued":    [Color(0.062, 0.068, 0.082), 0.66, 0.50, 0.0, 0.06],
+	"gunmetal": [Color(0.115, 0.120, 0.135), 0.55, 0.72, 0.0, 0.0],
+	"steel":    [Color(0.24, 0.25, 0.28), 0.62, 0.60, 0.0, 0.02],
+	"blued":    [Color(0.062, 0.068, 0.082), 0.58, 0.64, 0.0, 0.03],
 	"polymer":  [Color(0.085, 0.085, 0.095), 0.00, 0.74, 0.0, 0.0],
 	"rubber":   [Color(0.045, 0.045, 0.050), 0.00, 0.95, 0.0, 0.0],
 	"wood":     [Color(0.26, 0.135, 0.062), 0.00, 0.55, 0.0, 0.0],

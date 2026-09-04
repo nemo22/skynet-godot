@@ -1109,12 +1109,17 @@ func _shoot(idx: int = -1) -> void:
 		_vm3d_kick = 1.0                  # 3D view model recoil, one shot
 
 	var fwd: Vector3 = aim_dir()
+	# ON the aim line, only a little under it. Dropping the muzzle 26
+	# units below the eye and starting the shot 90 units out puts it 16
+	# degrees below where you are looking, and every bolt then flies in
+	# from the corner of the screen ("vystrely su zasa nakrivo",
+	# 2026-09-04).
 	var muzzle: Vector3 = _cam.global_position + fwd * 90.0 \
-		- _cam.global_transform.basis.y * 26.0
+		- _cam.global_transform.basis.y * 7.0
 	if vehicle != VEH_FOOT:
 		# Vehicle guns sit low on the hull, well ahead of the cockpit.
 		muzzle = _cam.global_position + fwd * (160.0 if vehicle == VEH_JEEP else 260.0) \
-			- _cam.global_transform.basis.y * 40.0
+			- _cam.global_transform.basis.y * 12.0
 	var dmg: float = float(w["dmg"])
 	# Deathmatch: everybody else draws this shot.
 	if Net.active:
@@ -1567,11 +1572,17 @@ const HUD_OVERLAP: float = 14.0
 ## with a narrow field of view and its own light rig, composited over
 ## the world. It also retires the no-depth-test hack, because the level
 ## is simply not in that viewport, so no wall can slice the gun.
-const VM3D_LEN: float = 34.0            # model length in world units
+## The gun in your hands. It was drawn 34 units long half a metre from
+## a 40-degree lens, which is a third of the screen and so much
+## perspective that you looked at the SIDE of the receiver with the wire
+## stock coming at you rather than down the barrel (2026-09-04). Smaller,
+## further away, and only a few degrees off the view axis.
+const VM3D_LEN: float = 28.0            # model length in world units
 const VM3D_FOV: float = 40.0            # narrow: no wide-angle stretch
-const VM3D_POS := Vector3(8.5, -9.0, -50.0)
-const VM3D_YAW: float = 0.34
-const VM3D_ROLL: float = -0.05
+const VM3D_POS := Vector3(9.0, -14.5, -48.0)
+const VM3D_YAW: float = 0.20
+const VM3D_PITCH: float = -0.05
+const VM3D_ROLL: float = -0.04
 ## An upright pipe needs to sit lower and further out than a rifle.
 const VM3D_PIPE_POS := Vector3(17.0, -26.0, -78.0)
 const VM3D_PIPE_LEN: float = 52.0
@@ -1682,17 +1693,17 @@ func _build_vm_viewport() -> void:
 	# dim rim from behind to pick the silhouette off the world.
 	var key := DirectionalLight3D.new()
 	key.rotation_degrees = Vector3(-38.0, 34.0, 0.0)
-	key.light_energy = 0.70
+	key.light_energy = 0.55
 	key.light_color = Color(1.0, 0.96, 0.90)
 	_vm_vp.add_child(key)
 	var fill := DirectionalLight3D.new()
 	fill.rotation_degrees = Vector3(-8.0, -120.0, 0.0)
-	fill.light_energy = 0.55
+	fill.light_energy = 0.32
 	fill.light_color = Color(0.62, 0.72, 0.95)
 	_vm_vp.add_child(fill)
 	var rim := DirectionalLight3D.new()
 	rim.rotation_degrees = Vector3(24.0, 168.0, 0.0)
-	rim.light_energy = 0.20
+	rim.light_energy = 0.14
 	rim.light_color = Color(0.85, 0.88, 1.0)
 	_vm_vp.add_child(rim)
 	_vm_tex = TextureRect.new()
@@ -1737,7 +1748,7 @@ func _update_viewmodel_3d(delta: float) -> void:
 			_vm3d.rotation = Vector3(0.0, PI * 0.5 + 0.45, deg_to_rad(74.0))
 			_vm3d.position = VM3D_PIPE_POS
 		else:
-			_vm3d.rotation = Vector3(0.0, PI * 0.5 + VM3D_YAW, VM3D_ROLL)
+			_vm3d.rotation = Vector3(VM3D_PITCH, PI * 0.5 + VM3D_YAW, VM3D_ROLL)
 		_vm_cam3d.add_child(_vm3d)
 	_vm_tex.visible = true
 	_layout_vm3d()
@@ -1763,7 +1774,8 @@ func _update_viewmodel_3d(delta: float) -> void:
 			deg_to_rad(74.0) - down * 1.5)
 		return
 	_vm3d.position = VM3D_POS + sway + Vector3(0.0, _vm3d_kick * 1.6, _vm3d_kick * 4.5)
-	_vm3d.rotation.x = _vm3d_kick * 0.20
+	_vm3d.rotation = Vector3(VM3D_PITCH + _vm3d_kick * 0.20,
+		PI * 0.5 + VM3D_YAW, VM3D_ROLL)
 
 ## The viewmodel viewport covers the WORLD area only — from the top of
 ## the screen down to the HUD panel — so the gun's grip runs off the

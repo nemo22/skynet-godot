@@ -277,19 +277,25 @@ static func fog_noise() -> Texture3D:
 ## (2026-09-04). Godot's volumetric fog does this properly, so the dust
 ## and the glow around a fire now live in the same froxel grid as the
 ## global haze.
+const DustBank := preload("res://scripts/dust_bank.gd")
+
 static func dust_volume(parent: Node3D, at: Vector3, size: Vector3,
-		density: float = 0.035, tint: Color = Color(0.44, 0.40, 0.35)) -> FogVolume:
+		density: float = 0.010, heading: float = 0.0,
+		tint: Color = Color(0.52, 0.48, 0.43)) -> FogVolume:
 	if parent == null:
 		return null
-	var fv := FogVolume.new()
+	var fv: FogVolume = DustBank.new()
 	fv.shape = RenderingServer.FOG_VOLUME_SHAPE_ELLIPSOID
 	fv.size = size
 	fv.position = at
+	fv.heading = heading
 	var m := FogMaterial.new()
 	m.density = density
 	m.albedo = tint
-	m.edge_fade = 0.6
-	m.height_falloff = 0.25
+	# A wide, soft edge and a steep height falloff: a bank has to fade
+	# out long before its bounds or it reads as a wall of grey.
+	m.edge_fade = 0.85
+	m.height_falloff = 0.6
 	m.density_texture = fog_noise()
 	fv.material = m
 	parent.add_child(fv)

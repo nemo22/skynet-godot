@@ -27,13 +27,16 @@ func _draw() -> void:
 	var c := _centre if _centre != Vector2.ZERO else size * 0.5
 	var col := Color(0.55, 1.0, 0.65, 0.85)
 	var shadow := Color(0.0, 0.0, 0.0, 0.6)
-	var gap := 7.0
-	var ln := 15.0
+	# Small: the DOS crosshair is a few pixels of green, and the port
+	# drew it three times that ("zameriavaci kriz je prilis velky",
+	# 2026-09-04).
+	var gap := 4.0
+	var ln := 8.0
 	var dirs: Array[Vector2] = [
 		Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)]
 	for d in dirs:
 		var a: Vector2 = c + d * gap
 		var b: Vector2 = c + d * (gap + ln)
-		draw_line(a + Vector2.ONE, b + Vector2.ONE, shadow, 3.0)
-		draw_line(a, b, col, 2.0)
-	draw_circle(c, 1.6, col)
+		draw_line(a + Vector2.ONE, b + Vector2.ONE, shadow, 2.0)
+		draw_line(a, b, col, 1.0)
+	draw_circle(c, 1.0, col)

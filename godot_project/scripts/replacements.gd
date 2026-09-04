@@ -113,7 +113,40 @@ static func sprite_node(bank: int, rec: int, world_w: float, world_h: float, see
 	var e: Dictionary = _sprites.get("T%03d_%03d" % [bank, rec], {})
 	if e.is_empty():
 		return null
-	return _instance(e, world_w, world_h, seed)
+	return _instance(e, world_w, world_h, seed, _stands_up(e, world_w, world_h))
+
+## Does this model have to be stood on end?
+##
+## Poly Haven scans a dead tree as a FELLED trunk: dead_tree_trunk_02 is
+## 4.05 x 1.06 x 1.06, lying along X. Fitting that to the HEIGHT of a
+## standing-tree billboard multiplies it by ~380 and lays a fifteen-metre
+## log across the valley — "tie stromy su furt divne a asi aj divne
+## zrotovane, asi by mali byt nastojato a su na lezato" (2026-09-04).
+##
+## The DOS billboard says which way the thing stood: taller than it is
+## wide means it stood up. If the model does not, turn its long axis
+## upright.
+static func _stands_up(e: Dictionary, world_w: float, world_h: float) -> bool:
+	if world_h < world_w * 1.15:
+		return false                     # the sprite is a wide thing
+	# The bounds only exist once the model has been read.
+	if _template(String(e["path"])) == null:
+		return false
+	var b: AABB = _bounds[String(e["path"])]
+	return maxf(b.size.x, b.size.z) > b.size.y * 1.5
+
+## The rotation that stands a lying model on its longest axis.
+static func _upright_basis(b: AABB) -> Basis:
+	if b.size.x >= b.size.z:
+		return Basis(Vector3.BACK, PI * 0.5)      # +X -> +Y
+	return Basis(Vector3.RIGHT, -PI * 0.5)        # +Z -> +Y
+
+## The model's bounds as they will actually be placed.
+static func _bounds_for(e: Dictionary, upright: bool) -> AABB:
+	var b: AABB = _bounds.get(String(e["path"]), AABB())
+	if upright:
+		b = Transform3D(_upright_basis(b), Vector3.ZERO) * b
+	return b
 
 ## A model standing in for the placed .3D mesh `name`, scaled to the DOS
 ## mesh's bounding box (its origin stays the entity origin).
@@ -139,17 +172,29 @@ static func sprite_fit(bank: int, rec: int, world_w: float, world_h: float,
 		return {}
 	if _template(String(e["path"])) == null:
 		return {}
-	return {"scale": _fit_scale(e, world_w, world_h), "yaw": _fit_yaw(e, seed)}
+	var upright: bool = _stands_up(e, world_w, world_h)
+	return {"scale": _fit_scale(e, world_w, world_h, upright),
+		"yaw": _fit_yaw(e, seed), "upright": upright}
 
-static func _fit_scale(e: Dictionary, world_w: float, world_h: float) -> float:
+## A model must never end up wildly bigger than the billboard it stands
+## in for: whatever the fit rule says, its longest side is capped at this
+## multiple of the sprite's longest side.
+const LONGEST_FACTOR: float = 1.35
+
+static func _fit_scale(e: Dictionary, world_w: float, world_h: float,
+		upright: bool = false) -> float:
 	var opts: Dictionary = e["opts"]
-	var b: AABB = _bounds[String(e["path"])]
+	var b: AABB = _bounds_for(e, upright)
 	var s: float = 1.0
 	if String(opts.get("fit", "h")) == "w" and maxf(b.size.x, b.size.z) > 0.0001:
 		s = world_w / maxf(b.size.x, b.size.z)
 	elif b.size.y > 0.0001:
 		s = world_h / b.size.y
-	return s * float(opts.get("scale", "1.0"))
+	s *= float(opts.get("scale", "1.0"))
+	var longest: float = maxf(b.size.x, maxf(b.size.y, b.size.z))
+	if longest > 0.0001:
+		s = minf(s, LONGEST_FACTOR * maxf(world_w, world_h) / longest)
+	return s
 
 static func _fit_yaw(e: Dictionary, seed: int) -> float:
 	var yaw_opt: String = String((e["opts"] as Dictionary).get("yaw", "random"))
@@ -157,16 +202,25 @@ static func _fit_yaw(e: Dictionary, seed: int) -> float:
 		return float(hash(seed) % 3600) / 3600.0 * TAU
 	return deg_to_rad(float(yaw_opt))
 
-static func _instance(e: Dictionary, world_w: float, world_h: float, seed: int) -> Node3D:
+static func _instance(e: Dictionary, world_w: float, world_h: float, seed: int,
+		upright: bool = false) -> Node3D:
 	var tpl: Node3D = _template(String(e["path"]))
 	if tpl == null:
 		return null
 	var opts: Dictionary = e["opts"]
-	var b: AABB = _bounds[String(e["path"])]
-	var s: float = _fit_scale(e, world_w, world_h)
+	var b: AABB = _bounds_for(e, upright)
+	var s: float = _fit_scale(e, world_w, world_h, upright)
 	var root := Node3D.new()
 	root.name = "Model"
-	var inst: Node3D = tpl.duplicate()
+	# `inst` carries the scale and the placement; a felled trunk that has
+	# to stand gets the extra quarter turn on the model inside it, so the
+	# bounds above and the node here can never drift apart.
+	var inst := Node3D.new()
+	inst.name = "Fit"
+	var model: Node3D = tpl.duplicate()
+	if upright:
+		model.basis = _upright_basis(_bounds[String(e["path"])])
+	inst.add_child(model)
 	inst.scale = Vector3(s, s, s)
 	# Base on the ground, centred on the origin.
 	inst.position = Vector3(-b.get_center().x * s, -b.position.y * s, -b.get_center().z * s)
@@ -181,6 +235,8 @@ static func _instance(e: Dictionary, world_w: float, world_h: float, seed: int) 
 	if tint != Color(1, 1, 1):
 		_tint(inst, tint)
 	return root
+
+## The mesh replacement path keeps the old signature.
 
 static func _tint(n: Node, tint: Color) -> void:
 	if n is MeshInstance3D:
