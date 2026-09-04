@@ -1090,6 +1090,9 @@ func _set_sky_fill(level: LevelLoader.Level, map_name: String = "") -> void:
 ## sun becomes a shadow-casting light that matches the sky, plus glow,
 ## ACES tonemapping and volumetric light for the rays.
 const NIGHT_LUMA: float = 0.14
+## Exposure for a photographed panorama from the pack (see below).
+const SKY_ENERGY_NIGHT: float = 0.09
+const SKY_ENERGY_DUSK: float = 0.55
 
 ## Time of day is per mission, not per texture: the DOS sky code
 ## (FUN_00133b67) draws the SKY_SKY.3D dusk dome only for the maps in the
@@ -1162,8 +1165,20 @@ func _clear_moon() -> void:
 
 ## The night moon: the DOS sprite pinned to the camera (both modes; in
 ## ENHANCED it glows a little so the bloom picks it up).
+##
+## ENHANCED swaps the 57 px sprite for a real lunar photomap on a SPHERE
+## — an equirectangular map wrapped on a ball is the only way to get the
+## limb right; painting half of one onto a flat quad smears the edges.
+## The map is Solar System Scope's 2k moon (CC BY 4.0), fetched into
+## <pack>/sky/moon.jpg by tools/enhanced_pack.py --sky.
 func _make_moon() -> void:
 	_clear_moon()
+	if Render.enhanced():
+		var real: String = Render.override_path("sky/moon.jpg")
+		if real.is_empty():
+			real = Render.override_path("sky/moon.png")
+		if not real.is_empty() and _make_moon_sphere(real):
+			return
 	var tex: Texture2D = Assets.texture(MOON_BANK, MOON_REC, true)
 	if tex == null:
 		return
@@ -1192,10 +1207,46 @@ func _make_moon() -> void:
 	add_child(_moon)
 	_update_moon()
 
+## The ENHANCED moon: a lunar photomap on an unshaded sphere, turned so
+## the near side (longitude 0, the middle of an equirectangular map) is
+## the face we see.
+func _make_moon_sphere(path: String) -> bool:
+	var img := Image.load_from_file(path)
+	if img == null or img.get_width() <= 0:
+		return false
+	img.generate_mipmaps()
+	var tex := ImageTexture.create_from_image(img)
+	_moon = MeshInstance3D.new()
+	_moon.name = "Moon"
+	var fov_w: float = 2.0 * MOON_DIST * tan(deg_to_rad(camera.fov * 0.5)) * (16.0 / 9.0)
+	var r: float = fov_w * MOON_SCREEN_FRAC * 0.5
+	var sm := SphereMesh.new()
+	sm.radius = r
+	sm.height = r * 2.0
+	sm.radial_segments = 48
+	sm.rings = 24
+	_moon.mesh = sm
+	var mat := StandardMaterial3D.new()
+	mat.albedo_texture = tex
+	mat.albedo_color = Color(1.15, 1.15, 1.12)
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.disable_fog = true
+	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	_moon.material_override = mat
+	_moon.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(_moon)
+	_update_moon()
+	return true
+
 func _update_moon() -> void:
 	if _moon == null or not is_instance_valid(_moon) or camera == null:
 		return
 	_moon.global_position = camera.global_position + _moon_dir() * MOON_DIST
+	if _moon.mesh is SphereMesh:
+		# Show the NEAR side. Godot's sphere puts u=0 at +Z, so the
+		# middle of an equirectangular map — longitude 0, the face we
+		# know — sits on -Z, which is exactly where look_at aims.
+		_moon.look_at(camera.global_position, Vector3.UP)
 ## Seconds the MISSION COMPLETE screen stays before the next mission.
 const AUTO_ADVANCE_SEC: float = 6.0
 
@@ -1265,9 +1316,17 @@ func _apply_render_env(level: LevelLoader.Level, env: Environment, fill: Color) 
 		sun.shadow_blur = 1.5
 	var sky := Sky.new()
 	sky.radiance_size = Sky.RADIANCE_SIZE_128
+	# A real equirectangular sky from the pack, if one is there. The
+	# builder fetches Poly Haven's CC0 night and dusk HDRIs (2k .hdr,
+	# about 5 MB each) — a photographed sky with the real Milky Way beats
+	# the procedural star field, and REFLECTION_SOURCE_SKY then lights
+	# every metal surface in the level from it.
 	var over: String = ""
 	for nm in ["sky", "night" if night else "sunset"]:
-		over = Render.override_path("sky/%s.png" % nm)
+		for ext in ["hdr", "exr", "png", "jpg"]:
+			over = Render.override_path("sky/%s.%s" % [nm, ext])
+			if not over.is_empty():
+				break
 		if not over.is_empty():
 			break
 	if not over.is_empty():
@@ -1277,6 +1336,11 @@ func _apply_render_env(level: LevelLoader.Level, env: Environment, fill: Color) 
 		if img != null:
 			img.generate_mipmaps()
 			pm.panorama = ImageTexture.create_from_image(img)
+		# A photographed sky carries the real world's luminance. Left at
+		# 1.0 the Milky Way lit the ground like noon (2026-09-04); these
+		# bring it back to a night and a dusk, and REFLECTION_SOURCE_SKY
+		# then picks up a believable amount off it.
+		pm.energy_multiplier = SKY_ENERGY_NIGHT if night else SKY_ENERGY_DUSK
 		sky.sky_material = pm
 	else:
 		var sm := ShaderMaterial.new()

@@ -76,7 +76,43 @@ SPRITES = {
 
 # placed .3D entity meshes -> model (fit to the DOS mesh's bounding box)
 MESHES = {
+    # The wrecked cars littering the outdoor maps. Poly Haven has no
+    # burnt-out shells, but "covered_car" — a saloon under a tarpaulin —
+    # is a photoscan that reads exactly right for a street full of
+    # abandoned vehicles, and it beats the 60-triangle DOS mesh.
+    "CARHIP1B": ("covered_car", {"fit": "w"}),
+    "CARHIP1C": ("covered_car", {"fit": "w"}),
+    "CARHIP2A": ("covered_car", {"fit": "w"}),
+    "CARHIP2C": ("covered_car", {"fit": "w"}),
+    "CARHIP3A": ("covered_car", {"fit": "w"}),
+    "CARHIP3B": ("covered_car", {"fit": "w"}),
+    "CARHIP3C": ("covered_car", {"fit": "w"}),
+    "CARHIP4A": ("covered_car", {"fit": "w"}),
 }
+
+# --- sky ---------------------------------------------------------------
+# The outdoor maps are a flat palette colour with a 57 px moon sprite in
+# DOS. ENHANCED replaces both: an equirectangular panorama on the sky
+# dome and a lunar photomap on a sphere (main.gd _apply_render_env /
+# _make_moon_sphere). Everything here is free to redistribute.
+#
+#   night  Poly Haven "Rogland Clear Night" — CC0. A clear Namaqualand
+#          night with the Milky Way; the same collection the terrain
+#          rocks come from, and MOONLESS, so the game's own moon stays
+#          the only one in the sky.
+#   sunset Poly Haven "Belfast Sunset (Pure Sky)" — CC0, for the dusk
+#          missions (5-8, the DOS SKY_SKY.3D dome maps).
+#   moon   Solar System Scope 2k lunar colour map — CC BY 4.0, credited
+#          in LICENSE.txt. Equirectangular, so longitude 0 (the near
+#          side we all know) lands in the middle of the texture.
+SKY_HDRIS = {
+    "night": "rogland_clear_night",
+    "sunset": "belfast_sunset_puresky",
+}
+SKY_HDRI_RES = "2k"
+MOON_URL = "https://www.solarsystemscope.com/images/textures/full/2k_moon.jpg"
+MOON_CREDIT = ("Solar System Scope (https://www.solarsystemscope.com/textures/), "
+               "CC BY 4.0")
 
 # DOS texture record -> Poly Haven texture. The photo texture is colour
 # matched to the DOS record (mean/spread of luminance and chroma) so it
@@ -194,6 +230,42 @@ def get_model(pid, out_root, res, authors):
     info = fetch_json(f"{API}/info/{pid}")
     authors[pid] = ", ".join(info.get("authors", {}).keys())
     return os.path.relpath(main, out_root).replace("\\", "/"), n
+
+
+def get_sky(out_root):
+    """Fetch the ENHANCED sky panoramas and the lunar photomap."""
+    made = []
+    for name, pid in SKY_HDRIS.items():
+        try:
+            files = fetch_json(f"{API}/files/{pid}")
+            fam = files.get("hdri", {})
+            res = SKY_HDRI_RES if SKY_HDRI_RES in fam else sorted(fam.keys())[0]
+            entry = fam[res]["hdr"]
+            path = os.path.join(out_root, "sky", name + ".hdr")
+            download(entry["url"], path, entry.get("md5"))
+            info = fetch_json(f"{API}/info/{pid}")
+            SKY_AUTHORS[pid] = ", ".join(info.get("authors", {}).keys())
+            made.append(f"sky/{name}.hdr  <- polyhaven {pid} ({res})")
+        except Exception as e:  # noqa
+            print(f"sky {name}: FAILED: {e}")
+    try:
+        # Not a Poly Haven asset: a plain file, and the site only serves
+        # it to a browser-shaped request.
+        req = urllib.request.Request(MOON_URL, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        path = os.path.join(out_root, "sky", "moon.jpg")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with urllib.request.urlopen(req, timeout=120) as r, open(path, "wb") as f:
+            f.write(r.read())
+        made.append("sky/moon.jpg  <- " + MOON_CREDIT)
+    except Exception as e:  # noqa
+        print("moon: FAILED:", e)
+    for m in made:
+        print(" ", m)
+    return made
+
+
+SKY_AUTHORS = {}
 
 
 def get_texture(tid, out_root, res):
@@ -341,14 +413,21 @@ def main():
     ap.add_argument("--textures", action="store_true", help="build the texture replacements (needs --dos)")
     ap.add_argument("--dos", default="", help="directory with the DOS records as PNG (map_dump --bankdump)")
     ap.add_argument("--no-models", action="store_true")
+    ap.add_argument("--sky", action="store_true",
+                    help="fetch the night/dusk sky panoramas and the moon map")
     a = ap.parse_args()
     game = os.path.abspath(a.game)
     # What the GAME reads at run time (shipped, packed into enhanced.pck).
     out_root = os.path.join(game, "converted", "enhanced_pack")
     # Downloaded originals the colour matching works from: build-time
     # only, outside the game data so they are never shipped or cached.
-    src_root = args.src or os.path.join(game, "assets_src")
+    global src_root
+    src_root = a.src or os.path.join(game, "assets_src")
     os.makedirs(os.path.join(out_root, "models"), exist_ok=True)
+    if a.sky:
+        get_sky(out_root)
+        if a.no_models:
+            return
     if a.textures:
         build_detail(out_root, a.res, set(x for x in a.only.split(",") if x))
         build_textures(out_root, a.dos, a.res, set(x for x in a.only.split(",") if x))
@@ -391,6 +470,12 @@ def main():
         lic.append(f"  {pid}: {authors[pid]}  https://polyhaven.com/a/{pid}")
     for tid in sorted(TEX_AUTHORS):
         lic.append(f"  {tid} (texture): {TEX_AUTHORS[tid]}  https://polyhaven.com/a/{tid}")
+    for pid in sorted(SKY_AUTHORS):
+        lic.append(f"  {pid} (sky): {SKY_AUTHORS[pid]}  https://polyhaven.com/a/{pid}")
+    if os.path.exists(os.path.join(out_root, "sky", "moon.jpg")):
+        lic += ["", "The lunar colour map sky/moon.jpg is NOT CC0 — it is",
+                "  " + MOON_CREDIT,
+                "which requires attribution. Keep this file with the pack."]
     with open(os.path.join(out_root, "LICENSE.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(lic) + "\n")
     print("wrote", os.path.join(out_root, "replace.cfg"), "and LICENSE.txt")

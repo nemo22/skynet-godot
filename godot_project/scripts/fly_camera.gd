@@ -1107,6 +1107,7 @@ func _shoot(idx: int = -1) -> void:
 		_vm_firing = true
 		_vm_idx = 0
 		_vm_t = 0.0
+		_vm3d_kick = 1.0                  # 3D view model recoil, one shot
 
 	var fwd: Vector3 = aim_dir()
 	var muzzle: Vector3 = _cam.global_position + fwd * 90.0 \
@@ -1601,10 +1602,16 @@ func _process(delta: float) -> void:
 		return
 	_update_viewmodel_3d(delta)
 	var frames: Array = _vm_cache.get(_weapon_idx, []) if vehicle == VEH_FOOT else []
-	if frames.is_empty() or _vm3d != null:
-		_viewmodel.visible = false
+	# The CFA clock runs even when the 3D model is the one being drawn.
+	# It used to return here instead, so `_vm_firing` was set by the shot
+	# and never cleared — and the 3D recoil, which re-armed itself from
+	# that flag, kicked forever: "after one shot the gun shakes back and
+	# forth in a loop" (2026-09-04).
+	var showing_art: bool = not frames.is_empty() and _vm3d == null
+	_viewmodel.visible = showing_art
+	if frames.is_empty():
+		_vm_firing = false
 		return
-	_viewmodel.visible = true
 	if _vm_firing:
 		_vm_t += delta
 		# Per-weapon playback speed. Hand-tuned: DOS record +0x2c is the
@@ -1619,6 +1626,8 @@ func _process(delta: float) -> void:
 				_vm_idx = 0                   # back to the idle pose
 				_vm_firing = false
 				break
+	if not showing_art:
+		return
 	_viewmodel.texture = frames[_vm_idx]
 	_layout_viewmodel()
 
@@ -1697,9 +1706,7 @@ func _update_viewmodel_3d(delta: float) -> void:
 		_vm_cam3d.add_child(_vm3d)
 	_vm_tex.visible = true
 	_layout_vm3d()
-	# Recoil: a kick back and up that eases out, plus a walking sway.
-	if _vm_firing and _vm3d_kick < 0.2:
-		_vm3d_kick = 1.0
+	# Recoil eases out from the kick the shot itself armed (_shoot).
 	_vm3d_kick = maxf(_vm3d_kick - delta * 6.0, 0.0)
 	var speed: float = Vector2(velocity.x, velocity.z).length() / maxf(walk_speed, 1.0)
 	var t: float = float(Time.get_ticks_msec()) * 0.004
