@@ -46,6 +46,8 @@ func _ready() -> void:
 	_pages["main"] = _build_main()
 	_pages["save"] = _build_slots("SAVE GAME", "save")
 	_pages["load"] = _build_slots("LOAD GAME", "load")
+	_pages["options"] = _build_options()
+	_pages["controls"] = _build_controls()
 	_pages["cheats"] = _build_cheats()
 	for p in _pages.values():
 		_root.add_child(p)
@@ -78,6 +80,21 @@ func close() -> void:
 	closed.emit()
 
 func _input(event: InputEvent) -> void:
+	if _binding != "":
+		var pressed: bool = (event is InputEventKey and event.pressed and not event.echo) \
+			or (event is InputEventMouseButton and event.pressed)
+		if not pressed:
+			return
+		var esc: bool = event is InputEventKey \
+			and (event as InputEventKey).keycode == KEY_ESCAPE
+		if not esc:
+			var code: int = Controls.code_for(event)
+			if code != 0:
+				Controls.set_bind(_binding, code)
+		_binding = ""
+		_refresh_binds()
+		get_viewport().set_input_as_handled()
+		return
 	if not is_open or not (event is InputEventKey and event.pressed and not event.echo):
 		return
 	if (event as InputEventKey).keycode == KEY_ESCAPE:
@@ -137,7 +154,7 @@ func _build_main() -> Control:
 	vb.add_child(_button("RESUME", close))
 	vb.add_child(_button("SAVE GAME", _show.bind("save")))
 	vb.add_child(_button("LOAD GAME", _show.bind("load")))
-	vb.add_child(_button("CHEATS", _show.bind("cheats")))
+	vb.add_child(_button("OPTIONS", _show.bind("options")))
 	vb.add_child(_button("CONSOLE  (~)", func() -> void:
 		close()
 		if game != null and game.has_method("open_console"):
@@ -151,6 +168,152 @@ func _build_main() -> Control:
 			game._return_to_menu()))
 	vb.add_child(_button("QUIT GAME", func() -> void: get_tree().quit()))
 	return pv[0]
+
+## --- OPTIONS, in game -------------------------------------------------
+## The DOS game let you into the options from the in-game menu; the port
+## only had them on the title screen, so nothing could be changed once a
+## level was up (2026-09-04). Every row reads and writes the same
+## autoloads the title screen uses, so the two never disagree.
+var _opt_rows: Array = []              # refresh callables
+
+func _build_options() -> Control:
+	var pv := _page_box("OPTIONS")
+	var vb: VBoxContainer = pv[1]
+	_opt_row(vb, "SOUND", func() -> String: return _pct(Audio.master_volume),
+		func(d: int) -> void: Audio.set_master_volume(
+			snappedf(clampf(Audio.master_volume + 0.1 * d, 0.0, 1.0), 0.1)))
+	_opt_row(vb, "MUSIC", func() -> String: return _pct(Audio.music_volume),
+		func(d: int) -> void: Audio.set_music_volume(
+			snappedf(clampf(Audio.music_volume + 0.1 * d, 0.0, 1.0), 0.1)))
+	_opt_row(vb, "DIFFICULTY",
+		func() -> String: return String(Settings.LEVEL_NAMES[Settings.difficulty]),
+		func(d: int) -> void: Settings.set_difficulty(
+			posmod(Settings.difficulty + d, 3)))
+	_opt_row(vb, "DETAIL",
+		func() -> String: return String(Settings.LEVEL_NAMES[Settings.detail]),
+		func(d: int) -> void: Settings.set_detail(posmod(Settings.detail + d, 3)))
+	_opt_row(vb, "RENDER",
+		func() -> String: return "ENHANCED" if Render.enhanced() else "DOS",
+		func(_d: int) -> void: Render.set_mode(
+			Render.DOS if Render.enhanced() else Render.ENHANCED))
+	_opt_row(vb, "RETRO RESOLUTION",
+		func() -> String: return String(Settings.RES_NAMES[Settings.resolution]),
+		func(d: int) -> void: Settings.set_resolution(
+			posmod(Settings.resolution + d, 3)))
+	_opt_row(vb, "WINDOW",
+		func() -> String: return String(Settings.WINDOW_MODE_NAMES[Settings.window_mode]),
+		func(d: int) -> void: Settings.set_window_mode(
+			posmod(Settings.window_mode + d, 3)))
+	_opt_row(vb, "WINDOW SIZE",
+		func() -> String: return Settings.size_name(Settings.window_size),
+		func(d: int) -> void: Settings.set_window_size(
+			posmod(Settings.window_size + d, Settings.available_sizes().size())))
+	_opt_row(vb, "WEAPON VIEW",
+		func() -> String: return "3D MODEL" if Settings.weapon_3d else "DOS ART",
+		func(_d: int) -> void: Settings.set_weapon_3d(not Settings.weapon_3d))
+	_opt_row(vb, "MUSIC SOURCE",
+		func() -> String: return "WAVETABLE" if Settings.wavetable else "SYNTH",
+		func(_d: int) -> void: Settings.set_wavetable(not Settings.wavetable))
+	_opt_row(vb, "REVERSE STEREO",
+		func() -> String: return "ON" if Settings.reverse_stereo else "OFF",
+		func(_d: int) -> void: Settings.set_reverse_stereo(not Settings.reverse_stereo))
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 10)
+	vb.add_child(gap)
+	var bar := HBoxContainer.new()
+	bar.alignment = BoxContainer.ALIGNMENT_CENTER
+	bar.add_theme_constant_override("separation", 8)
+	vb.add_child(bar)
+	bar.add_child(_button("CONTROLS", _show.bind("controls"), 180.0, 40.0))
+	bar.add_child(_button("CHEATS", _show.bind("cheats"), 150.0, 40.0))
+	bar.add_child(_button("BACK", _show.bind("main"), 150.0, 40.0))
+	return pv[0]
+
+static func _pct(v: float) -> String:
+	return "%d %%" % int(round(v * 100.0))
+
+## A caption on the left and a value you step with < and >.
+func _opt_row(parent: Control, caption: String, get_text: Callable,
+		step: Callable) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	parent.add_child(row)
+	var cap := Label.new()
+	cap.text = caption
+	cap.custom_minimum_size = Vector2(250.0, 32.0)
+	cap.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	cap.add_theme_font_size_override("font_size", 18)
+	row.add_child(cap)
+	var val := Label.new()
+	val.custom_minimum_size = Vector2(170.0, 32.0)
+	val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	val.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	val.add_theme_font_size_override("font_size", 18)
+	val.add_theme_color_override("font_color", Color(0.62, 0.95, 0.70))
+	var refresh := func() -> void: val.text = String(get_text.call())
+	row.add_child(_button("<", func() -> void:
+		step.call(-1)
+		_refresh_options(), 46.0, 32.0))
+	row.add_child(val)
+	row.add_child(_button(">", func() -> void:
+		step.call(1)
+		_refresh_options(), 46.0, 32.0))
+	_opt_rows.append(refresh)
+	refresh.call()
+
+func _refresh_options() -> void:
+	for r in _opt_rows:
+		(r as Callable).call()
+
+## --- CONTROLS, in game ------------------------------------------------
+var _bind_labels: Dictionary = {}      # action -> Label
+var _binding: String = ""
+
+func _build_controls() -> Control:
+	var pv := _page_box("CONTROLS")
+	var vb: VBoxContainer = pv[1]
+	var grid := GridContainer.new()
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 12)
+	grid.add_theme_constant_override("v_separation", 3)
+	vb.add_child(grid)
+	for entry in Controls.ACTIONS:
+		var action: String = String(entry[0])
+		var cap := Label.new()
+		cap.text = String(entry[1])
+		cap.custom_minimum_size = Vector2(150.0, 30.0)
+		cap.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		cap.add_theme_font_size_override("font_size", 16)
+		grid.add_child(cap)
+		var b := _button(Controls.key_label(action),
+			func() -> void: _begin_bind(action), 190.0, 30.0)
+		b.add_theme_font_size_override("font_size", 16)
+		grid.add_child(b)
+		_bind_labels[action] = b
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 10)
+	vb.add_child(gap)
+	var hint := Label.new()
+	hint.text = "Click a binding, then press a key or a mouse button.  Esc cancels."
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 15)
+	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.7))
+	vb.add_child(hint)
+	vb.add_child(_button("DEFAULTS", func() -> void:
+		Controls.reset_defaults()
+		_refresh_binds()))
+	vb.add_child(_button("BACK", _show.bind("options")))
+	return pv[0]
+
+func _begin_bind(action: String) -> void:
+	_binding = action
+	var b: Button = _bind_labels.get(action)
+	if b != null:
+		b.text = "...?"
+
+func _refresh_binds() -> void:
+	for a in _bind_labels:
+		(_bind_labels[a] as Button).text = Controls.key_label(a)
 
 func _build_slots(title: String, mode: String) -> Control:
 	var pv := _page_box(title)

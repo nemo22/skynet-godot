@@ -1742,17 +1742,25 @@ func _on_controls_back() -> void:
 # --- input / actions --------------------------------------------------
 
 func _unhandled_input(event: InputEvent) -> void:
-	if not (event is InputEventKey and event.pressed and not event.echo):
-		return
-	# While the CONTROLS dialog is waiting, the next key is the new bind.
+	# While the CONTROLS dialog is waiting, the next key OR MOUSE BUTTON
+	# is the new bind — the mouse was not bindable at all before
+	# 2026-09-04, which left fire and throw stuck on the keyboard.
 	if _rebinding_action != "":
-		if event.keycode != KEY_ESCAPE:
-			Controls.set_bind(_rebinding_action, event.keycode)
+		var pressed: bool = (event is InputEventKey and event.pressed and not event.echo) 			or (event is InputEventMouseButton and event.pressed)
+		if not pressed:
+			return
+		var esc: bool = event is InputEventKey 			and (event as InputEventKey).keycode == KEY_ESCAPE
+		if not esc:
+			var code: int = Controls.code_for(event)
+			if code != 0:
+				Controls.set_bind(_rebinding_action, code)
 		var rl: Label = _rebind_labels.get(_rebinding_action)
 		if rl != null:
 			rl.text = Controls.key_label(_rebinding_action)
 		_rebinding_action = ""
 		get_viewport().set_input_as_handled()
+		return
+	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 	if event.keycode == KEY_ESCAPE:
 		if _quit_overlay != null and is_instance_valid(_quit_overlay):

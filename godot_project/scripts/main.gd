@@ -14,6 +14,7 @@ extends Node3D
 const LevelLoader := preload("res://scripts/level_loader.gd")
 const Replacements := preload("res://scripts/replacements.gd")
 const PickupData := preload("res://scripts/pickup_data.gd")
+const MidiSynth := preload("res://scripts/midi_synth.gd")
 const BSAReader   := preload("res://scripts/loaders/bsa_reader.gd")
 const ImgFile     := preload("res://scripts/loaders/img_file.gd")
 const Palette     := preload("res://scripts/loaders/palette.gd")
@@ -942,6 +943,7 @@ func _light_level(level: LevelLoader.Level) -> void:
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	if level.is_outdoor:
 		env.ambient_light_color = OUTDOOR_AMBIENT
+		env.ambient_light_energy = 1.0 if Render.enhanced() else 1.45
 		if sun != null:
 			sun.visible = true
 		if Render.enhanced():
@@ -1099,6 +1101,10 @@ func _set_sky_fill(level: LevelLoader.Level, map_name: String = "") -> void:
 ## sun becomes a shadow-casting light that matches the sky, plus glow,
 ## ACES tonemapping and volumetric light for the rays.
 const NIGHT_LUMA: float = 0.14
+## DOS-mode grading — the palette-ramp look, not raw linear output.
+const DOS_BRIGHTNESS: float = 1.30
+const DOS_CONTRAST: float = 1.06
+const DOS_SATURATION: float = 1.10
 ## ENHANCED colour grading — the ash-choked look.
 const GRADE_SATURATION: float = 0.68
 const GRADE_CONTRAST: float = 1.07
@@ -1289,9 +1295,26 @@ func _apply_render_env(level: LevelLoader.Level, env: Environment, fill: Color) 
 		env.volumetric_fog_enabled = false
 		env.tonemap_mode = Environment.TONE_MAPPER_LINEAR
 		env.ssao_enabled = false
+		# The DOS renderer draws through a palette ramp and its own
+		# gamma; the port's straight linear output came out darker and
+		# flatter than the original ever looked. The Win32 port solves
+		# it with fGamma / fContrast uniforms — same idea here
+		# (2026-09-04: "the shading and the brightness in that port are
+		# how I would want our DOS look").
+		env.adjustment_enabled = true
+		env.adjustment_brightness = DOS_BRIGHTNESS
+		env.adjustment_contrast = DOS_CONTRAST
+		env.adjustment_saturation = DOS_SATURATION
 		if sun != null:
-			sun.light_energy = 1.2
-			sun.light_color = Color(1, 1, 1)
+			sun.light_energy = 1.55
+			sun.light_color = Color(1.0, 0.97, 0.92)
+		if level.is_outdoor:
+			# Haze that reaches the horizon instead of swallowing the
+			# next hill: the sky colour, not a third of it, and pushed
+			# out with the far clip.
+			env.fog_light_color = fill.lerp(Color(0.16, 0.14, 0.16), 0.35)
+			env.fog_depth_begin = FOG_BEGIN * 1.9 * Settings.fog_scale()
+			env.fog_depth_end = FOG_END * 1.8 * Settings.fog_scale()
 		return
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
 	env.tonemap_exposure = 1.0
@@ -3213,6 +3236,32 @@ func run_command(line: String) -> String:
 			# DETAIL -> WEAPON VIEW, from a script.
 			Settings.set_weapon_3d(_bool_arg(args, not Settings.weapon_3d))
 			return "weapon view: %s" % ("3D MODEL" if Settings.weapon_3d else "DOS ART")
+		"wavetable", "sf2":
+			Settings.set_wavetable(_bool_arg(args, not Settings.wavetable))
+			var sf: String = MidiSynth.soundfont_path()
+			var report: String = "music: %s%s" % [
+				"WAVETABLE" if Settings.wavetable else "SYNTH",
+				("  (" + sf.get_file() + ")") if not sf.is_empty() else "  (no .sf2 found)"]
+			if Settings.wavetable and not sf.is_empty():
+				# Prove the bank actually yields samples, not silence.
+				var SF2 := load("res://scripts/loaders/sf2_file.gd")
+				var bank = SF2.open_file(sf)
+				var got: Array = []
+				for pr in [0, 24, 33, 48, 56, 73]:
+					var it: Dictionary = SF2.instrument(bank, 0, pr, 60)
+					got.append("%d:%s" % [pr, "%d f" % (it["stream"].data.size() / 2) if not it.is_empty() else "-"])
+				var dr: Dictionary = SF2.instrument(bank, 128, 0, 36)
+				got.append("kick:%s" % ("%d f" % (dr["stream"].data.size() / 2) if not dr.is_empty() else "-"))
+				report += "
+" + ", ".join(got)
+			return report
+		"pause", "options":
+			# Agent aid / quick access: open the in-game menu, on the
+			# OPTIONS page when asked for.
+			open_pause_menu()
+			if cmd == "options" and _pause != null:
+				_pause.call("_show", "options")
+			return "menu open"
 		"use":
 			# The action key, from a script: --console="tp …;use".
 			if p == null:

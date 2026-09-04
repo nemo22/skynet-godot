@@ -519,15 +519,12 @@ func _unhandled_input(event: InputEvent) -> void:
 	if _mobile:
 		return                           # touch handled by TouchControls
 	if event is InputEventMouseButton and event.pressed:
+		if not _captured and event.button_index == MOUSE_BUTTON_LEFT:
+			_capture(true)
+			return
+		if _captured and _act_on(event):
+			return
 		match event.button_index:
-			MOUSE_BUTTON_LEFT:
-				if _captured:
-					_shoot()
-				else:
-					_capture(true)
-			MOUSE_BUTTON_RIGHT:
-				if _captured:
-					_throw_secondary()
 			MOUSE_BUTTON_MIDDLE:
 				if _captured:
 					cycle_throwable(1)
@@ -538,10 +535,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
 			_capture(false)
+		elif _act_on(event):
+			pass
 		elif Controls.matches(event, "activate"):
 			_try_activate()
-		elif Controls.matches(event, "throw"):
-			_throw_secondary()
 		elif Controls.matches(event, "center_view"):
 			set_view(_yaw, 0.0)           # CENTER VIEW: level the horizon
 		elif event.keycode >= KEY_1 and event.keycode <= KEY_9:
@@ -599,9 +596,7 @@ func _physics_process(delta: float) -> void:
 	if ui_fire:
 		ui_fire = false
 		_shoot()
-	elif _captured and not _mobile \
-			and (Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
-				or Controls.is_pressed("fire")):
+	elif _captured and not _mobile and Controls.is_pressed("fire"):
 		_shoot()                          # held trigger — DOS auto-fire
 
 	# --- movement input (horizontal intent) ---------------------------
@@ -1599,6 +1594,20 @@ func _load_viewmodels() -> void:
 		if not frames.is_empty():
 			_vm_cache[i] = frames
 			print("[weapon] %s — %d viewmodel frames" % [cfa, frames.size()])
+
+## The one-shot actions that can sit on a key OR a mouse button. True
+## when the event was one of them.
+func _act_on(event: InputEvent) -> bool:
+	if Controls.matches(event, "fire"):
+		_shoot()
+		return true
+	if Controls.matches(event, "throw"):
+		_throw_secondary()
+		return true
+	if Controls.matches(event, "activate"):
+		_try_activate()
+		return true
+	return false
 
 ## Advance the viewmodel animation and keep it pinned bottom-centre.
 func _process(delta: float) -> void:

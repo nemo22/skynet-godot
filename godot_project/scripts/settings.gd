@@ -68,6 +68,9 @@ var reverse_stereo: bool = false
 var resolution: int = RES_NATIVE
 var window_mode: int = WIN_WINDOWED
 var window_size: int = 0                # index into available_sizes()
+## Music: false = the port's synthesised tones (the retro sound), true =
+## samples out of a General MIDI SoundFont found next to the game data.
+var wavetable: bool = false
 ## The weapon in the player's hands: false = the DOS hand-drawn CFA
 ## animation (with the soldier's gloves), true = the ENHANCED 3D model.
 ## The art is the better-looking of the two, so it stays the default.
@@ -84,6 +87,7 @@ func _ready() -> void:
 		window_mode = clampi(int(cfg.get_value("video", "window_mode", WIN_WINDOWED)),
 			WIN_WINDOWED, WIN_FULLSCREEN)
 		window_size = int(cfg.get_value("video", "window_size", 0))
+		wavetable = bool(cfg.get_value("audio", "wavetable", false))
 	get_tree().root.size_changed.connect(apply_resolution)
 	get_window().content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
 	apply_window()
@@ -98,6 +102,7 @@ func save() -> void:
 	cfg.set_value("video", "weapon_3d", weapon_3d)
 	cfg.set_value("video", "window_mode", window_mode)
 	cfg.set_value("video", "window_size", window_size)
+	cfg.set_value("audio", "wavetable", wavetable)
 	cfg.save(CFG_PATH)
 
 func set_difficulty(level: int) -> void:
@@ -185,6 +190,14 @@ func set_weapon_3d(on: bool) -> void:
 	weapon_3d = on
 	save()
 	weapon_view_changed.emit(on)
+
+signal wavetable_changed(on: bool)
+
+func set_wavetable(on: bool) -> void:
+	wavetable = on
+	save()
+	wavetable_changed.emit(on)
+	print("[settings] music %s" % ("WAVETABLE" if on else "SYNTH"))
 
 func set_reverse_stereo(on: bool) -> void:
 	reverse_stereo = on

@@ -55,6 +55,11 @@ func _ready() -> void:
 	_apply_music_volume()
 	_synth = MidiSynth.new()
 	_synth.name = "MidiSynth"
+	# Switching SYNTH <-> WAVETABLE rebuilds the instruments on the next
+	# note, so the change is audible without restarting the track.
+	Settings.wavetable_changed.connect(func(_on: bool) -> void:
+		if _synth != null and is_instance_valid(_synth):
+			_synth.reset_bank())
 	_synth.bus = "Music"
 	add_child(_synth)
 	_bsa = preload("res://scripts/loaders/bsa_reader.gd").new()
