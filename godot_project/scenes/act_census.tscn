@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://tools/act_census.gd" id="1_actc"]
+
+[node name="ActCensus" type="Node"]
+script = ExtResource("1_actc")
