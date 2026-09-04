@@ -45,6 +45,9 @@ enabled=PackedStringArray("res://addons/skynet_maps/plugin.cfg")
 
 [rendering]
 
+; Baked occluders (converted/maps/*.level.scn) let the engine drop what
+; is behind a hill or a wall. Off on LOW detail (main._setup_detail).
+occlusion_culling/use_occlusion_culling=true
 textures/canvas_textures/default_texture_filter=0
 renderer/rendering_method.mobile="gl_compatibility"
 textures/vram_compression/import_etc2_astc=true

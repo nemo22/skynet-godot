@@ -28,6 +28,7 @@ var _ash: GPUParticles3D = null
 const PauseMenu   := preload("res://scripts/pause_menu.gd")
 const DmGame      := preload("res://scripts/net/dm_game.gd")
 const WldTerrain  := preload("res://scripts/loaders/wld_terrain.gd")
+const LevelScene  := preload("res://scripts/level_scene.gd")
 
 ## Map to load on startup (falls back to first map if missing).
 @export var initial_map: String = "MAP.210"
@@ -186,6 +187,16 @@ func _ready() -> void:
 		load_from_slot(slot)
 	else:
 		_load_current()
+
+## Does this mesh already carry a collision body? Static geometry comes
+## out of the baked level scene with one (and the loader gives the rest
+## of it one too), so the per-entity trimesh build here is only for the
+## movers and destructibles it built by hand.
+static func _has_collision(mi: Node) -> bool:
+	for c in mi.get_children():
+		if c is CollisionObject3D:
+			return true
+	return false
 
 ## DOS meshes are drawn double-sided and their winding is arbitrary —
 ## the 210TOWER observation deck floor faces DOWN. Godot's concave
@@ -664,8 +675,9 @@ func _begin_level(name: String) -> void:
 	_current_level = level
 	if level.terrain:
 		add_child(level.terrain)
-		level.terrain.create_trimesh_collision()   # walkable ground
-		_enable_backfaces(level.terrain)
+		if not _has_collision(level.terrain):
+			level.terrain.create_trimesh_collision()   # walkable ground
+			_enable_backfaces(level.terrain)
 	if level.entities:
 		# Bake the colliders BEFORE the subtree enters the physics space so
 		# their flags (backface_collision) are registered from the first
@@ -676,6 +688,11 @@ func _begin_level(name: String) -> void:
 			# movers (doors/gates/lifts) it is a child of the moving
 			# node, so the collision follows the action-system motion.
 			if c is MeshInstance3D:
+				# Static geometry arrives with its collision already on
+				# it — one shared shape per mesh, out of the converted
+				# cache (scripts/level_scene.gd).
+				if _has_collision(c):
+					continue
 				# Doors, gates and lifts collide as their AABB box, like
 				# every DOS object: the BIGDOOR leaf is a braced frame
 				# whose trimesh has holes a player capsule slips through
@@ -772,8 +789,7 @@ func _begin_level(name: String) -> void:
 	_apply_pending_player()
 	_collect_radiation(level)
 	_setup_water(level)
-	_scatter_clutter(level)
-	_place_dust(level)
+	_setup_detail(level)
 	_compass_north = _marker_value(level, 7)
 	_set_hud_mode(player.vehicle if is_instance_valid(player) else 0)
 	if _dm != null:
@@ -1739,222 +1755,76 @@ func _radiation_dose(at: Vector3) -> float:
 		dose += minf(r * 50.0, 12800.0) / 256.0
 	return dose
 
-## --- Outdoor clutter (ENHANCED only) ---------------------------------
-## The DOS maps are bare: a 1996 engine could not afford scenery, so the
-## ground between the buildings is empty terrain. It reads as a level,
-## not as a country that lost a nuclear war. This scatters the CC0 props
-## the pack already carries — dead branches, bark debris, boulders,
-## stumps, tyres, the odd dead tree — over the open ground of every
-## outdoor map, on a jittered grid seeded from the map number so the same
-## map always looks the same.
+## --- The level's own scenery (ENHANCED only) -------------------------
+## The scatter itself now happens once, at conversion time, and lives in
+## the baked level scene (scripts/level_scene.gd) — a thousand props are
+## not something to re-derive on every level start, and having them in a
+## scene means they can be looked at and moved in the Godot editor.
+## What is left here is deciding how much of it to draw.
 ##
-## Rules: nothing on a slope you could not walk, nothing within
-## CLUTTER_CLEAR of a placed entity (buildings, vehicles, the objective
-## props) or of the player's own start, and nothing at all on LOW detail.
-const CLUTTER_SPACING: Array = [0.0, 2000.0, 1400.0]   # per DETAIL level
-const CLUTTER_SKIP: float = 0.45          # fraction of cells left empty
-const CLUTTER_CLEAR: float = 620.0        # keep away from real entities
-const CLUTTER_MAX_SLOPE: float = 260.0    # height change across a cell
-const CLUTTER_MARGIN: float = 2500.0      # how far past the buildings
-const CLUTTER_MAX_SIZE: float = 240.0     # longest side of any one prop
-const CLUTTER_SINK: float = 12.0          # bed it into the ground
-## How far a scattered prop is drawn. Without a limit every one of them
-## is submitted every frame from anywhere on the map, which is what made
-## looking across the valley from the jeep stutter (2026-09-04). Godot
-## fades a GeometryInstance3D out by distance for free.
-const CLUTTER_DRAW_RANGE: float = 7000.0
-## [bank, record, weight] — every one of these has a model in the pack.
-const CLUTTER_PROPS: Array = [
-	[215, 6, 5.0],    # dry branches
-	[242, 2, 4.0],    # dry branches, spread
-	[242, 3, 4.0],    # bark debris
-	[211, 3, 4.0],    # rock
-	[211, 5, 3.0],    # small sand rocks
-	[210, 9, 3.0],    # stones
-	[210, 2, 2.0],    # moon rock
-	[211, 1, 1.5],    # boulder
-	[213, 12, 1.5],   # burnt stump
-	[213, 9, 1.0],    # old tyre
-	[208, 0, 0.8],    # dead tree
-]
-var _clutter: Node3D = null
+##   Detail/Props   one MultiMesh per model per patch of ground; the
+##                  first half of each is the MED set, so dropping to
+##                  MED is a visible_instance_count away
+##   Detail/Dust    volumetric dust banks — HIGH only
+##
+## `mods/maps/<MAP>.detail.tscn` is a scene of your own, instantiated on
+## top and never touched by the conversion (level.overlay).
+var _detail: Node3D = null
+var _overlay: Node3D = null
+var _occluders: Node3D = null
 
-func _scatter_clutter(level: LevelLoader.Level) -> void:
-	if _clutter != null and is_instance_valid(_clutter):
-		_clutter.queue_free()
-	_clutter = null
-	if _dust_root != null and is_instance_valid(_dust_root):
-		_dust_root.queue_free()
-	_dust_root = null
-	if not Render.enhanced() or level == null or not level.is_outdoor:
+func _setup_detail(level: LevelLoader.Level) -> void:
+	for old in [_detail, _overlay, _occluders]:
+		if old != null and is_instance_valid(old):
+			old.queue_free()
+	_detail = null
+	_overlay = null
+	_occluders = null
+	if level == null:
 		return
-	if level.wld == null or level.map == null or _dm != null:
-		return
-	var spacing: float = float(CLUTTER_SPACING[clampi(Settings.detail, 0, 2)])
-	if spacing <= 0.0:
-		return
-	# The area worth dressing: around everything the map actually placed.
-	var lo := Vector2(1e9, 1e9)
-	var hi := Vector2(-1e9, -1e9)
-	var solid: Array[Vector2] = []
-	for e in level.map.entities:
-		if (e.flags & 3) == 2:
-			continue
-		var q := Vector2(float(e.x), -float(e.z))
-		lo = lo.min(q)
-		hi = hi.max(q)
-		if (e.flags & 3) == 1:
-			solid.append(q)
-	if solid.is_empty():
-		return
-	lo -= Vector2(CLUTTER_MARGIN, CLUTTER_MARGIN)
-	hi += Vector2(CLUTTER_MARGIN, CLUTTER_MARGIN)
-	var total: float = 0.0
-	for c in CLUTTER_PROPS:
-		total += float(c[2])
-	_clutter = Node3D.new()
-	_clutter.name = "Clutter"
-	add_child(_clutter)
-	var rng := RandomNumberGenerator.new()
-	var made: int = 0
-	var start := Vector2(player.global_position.x, player.global_position.z) 		if is_instance_valid(player) else Vector2.ZERO
-	var x: float = lo.x
-	while x < hi.x:
-		var z: float = lo.y
-		while z < hi.y:
-			# Seeded per cell: the same map always dresses the same way.
-			rng.seed = hash(Vector2i(int(x / spacing), int(z / spacing))) 				^ int(_suffix(level.map_suffix.insert(0, "MAP.")))
-			z += spacing
-			if rng.randf() < CLUTTER_SKIP:
-				continue
-			var at := Vector2(x + rng.randf_range(-0.4, 0.4) * spacing,
-				z + rng.randf_range(-0.4, 0.4) * spacing)
-			if at.distance_to(start) < 900.0:
-				continue
-			var near: bool = false
-			for q in solid:
-				if absf(q.x - at.x) < CLUTTER_CLEAR and absf(q.y - at.y) < CLUTTER_CLEAR:
-					near = true
-					break
-			if near:
-				continue
-			# Flat enough to stand on? Sample the cell's corners.
-			var h0: float = WldTerrain.height_at_world(level.wld, at.x, -at.y)
-			var h1: float = WldTerrain.height_at_world(level.wld, at.x + 256.0, -at.y)
-			var h2: float = WldTerrain.height_at_world(level.wld, at.x, -at.y - 256.0)
-			if maxf(absf(h1 - h0), absf(h2 - h0)) > CLUTTER_MAX_SLOPE:
-				continue
-			var node: Node3D = _clutter_prop(rng, total)
-			if node == null:
-				continue
-			# The sprite's world size is the wrong yardstick for a model:
-			# fitting a felled LOG to a tall sprite's height stretched it
-			# into a twenty-metre tree floating over the hill
-			# (2026-09-04). Cap the longest side and sit it in the dirt.
-			var b: AABB = _measure_node(node)
-			var longest: float = maxf(b.size.x, maxf(b.size.y, b.size.z))
-			if longest > CLUTTER_MAX_SIZE:
-				node.scale = Vector3.ONE * (CLUTTER_MAX_SIZE / longest)
-			var ground: float = (h0 + h1 + h2) / 3.0
-			node.position = Vector3(at.x, ground - CLUTTER_SINK, -at.y)
-			_dull(node)
-			_range_limit(node, CLUTTER_DRAW_RANGE)
-			_clutter.add_child(node)
-			made += 1
-		x += spacing
-	print("[level] clutter: %d props over %.0fx%.0f u" % [made, hi.x - lo.x, hi.y - lo.y])
+	if level.detail != null and is_instance_valid(level.detail):
+		# Deathmatch arenas stay as the DOS authors laid them out.
+		if _dm != null or Net.active or Settings.detail <= Settings.LOW:
+			level.detail.queue_free()
+		else:
+			_detail = level.detail
+			if Settings.detail < Settings.HIGH:
+				var dust: Node = _detail.get_node_or_null("Dust")
+				if dust != null:
+					dust.queue_free()
+				var props: Node = _detail.get_node_or_null("Props")
+				if props != null:
+					for mmi in props.get_children():
+						if mmi is MultiMeshInstance3D and mmi.has_meta("med"):
+							(mmi as MultiMeshInstance3D).multimesh \
+								.visible_instance_count = int(mmi.get_meta("med"))
+			add_child(_detail)
+		level.detail = null
+	if level.occluders != null and is_instance_valid(level.occluders):
+		_occluders = level.occluders
+		add_child(_occluders)
+		level.occluders = null
+	if level.overlay != null and is_instance_valid(level.overlay):
+		_overlay = level.overlay
+		add_child(_overlay)
+		level.overlay = null
+	# Occlusion culling costs a CPU pass of its own; LOW turns it off.
+	get_viewport().use_occlusion_culling = Settings.detail > Settings.LOW
 
-## Volumetric dust over the open ground. Ellipsoid FogVolumes in the same
-## froxel grid as the global haze, so the moon and every muzzle flash
-## light them; they need Environment.volumetric_fog_enabled, which is on
-## above LOW detail.
-const DUST_VOLUMES: int = 6
-const DUST_SIZE := Vector3(5200.0, 900.0, 5200.0)
-var _dust_root: Node3D = null
-
-func _place_dust(level: LevelLoader.Level) -> void:
-	if _dust_root != null and is_instance_valid(_dust_root):
-		_dust_root.queue_free()
-	_dust_root = null
-	if not Render.enhanced() or level == null or not level.is_outdoor:
-		return
-	if level.wld == null or Settings.detail < Settings.HIGH:
-		return
-	_dust_root = Node3D.new()
-	_dust_root.name = "Dust"
-	add_child(_dust_root)
-	var rng := RandomNumberGenerator.new()
-	rng.seed = hash(level.map_suffix)
-	var centre := Vector3.ZERO
-	if is_instance_valid(player):
-		centre = player.global_position
-	for i in DUST_VOLUMES:
-		var a: float = rng.randf() * TAU
-		var r: float = 2000.0 + rng.randf() * 11000.0
-		var at := Vector3(centre.x + cos(a) * r, 0.0, centre.z + sin(a) * r)
-		at.y = WldTerrain.height_at_world(level.wld, at.x, -at.z) + rng.randf_range(150.0, 700.0)
-		FxParticles.dust_volume(_dust_root, at,
-			DUST_SIZE * rng.randf_range(0.6, 1.4), rng.randf_range(0.02, 0.05))
-
-## One weighted pick from CLUTTER_PROPS, built through the replacement
-## pack at the DOS sprite's own world size.
-static func _measure_node(n: Node3D) -> AABB:
-	var out := AABB()
-	var first := true
-	for c in n.get_children():
-		if c is MeshInstance3D and (c as MeshInstance3D).mesh != null:
-			var a: AABB = (c as Node3D).transform * (c as MeshInstance3D).get_aabb()
-			out = a if first else out.merge(a)
-			first = false
-		elif c is Node3D:
-			var a2: AABB = (c as Node3D).transform * _measure_node(c)
-			if a2.size != Vector3.ZERO:
-				out = a2 if first else out.merge(a2)
-				first = false
-	return out
-
-## Stop drawing a prop past `far`, fading it out over the last fifth so
-## it never pops.
-static func _range_limit(n: Node, far: float) -> void:
-	if n is GeometryInstance3D:
-		var g := n as GeometryInstance3D
-		g.visibility_range_end = far
-		g.visibility_range_end_margin = far * 0.2
-		g.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
-	for c in n.get_children():
-		_range_limit(c, far)
-
-## Photoscans come with a specular response tuned for daylight; under a
-## night sky reflection they glint like wet plastic. Roughen them.
-static func _dull(n: Node) -> void:
-	if n is MeshInstance3D:
-		var mi := n as MeshInstance3D
-		for si in mi.get_surface_override_material_count():
-			var m: Material = mi.get_active_material(si)
-			if m is BaseMaterial3D:
-				var d: BaseMaterial3D = (m as BaseMaterial3D).duplicate()
-				d.roughness = clampf(d.roughness + 0.35, 0.0, 1.0)
-				d.metallic = 0.0
-				d.metallic_specular = 0.15
-				mi.set_surface_override_material(si, d)
-	for c in n.get_children():
-		_dull(c)
-
-func _clutter_prop(rng: RandomNumberGenerator, total: float) -> Node3D:
-	var r: float = rng.randf() * total
-	for c in CLUTTER_PROPS:
-		r -= float(c[2])
-		if r > 0.0:
-			continue
-		var bank: int = int(c[0])
-		var rec: int = int(c[1])
-		if not Replacements.has_sprite(bank, rec):
-			return null
-		var rs: Vector2i = Assets.record_size(bank, rec)
-		var scale: float = LevelLoader.SPRITE_PIXEL_SIZE * rng.randf_range(0.8, 1.35)
-		return Replacements.sprite_node(bank, rec,
-			float(rs.x) * scale, float(rs.y) * scale, rng.randi())
-	return null
+## How many scenery props are actually being drawn (the `where` dump).
+func _detail_count() -> int:
+	if _detail == null or not is_instance_valid(_detail):
+		return 0
+	var n: int = 0
+	for group in _detail.get_children():
+		for c in group.get_children():
+			if c is MultiMeshInstance3D:
+				var mm: MultiMesh = (c as MultiMeshInstance3D).multimesh
+				n += mm.instance_count if mm.visible_instance_count < 0 \
+					else mm.visible_instance_count
+			else:
+				n += 1
+	return n
 
 ## --- Water (DOS 0x120bf9 / 0x120c83 / 0x12e56b) ----------------------
 ## Marker type 103 (or 104) carries the map's WATER LEVEL: the engine
@@ -3066,9 +2936,12 @@ func _clear_level() -> void:
 	if _water != null and is_instance_valid(_water):
 		_water.queue_free()
 	_water = null
-	if _clutter != null and is_instance_valid(_clutter):
-		_clutter.queue_free()
-	_clutter = null
+	for scenery in [_detail, _overlay, _occluders]:
+		if scenery != null and is_instance_valid(scenery):
+			scenery.queue_free()
+	_detail = null
+	_overlay = null
+	_occluders = null
 	if is_instance_valid(player):
 		player.water_level = INF
 	_current_level = null
@@ -3172,7 +3045,8 @@ const HELP_TEXT := """[b]commands[/b]
   god [on|off] · noclip [on|off] · give <all|super|slot|name> · ammo
   health [n] · armor [0-100] · speed [x] · nextlevel · win · enemies
   use (action key) · objectives (what the mission still wants)
-  music [0-100|off|t200|title] · save [slot] · load [slot] · menu · quit"""
+  music [0-100|off|t200|title] · save [slot] · load [slot] · menu · quit
+  where (position, view and what the level costs) · bake [all]"""
 
 const CHEATS_TEXT := """[b]DOS cheat codes[/b] (CHEAT.PRS, typed after Alt+\\ in the original)
   superuzi · arnold (all weapons) · slugs (ammo) · surgery (health+armor)
@@ -3368,16 +3242,50 @@ func run_command(line: String) -> String:
 				Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
 				Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),
 				Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0])
-			lines.append("render %s  detail %s  clutter %d  dust %d  enemies %d" % [
+			lines.append("render %s  detail %s  baked %s  scenery %d  enemies %d" % [
 				"ENHANCED" if Render.enhanced() else "DOS",
 				Settings.LEVEL_NAMES[Settings.detail],
-				_clutter.get_child_count() if _clutter != null and is_instance_valid(_clutter) else 0,
-				_dust_root.get_child_count() if _dust_root != null and is_instance_valid(_dust_root) else 0,
+				"yes" if _current_level != null and _current_level.baked else "no",
+				_detail_count(),
 				get_tree().get_nodes_in_group("enemy").size()])
+			lines.append("occlusion culling %s  objects %d  shadow draws %d" % [
+				"on" if get_viewport().use_occlusion_culling else "off",
+				Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME),
+				Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)])
 			for l in lines:
 				print("[where] %s" % l)
 			return "
 ".join(lines)
+		"occlusion", "occ":
+			# Debug aid: the baked occluders are what stops the engine
+			# submitting the valley behind the ridge. Toggling them makes
+			# the difference measurable with `where`.
+			var vp := get_viewport()
+			if not args.is_empty():
+				vp.use_occlusion_culling = args[0].to_lower() in ["on", "1", "true"]
+			return "occlusion culling %s" % ("on" if vp.use_occlusion_culling else "off")
+		"bake", "rebake":
+			# Rebuild the baked level scene (scripts/level_scene.gd) for
+			# the map that is up, or for every map with `bake all`. The
+			# conversion does this on the first run; this is for after a
+			# change to the bake or to a MAP.
+			var which: Array = _maps.duplicate() if (not args.is_empty() 				and args[0].to_lower() == "all") else [_level_name()]
+			var t0: int = Time.get_ticks_msec()
+			var made: int = 0
+			for mn in which:
+				var sp: String = LevelScene.scene_path(String(mn))
+				if not sp.is_empty() and ResourceLoader.exists(sp) and not Assets.read_only:
+					DirAccess.remove_absolute(ProjectSettings.globalize_path(sp))
+				if not Assets.level_scene(String(mn)).is_empty():
+					made += 1
+				await get_tree().process_frame
+			var msg: String = "baked %d/%d level scenes in %.1f s (%s)" % [made,
+				which.size(), (Time.get_ticks_msec() - t0) / 1000.0,
+				"ENHANCED" if Render.enhanced() else "DOS"]
+			print("[bake] %s" % msg)
+			if which.size() == 1:
+				_load_current()
+			return msg
 		"pause", "options":
 			# Agent aid / quick access: open the in-game menu, on the
 			# OPTIONS page when asked for.

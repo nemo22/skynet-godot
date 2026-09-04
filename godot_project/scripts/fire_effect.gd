@@ -43,7 +43,13 @@ func setup(sprite_index: int, world_w: float, world_h: float, seed: int) -> void
 	var w: float = world_w
 	_phase = float(hash(seed) % 1000) / 1000.0 * TAU
 	var flame_base: float = 0.0
-	if kind == "camp":
+	if kind == "flame":
+		# A bank-216 flame is a bare billboard: in ENHANCED it became a
+		# fire standing on nothing at all ("tu hori ohen len tak z
+		# nicoho", 2026-09-04). Give it something to be burning —
+		# scorched ground and a few charred lumps.
+		_scorch(w)
+	elif kind == "camp":
 		_logs(w, h)
 		w *= 0.75
 		h *= 0.95
@@ -157,6 +163,45 @@ func _embers(w: float, h: float, base: float) -> void:
 	add_child(p)
 
 ## A few charred logs leaning into a pile.
+## What a loose flame is burning: a scorched patch of ground and a
+## handful of charred lumps around the base, so the fire has a source.
+func _scorch(w: float) -> void:
+	var burnt := StandardMaterial3D.new()
+	burnt.albedo_color = Color(0.09, 0.07, 0.06)
+	burnt.roughness = 1.0
+	var mark := MeshInstance3D.new()
+	var disc := CylinderMesh.new()
+	disc.top_radius = w * 0.85
+	disc.bottom_radius = w * 0.9
+	disc.height = maxf(w * 0.02, 1.0)
+	disc.radial_segments = 14
+	var dm := StandardMaterial3D.new()
+	dm.albedo_color = Color(0.06, 0.05, 0.045)
+	dm.roughness = 1.0
+	dm.emission_enabled = true
+	dm.emission = Color(1.0, 0.34, 0.06)
+	dm.emission_energy_multiplier = 0.18
+	disc.material = dm
+	mark.mesh = disc
+	mark.position.y = disc.height * 0.4
+	add_child(mark)
+	# Rubble: small blocks pushed into the ground, no two alike.
+	var rng := RandomNumberGenerator.new()
+	rng.seed = int(_phase * 1000.0) + 7
+	for i in 6:
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		var s: float = w * rng.randf_range(0.10, 0.22)
+		bm.size = Vector3(s, s * rng.randf_range(0.5, 0.9), s * rng.randf_range(0.7, 1.3))
+		bm.material = burnt
+		mi.mesh = bm
+		var a: float = rng.randf() * TAU
+		var r: float = w * rng.randf_range(0.25, 0.8)
+		mi.position = Vector3(cos(a) * r, bm.size.y * 0.3, sin(a) * r)
+		mi.rotation = Vector3(rng.randf_range(-0.3, 0.3), rng.randf() * TAU,
+			rng.randf_range(-0.3, 0.3))
+		add_child(mi)
+
 func _logs(w: float, h: float) -> void:
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.16, 0.1, 0.07)

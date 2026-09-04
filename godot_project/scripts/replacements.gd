@@ -126,19 +126,44 @@ static func mesh_node(name: String, dos_aabb: AABB, seed: int) -> Node3D:
 		n.position.y = dos_aabb.position.y
 	return n
 
+## How a replacement model would be placed, WITHOUT building it: the
+## uniform scale that fits it to the billboard's world size and the yaw
+## the pack asks for. The scenery bake places a thousand props a map and
+## only wants those two numbers — instantiating each one, tinting it and
+## throwing it away cost 60 ms a prop.
+## Empty when there is no model for this record.
+static func sprite_fit(bank: int, rec: int, world_w: float, world_h: float,
+		seed: int) -> Dictionary:
+	var e: Dictionary = _sprites.get("T%03d_%03d" % [bank, rec], {})
+	if e.is_empty():
+		return {}
+	if _template(String(e["path"])) == null:
+		return {}
+	return {"scale": _fit_scale(e, world_w, world_h), "yaw": _fit_yaw(e, seed)}
+
+static func _fit_scale(e: Dictionary, world_w: float, world_h: float) -> float:
+	var opts: Dictionary = e["opts"]
+	var b: AABB = _bounds[String(e["path"])]
+	var s: float = 1.0
+	if String(opts.get("fit", "h")) == "w" and maxf(b.size.x, b.size.z) > 0.0001:
+		s = world_w / maxf(b.size.x, b.size.z)
+	elif b.size.y > 0.0001:
+		s = world_h / b.size.y
+	return s * float(opts.get("scale", "1.0"))
+
+static func _fit_yaw(e: Dictionary, seed: int) -> float:
+	var yaw_opt: String = String((e["opts"] as Dictionary).get("yaw", "random"))
+	if yaw_opt == "random":
+		return float(hash(seed) % 3600) / 3600.0 * TAU
+	return deg_to_rad(float(yaw_opt))
+
 static func _instance(e: Dictionary, world_w: float, world_h: float, seed: int) -> Node3D:
 	var tpl: Node3D = _template(String(e["path"]))
 	if tpl == null:
 		return null
 	var opts: Dictionary = e["opts"]
 	var b: AABB = _bounds[String(e["path"])]
-	var fit_w: bool = String(opts.get("fit", "h")) == "w"
-	var s: float = 1.0
-	if fit_w and maxf(b.size.x, b.size.z) > 0.0001:
-		s = world_w / maxf(b.size.x, b.size.z)
-	elif b.size.y > 0.0001:
-		s = world_h / b.size.y
-	s *= float(opts.get("scale", "1.0"))
+	var s: float = _fit_scale(e, world_w, world_h)
 	var root := Node3D.new()
 	root.name = "Model"
 	var inst: Node3D = tpl.duplicate()
@@ -146,11 +171,7 @@ static func _instance(e: Dictionary, world_w: float, world_h: float, seed: int) 
 	# Base on the ground, centred on the origin.
 	inst.position = Vector3(-b.get_center().x * s, -b.position.y * s, -b.get_center().z * s)
 	root.add_child(inst)
-	var yaw_opt: String = String(opts.get("yaw", "random"))
-	if yaw_opt == "random":
-		root.rotation.y = float(hash(seed) % 3600) / 3600.0 * TAU
-	else:
-		root.rotation.y = deg_to_rad(float(yaw_opt))
+	root.rotation.y = _fit_yaw(e, seed)
 	# Per-instance tint (materials are shared: override on the instances).
 	var tint: Color = DEFAULT_TINT
 	if opts.has("tint"):
@@ -201,9 +222,39 @@ static func _template(path: String) -> Node3D:
 		print("[enhanced] model %s size %.2fx%.2fx%.2f" % [path.get_file(), b.size.x, b.size.y, b.size.z])
 	return node
 
+## Give a mesh the level-of-detail chain Godot's own model importer
+## would build for it, so a photo-scanned rock stops costing 60 000
+## triangles once it is a hundred metres away.
+##
+## The pack's models are scenery scattered by the hundred: MAP.220 was
+## submitting 26.5 MILLION primitives a frame with 262 of them placed,
+## which is what made looking across the valley from the jeep stutter
+## even though "there is nothing there" (2026-09-04). Nothing in the
+## glTF files carries LODs, and a runtime-loaded mesh never goes through
+## the importer, so it is done here — once per model, at load.
+static func with_lods(src: ArrayMesh) -> ArrayMesh:
+	if src == null or src.get_surface_count() == 0:
+		return src
+	var im := ImporterMesh.new()
+	var made := 0
+	for si in src.get_surface_count():
+		if src.surface_get_primitive_type(si) != Mesh.PRIMITIVE_TRIANGLES:
+			continue
+		im.add_surface(Mesh.PRIMITIVE_TRIANGLES, src.surface_get_arrays(si),
+			[], {}, src.surface_get_material(si), src.surface_get_name(si),
+			src.surface_get_format(si))
+		made += 1
+	if made == 0:
+		return src
+	im.generate_lods(25.0, 60.0, [])
+	var out: ArrayMesh = im.get_mesh()
+	return out if out != null else src
+
 static func _style(n: Node) -> void:
 	if n is MeshInstance3D:
 		var mi := n as MeshInstance3D
+		if mi.mesh is ArrayMesh:
+			mi.mesh = with_lods(mi.mesh as ArrayMesh)
 		if mi.mesh != null:
 			for si in mi.mesh.get_surface_count():
 				var m: Material = mi.get_active_material(si)

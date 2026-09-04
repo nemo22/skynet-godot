@@ -252,6 +252,14 @@ func _maybe_import() -> void:
 			print("[menu] map scene: %s" % (p if not p.is_empty() else "FAILED"))
 			get_tree().quit(0 if not p.is_empty() else 1)
 			return
+	# `--level-scene=MAP.210`: bake one level scene (the world in Godot
+	# format) for the look in force and quit. The editor dock uses this.
+	for a in args:
+		if a.begins_with("--level-scene="):
+			var lp: String = Assets.level_scene(a.substr(14).strip_edges().to_upper())
+			print("[menu] level scene: %s" % (lp if not lp.is_empty() else "FAILED"))
+			get_tree().quit(0 if not lp.is_empty() else 1)
+			return
 	if not forced and DirAccess.dir_exists_absolute(Assets.root + "/mesh"):
 		return
 	# No original data found (exported build without a bundled copy):

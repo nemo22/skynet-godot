@@ -29,6 +29,7 @@ const EnemyAnim    := preload("res://scripts/enemy_anim.gd")
 const AIData       := preload("res://scripts/enemy_ai_data.gd")
 const Pickup       := preload("res://scripts/pickup.gd")
 const PickupData   := preload("res://scripts/pickup_data.gd")
+const LevelScene   := preload("res://scripts/level_scene.gd")
 
 ## Variant-3 billboard sprite banks (sprite_index >> 7) → TEXTURE.NNN file.
 ## "weapons flat" banks are weapon/ammo pickups, "equipment" is gear; the
@@ -40,6 +41,9 @@ const SPRITE_HEALTH_BANKS := [214]        # TEXTURE.214 "equipment"
 ## FUN_0014f4xx: `tex_w * puVar1[0x11]`); the texture dimensions already
 ## carry each prop's relative size, so a single world-scale suffices.
 const SPRITE_PIXEL_SIZE: float = 2.0
+## How far a replacement scenery MODEL is drawn. The DOS billboard it
+## stands in for cost nothing at any distance; a photo-scan does not.
+const SCENERY_DRAW_RANGE: float = 9000.0
 ## Collectibles are drawn at the DOS renderer's own 1:1 scale.
 ##
 ## FUN_0014f208 hands the blitter `record.width * scale`, where `scale`
@@ -255,6 +259,18 @@ class Level:
 	## the per-map state overlay records which of them are gone.
 	var enemy_marker_offs: Array = []
 	var pickup_offs: Array = []
+	## --- the baked level scene (scripts/level_scene.gd) ----------------
+	## Terrain, static geometry and their collision come out of a Godot
+	## scene the conversion wrote; `baked` says the entity loop below can
+	## skip everything that has no behaviour.
+	var baked: bool = false
+	var occluders: Node3D = null          # OccluderInstance3D for the map
+	var detail: Node3D = null             # ENHANCED clutter / dust
+	var overlay: Node3D = null            # mods/maps/<MAP>.detail.tscn
+
+## Build every node from the DOS data, ignoring (and then rewriting) the
+## baked level scene. The bake itself runs with this off.
+var use_baked: bool = true
 
 ## Load a level by its MAP basename (e.g. "MAP.210").
 func load_level(map_name: String) -> Level:
@@ -328,6 +344,22 @@ func load_level(map_name: String) -> Level:
 			push_warning("[level] outdoor flag set but WLD.%s missing"
 				% level.map_suffix)
 
+	# The baked level scene: terrain, static geometry and their collision,
+	# the occluders and the ENHANCED dressing, all in Godot's own format
+	# (scripts/level_scene.gd). It carries a hash of this MAP, so an
+	# edited map falls straight back to building from the data.
+	var baked: Dictionary = {}
+	if use_baked:
+		baked = LevelScene.take(map_name, map_bytes)
+	var baked_static: Node = null
+	if not baked.is_empty():
+		level.baked = true
+		level.terrain = baked.get("terrain")
+		level.occluders = baked.get("occluders")
+		level.detail = baked.get("detail")
+		baked_static = baked.get("static")
+	level.overlay = LevelScene.overlay(map_name)
+
 	# Terrain tile textures — the WLD chunk header references TEXTURE.302
 	# (verified: 62× 64×64 "lndscps" records). Each cell binds one tile by
 	# (layer2 & 0x3F); build_terrain_mesh tiles it world-planar so roads
@@ -340,16 +372,29 @@ func load_level(map_name: String) -> Level:
 
 	# Terrain mesh — built once and served from the asset cache
 	# (converted/terrain/WLD.NNN.res); the tiles come from TEXTURE.302.
-	if level.wld:
+	if level.wld and level.terrain == null:
 		var terrain_mesh := Assets.terrain(level.map_suffix, level.wld)
 		if terrain_mesh:
 			level.terrain = MeshInstance3D.new()
 			level.terrain.name = "Terrain"
 			level.terrain.mesh = terrain_mesh
+			# The ground's collision shape is cached like everything else
+			# (converted/shape/WLD_NNN.res): 130 000 triangles is a slow
+			# thing to re-derive on every level start.
+			LevelScene.add_collision(level.terrain, "WLD_" + level.map_suffix)
 
 	# Entities (variant 1 only) ------------------------------------
 	level.entities = Node3D.new()
 	level.entities.name = "Entities"
+	# The baked half moves in first; the loop below adds the entities
+	# that carry behaviour, so everything still lives in one container
+	# and the automap, the lighting pass and the collision pass do not
+	# have to know where a mesh came from.
+	if baked_static != null and is_instance_valid(baked_static):
+		for c in baked_static.get_children().duplicate():
+			baked_static.remove_child(c)
+			level.entities.add_child(c)
+		baked_static.free()
 
 	var objs := BSAReader.new()
 	if not objs.open(SkynetPaths.gamedata_path("MDMDOBJS.BSA"), SkynetPaths.variant):
@@ -379,6 +424,41 @@ func load_level(map_name: String) -> Level:
 		if (e.flags & 3) != 1: continue
 		var name: String = MapFile.entity_name(level.map, e)
 		if name.is_empty(): continue
+
+		# Classification by the entity's action/handler id (the 0x59b00
+		# table families, recovered from Skynet.exe): doors, gates,
+		# lifts and rotators are MOVER types — their DOS handlers move
+		# the entity transform per tick (NOT mesh-frame swaps; every
+		# door .3D in the archives is single-frame). 0x18/0x19 are
+		# TRANSFRM.PRS destructibles. Anything damageable (state bits
+		# 1+2, ObjHit skynet_gh.c:39512) needs a hit/activate route.
+		# Everything else is plain static geometry — and static geometry
+		# is what the baked level scene already holds.
+		var act: int = e.link_act_type
+		# Destructibles bind BY NAME to TRANSFRM.PRS (TransformInit
+		# keys templates on the mesh name) — cars carry state bit1 +
+		# HP but act 0x00 in the MAP data.
+		var has_transfrm: bool = transfrm.has(name.to_lower())
+		# Anything with HP is a hit target too (ObjHit drains it whatever
+		# the state bits say — crates, buses, the dish take their HP from
+		# the map's per-name defaults).
+		var wants_action: bool = (ActionSystem.is_mover(act)
+			or ActionSystem.is_destructible(act) or has_transfrm
+			or (e.state_byte & 6) != 0 or e.hp > 0
+			or act == 0xEF or act == 0xF1 or act == 0xF2)
+
+		# Position: entity X/Y/Z used VERBATIM from the MAP record. The DOS
+		# engine never samples terrain height nor applies an AABB offset
+		# for placed meshes — entity.Y (MAP +0x0C, Y-down) is already the
+		# absolute world Y (verified skynet_gh.c FUN_00136519:38194-38198).
+		var pos := Vector3(float(e.x), -float(e.y), -float(e.z))
+		if level.baked and not wants_action:
+			# Already in the scene, with its collision. Only the tally
+			# the camera framing uses is still wanted.
+			sum_x += pos.x; sum_y += pos.y; sum_z += pos.z
+			n += 1
+			continue
+
 		var lookup: String = name + ".3D"
 		var cached = mesh_cache.get(lookup, null)
 		var am: ArrayMesh = null
@@ -406,26 +486,6 @@ func load_level(map_name: String) -> Level:
 			am = cached
 		if am == null: continue
 
-		# Classification by the entity's action/handler id (the 0x59b00
-		# table families, recovered from Skynet.exe): doors, gates,
-		# lifts and rotators are MOVER types — their DOS handlers move
-		# the entity transform per tick (NOT mesh-frame swaps; every
-		# door .3D in the archives is single-frame). 0x18/0x19 are
-		# TRANSFRM.PRS destructibles. Anything damageable (state bits
-		# 1+2, ObjHit skynet_gh.c:39512) needs a hit/activate route.
-		# Everything else is plain static geometry.
-		var act: int = e.link_act_type
-		# Destructibles bind BY NAME to TRANSFRM.PRS (TransformInit
-		# keys templates on the mesh name) — cars carry state bit1 +
-		# HP but act 0x00 in the MAP data.
-		var has_transfrm: bool = transfrm.has(name.to_lower())
-		# Anything with HP is a hit target too (ObjHit drains it whatever
-		# the state bits say — crates, buses, the dish take their HP from
-		# the map's per-name defaults).
-		var wants_action: bool = (ActionSystem.is_mover(act)
-			or ActionSystem.is_destructible(act) or has_transfrm
-			or (e.state_byte & 6) != 0 or e.hp > 0
-			or act == 0xEF or act == 0xF1 or act == 0xF2)
 		var mi: MeshInstance3D
 		if wants_action:
 			var at := ActionTarget.new()
@@ -438,12 +498,6 @@ func load_level(map_name: String) -> Level:
 			mi = MeshInstance3D.new()
 		mi.name = name
 		mi.mesh = am
-
-		# Position: entity X/Y/Z used VERBATIM from the MAP record. The DOS
-		# engine never samples terrain height nor applies an AABB offset
-		# for placed meshes — entity.Y (MAP +0x0C, Y-down) is already the
-		# absolute world Y (verified skynet_gh.c FUN_00136519:38194-38198).
-		var pos := Vector3(float(e.x), -float(e.y), -float(e.z))
 
 		# Rotation: sub-record Euler angles, 11-bit units (2048 = 360°).
 		# Order verified vs FUN_0014e100 + FUN_00150284 (skynet_gh.c):
@@ -462,6 +516,12 @@ func load_level(map_name: String) -> Level:
 		b = b.rotated(Vector3.RIGHT,  pitch_rad)
 		b = b.rotated(Vector3.BACK,  -roll_rad)
 		mi.transform = Transform3D(b, pos)
+		if not wants_action:
+			# Shared with every other copy of this mesh, in this map and
+			# in all the others (converted/shape/). Movers and
+			# destructibles keep main.gd's treatment: a door leaf
+			# collides as a box, and a mover needs its own body.
+			LevelScene.add_collision(mi, name.to_upper())
 		level.entities.add_child(mi)
 		if wants_action:
 			# Register after the transform is final — the mover base
@@ -691,6 +751,16 @@ func load_level(map_name: String) -> Level:
 				   pitch * 360.0 / 2048.0, yaw * 360.0 / 2048.0,
 				   roll * 360.0 / 2048.0])
 
+	# Nothing was baked for this map (or the MAP has changed): build the
+	# occluders and the ENHANCED dressing now, and write the whole static
+	# half out as a Godot scene so the next start just instantiates it.
+	if not level.baked and use_baked:
+		var t0 := Time.get_ticks_msec()
+		level.occluders = LevelScene.build_occluders(level)
+		level.detail = LevelScene.build_detail(level)
+		LevelScene.save_from(level, map_name)
+		print("[level] %s: bake took %d ms" % [map_name, Time.get_ticks_msec() - t0])
+
 	return level
 
 ## Resolve an enemy marker's animation frames by enemy-type ID (marker
@@ -897,6 +967,10 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 				spr.position = Vector3(float(e.x), base_y + world_h * 0.5, -float(e.z))
 			else:
 				spr.position = Vector3(float(e.x), base_y, -float(e.z))
+				# Scenery, not landmarks: stop drawing it in the distance
+				# the way the scattered clutter already does. 262 of these
+				# on MAP.220, each a full photo-scan.
+				LevelScene.range_limit(spr, SCENERY_DRAW_RANGE)
 				models += 1
 		else:
 			spr = Sprite3D.new()

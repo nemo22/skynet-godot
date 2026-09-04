@@ -13,6 +13,8 @@
 ##   converted/terrain/WLD.210.res    ArrayMesh
 ##   converted/sfx/DOORA.RAW.res      AudioStreamWAV
 ##   converted/cfa/WEAPON04.CFA.res   FramePack of textures
+##   converted/shape/BIGDOOR.res      ConcavePolygonShape3D (shared)
+##   converted/maps/MAP.210.level.scn the level itself, as a Godot scene
 ##
 ## Where the cache lives: `<game dir>/converted/` next to the gamedata
 ## directory (SkynetPaths.converted_dir — a portable install, nothing
@@ -38,6 +40,7 @@ const WldTerrain := preload("res://scripts/loaders/wld_terrain.gd")
 const CFAFile    := preload("res://scripts/loaders/cfa_file.gd")
 const FramePack  := preload("res://scripts/loaders/frame_pack.gd")
 const MapScene   := preload("res://scripts/editor/map_scene.gd")
+const LevelScene := preload("res://scripts/level_scene.gd")
 
 ## Bump whenever a loader changes its output.
 const CACHE_VERSION: int = 8
@@ -161,15 +164,25 @@ func _check_version() -> void:
 		w.store_line(str(CACHE_VERSION))
 		w.close()
 
-func _wipe(dir: String) -> void:
+## Directories under the cache root that are INPUTS, not outputs, and
+## must survive a rebuild: enhanced_pack is the downloaded CC0 art
+## (models, textures, replace.cfg). It sits inside converted/ only
+## because that is where a portable install keeps everything; wiping it
+## would throw away assets the conversion cannot regenerate.
+const WIPE_KEEP: Array = ["enhanced_pack"]
+
+func _wipe(dir: String, top: bool = true) -> void:
 	var d := DirAccess.open(dir)
 	if d == null:
 		return
 	d.list_dir_begin()
 	var n := d.get_next()
 	while n != "":
+		if top and WIPE_KEEP.has(n):
+			n = d.get_next()
+			continue
 		if d.current_is_dir():
-			_wipe(dir + "/" + n)
+			_wipe(dir + "/" + n, false)
 			DirAccess.remove_absolute(dir + "/" + n)
 		else:
 			DirAccess.remove_absolute(dir + "/" + n)
@@ -203,7 +216,7 @@ func palette() -> PackedColorArray:
 ## a mesh .res references its textures by path, so the two looks must
 ## never share a file.
 func _path(kind: String, key: String) -> String:
-	var sub: String = ("enhanced/" + kind) if Render.enhanced() and kind in ["tex", "nrm", "mesh", "frames", "terrain"] else kind
+	var sub: String = ("enhanced/" + kind) if Render.enhanced() and kind in ["tex", "nrm", "mesh", "frames", "terrain", "prop"] else kind
 	return "%s/%s/%s.res" % [root, sub, key.to_upper().replace("/", "_")]
 
 ## Return the cached resource for `kind/key`, building it with
@@ -434,6 +447,26 @@ func terrain(suffix: String, wld: WldTerrain.WLD) -> ArrayMesh:
 				normals.append(normal_map(302, i) if ok else null)
 		return WldTerrain.build_terrain_mesh(wld, tiles, normals)) as ArrayMesh
 
+## The collision shape of a mesh, shared by every copy of it in every
+## map (converted/shape/<key>.res). The level used to call
+## MeshInstance3D.create_trimesh_collision() per entity, which walks the
+## faces and builds a private ConcavePolygonShape3D — MAP.240 did that
+## 410 times, for maybe 120 distinct meshes. Geometry is the same in
+## both looks, so this tree is NOT per render mode.
+##
+## backface_collision is on for all of them: DOS meshes are drawn
+## double-sided and their winding is arbitrary (the 210TOWER deck floor
+## faces down), so a one-sided shape lets rays and bodies through.
+func shape(key: String, mesh: Mesh) -> ConcavePolygonShape3D:
+	return fetch("shape", key, func() -> Resource:
+		if mesh == null:
+			return null
+		var sh: ConcavePolygonShape3D = mesh.create_trimesh_shape()
+		if sh == null:
+			return null
+		sh.backface_collision = true
+		return sh) as ConcavePolygonShape3D
+
 # ---------------------------------------------------------------------
 # Sounds / CFA
 # ---------------------------------------------------------------------
@@ -495,6 +528,28 @@ func map_scene(map_name: String) -> String:
 	misses += 1
 	return MapScene.save(map_name)
 
+## Bake the level scene for `map_name` in the look that is in force
+## (scripts/level_scene.gd) — terrain, static geometry with its
+## collision, the occluders and, in ENHANCED, the scenery. Loading the
+## map writes it as a side effect, so this just makes the loader run.
+func level_scene(map_name: String) -> String:
+	var p := LevelScene.scene_path(map_name)
+	if p.is_empty():
+		return ""
+	if ResourceLoader.exists(p):
+		hits += 1
+		return p
+	misses += 1
+	var loader = load("res://scripts/level_loader.gd").new()
+	var lvl = loader.load_level(map_name)
+	if lvl == null:
+		return ""
+	for n in [lvl.terrain, lvl.entities, lvl.enemies, lvl.sprites, lvl.sky,
+			lvl.occluders, lvl.detail, lvl.overlay]:
+		if n != null and is_instance_valid(n):
+			n.free()
+	return p if ResourceLoader.exists(p) else ""
+
 ## Run `what` with the cache addressed through the project link (when
 ## there is one) so every resource it touches gets a res:// path, then
 ## return to the direct path for the rest of this process.
@@ -551,13 +606,19 @@ func import_all(progress: Callable = Callable()) -> int:
 	for i in 14:
 		var cfa := "WEAPON%02d.CFA" % i
 		jobs.append([cfa, func() -> void: cfa_frames(cfa)])
-	# Editor map scenes (converted/maps/MAP.NNN.scn) — every MAP.
+	# Map scenes, two per MAP: the editor's data view
+	# (converted/maps/MAP.NNN.scn — one node per MAP record, what the
+	# SkyNET Maps dock edits and exports) and the level itself
+	# (MAP.NNN.level.scn — the world in Godot's own format, which is
+	# what the game loads). Both are built here so the first run pays
+	# for the whole conversion and nothing is derived during play.
 	var maps := BSAReader.new()
 	if maps.open(SkynetPaths.gamedata_path("MDMDMAP2.BSA"), SkynetPaths.variant):
 		for e in maps.entries():
 			var mn: String = e.name.to_upper()
 			if mn.begins_with("MAP."):
 				jobs.append([mn, func() -> void: map_scene(mn)])
+				jobs.append([mn + " (level)", func() -> void: level_scene(mn)])
 		maps.close()
 
 	var t0 := Time.get_ticks_msec()

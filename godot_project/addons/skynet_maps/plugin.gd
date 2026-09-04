@@ -78,6 +78,8 @@ func _enter_tree() -> void:
 	row.add_child(refresh)
 	_dock.add_child(row)
 	_dock.add_child(_button("Open map (builds the scene when needed)", _open))
+	_dock.add_child(_button("Open level scene (DOS)", _open_level.bind(false)))
+	_dock.add_child(_button("Open level scene (ENHANCED)", _open_level.bind(true)))
 	_dock.add_child(_button("Export edited scene → mods/maps/", _export))
 	_dock.add_child(_button("Rebuild scene from MAP", _rebuild))
 	_dock.add_child(_button("Play map", _play))
@@ -173,6 +175,37 @@ func _open() -> void:
 		if scn.is_empty():
 			return
 		_fill_maps()
+	EditorInterface.open_scene_from_path(scn)
+	_say("opened %s" % scn)
+
+## The baked LEVEL scene — the world itself in Godot format (terrain,
+## static geometry with its collision, occluders and, in ENHANCED, the
+## scattered scenery). Built by the conversion; this bakes it on demand
+## the same way _build_scene does for the data view.
+##
+## The data view (Open map) is what you EDIT — move an entity there and
+## export it to mods/maps/. The level scene is a build artefact: it is
+## rebuilt whenever the MAP it came from changes. To add scenery by hand
+## and keep it, put it in mods/maps/<MAP>.detail.tscn, which the game
+## instantiates on top of every level.
+func _open_level(enhanced: bool) -> void:
+	var m := _selected()
+	if m.is_empty():
+		return
+	if not _ensure_link():
+		return
+	var rel: String = ("enhanced/maps" if enhanced else "maps")
+	var scn: String = "%s/%s/%s.level.scn" % [LINK, rel, m]
+	if not FileAccess.file_exists(ProjectSettings.globalize_path(scn)):
+		var out: Array = []
+		_say("baking %s level scene (%s) …" % [m, "ENHANCED" if enhanced else "DOS"])
+		var code: int = OS.execute(OS.get_executable_path(), _godot_args([
+			"--headless", "--", "--render=%s" % ("enhanced" if enhanced else "dos"),
+			"--level-scene=%s" % m]), out, true)
+		if code != 0 or not FileAccess.file_exists(ProjectSettings.globalize_path(scn)):
+			_say("bake failed (%d): %s" % [code, "".join(out).right(600)])
+			return
+		EditorInterface.get_resource_filesystem().scan()
 	EditorInterface.open_scene_from_path(scn)
 	_say("opened %s" % scn)
 
