@@ -653,6 +653,10 @@ func load_level(map_name: String) -> Level:
 
 	# --- Billboard sprites + pickups (variant-3 non-marker) ---------
 	_build_sprites(level, palette)
+	# Meshes that arrived through the baked scene skip Assets.mesh(),
+	# so the cache-era emission correction runs over the tree here.
+	if Render.enhanced():
+		Assets.fix_emission_tree(level.entities)
 
 	# --- Player spawn (variant-3 markers: type 0 = start, 1 = direction) ---
 	# DOS FUN_00121f72 (PlrSetPosMarker): the player spawns at the marker

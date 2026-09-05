@@ -404,6 +404,59 @@ static func _cli_vec3(s: String) -> Vector3:
 
 ## Apply the automation switches once a level is up: place the camera,
 ## then capture a screenshot and optionally quit.
+## `--mat-debug=…`: turn features off on every material the level draws
+## (shared objects, so the enemy frames follow too).
+func _mat_debug(what: String) -> void:
+	var flags: PackedStringArray = what.to_lower().split(",")
+	var done: Dictionary = {}
+	var stack: Array = [self]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		var mats: Array = []
+		if n is MeshInstance3D:
+			var mi := n as MeshInstance3D
+			if mi.material_override != null:
+				mats.append(mi.material_override)
+			if mi.mesh != null:
+				for si in mi.mesh.get_surface_count():
+					mats.append(mi.mesh.surface_get_material(si))
+					mats.append(mi.get_surface_override_material(si))
+		for m in mats:
+			if not (m is BaseMaterial3D) or done.has(m):
+				continue
+			done[m] = true
+			var b := m as BaseMaterial3D
+			if "dump" in flags and b.emission_enabled:
+				var lit: String = "-"
+				if b.emission_texture != null:
+					var img: Image = b.emission_texture.get_image()
+					if img != null:
+						if img.is_compressed():
+							img.decompress()
+						var c: int = 0
+						for y in img.get_height():
+							for x in img.get_width():
+								if img.get_pixel(x, y).v > 0.5:
+									c += 1
+						lit = "%dx%d %.1f%% lit" % [img.get_width(), img.get_height(),
+							100.0 * c / maxf(img.get_width() * img.get_height(), 1)]
+				print("[mat] %-24s albedo %-14s emission %s %s colour %s x%.2f op %d"
+					% [n.name, b.albedo_texture.resource_path.get_file() if b.albedo_texture else "-",
+					   b.emission_texture.resource_path.get_file() if b.emission_texture else "NONE",
+					   lit, b.emission, b.emission_energy_multiplier, b.emission_operator])
+			if "noemission" in flags:
+				b.emission_enabled = false
+			if "nonormal" in flags:
+				b.normal_enabled = false
+			if "nospec" in flags:
+				b.metallic_specular = 0.0
+				b.metallic = 0.0
+			if "unshaded" in flags:
+				b.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	print("[cli] mat-debug %s on %d materials" % [what, done.size()])
+
 func _cli_after_level() -> void:
 	if _cli.is_empty() or not is_instance_valid(player):
 		return
@@ -421,6 +474,12 @@ func _cli_after_level() -> void:
 			print("[skynet] --quit-after elapsed")
 			Net.leave()
 			get_tree().quit())
+	if _cli.has("mat-debug"):
+		# Agent diagnostics: strip one material feature from EVERY mesh
+		# in the level (`--mat-debug=noemission|nonormal|nospec|unshaded`,
+		# comma-separated; `dump` lists the emissive ones) — the bisect
+		# that found the white panels (2026-09-05).
+		_mat_debug(String(_cli["mat-debug"]))
 	if _cli.has("near"):
 		# Agent diagnostics: stand 260 u from the first node of a group
 		# ("pickup", "fire", "enemy"; "group:N" picks the N-th) facing it.
@@ -899,8 +958,13 @@ const OUTDOOR_AMBIENT: Color = Color(0.55, 0.55, 0.65)
 ## ENHANCED runs much darker and lets the fittings do the work.
 const INDOOR_AMBIENT_ENHANCED: Color = Color(0.36, 0.37, 0.43)
 const INDOOR_ENERGY_ENHANCED: float = 1.0
-## Outdoors the ambient comes from the sky itself, at this energy.
-const OUTDOOR_SKY_AMBIENT: float = 0.32
+## Outdoors the ambient comes from the sky itself, at this energy — but
+## a night sky alone left every slope facing away from the moon black
+## ("vonku sú niektoré pasáže extrémne tmavé", 2026-09-05), so it is
+## mixed with a flat floor: OUTDOOR_SKY_MIX of sky, the rest
+## OUTDOOR_AMBIENT.
+const OUTDOOR_SKY_AMBIENT: float = 0.6
+const OUTDOOR_SKY_MIX: float = 0.55
 ## Sodium-ish tint for the street lamps (the DOS lamp sprite's heads are
 ## white-hot, and the pools they throw read warm against the night).
 const LAMP_COLOR: Color = Color(1.0, 0.86, 0.62)
@@ -929,21 +993,24 @@ func _light_level(level: LevelLoader.Level) -> void:
 			# shape; a flat grey ambient at full energy did neither, it
 			# just made everything evenly bright whatever the time of day
 			# ("vonkajsok je konstantne osvetleny", 2026-09-04).
+			env.ambient_light_color = OUTDOOR_AMBIENT
 			if env.sky != null:
 				env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 				env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
-			else:
-				env.ambient_light_color = OUTDOOR_AMBIENT
+				# Part sky, part floor: the sky gives the gradient and the
+				# colour, the floor keeps the moon-shadowed slopes readable.
+				env.ambient_light_sky_contribution = OUTDOOR_SKY_MIX
 			env.ambient_light_energy = OUTDOOR_SKY_AMBIENT
 		else:
 			env.ambient_light_color = OUTDOOR_AMBIENT
-			env.ambient_light_energy = 1.45
+			env.ambient_light_energy = 1.25
 		if sun != null:
 			sun.visible = true
 		if Render.enhanced():
 			print("[level] outdoor: %d lamp lights, %d lit fittings"
 				% [_place_map_lights(level, true), _place_emissive_lights(level)])
 		return
+	env.ambient_light_sky_contribution = 1.0
 	env.ambient_light_color = INDOOR_AMBIENT
 	env.ambient_light_energy = 1.0
 	if sun != null:
@@ -978,7 +1045,13 @@ func _light_level(level: LevelLoader.Level) -> void:
 const EMIT_LIGHT_MAX: int = 32
 const EMIT_LIGHT_SHADOWS: int = 4
 const EMIT_LIGHT_COLOR: Color = Color(1.0, 0.94, 0.84)
-const EMIT_LIGHT_ENERGY: float = 1.9
+## 1.9 blew out the wall under every ceiling strip; the fittings still
+## emit on their own (Render.EMISSION_ENERGY), the lamp is the spill.
+const EMIT_LIGHT_ENERGY: float = 1.3
+## Interior map lights in ENHANCED: the DOS intensity scale, capped —
+## a 3.5 × 1.6 lamp at 6000 u range was most of the "burnt out" rooms.
+const MAP_LIGHT_MAX_ENHANCED: float = 1.8
+const MAP_LIGHT_ATTENUATION_ENHANCED: float = 1.5
 const EMIT_RANGE_SCALE: float = 9.0      # x the fitting's own size
 const EMIT_RANGE_MIN: float = 750.0
 const EMIT_RANGE_MAX: float = 3200.0
@@ -1055,7 +1128,11 @@ func _place_map_lights(level: LevelLoader.Level, outdoor: bool) -> int:
 			l.shadow_enabled = false
 		else:
 			if Render.enhanced():
-				l.light_energy *= 1.6
+				# Per-pixel lit walls take a lamp much harder than the
+				# DOS per-vertex look did: capped, and falling off
+				# faster, or the wall under the lamp goes white.
+				l.light_energy = minf(l.light_energy, MAP_LIGHT_MAX_ENHANCED)
+				l.omni_attenuation = MAP_LIGHT_ATTENUATION_ENHANCED
 			# The first few interior lamps cast shadows (a cubemap each).
 			l.shadow_enabled = Render.enhanced() and n < 6
 		l.add_to_group("maplight")      # agent aid: --near=maplight:N
@@ -1163,7 +1240,10 @@ func _set_sky_fill(level: LevelLoader.Level, map_name: String = "") -> void:
 ## ACES tonemapping and volumetric light for the rays.
 const NIGHT_LUMA: float = 0.14
 ## DOS-mode grading — the palette-ramp look, not raw linear output.
-const DOS_BRIGHTNESS: float = 1.30
+## 1.30 matched the Win32 port's gamma (2026-09-04) and came back as
+## "až moc svetlá" (2026-09-05); the player's own BRIGHTNESS setting
+## multiplies this (Settings.brightness).
+const DOS_BRIGHTNESS: float = 1.15
 const DOS_CONTRAST: float = 1.06
 const DOS_SATURATION: float = 1.10
 ## ENHANCED colour grading — the ash-choked look.
@@ -1346,6 +1426,21 @@ const DUSK_SKY_SHADER := preload("res://shaders/dusk_sky.gdshader")
 const DUSK_SUN_ROT := Vector3(-7.0, 200.0, 0.0)
 const NIGHT_SUN_ROT := Vector3(-38.0, 155.0, 0.0)
 
+## The BRIGHTNESS setting (OPTIONS → DISPLAY, console `brightness`) is
+## the DOS gamma or the ENHANCED exposure, and it applies at once.
+func _watch_brightness() -> void:
+	if not Settings.brightness_changed.is_connected(_refresh_brightness):
+		Settings.brightness_changed.connect(_refresh_brightness)
+
+func _refresh_brightness(_v: float = 1.0) -> void:
+	var we: WorldEnvironment = get_node_or_null("WorldEnvironment")
+	if we == null or we.environment == null:
+		return
+	if Render.enhanced():
+		we.environment.tonemap_exposure = Settings.brightness()
+	else:
+		we.environment.adjustment_brightness = DOS_BRIGHTNESS * Settings.brightness()
+
 func _apply_render_env(level: LevelLoader.Level, env: Environment, fill: Color) -> void:
 	var enhanced: bool = Render.enhanced()
 	var night: bool = level.is_outdoor and _moon != null
@@ -1363,11 +1458,12 @@ func _apply_render_env(level: LevelLoader.Level, env: Environment, fill: Color) 
 		# (2026-09-04: "the shading and the brightness in that port are
 		# how I would want our DOS look").
 		env.adjustment_enabled = true
-		env.adjustment_brightness = DOS_BRIGHTNESS
+		env.adjustment_brightness = DOS_BRIGHTNESS * Settings.brightness()
 		env.adjustment_contrast = DOS_CONTRAST
 		env.adjustment_saturation = DOS_SATURATION
+		_watch_brightness()
 		if sun != null:
-			sun.light_energy = 1.55
+			sun.light_energy = 1.35
 			sun.light_color = Color(1.0, 0.97, 0.92)
 		if level.is_outdoor:
 			# Haze that reaches the horizon instead of swallowing the
@@ -1378,7 +1474,8 @@ func _apply_render_env(level: LevelLoader.Level, env: Environment, fill: Color) 
 			env.fog_depth_end = FOG_END * 1.8 * Settings.fog_scale()
 		return
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
-	env.tonemap_exposure = 1.0
+	env.tonemap_exposure = Settings.brightness()
+	_watch_brightness()
 	# Nuclear winter grading: pull the colour out of the world and lift
 	# the contrast a little. Everything in this game happened after the
 	# bombs, and full-saturation photoscans read like a nature documentary
@@ -3445,6 +3542,11 @@ func run_command(line: String) -> String:
 			_close_overlays()
 			_return_to_menu()
 			return ""
+		"brightness", "gamma":
+			# Per look: the DOS gamma or the ENHANCED exposure, 0.5..1.8.
+			if not args.is_empty() and args[0].is_valid_float():
+				Settings.set_brightness(float(args[0]))
+			return "brightness %.2f (%s)" % [Settings.brightness(), Render.NAMES[Render.mode]]
 		"render":
 			if args.is_empty():
 				return "render: %s (dos | enhanced)" % Render.NAMES[Render.mode]

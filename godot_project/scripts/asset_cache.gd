@@ -475,7 +475,7 @@ func read_3d(name: String) -> PackedByteArray:
 ## supplied by a caller that already has the archive open.
 func mesh(name: String, bytes: PackedByteArray = PackedByteArray()) -> ArrayMesh:
 	var key := name.get_basename()
-	return fetch("mesh", key, func() -> Resource:
+	var am := fetch("mesh", key, func() -> Resource:
 		var data := bytes if not bytes.is_empty() else read_3d(name)
 		if data.is_empty():
 			return null
@@ -483,6 +483,39 @@ func mesh(name: String, bytes: PackedByteArray = PackedByteArray()) -> ArrayMesh
 		if parsed == null:
 			return null
 		return Mesh3D.build_textured_array_mesh(parsed, Callable(self, "provide"))) as ArrayMesh
+	_fix_emission(am)
+	return am
+
+## Materials written into the cache before 2026-09-05 add their white
+## emission colour to the mask (EMISSION_OP_ADD), which lights the whole
+## surface a flat 0.4 — the white wall signs and the raptor's chest.
+## Render.style now writes MULTIPLY; a cached mesh is corrected as it is
+## loaded, so nobody has to rebuild ~4 000 meshes for it.
+## The same correction for every mesh under `root` — the baked level
+## scene hands its Static meshes over without going through mesh().
+static func fix_emission_tree(root: Node) -> int:
+	var seen: Dictionary = {}
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		if n is MeshInstance3D and (n as MeshInstance3D).mesh != null \
+				and not seen.has((n as MeshInstance3D).mesh):
+			seen[(n as MeshInstance3D).mesh] = true
+			_fix_emission((n as MeshInstance3D).mesh)
+	return seen.size()
+
+static func _fix_emission(m: Mesh) -> void:
+	if m == null:
+		return
+	for si in m.get_surface_count():
+		var mat: Material = m.surface_get_material(si)
+		if mat is BaseMaterial3D and (mat as BaseMaterial3D).emission_enabled \
+				and (mat as BaseMaterial3D).emission_texture != null \
+				and (mat as BaseMaterial3D).emission_operator != BaseMaterial3D.EMISSION_OP_MULTIPLY:
+			(mat as BaseMaterial3D).emission_operator = BaseMaterial3D.EMISSION_OP_MULTIPLY
+			(mat as BaseMaterial3D).emission_energy_multiplier = Render.EMISSION_ENERGY
 
 ## Every animation frame of `name` as an Array of ArrayMesh.
 func mesh_frames(name: String, bytes: PackedByteArray = PackedByteArray()) -> Array:
@@ -501,6 +534,8 @@ func mesh_frames(name: String, bytes: PackedByteArray = PackedByteArray()) -> Ar
 		fp.frames = frames
 		return fp)
 	if pack is FramePack:
+		for f in (pack as FramePack).frames:
+			_fix_emission(f)
 		return (pack as FramePack).frames
 	return []
 

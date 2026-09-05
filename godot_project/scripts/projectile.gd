@@ -60,6 +60,11 @@ var _color: Color = Color(1.0, 0.75, 0.4)
 var _owner: Node = null
 var _mi: MeshInstance3D = null
 var _light: OmniLight3D = null
+## The bolt's light at full strength, and how far it flies before it
+## gets there (so it never lights the one who fired it).
+const LIGHT_ENERGY: float = 2.0
+const LIGHT_RAMP: float = 260.0
+var _travelled: float = 0.0
 var _done: bool = false
 ## Hitboxes of actors this bolt passes through (the shooter, allies).
 var _ignore: Array[RID] = []
@@ -152,7 +157,11 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 	if bool(cfg.get("light", false)):
 		_light = OmniLight3D.new()
 		_light.light_color = _color
-		_light.light_energy = 2.6
+		# Dark at the muzzle, full a body length on: a bolt that lit up
+		# at 2.6 right where it spawned painted the SHOOTER white — a
+		# raptor firing at you glowed from the chest down ("z predu celé
+		# žiariace na bielo", 2026-09-05).
+		_light.light_energy = 0.0
 		_light.omni_range = maxf(_splash, 420.0)
 		add_child(_light)
 
@@ -208,6 +217,9 @@ func _physics_process(delta: float) -> void:
 					(c as MeshInstance3D).visible = true
 
 	var to := global_position + _dir * _speed * delta
+	_travelled += _speed * delta
+	if _light != null:
+		_light.light_energy = LIGHT_ENERGY * clampf(_travelled / LIGHT_RAMP, 0.0, 1.0)
 	var space := get_world_3d().direct_space_state
 	var q := PhysicsRayQueryParameters3D.create(global_position, to)
 	q.collide_with_areas = true                # actor hitboxes are Area3D

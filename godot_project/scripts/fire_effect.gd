@@ -66,10 +66,14 @@ func setup(sprite_index: int, world_w: float, world_h: float, seed: int) -> void
 	FxParticles.fire_smoke(self, w, h, flame_base)
 	_light = OmniLight3D.new()
 	_light.light_color = Color(1.0, 0.58, 0.22)
-	_base_energy = clampf(h / 60.0, 1.2, 4.0)
+	# A fire lights the room, it does not bleach it: at 4.0 the wall
+	# sign next to the burning pile in MAP.218 was a white rectangle
+	# ("interiéry miestami strašne prepálené", 2026-09-05). Capped, and
+	# a steeper falloff keeps the near field under the tonemapper's knee.
+	_base_energy = clampf(h / 90.0, 0.9, 2.0)
 	_light.light_energy = _base_energy
 	_light.omni_range = clampf(h * 9.0, 500.0, 2400.0)
-	_light.omni_attenuation = 1.4
+	_light.omni_attenuation = 1.8
 	_light.position = Vector3(0.0, flame_base + h * 0.35, 0.0)
 	if _shadow_count < SHADOW_LIGHTS:
 		_light.shadow_enabled = true

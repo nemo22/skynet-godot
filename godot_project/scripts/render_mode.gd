@@ -132,7 +132,15 @@ func override_path(rel: String) -> String:
 ## "sprite", "sky". `normal` is the derived normal map (ENHANCED).
 ## How hard a lit texel glows. Enough to read as a light source and to
 ## feed the glow pass, not enough to blow the texture out.
-const EMISSION_ENERGY: float = 0.40
+##
+## 0.8 is what the lit texels always got: until 2026-09-05 the material
+## used EMISSION_OP_ADD with a white emission colour, and Godot computes
+## that as (colour + mask) × energy — so EVERY texel of a masked surface
+## glowed a flat 0.4 and the lit ones 0.8. That flat glow was the white
+## wall signs, the "burnt out" rooms and the raptor's chest panel (the
+## one raptor surface with a mask) shining white at you. MULTIPLY makes
+## the mask a mask.
+const EMISSION_ENERGY: float = 0.8
 
 func style(mat: BaseMaterial3D, kind: String, normal: Texture2D = null,
 		emission: Texture2D = null) -> void:
@@ -159,6 +167,9 @@ func style(mat: BaseMaterial3D, kind: String, normal: Texture2D = null,
 				mat.emission_enabled = true
 				mat.emission_texture = emission
 				mat.emission = Color(1, 1, 1)
+				# colour × mask × energy — with ADD the colour alone
+				# would light the whole surface (see EMISSION_ENERGY).
+				mat.emission_operator = BaseMaterial3D.EMISSION_OP_MULTIPLY
 				mat.emission_energy_multiplier = EMISSION_ENERGY
 			if kind == "terrain":
 				var det: Array = detail_layer("terrain")

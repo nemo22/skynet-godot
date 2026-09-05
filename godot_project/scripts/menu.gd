@@ -1344,6 +1344,29 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 		renders.add_child(rb)
 	vb.add_child(renders)
 
+	# Brightness of the look in force: the DOS gamma or the ENHANCED
+	# exposure (Settings.brightness), applied at once, kept per look.
+	vb.add_child(_section_label("Brightness"))
+	var bright := HBoxContainer.new()
+	bright.alignment = BoxContainer.ALIGNMENT_CENTER
+	bright.add_theme_constant_override("separation", 14)
+	var darker := _option_button("DARKER", func() -> void:
+		Settings.set_brightness(Settings.brightness() - 0.1)
+		_refresh_brightness_label())
+	darker.custom_minimum_size = Vector2(160, 48)
+	bright.add_child(darker)
+	_brightness_label = _section_label("")
+	_brightness_label.custom_minimum_size = Vector2(120, 48)
+	_brightness_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	bright.add_child(_brightness_label)
+	var brighter := _option_button("BRIGHTER", func() -> void:
+		Settings.set_brightness(Settings.brightness() + 0.1)
+		_refresh_brightness_label())
+	brighter.custom_minimum_size = Vector2(160, 48)
+	bright.add_child(brighter)
+	vb.add_child(bright)
+	_refresh_brightness_label()
+
 	vb.add_child(_spacer(4))
 	vb.add_child(_menu_button("BACK", func() -> void: _show_screen(_screen_options)))
 	_refresh_display_marks()
@@ -1351,6 +1374,12 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 	return pair[0]
 
 var _render_buttons: Array[Button] = []
+var _brightness_label: Label = null
+
+func _refresh_brightness_label() -> void:
+	if _brightness_label != null and is_instance_valid(_brightness_label):
+		_brightness_label.text = "%d %%  (%s)" % [int(round(Settings.brightness() * 100.0)),
+			Render.NAMES[Render.mode]]
 var _weapon_view_buttons: Array[Button] = []
 
 ## Resolutions for the DISPLAY dialog: common sizes matching the
