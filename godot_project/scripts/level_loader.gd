@@ -980,6 +980,7 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 			level.pickup_offs.append(e.file_off)
 			_style_sprite(p, tex, px)
 			p.position = Vector3(float(e.x), base_y + world_h * 0.5, -float(e.z))
+			p.set_meta("bottom_off", -world_h * 0.5)
 			Replacements.dress_pickup(p, e.sprite_index, float(tex.get_width()) * px, world_h)
 			spr = p
 			pickups += 1
@@ -987,6 +988,7 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 			# ENHANCED: a shader flame with its own light.
 			spr = Replacements.fire_node(e.sprite_index, float(tex.get_width()) * px, world_h, e.file_off)
 			spr.position = Vector3(float(e.x), base_y, -float(e.z))
+			spr.set_meta("bottom_off", 0.0)
 			models += 1
 		elif Replacements.has_sprite(bank, rec_id):
 			# ENHANCED pack: a 3D model stands in for the scenery billboard.
@@ -996,8 +998,10 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 				spr = Sprite3D.new()
 				_style_sprite(spr, tex, px)
 				spr.position = Vector3(float(e.x), base_y + world_h * 0.5, -float(e.z))
+				spr.set_meta("bottom_off", -world_h * 0.5)
 			else:
 				spr.position = Vector3(float(e.x), base_y, -float(e.z))
+				spr.set_meta("bottom_off", 0.0)
 				# Scenery, not landmarks: stop drawing it in the distance
 				# the way the scattered clutter already does. 262 of these
 				# on MAP.220, each a full photo-scan.
@@ -1007,6 +1011,7 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 			spr = Sprite3D.new()
 			_style_sprite(spr, tex, px)
 			spr.position = Vector3(float(e.x), base_y + world_h * 0.5, -float(e.z))
+			spr.set_meta("bottom_off", -world_h * 0.5)
 		level.sprites.add_child(spr)
 		placed += 1
 		# Looping ambient sound from the 0x4cc00 sprite→sound table

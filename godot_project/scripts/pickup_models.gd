@@ -69,6 +69,10 @@ static func grunge_normal() -> Texture2D:
 ## sprite index → [builder, colour]
 const MODELS: Dictionary = {
 	27399: ["can", WHITE],                       # 214_007 health 50 %
+	27392: ["vest", Color(0.36, 0.38, 0.36)],    # 214_000 armour 5 % — a flak vest
+	27393: ["vest", Color(0.2, 0.21, 0.23)],     # 214_001 armour 10 % — plated
+	27394: ["vest", Color(0.22, 0.4, 0.42)],     # 214_002 armour 25 % — segmented
+	27395: ["vest", Color(0.7, 0.7, 0.68)],      # 214_003 armour 50 % — the chest plate
 	27400: ["medkit", Color(0.2, 0.3, 0.18)],    # 214_008 health 25 %
 	27401: ["medkit", Color(0.24, 0.42, 0.22)],  # 214_009 health 10 %
 	27402: ["medkit", Color(0.5, 0.52, 0.55)],   # 214_010 health 5 %
@@ -101,6 +105,8 @@ static func build(sprite_index: int, w: float, h: float) -> Node3D:
 	root.name = "PickupModel"
 	var col: Color = spec[1]
 	match String(spec[0]):
+		"vest":
+			_vest(root, w, h, col, sprite_index - 27392)
 		"medkit":
 			_box(root, Vector3(w, h * 0.7, w * 0.62), col, Vector3.ZERO)
 			_cross(root, w * 0.45, Vector3(0.0, h * 0.35 + 1.0, 0.0), true)
@@ -160,6 +166,32 @@ static func build(sprite_index: int, w: float, h: float) -> Node3D:
 				var tip := _cyl(root, h * 0.45, w * 0.2, RED, Vector3(w * 0.5, 0.0, z))
 				tip.rotation.z = deg_to_rad(90.0)
 	return root
+
+## Body armour standing up as the DOS sprite does: a torso shell with a
+## neck opening, shoulders and straps; `grade` 0–3 adds plates, segments
+## and the indicator lights of the heavy suit.
+static func _vest(root: Node3D, w: float, h: float, col: Color, grade: int) -> void:
+	var d: float = w * 0.3
+	_box(root, Vector3(w * 0.7, h * 0.6, d), col, Vector3(0.0, h * 0.06, 0.0))
+	_box(root, Vector3(w * 0.56, h * 0.28, d * 1.04), col.darkened(0.12), Vector3(0.0, -h * 0.3, 0.0))
+	_box(root, Vector3(w * 0.3, h * 0.14, d * 1.1), DARK, Vector3(0.0, h * 0.35, 0.0))
+	for side in [-1.0, 1.0]:
+		_box(root, Vector3(w * 0.2, h * 0.16, d * 1.15), col.lightened(0.08), Vector3(side * w * 0.42, h * 0.3, 0.0))
+		_box(root, Vector3(w * 0.05, h * 0.66, d * 1.06), DARK, Vector3(side * w * 0.2, 0.0, 0.0))
+	match grade:
+		1:
+			# Plates riveted over the chest.
+			for k in 3:
+				_box(root, Vector3(w * 0.22, h * 0.2, d * 0.25), col.lightened(0.15), Vector3((float(k) - 1.0) * w * 0.24, h * 0.02, d * 0.55))
+		2:
+			# Segments with gaps.
+			for k in 4:
+				_box(root, Vector3(w * 0.66, h * 0.11, d * 0.2), col.lightened(0.2), Vector3(0.0, h * 0.3 - float(k) * h * 0.17, d * 0.55))
+		3:
+			# The heavy shell: a raised chest plate and indicator lights.
+			_box(root, Vector3(w * 0.5, h * 0.3, d * 0.3), col.lightened(0.1), Vector3(0.0, h * 0.08, d * 0.55))
+			_box(root, Vector3(w * 0.05, h * 0.04, d * 0.1), Color(0.2, 1.0, 0.3), Vector3(-w * 0.2, h * 0.2, d * 0.72), true)
+			_box(root, Vector3(w * 0.05, h * 0.04, d * 0.1), Color(1.0, 0.15, 0.1), Vector3(w * 0.2, h * 0.2, d * 0.72), true)
 
 static func _mat(col: Color, glow: bool = false) -> StandardMaterial3D:
 	_surface()

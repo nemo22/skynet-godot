@@ -14,7 +14,7 @@ const FireEffect := preload("res://scripts/fire_effect.gd")
 const Explosion := preload("res://scripts/explosion.gd")
 const FxParticles := preload("res://scripts/fx_particles.gd")
 
-const BURN_TIME: float = 7.0
+const BURN_TIME: float = 5.0
 const TICK: float = 1.0                 # damage interval
 const FIRE_SPRITE: int = 27659          # 216_011 — a flame billboard
 const FLAME_SPOTS: int = 4
@@ -29,23 +29,44 @@ var _owner: Node = null
 ## the item's direct damage (a second of burning does a third of it).
 func setup(at: Vector3, radius: float, blast: float, thrower: Node) -> void:
 	add_to_group("projectile")           # cleared on a map change
-	global_position = at
 	_radius = maxf(radius, 60.0)
 	_dps = maxf(blast, 30.0) * 0.33
 	_owner = thrower
+	# Fuel runs down to the floor: the bottle bursts against a wall or a
+	# railing and the pool used to hang there in the air, scorch discs
+	# and all (Marek, 2026-09-05). No floor within reach — no pool.
+	var floor_y: float = _floor_under(at)
+	if is_nan(floor_y):
+		_left = 0.0
+		global_position = at
+		return
+	global_position = Vector3(at.x, floor_y + 0.5, at.z)
 	if Render.enhanced():
-		# A few flames spread over the puddle rather than one tall fire.
+		# A few low flames spread over the puddle rather than one tall fire.
 		for i in FLAME_SPOTS:
 			var a: float = TAU * float(i) / float(FLAME_SPOTS) + randf()
-			var r: float = _radius * 0.55 * sqrt(randf())
+			var r: float = _radius * 0.5 * sqrt(randf())
 			var f := FireEffect.new()
 			add_child(f)
 			f.position = Vector3(cos(a) * r, 0.0, sin(a) * r)
-			f.setup(FIRE_SPRITE, _radius * 0.5, _radius * 0.8, i * 7 + 3)
+			f.setup(FIRE_SPRITE, _radius * 0.45, _radius * 0.55, i * 7 + 3, "pool")
 	else:
 		var ex := Explosion.new()
 		add_child(ex)
 		ex.setup(at, _radius * 0.9, 356)
+
+## Y of the floor under `at` (up to 40 u above it, 320 below), NAN when
+## there is none.
+func _floor_under(at: Vector3) -> float:
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return at.y
+	var q := PhysicsRayQueryParameters3D.create(at + Vector3(0.0, 40.0, 0.0), at - Vector3(0.0, 320.0, 0.0))
+	q.collide_with_areas = false
+	var hit := space.intersect_ray(q)
+	if hit.has("position"):
+		return float((hit["position"] as Vector3).y)
+	return NAN
 
 func _physics_process(delta: float) -> void:
 	_left -= delta

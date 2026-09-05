@@ -794,6 +794,7 @@ func _begin_level(name: String) -> void:
 	# Let the freshly-added trimesh collision register in the physics
 	# space before the spawn-clearance query runs.
 	await get_tree().physics_frame
+	_settle_sprites(level)
 	_frame_camera(level)
 	# Gates/doorways the spawn already sits in must be left before they
 	# can fire again — return exits drop the player right beside the
@@ -1079,7 +1080,7 @@ const EMIT_LIGHT_COLOR: Color = Color(1.0, 0.94, 0.84)
 ## (2026-09-05): a strip lamp sits 100-150 u from the walls of a
 ## corridor and a dozen of them overlap, so it wants a tenth of what a
 ## lone lamp in a hall would.
-const EMIT_LIGHT_ENERGY: float = 0.14
+const EMIT_LIGHT_ENERGY: float = 0.10       # a bright-walled corridor was bleaching at 0.14
 const MAP_LIGHT_MAX_ENHANCED: float = 0.3
 const EMIT_RANGE_SCALE: float = 9.0      # x the fitting's own size
 const EMIT_RANGE_MIN: float = 750.0
@@ -1098,6 +1099,39 @@ const EMIT_RANGE_MAX: float = 3200.0
 ## skipped anything over 1400 u as "a building, not a lamp" — which is
 ## exactly what a corridor segment or a hall ceiling is, so the strips
 ## glowed and lit nothing ("celá chodba je temná", 2026-09-05).
+## Indoor sprites and their stand-in models rest on the floor the physics
+## world actually has under them. The DOS record's Y sits a little above
+## the floor and the port lifted the billboard's foot by a constant; the
+## items still sank ("sprity zabiehajú do podlahy", 2026-09-05). Each
+## sprite carries `bottom_off` (its foot relative to its origin); a ray
+## from knee height finds the floor and the foot goes onto it, within a
+## hand's span either way.
+const SETTLE_REACH: float = 60.0
+func _settle_sprites(level: LevelLoader.Level) -> void:
+	if level == null or level.sprites == null or level.is_outdoor:
+		return
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return
+	var moved: int = 0
+	for s in level.sprites.get_children():
+		if not (s is Node3D) or not s.has_meta("bottom_off"):
+			continue
+		var n: Node3D = s
+		var foot: float = n.global_position.y + float(n.get_meta("bottom_off"))
+		var from := Vector3(n.global_position.x, foot + SETTLE_REACH, n.global_position.z)
+		var q := PhysicsRayQueryParameters3D.create(from, from - Vector3(0.0, SETTLE_REACH * 2.0, 0.0))
+		q.collide_with_areas = false
+		var hit := space.intersect_ray(q)
+		if not hit.has("position"):
+			continue
+		var dy: float = float((hit["position"] as Vector3).y) + 0.5 - foot
+		if absf(dy) > 0.5 and absf(dy) <= SETTLE_REACH:
+			n.global_position.y += dy
+			moved += 1
+	if moved > 0:
+		print("[level] settled %d sprites onto the floor" % moved)
+
 func _place_emissive_lights(level: LevelLoader.Level) -> int:
 	if not Render.enhanced() or level.entities == null:
 		return 0

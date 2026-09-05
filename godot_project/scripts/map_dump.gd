@@ -117,6 +117,8 @@ func _ready() -> void:
 		dump_bsa(String(cli["bsa"]), String(cli.get("filter", "")))
 	if cli.has("strings"):
 		dump_strings(String(cli["strings"]))
+	if cli.has("scan"):
+		scan_colours(String(cli["scan"]))
 	if cli.has("tex"):
 		dump_tex(String(cli["tex"]), String(cli.get("out", "")))
 	if cli.has("faces"):
@@ -504,3 +506,48 @@ static func dump_bsa(arc: String, filt: String) -> void:
 	b.close()
 	names.sort()
 	print("%s: %s" % [arc, " ".join(names)])
+
+## --scan=magenta|red|<r,g,b,tol>: every TEXTURE record (banks 0..450)
+## whose average opaque colour is near the target — to find which art a
+## strange-coloured surface in a screenshot comes from.
+static func scan_colours(spec: String) -> void:
+	var target := Color(1.0, 0.2, 0.9)
+	var tol: float = 0.3
+	match spec:
+		"magenta": target = Color(0.85, 0.25, 0.8)
+		"red": target = Color(0.7, 0.1, 0.1)
+		_:
+			var f := spec.split(",")
+			if f.size() >= 3:
+				target = Color(float(f[0]), float(f[1]), float(f[2]))
+			if f.size() >= 4:
+				tol = float(f[3])
+	var found := 0
+	for bank in 451:
+		var tf = Assets._tex_file(bank)
+		if tf == null:
+			continue
+		for rec in tf.records.size():
+			var t: Texture2D = Assets.texture(bank, rec, true)
+			if t == null:
+				continue
+			var img: Image = t.get_image()
+			if img == null:
+				continue
+			var acc := Color(0, 0, 0, 0)
+			var n := 0
+			var step: int = maxi(1, mini(img.get_width(), img.get_height()) / 24)
+			for y in range(0, img.get_height(), step):
+				for x in range(0, img.get_width(), step):
+					var c := img.get_pixel(x, y)
+					if c.a > 0.5:
+						acc += c
+						n += 1
+			if n == 0:
+				continue
+			var avg := Color(acc.r / n, acc.g / n, acc.b / n)
+			var d: float = Vector3(avg.r - target.r, avg.g - target.g, avg.b - target.b).length()
+			if d < tol:
+				found += 1
+				print("  T%03d_%03d %dx%d avg (%.2f %.2f %.2f) d=%.2f" % [bank, rec, img.get_width(), img.get_height(), avg.r, avg.g, avg.b, d])
+	print("[scan] %d records near %s" % [found, spec])

@@ -26,14 +26,18 @@ const PickupData := preload("res://scripts/pickup_data.gd")
 # --- materials ---------------------------------------------------------
 ## kind → [albedo, metallic, roughness, emission energy, clearcoat]
 const MATERIALS: Dictionary = {
-	"gunmetal": [Color(0.115, 0.120, 0.135), 0.55, 0.72, 0.0, 0.0],
-	"steel":    [Color(0.24, 0.25, 0.28), 0.62, 0.60, 0.0, 0.02],
-	"blued":    [Color(0.062, 0.068, 0.082), 0.58, 0.64, 0.0, 0.03],
-	"polymer":  [Color(0.085, 0.085, 0.095), 0.00, 0.74, 0.0, 0.0],
-	"rubber":   [Color(0.045, 0.045, 0.050), 0.00, 0.95, 0.0, 0.0],
-	"wood":     [Color(0.26, 0.135, 0.062), 0.00, 0.55, 0.0, 0.0],
-	"brass":    [Color(0.48, 0.35, 0.13), 0.80, 0.34, 0.0, 0.08],
-	"olive":    [Color(0.165, 0.180, 0.105), 0.12, 0.70, 0.0, 0.05],
+	# There are no reflection probes in these rooms, so a metallic
+	# surface has nothing to reflect and renders black; the guns on the
+	# floor were coal ("zbraň je strašne tmavá", 2026-09-05). Lighter
+	# albedo, less metal.
+	"gunmetal": [Color(0.24, 0.25, 0.28), 0.30, 0.62, 0.0, 0.0],
+	"steel":    [Color(0.36, 0.37, 0.40), 0.35, 0.50, 0.0, 0.02],
+	"blued":    [Color(0.17, 0.18, 0.22), 0.30, 0.56, 0.0, 0.03],
+	"polymer":  [Color(0.19, 0.19, 0.21), 0.00, 0.72, 0.0, 0.0],
+	"rubber":   [Color(0.10, 0.10, 0.11), 0.00, 0.92, 0.0, 0.0],
+	"wood":     [Color(0.32, 0.18, 0.09), 0.00, 0.55, 0.0, 0.0],
+	"brass":    [Color(0.55, 0.42, 0.18), 0.45, 0.34, 0.0, 0.08],
+	"olive":    [Color(0.24, 0.26, 0.16), 0.10, 0.70, 0.0, 0.05],
 	"glass":    [Color(0.04, 0.06, 0.09), 0.55, 0.08, 0.0, 0.40],
 	"glow":     [Color(1.0, 1.0, 1.0), 0.0, 0.4, 2.8, 0.0],
 }

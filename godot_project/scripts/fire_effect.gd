@@ -21,6 +21,9 @@ const FIRE_SPRITES: Dictionary = {
 	27906: {"kind": "camp", "h": 0.9},           # 218_002
 	27907: {"kind": "camp", "h": 1.0},           # 218_003
 	26626: {"kind": "barrel", "h": 1.0},         # 208_002
+	26369: {"kind": "barrel", "h": 1.0},         # 206_001 (the bank-206 drum)
+	26627: {"kind": "wreck", "h": 1.0},          # 208_003 burning tyres
+	27662: {"kind": "flame", "h": 1.0},          # 216_014 a small flame
 }
 
 ## How many fire lights may cast shadows (each one costs a cubemap).
@@ -35,10 +38,13 @@ static func is_fire(sprite_index: int) -> bool:
 	return FIRE_SPRITES.has(sprite_index)
 
 ## `world_w`/`world_h`: the DOS sprite's world size; the flame fills it.
-func setup(sprite_index: int, world_w: float, world_h: float, seed: int) -> void:
+## `kind_override`: "pool" for the burning fuel a molotov leaves — flat
+## flames on a scorch mark, no logs, no rubble.
+func setup(sprite_index: int, world_w: float, world_h: float, seed: int, kind_override: String = "") -> void:
 	add_to_group("fire")
 	var info: Dictionary = FIRE_SPRITES.get(sprite_index, {"kind": "flame", "h": 1.0})
-	var kind: String = String(info["kind"])
+	var kind: String = kind_override if kind_override != "" else String(info["kind"])
+	add_to_group("fire_" + kind)         # agent aid: --near=fire_wreck:0
 	var h: float = world_h * float(info["h"])
 	var w: float = world_w
 	_phase = float(hash(seed) % 1000) / 1000.0 * TAU
@@ -48,11 +54,22 @@ func setup(sprite_index: int, world_w: float, world_h: float, seed: int) -> void
 		# fire standing on nothing at all ("tu hori ohen len tak z
 		# nicoho", 2026-09-04). Give it something to be burning —
 		# scorched ground and a few charred lumps.
-		_scorch(w)
+		_scorch(w, true)
+	elif kind == "pool":
+		_scorch(w, false)
+		w *= 0.9
+		h *= 0.55
 	elif kind == "camp":
-		_logs(w, h)
-		w *= 0.75
-		h *= 0.95
+		# The DOS campfire sprite is a bonfire the size of a room (Marek,
+		# 2026-09-05: "asi by mal byť trochu menší a realistickejší, ten
+		# červený kruh"): a fire of half the sprite over a small hearth.
+		_campfire(w * 0.6)
+		w *= 0.42
+		h *= 0.55
+	elif kind == "wreck":
+		_tyres(w, h)
+		w *= 0.8
+		h *= 0.7
 	elif kind == "barrel":
 		_barrel(w, h)
 		flame_base = h * 0.55
@@ -165,36 +182,37 @@ func _embers(w: float, h: float, base: float) -> void:
 	p.position = Vector3(0.0, base + h * 0.3, 0.0)
 	add_child(p)
 
-## A few charred logs leaning into a pile.
-## What a loose flame is burning: a scorched patch of ground and a
-## handful of charred lumps around the base, so the fire has a source.
-func _scorch(w: float) -> void:
+## What a loose flame is burning: a scorched patch of ground and, when
+## `lumps`, a handful of charred blocks around the base, so the fire has
+## a source. The molotov pool skips the lumps.
+func _scorch(w: float, lumps: bool = true) -> void:
 	var burnt := StandardMaterial3D.new()
 	burnt.albedo_color = Color(0.09, 0.07, 0.06)
 	burnt.roughness = 1.0
+	# The mark: soot, thin as paint — the raised brown disc read as a
+	# plate under the fire (2026-09-05).
 	var mark := MeshInstance3D.new()
 	var disc := CylinderMesh.new()
-	disc.top_radius = w * 0.50
-	disc.bottom_radius = w * 0.54
-	disc.height = maxf(w * 0.02, 1.0)
+	disc.top_radius = w * 0.34
+	disc.bottom_radius = w * 0.38
+	disc.height = 0.6
 	disc.radial_segments = 14
 	var dm := StandardMaterial3D.new()
-	dm.albedo_color = Color(0.06, 0.05, 0.045)
+	dm.albedo_color = Color(0.03, 0.028, 0.025)
 	dm.roughness = 1.0
-	dm.emission_enabled = true
-	dm.emission = Color(1.0, 0.34, 0.06)
-	dm.emission_energy_multiplier = 0.05
 	disc.material = dm
 	mark.mesh = disc
-	mark.position.y = disc.height * 0.4
+	mark.position.y = 0.3
 	add_child(mark)
+	if not lumps:
+		return
 	# Rubble: small blocks pushed into the ground, no two alike.
 	var rng := RandomNumberGenerator.new()
 	rng.seed = int(_phase * 1000.0) + 7
-	for i in 6:
+	for i in 5:
 		var mi := MeshInstance3D.new()
 		var bm := BoxMesh.new()
-		var s: float = w * rng.randf_range(0.10, 0.22)
+		var s: float = w * rng.randf_range(0.06, 0.13)
 		bm.size = Vector3(s, s * rng.randf_range(0.5, 0.9), s * rng.randf_range(0.7, 1.3))
 		bm.material = burnt
 		mi.mesh = bm
@@ -205,41 +223,119 @@ func _scorch(w: float) -> void:
 			rng.randf_range(-0.3, 0.3))
 		add_child(mi)
 
-func _logs(w: float, h: float) -> void:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.16, 0.1, 0.07)
-	mat.roughness = 0.95
-	var r: float = maxf(w * 0.028, 2.0)
-	var n: int = 5
-	for i in n:
+## A hearth: a ring of stones around an ash bed, a teepee of thin
+## charred logs, two more lying across, a faint ember glow in the
+## middle. `w` is the hearth's width.
+func _campfire(w: float) -> void:
+	var char_mat := StandardMaterial3D.new()
+	char_mat.albedo_color = Color(0.11, 0.08, 0.06)
+	char_mat.roughness = 0.95
+	var ash := StandardMaterial3D.new()
+	ash.albedo_color = Color(0.09, 0.085, 0.08)
+	ash.roughness = 1.0
+	var ember := StandardMaterial3D.new()
+	ember.albedo_color = Color(0.12, 0.05, 0.02)
+	ember.emission_enabled = true
+	ember.emission = Color(1.0, 0.32, 0.05)
+	ember.emission_energy_multiplier = 0.35
+	var stone := StandardMaterial3D.new()
+	stone.albedo_color = Color(0.3, 0.29, 0.27)
+	stone.roughness = 0.95
+	var rng := RandomNumberGenerator.new()
+	rng.seed = int(_phase * 1000.0) + 3
+	# Ash bed and embers.
+	_disc(w * 0.26, 1.5, ash, 0.7)
+	_disc(w * 0.12, 2.5, ember, 1.4)
+	# Stones.
+	for i in 10:
+		var a: float = float(i) / 10.0 * TAU + rng.randf_range(-0.15, 0.15)
+		var rr: float = w * rng.randf_range(0.27, 0.31)
 		var mi := MeshInstance3D.new()
-		var cm := CylinderMesh.new()
-		cm.top_radius = r
-		cm.bottom_radius = r * 1.15
-		cm.height = w * 0.8
-		cm.radial_segments = 8
-		cm.material = mat
-		mi.mesh = cm
-		var yaw: float = float(i) / float(n) * TAU + _phase
-		mi.rotation = Vector3(0.0, yaw, deg_to_rad(62.0))
-		mi.position = Vector3(cos(yaw) * w * 0.1, r + w * 0.8 * 0.5 * sin(deg_to_rad(28.0)), sin(yaw) * w * 0.1)
+		var sm := SphereMesh.new()
+		var sr: float = w * rng.randf_range(0.04, 0.06)
+		sm.radius = sr
+		sm.height = sr * 2.0
+		sm.radial_segments = 8
+		sm.rings = 4
+		sm.material = stone
+		mi.mesh = sm
+		mi.scale = Vector3(1.0, 0.6, 0.85)
+		mi.position = Vector3(cos(a) * rr, sr * 0.45, sin(a) * rr)
+		mi.rotation.y = rng.randf() * TAU
 		add_child(mi)
-	# Ash / ember bed.
-	var bed := MeshInstance3D.new()
+	# Logs: a teepee of five, two lying across the bed.
+	var r: float = maxf(w * 0.018, 1.5)
+	var apex := Vector3(0.0, w * 0.3, 0.0)
+	for i in 5:
+		var a: float = float(i) / 5.0 * TAU + _phase
+		var foot := Vector3(cos(a) * w * 0.19, r, sin(a) * w * 0.19)
+		var top := apex + Vector3(cos(a) * w * 0.04, rng.randf_range(-0.02, 0.06) * w, sin(a) * w * 0.04)
+		_log(foot, top, r, char_mat)
+	for i in 2:
+		var a: float = rng.randf() * TAU
+		var d := Vector3(cos(a), 0.0, sin(a)) * w * 0.24
+		_log(-d + Vector3(0.0, r * 1.2, 0.0), d + Vector3(0.0, r * 1.2, 0.0), r * 0.9, char_mat)
+
+func _disc(radius: float, height: float, mat: Material, y: float) -> void:
+	var mi := MeshInstance3D.new()
 	var cyl := CylinderMesh.new()
-	cyl.top_radius = w * 0.3
-	cyl.bottom_radius = w * 0.34
-	cyl.height = r
-	cyl.radial_segments = 12
-	var bm := StandardMaterial3D.new()
-	bm.albedo_color = Color(0.12, 0.07, 0.05)
-	bm.emission_enabled = true
-	bm.emission = Color(1.0, 0.3, 0.04)
-	bm.emission_energy_multiplier = 0.25
-	cyl.material = bm
-	bed.mesh = cyl
-	bed.position = Vector3(0.0, r * 0.5, 0.0)
-	add_child(bed)
+	cyl.top_radius = radius
+	cyl.bottom_radius = radius * 1.1
+	cyl.height = height
+	cyl.radial_segments = 14
+	cyl.material = mat
+	mi.mesh = cyl
+	mi.position.y = y
+	add_child(mi)
+
+## A tapered log from `a` to `b`.
+func _log(a: Vector3, b: Vector3, r: float, mat: Material) -> void:
+	var d: Vector3 = b - a
+	var len: float = d.length()
+	if len < 0.01:
+		return
+	var mi := MeshInstance3D.new()
+	var cm := CylinderMesh.new()
+	cm.top_radius = r * 0.8
+	cm.bottom_radius = r
+	cm.height = len
+	cm.radial_segments = 7
+	cm.material = mat
+	mi.mesh = cm
+	var dir := d / len
+	var basis := Basis.IDENTITY
+	if absf(dir.dot(Vector3.UP)) < 0.999:
+		var x := Vector3.UP.cross(dir).normalized()
+		basis = Basis(x, dir, x.cross(dir).normalized())
+	mi.transform = Transform3D(basis, (a + b) * 0.5)
+	add_child(mi)
+
+## The burning wreck (208_003): a heap of tyres — two flat, one thrown on
+## top — over scorched ground.
+func _tyres(w: float, h: float) -> void:
+	_scorch(w * 0.9, false)
+	var rubber := StandardMaterial3D.new()
+	rubber.albedo_color = Color(0.05, 0.05, 0.05)
+	rubber.roughness = 0.8
+	var R: float = minf(w, h) * 0.2
+	var tyre := TorusMesh.new()
+	tyre.inner_radius = R * 0.55
+	tyre.outer_radius = R
+	tyre.rings = 18
+	tyre.ring_segments = 8
+	tyre.material = rubber
+	var spots: Array = [
+		[Vector3(-w * 0.16, R * 0.23, w * 0.02), Vector3(0.0, 0.3, 0.0)],
+		[Vector3(w * 0.14, R * 0.23, -w * 0.04), Vector3(0.0, 1.1, 0.0)],
+		[Vector3(-w * 0.02, R * 0.62, -w * 0.02), Vector3(deg_to_rad(28.0), 0.7, deg_to_rad(10.0))],
+	]
+	for sp in spots:
+		var mi := MeshInstance3D.new()
+		mi.mesh = tyre
+		mi.position = sp[0]
+		mi.rotation = sp[1]
+		mi.scale = Vector3(1.0, 0.9, 1.0)
+		add_child(mi)
 
 ## An oil drum with the fire coming out of the top.
 func _barrel(w: float, h: float) -> void:

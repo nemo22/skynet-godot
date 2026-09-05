@@ -27,7 +27,8 @@ const BurningPool := preload("res://scripts/burning_pool.gd")
 ## travel, a visible lob. Faster and lighter: 3400 u/s, 1400 u/s².
 const GRAVITY: float = 1400.0
 const FUSE_TIME: float = 2.5
-const RESTITUTION: float = 0.35              # bounce energy retained
+const RESTITUTION: float = 0.3               # off a wall: bounce energy retained
+const FLOOR_SLIDE: float = 0.3               # on the floor: no bounce, a short skid
 const SPEED: float = 3400.0                  # initial muzzle velocity
 const SPRITE_BANK: int = 217
 const SPRITE_RECORD: int = 2
@@ -136,10 +137,16 @@ func _physics_process(delta: float) -> void:
 			if _burst or (n != null and n != _owner and n is Node3D and _is_target(n)):
 				_detonate(hit["position"])
 				return
-			# Bounce: reflect velocity around the hit normal, lose energy.
+			# Off a wall it bounces; on the floor it drops dead and skids a
+			# little — the DOS grenade never hopped back up off the ground
+			# (Marek, 2026-09-05).
 			var nrm: Vector3 = hit.get("normal", Vector3.UP)
 			global_position = hit["position"] + nrm * 2.0
-			_vel = _vel.bounce(nrm) * RESTITUTION
+			if nrm.y > 0.6:
+				_vel = (_vel - nrm * _vel.dot(nrm)) * FLOOR_SLIDE
+				_vel.y = 0.0
+			else:
+				_vel = _vel.bounce(nrm) * RESTITUTION
 			return
 	global_position = to
 	if _life <= 0.0:
