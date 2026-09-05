@@ -40,10 +40,11 @@
 ## destructible IS its mesh, a wall button is a Trigger with the panel
 ## under it. Everything else stays in the level's Static branch.
 ##
-## F1 (2026-09-05): the branch is generated and saved but the runtime
-## does not lift it out of the scene yet (level_scene.take) — the game
-## keeps running the records through action_system.gd. F2 switches the
-## classes over one by one, sounds first.
+## F1 (2026-09-05) generated the branch; F2 (same day, first step) put
+## it in the running level with scripts/level/behaviour.gd on its root:
+## the chain walk runs on the nodes and the one-shot cues fire from
+## them, while action_system.gd still drives movers, triggers, exits and
+## destructibles from the records the nodes mirror into.
 
 extends RefCounted
 
@@ -64,6 +65,8 @@ const MESSAGE_CUE  := preload("res://scenes/level/message_cue.tscn")
 const OBJECTIVE    := preload("res://scenes/level/objective.tscn")
 const RAW_ACTION   := preload("res://scenes/level/raw_action.tscn")
 const MISSION      := preload("res://scenes/level/mission.tscn")
+## The script on the branch root — the run-time object layer.
+const BEHAVIOUR_ROOT := preload("res://scripts/level/behaviour.gd")
 
 const ANIM := &"move"
 ## Looping ambient sound (handler 0x12a47a; id at sub+2).
@@ -116,6 +119,7 @@ const BOX_MIN_THICKNESS: float = 16.0
 static func wants_action(e: MapFile.Entity, name: String, transfrm: Dictionary) -> bool:
 	var act: int = e.link_act_type
 	return ActionSystem.is_mover(act) or ActionSystem.is_destructible(act) \
+		or act == ActionSystem.ACT_DEMOLISH \
 		or transfrm.has(name.to_lower()) \
 		or (e.state_byte & 6) != 0 or e.hp > 0 \
 		or act == ActionSystem.ACT_PROX_GATE or act == ActionSystem.ACT_PROX_CHAIN_A \
@@ -164,7 +168,8 @@ static func kind_of(map: MapFile.MapFile, e: MapFile.Entity, transfrm: Dictionar
 		return "message"
 	if act >= ActionSystem.ACT_OBJECTIVE_FIRST and act <= ActionSystem.ACT_FAIL:
 		return "objective"
-	if variant == 1 and (e.hp > 0 or (e.state_byte & 6) != 0):
+	# 0x1B: a chain kills it — a Damageable whose act says so.
+	if variant == 1 and (e.hp > 0 or (e.state_byte & 6) != 0 or act == ActionSystem.ACT_DEMOLISH):
 		return "damageable"
 	# 0xFE / 0xFF are what DOS writes into a spent act byte, not ids.
 	if act > 0 and act < 0xFE:
@@ -346,6 +351,7 @@ static func box_shape(mesh: Mesh) -> Dictionary:
 static func build(level, report: Dictionary = {}) -> Node3D:
 	var root := Node3D.new()
 	root.name = "Behaviour"
+	root.set_script(BEHAVIOUR_ROOT)
 	for k in ["movers_without_mesh", "cues_with_mesh", "dangling", "to_markers"]:
 		report[k] = 0
 	report["kinds"] = {}

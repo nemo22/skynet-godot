@@ -21,13 +21,13 @@
 ##                  triggers, exits, sounds, messages and objectives as
 ##                  nodes, chains as NodePaths (scripts/level_behaviour.gd)
 ##
-## The Behaviour branch is phase F1 of docs/map_format_plan.md: it is
-## generated and saved, the editor shows it, but the runtime does not
-## lift it out yet (take() below) — the game still drives the movers,
-## triggers and the rest from the MAP records through action_system.gd.
-## Enemies, pickups, lights and markers are likewise still built from
-## the records by the loader (they are the cheap half — a few dozen
-## nodes against several hundred).
+## The Behaviour branch is phases F1/F2 of docs/map_format_plan.md: the
+## bake generates it, the editor shows it, and the running level lifts
+## it out like the rest (take() below) — its root script walks the
+## chains and fires the cues, while action_system.gd still drives the
+## movers, triggers, exits and destructibles from the MAP records until
+## their turn comes. Enemies, pickups, lights and markers are still
+## built from the records by the loader.
 ##
 ## Three things this buys, all of them asked for (2026-09-04, "kludne
 ## nech konverzia spracuje tie data do formatu ktory vyhovuje godotu"):
@@ -60,8 +60,9 @@ const LevelLoaderRef := preload("res://scripts/level_loader.gd")
 const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
 
 ## Bump when the bake changes shape (invalidates every saved scene).
-## 8 = the Behaviour branch (2026-09-05).
-const BAKE_VERSION: int = 8
+## 8 = the Behaviour branch (2026-09-05); 9 = its root script and the
+## 0x1B demolition targets as Damageables.
+const BAKE_VERSION: int = 9
 
 # ---------------------------------------------------------------------
 # Paths
@@ -107,9 +108,7 @@ static func take(map_name: String, map_bytes: PackedByteArray) -> Dictionary:
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
 		return {}
 	var out: Dictionary = {}
-	# Behaviour stays behind (F1): the runtime still builds those nodes
-	# from the records; it goes with the root below.
-	for key in ["Terrain", "Static", "Occluders", "Detail"]:
+	for key in ["Terrain", "Static", "Occluders", "Detail", "Behaviour"]:
 		var n: Node = root.get_node_or_null(NodePath(key))
 		if n == null:
 			continue

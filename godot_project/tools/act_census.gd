@@ -29,6 +29,7 @@ const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
 ## action-handler-table-0x59b00).
 const KNOWN: Dictionary = {
 	0x18: "destructible (TRANSFRM.PRS)", 0x19: "destructible (TRANSFRM.PRS)",
+	0x1B: "demolished by its chain (ObjHit HP+1, handler 0x1378bf)",
 	0xED: "voice line", 0xEE: "looping sound",
 	0xEF: "proximity gate (60 u)", 0xF0: "teleport / map exit",
 	0xF1: "proximity chain (256 u)", 0xF2: "proximity chain (1024 u)",
@@ -37,7 +38,15 @@ const KNOWN: Dictionary = {
 
 func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
-	var out_path: String = args[0] if args.size() > 0 else "act_census.csv"
+	var out_path: String = "act_census.csv"
+	# `--act=0x1B`: list every entity carrying that id instead — what it
+	# is, where it sits, what its state and chain look like.
+	var dump_act: int = -1
+	for a in args:
+		if String(a).begins_with("--act="):
+			dump_act = String(a).substr(6).hex_to_int() if String(a).substr(6).begins_with("0x") else int(String(a).substr(6))
+		elif not String(a).begins_with("--"):
+			out_path = String(a)
 	var gd: String = SkynetPaths.gamedata_dir
 	var acts: Dictionary = {}          # act -> count (entities, markers apart)
 	var act_markers: Dictionary = {}   # act -> count on placement markers
@@ -77,6 +86,9 @@ func _ready() -> void:
 		var targeted: Dictionary = {}
 		for ent in m.entities:
 			by_off[ent.file_off] = ent
+		if dump_act >= 0:
+			_dump_act(mn, m, dump_act, transfrm)
+			continue
 		for ent in m.entities:
 			var act: int = ent.link_act_type
 			if ent.marker_type >= 0:
@@ -125,6 +137,9 @@ func _ready() -> void:
 		for k in r:
 			links[k] = int(links.get(k, 0)) + int(r[k])
 	maps.close()
+	if dump_act >= 0:
+		get_tree().quit()
+		return
 
 	var keys: Array = acts.keys()
 	keys.sort_custom(func(a, b) -> bool: return int(acts[a]) > int(acts[b]))
@@ -183,6 +198,38 @@ func _ready() -> void:
 		f.close()
 		print("wrote %s" % out_path)
 	get_tree().quit()
+
+## One line per entity with act `act` in map `mn`: variant, what it is
+## (mesh name / sprite bank:record / light), position, state, HP, what
+## it links to and what links to it, and the node kind the bake gives it.
+static func _dump_act(mn: String, m, act: int, transfrm: Dictionary) -> void:
+	var targeted_by: Dictionary = {}
+	for e in m.entities:
+		if e.marker_type < 0 and e.link_next > 0 and m.entities_by_off.has(e.link_next):
+			targeted_by[e.link_next] = e
+	var targeted := LevelBehaviour.chain_targets(m)
+	for e in m.entities:
+		if e.link_act_type != act or e.marker_type >= 0:
+			continue
+		var variant: int = e.flags & 3
+		var what: String
+		match variant:
+			1: what = "mesh %s" % MapFile.entity_name(m, e)
+			2: what = "light %d/%d" % [e.light_intensity, e.light_enable]
+			_: what = "sprite %d:%d" % [e.sprite_index >> 7, e.sprite_index & 0x7F]
+		var nxt: String = "-"
+		var t = m.entities_by_off.get(e.link_next) if e.link_next > 0 else null
+		if t != null:
+			nxt = "-> act %02X %s" % [t.link_act_type,
+				MapFile.entity_name(m, t) if (t.flags & 3) == 1 else ("marker %d" % t.marker_type if t.marker_type >= 0 else "sprite")]
+		var src: String = ""
+		var s = targeted_by.get(e.file_off)
+		if s != null:
+			src = "  <- act %02X %s" % [s.link_act_type, MapFile.entity_name(m, s) if (s.flags & 3) == 1 else "sprite"]
+		print("%s @%05x v%d %-22s at %6d,%6d,%6d state %02x hp %4d sub+2 %5d %s%s  [%s]"
+			% [mn, e.file_off, variant, what, e.x, e.y, e.z, e.state_byte, e.hp,
+			   e.exit_map if variant == 3 else 0, nxt, src,
+			   LevelBehaviour.kind_of(m, e, transfrm, targeted)])
 
 static func _is_end(v: int) -> bool:
 	return v == 0xFFFFFFFF or v == 0xFFFFFFFE or v == -1 or v == -2

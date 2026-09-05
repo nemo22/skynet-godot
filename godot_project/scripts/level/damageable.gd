@@ -8,6 +8,13 @@
 ## the HP is gone. At zero HP the link record's destruction type picks
 ## the blast, the drop and the sound (Skynet.exe 0x423d6).
 ##
+## Act 0x1B (handler 0x1378bf, decoded 2026-09-05) makes one of these a
+## DEMOLITION target: a chain that enables it deals it HP + 1 through
+## ObjHit (HP 0 is set to 1 first), so a rack of crates goes with the
+## one you shot (MAP.213), the PC and chair with their desk (MAP.461),
+## the fence ring with the NODE00 gate (MAP.280), the bridge rails with
+## the button (MAP.260). 243 entities across 56 maps carry it.
+##
 ##   Damageable (this)     StaticBody3D at the DOS position and rotation
 ##   +- Mesh
 ##   +- Shape              the shared trimesh

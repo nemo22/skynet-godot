@@ -3,8 +3,8 @@
 ## its own enable bit. MAP.212's truck ride is one of these at the end
 ## of a floor gate's chain.
 ##
-## F1 (2026-09-05): generated and inert — action_system.gd still runs
-## the records.
+## Live since F2 (2026-09-05): the Behaviour root fires it when a chain
+## flip enables it.
 
 extends Node3D
 
@@ -15,3 +15,6 @@ extends Node3D
 ## DOS state byte: bit 0 = armed.
 @export var state: int = 0
 @export var targets: Array[NodePath] = []
+
+func fire() -> void:
+	Audio.play_voice(voice_id)

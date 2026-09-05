@@ -29,6 +29,13 @@
 ## lives on/next to the parsed MapFile — reloading a map re-parses it,
 ## which matches DOS (maps are always reloaded from disk; the Mst
 ## state overlay arrives with map transitions in phase 2).
+##
+## Phase F2 of docs/map_format_plan.md moves this, class by class, onto
+## the level's Behaviour branch (scripts/level/behaviour.gd). Done so
+## far: the chain walk itself (ObjFlipLink runs on the nodes and mirrors
+## every state bit back into the records read here) and the one-shot
+## cues — sounds, voice lines, hints, objectives fire from their nodes.
+## Still here: movers, proximity, exits, destructibles, demolition.
 
 extends RefCounted
 
@@ -37,16 +44,6 @@ const Explosion := preload("res://scripts/explosion.gd")
 signal teleport_requested(target_map: int, marker_set: int)
 ## A destroyed object drops an item (FUN_00124293 → FUN_00124119).
 signal drop_requested(pos: Vector3, drop_type: int)
-## A MISSION OBJECTIVE act (0x26..0x2A) fired; index = act - 0x26, which
-## selects the [M1]..[M5] line of the mission's briefing script. The DOS
-## engine (handler 0x1377d0) decrements the "objectives remaining"
-## counter here, prints that line, and disables the node.
-signal objective_complete(index: int)
-## A hint act (0x1C..0x25) fired; index = act - 0x1C → [G1]..[G9].
-## Handler 0x13779d: prints the line, changes no counter.
-signal hint_message(index: int)
-## Act 0x2B (handler 0x13782d): the mission is lost, at once.
-signal mission_failed()
 
 const MapFile := preload("res://scripts/loaders/map_file.gd")
 const PickupData := preload("res://scripts/pickup_data.gd")
@@ -103,6 +100,14 @@ const MOVER_TABLE: Dictionary = {
 
 const ACT_DESTRUCT_A: int = 0x18
 const ACT_DESTRUCT_B: int = 0x19
+## Demolition (handler 0x1378bf, decoded 2026-09-05): when a chain
+## enables the entity, the handler sets its HP to 1 if it has none and
+## calls ObjHit with HP + 1 — the object dies through the normal
+## destruction path (blast, drop, sound). Stacked crates go with the
+## one shot (MAP.213), the PC and chair with their desk (MAP.461), the
+## fence ring with its NODE00 gate (MAP.280), the bridge rails with the
+## button (MAP.260). 243 entities in 56 maps.
+const ACT_DEMOLISH: int = 0x1B
 const ACT_PROX_GATE: int = 0xEF     # 60-unit player-proximity gate
 const ACT_PROX_CHAIN_A: int = 0xF1  # radius 256 (table +4)
 const ACT_PROX_CHAIN_B: int = 0xF2  # radius 1024 (table +4)
@@ -159,10 +164,11 @@ var _nodes: Dictionary = {}       # file_off → Node3D (visual, optional)
 var _movers: Dictionary = {}      # file_off → mover runtime state
 var _prox: Array = []             # entities with a proximity act type
 var _teleports: Array = []        # entities with act 0xF0
-var _sound_nodes: Array = []      # entities with a SOUND_ONESHOT act
-var _voice_nodes: Array = []      # entities with act 0xED
-var _objective_nodes: Array = []  # entities with acts 0x1C..0x2B
 var _destruct_nodes: Array = []   # entities with acts 0x18/0x19
+var _demolish_nodes: Array = []   # entities with act 0x1B
+## The level's Behaviour branch (scripts/level/behaviour.gd): the chain
+## walk runs there and the cue nodes fire themselves (F2).
+var behaviour: Node = null
 ## Physics access for reachability tests (set by the level controller).
 var space: PhysicsDirectSpaceState3D = null
 var player_body: CollisionObject3D = null
@@ -189,28 +195,36 @@ var _unhandled_logged: Dictionary = {}
 func setup(map: MapFile.MapFile) -> void:
 	_map = map
 	for e in map.entities:
+		# Placement MARKERS (enemy starts, radiation sources …) keep
+		# other data where a sprite keeps its act byte — an enemy
+		# marker's "act" is its enemy type.
+		if e.marker_type >= 0:
+			continue
 		var act: int = e.link_act_type
-		if act == ACT_PROX_GATE or act == ACT_PROX_CHAIN_A \
-				or act == ACT_PROX_CHAIN_B:
+		if act == ACT_PROX_GATE:
+			if gate_runs(e):
+				_prox.append(e)
+		elif act == ACT_PROX_CHAIN_A or act == ACT_PROX_CHAIN_B:
 			_prox.append(e)
 		elif act == ACT_TELEPORT:
 			_teleports.append(e)
-		elif SOUND_ONESHOT.has(act):
-			_sound_nodes.append(e)
-		elif act == ACT_VOICE:
-			_voice_nodes.append(e)
 		elif is_destructible(act):
 			_destruct_nodes.append(e)
-		elif act >= ACT_HINT_FIRST and act <= ACT_FAIL:
-			# Placement MARKERS (enemy starts, radiation sources …) keep
-			# other data where a sprite keeps its act byte, and half the
-			# campaign's enemy markers read back as 0x28/0x29/0x2B — a
-			# mission complete or a mission FAILED. Only real entities
-			# carry messages.
-			if e.marker_type < 0:
-				_objective_nodes.append(e)
+		elif act == ACT_DEMOLISH:
+			_demolish_nodes.append(e)
 		if (e.flags & 3) == 1 and e.hp > 0:
 			_hp[e.file_off] = float(e.hp)
+
+## The 0xEF handler (0x137e2e) runs only for a state byte whose bits
+## 1-2 are both clear or both set. A prop that carries the "act on
+## death" bit alone is NOT a gate: the DESK0S of MAP.461 (state 04, HP
+## 50) or a stacked crate on MAP.213 fires its chain from ObjHit when it
+## breaks, and walking past it does nothing.
+static func gate_runs(e: MapFile.Entity) -> bool:
+	if e.link_act_type != ACT_PROX_GATE:
+		return false
+	var bits: int = e.state_byte & 6
+	return bits == 0 or bits == 6
 
 ## Does this act type get a visual/interactive node treatment?
 static func is_mover(act: int) -> bool:
@@ -311,7 +325,9 @@ func on_player_activate(file_off: int, player_pos: Vector3 = Vector3.INF) -> boo
 	# Levers, buttons and proximity gates (0xEF/0xF1/0xF2) are use-key
 	# operated in DOS — the tower lever opens the base gate — even
 	# though their state byte carries no "act on hit" bit.
-	var usable: bool = (e.state_byte & 2) != 0 		or e.link_act_type == ACT_PROX_GATE or e.link_act_type == 0xF1 		or e.link_act_type == 0xF2
+	var usable: bool = (e.state_byte & 2) != 0 \
+		or gate_runs(e) or e.link_act_type == ACT_PROX_CHAIN_A \
+		or e.link_act_type == ACT_PROX_CHAIN_B
 	if not usable:
 		return false
 	# A gate whose chain ends in an exit (the truck DOOR in MAP.211/212,
@@ -365,30 +381,23 @@ func _trigger(e: MapFile.Entity) -> void:
 	_flip_link(e)
 	_do_action(e)
 
-## ObjFlipLink FUN_001394aa: toggle bit0 down the chain; 0xEF nodes
-## force their bit0 back on; stop at an actor or end-of-chain. Chains
-## in the MAP data can be RINGS (…→door0→door1→…→back to the head);
-## DOS normalises them at load in MapFixLinkEnds — we instead track
-## visited members so each one toggles exactly once per trigger.
+## ObjFlipLink FUN_001394aa — runs on the Behaviour branch since F2
+## (scripts/level/behaviour.gd flip): toggle bit 0 down the chain, an
+## 0xEF node forces its bit back on, the walk stops at an actor, and a
+## one-shot cue whose bit goes up fires there and then. The nodes
+## mirror every bit into the records, so the sweeps below keep reading
+## the entities as before.
 func _flip_link(start: MapFile.Entity) -> void:
-	var cur: MapFile.Entity = start
-	var visited: Dictionary = {}
-	while cur != null and not visited.has(cur.file_off):
-		visited[cur.file_off] = true
-		cur.state_byte ^= 1
-		if cur.link_act_type == ACT_PROX_GATE:
-			cur.state_byte |= 1
-		if (cur.state_byte & 1) != 0:
-			_armed[cur.file_off] = true
-		_refresh_switch_visual(cur)
-		if (cur.flags & 0x40) != 0:
-			break
-		if cur.link_next < 1:
-			break
-		var nxt: MapFile.Entity = _map.entities_by_off.get(cur.link_next)
-		if nxt == cur:
-			break
-		cur = nxt
+	if behaviour == null:
+		push_warning("[action] no Behaviour branch — chain from @%05x dropped" % start.file_off)
+		return
+	for item in behaviour.flip(start.file_off):
+		var e: MapFile.Entity = _map.entities_by_off.get(int(item[0]))
+		if e == null:
+			continue
+		if (int(item[1]) & 1) != 0:
+			_armed[e.file_off] = true
+		_refresh_switch_visual(e)
 
 ## BUTTON01/02 are a single quad with the OFF texture (222/0, 222/2) on
 ## the front face and the lit ON texture (222/1, 222/3) on the back —
@@ -416,9 +425,10 @@ func _do_action(e: MapFile.Entity) -> void:
 		return
 	if is_mover(act) or act == ACT_PROX_GATE \
 			or act == ACT_PROX_CHAIN_A or act == ACT_PROX_CHAIN_B \
-			or act == ACT_TELEPORT or is_destructible(act) \
-			or (act >= ACT_HINT_FIRST and act <= ACT_FAIL) or act == ACT_VOICE:
-		return                                  # handled in tick()/hit path
+			or act == ACT_TELEPORT or is_destructible(act) or act == ACT_DEMOLISH \
+			or (act >= ACT_HINT_FIRST and act <= ACT_FAIL) or act == ACT_VOICE \
+			or SOUND_ONESHOT.has(act):
+		return                                  # tick() / the hit path / the cue nodes
 	if not _unhandled_logged.has(act):
 		_unhandled_logged[act] = true
 		print("[action] unhandled act 0x%02x (entity @%d)" % [act, e.file_off])
@@ -463,21 +473,8 @@ func tick(delta: float, player_pos: Vector3) -> void:
 			_flip_link(e)
 		elif not inside and latched:
 			_prox_latched[e.file_off] = false
-	# Sound one-shots (0xdb..0xeb, handler 0x137dbd): play the slot's
-	# sound id (Audio.SOUND_IDS, the 0x4ff00 table) at the node, then
-	# self-disable. Door/button chains route through these for their
-	# sounds; a node armed in the MAP data plays once at level start.
-	for e in _sound_nodes:
-		if _fires(e):
-			e.state_byte &= ~1
-			Audio.play_id_3d(int(SOUND_ONESHOT.get(e.link_act_type, -1)),
-				Vector3(float(e.x), -float(e.y), -float(e.z)), -4.0)
-	# Voice lines (0xED, handler 0x137dfd): play the VOICE.PRS sample
-	# whose id sits at sub+2, then self-disable.
-	for e in _voice_nodes:
-		if _fires(e):
-			e.state_byte &= ~1
-			Audio.play_voice(e.exit_map)
+	# (Sound one-shots, voice lines, hints and objectives fire from their
+	# Behaviour nodes as the chain is flipped — F2.)
 	# Destructibles a CHAIN switched on (0x18/0x19). Normally these only
 	# break under fire, but a machine can break one for you: on MAP.248 a
 	# START BOX (0xEF) runs a sound node into the IBEM64 girder (a 0x73
@@ -489,24 +486,15 @@ func tick(delta: float, player_pos: Vector3) -> void:
 			continue
 		e.state_byte &= ~1
 		_break_down(e)
-	# Messages and mission progress (0x1C..0x2B): fire once when a
-	# chain enables them, then the act disarms itself (DOS writes 0xFF
-	# into the act byte). FUN_0012f53d confirms with sound 0x51.
-	for e in _objective_nodes:
+	# Demolition (0x1B, handler 0x1378bf): a chain that enables one of
+	# these deals it HP + 1 through ObjHit. The crate stack on MAP.213
+	# comes down with the crate you shot, the desk takes the PC on it,
+	# the NODE00 gate on MAP.280 drops the fence ring.
+	for e in _demolish_nodes:
 		if not _fires(e):
 			continue
-		var act: int = e.link_act_type
-		if act < ACT_HINT_FIRST or act > ACT_FAIL:
-			continue
 		e.state_byte &= ~1
-		e.link_act_type = 0xFF               # DOS writes 0xFF: one-shot
-		if act == ACT_FAIL:
-			mission_failed.emit()
-		elif act >= ACT_OBJECTIVE_FIRST:
-			Audio.play_id(0x51, -4.0)
-			objective_complete.emit(act - ACT_OBJECTIVE_FIRST)
-		else:
-			hint_message.emit(act - ACT_HINT_FIRST)
+		_demolish(e)
 	# Teleports ---------------------------------------------------
 	# A chain (0xEF gate → sound node → 0xF0) or touching the doorway
 	# sprite ARMS the exit (state bit 0); the map change itself needs
@@ -658,6 +646,8 @@ func restore_state(snap: Dictionary) -> void:
 		var e: MapFile.Entity = _map.entities_by_off.get(off)
 		if e != null:
 			e.state_byte = int(states[off])
+	if behaviour != null:
+		behaviour.sync_from_records()
 	_hp = (snap.get("hp", {}) as Dictionary).duplicate()
 	_spent = (snap.get("spent", {}) as Dictionary).duplicate()
 	var movers: Dictionary = snap.get("movers", {})
@@ -801,6 +791,18 @@ func _advance_destructible(e: MapFile.Entity, damage: float) -> bool:
 			_disable_collision(node)
 	return true
 
+## Handler 0x1378bf (act 0x1B): a killing blow through ObjHit — HP + 1,
+## after an HP of 0 is raised to 1 so a prop with no hit points goes
+## too. Everything else (blast, drop, sound, the chain if the state
+## bits ask for it) is the ordinary destruction path.
+func _demolish(e: MapFile.Entity) -> void:
+	if _spent.has(e.file_off) or (e.flags & 3) != 1:
+		return
+	if not _hp.has(e.file_off) or float(_hp[e.file_off]) <= 0.0:
+		_hp[e.file_off] = 1.0
+	print("[action] demolish @%05x (act 0x1b, hp %.0f)" % [e.file_off, float(_hp[e.file_off])])
+	on_player_hit(e.file_off, float(_hp[e.file_off]) + 1.0)
+
 ## Run a destructible through every one of its TRANSFRM.PRS stages at
 ## once — what a machine (or a scripted demolition) does to it, as
 ## opposed to the slow chipping away of gunfire.
@@ -872,9 +874,10 @@ func _destroy(e: MapFile.Entity) -> void:
 			var reach: float = radius * 2.5
 			if dist < reach:
 				pl.take_damage(45.0 * (1.0 - dist / reach))
-		if not _destr.has(e.file_off):
-			node.visible = false
-			_disable_collision(node)
+	# Gone from the world, whether or not it was in a tree to blow up in.
+	if alive and not _destr.has(e.file_off):
+		node.visible = false
+		_disable_collision(node)
 	if drop >= 0:
 		drop_requested.emit(Vector3(centre.x, origin.y, centre.z), drop)
 

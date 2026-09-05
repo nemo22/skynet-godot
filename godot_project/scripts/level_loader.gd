@@ -271,6 +271,10 @@ class Level:
 	var occluders: Node3D = null          # OccluderInstance3D for the map
 	var detail: Node3D = null             # ENHANCED clutter / dust
 	var overlay: Node3D = null            # mods/maps/<MAP>.detail.tscn
+	## The map's behaviour as nodes (scripts/level_behaviour.gd), out of
+	## the baked scene or built here; scripts/level/behaviour.gd on its
+	## root runs the chains and the cues (F2).
+	var behaviour: Node3D = null
 
 ## Build every node from the DOS data, ignoring (and then rewriting) the
 ## baked level scene. The bake itself runs with this off.
@@ -363,7 +367,18 @@ func load_level(map_name: String) -> Level:
 		level.occluders = baked.get("occluders")
 		level.detail = baked.get("detail")
 		baked_static = baked.get("static")
+		level.behaviour = baked.get("behaviour")
 	level.overlay = LevelScene.overlay(map_name)
+	# The behaviour nodes: from the bake, or built from the records now
+	# (a bake-less run, the editor's data view). The action system walks
+	# the chains on them from here on.
+	if level.behaviour == null:
+		level.behaviour = LevelBehaviour.build(level)
+	level.behaviour.bind_records(level.map)
+	# Its bodies and meshes sleep while the entity loop below still
+	# builds the same objects from the records (F2, class by class).
+	level.behaviour.sleep_geometry(level.behaviour)
+	level.action.behaviour = level.behaviour
 
 	# Terrain tile textures — the WLD chunk header references TEXTURE.302
 	# (verified: 62× 64×64 "lndscps" records). Each cell binds one tile by
@@ -984,16 +999,12 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 			spr.position = Vector3(float(e.x), base_y + world_h * 0.5, -float(e.z))
 		level.sprites.add_child(spr)
 		placed += 1
-		# Looping ambient sound: the 0x4cc00 sprite→sound table (fires,
-		# barrels — FUN_0012a400 gives them act 0xEE) or an explicit 0xEE
-		# node whose sound id sits at sub+2 (exit_map holds that u16).
-		var amb: int = -1
-		if e.link_act_type == 0xEE:
-			amb = e.exit_map
-		elif e.link_act_type == 0 and PickupData.AMBIENT.has(e.sprite_index):
-			amb = int(PickupData.AMBIENT[e.sprite_index])
-		if amb >= 0:
-			Audio.attach_loop_3d(amb, spr, -10.0)
+		# Looping ambient sound from the 0x4cc00 sprite→sound table
+		# (fires, barrels — FUN_0012a400 gives them act 0xEE at map
+		# start). An explicit 0xEE record is a Sound node of the
+		# Behaviour branch and plays from there (F2).
+		if e.link_act_type == 0 and PickupData.AMBIENT.has(e.sprite_index):
+			Audio.attach_loop_3d(int(PickupData.AMBIENT[e.sprite_index]), spr, -10.0)
 	print("[level] placed %d billboard sprites (%d pickups, %d as models)"
 		% [placed, pickups, models])
 	var keys := bank_hist.keys()

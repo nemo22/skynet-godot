@@ -655,7 +655,7 @@ func level_scene(map_name: String) -> String:
 	if lvl == null:
 		return ""
 	for n in [lvl.terrain, lvl.entities, lvl.enemies, lvl.sprites, lvl.sky,
-			lvl.occluders, lvl.detail, lvl.overlay]:
+			lvl.occluders, lvl.detail, lvl.overlay, lvl.behaviour]:
 		if n != null and is_instance_valid(n):
 			n.free()
 	return p if ResourceLoader.exists(p) else ""

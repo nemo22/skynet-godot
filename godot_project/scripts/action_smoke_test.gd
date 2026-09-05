@@ -52,6 +52,7 @@ func _ready() -> void:
 			level210 = level
 	if level210 != null:
 		_run_map210_checks(level210)
+		_run_behaviour_checks()
 		_run_transition_checks(level210)
 	_run_ai_checks()
 	_run_map_scene_checks()
@@ -233,6 +234,73 @@ func _run_map210_checks(level: LevelLoader.Level) -> void:
 
 func _on_teleport(target_map: int, marker_set: int) -> void:
 	_teleport_seen.append([target_map, marker_set])
+
+## F2 — the chain walk runs on the Behaviour nodes and the cues fire
+## from there; 0x1B demolition.
+func _run_behaviour_checks() -> void:
+	# MAP.217: the HUMMERTK carries mission 1's last objective (act 0x28)
+	# and eight 0xEF gates ring it. Tripping one fires the objective from
+	# its node, once; a second gate flips a spent cue and nothing happens;
+	# the record is retired the way DOS does it (act 0xFF).
+	var l217: LevelLoader.Level = LevelLoader.new().load_level("MAP.217")
+	_check(l217 != null and l217.behaviour != null and l217.action.behaviour == l217.behaviour,
+		"MAP.217 loads with a Behaviour branch wired into the action system")
+	if l217 != null and l217.behaviour != null:
+		var seen: Array = []
+		l217.behaviour.objective_complete.connect(func(i: int) -> void: seen.append(i))
+		var target = null
+		for e in l217.map.entities:
+			if (e.flags & 3) == 1 and e.marker_type < 0 and e.link_act_type == 0x28:
+				target = e
+		_check(target != null, "MAP.217 carries the [M3] objective (act 0x28) on a mesh")
+		var gates: Array = []
+		for g in l217.action._prox:
+			if g.link_act_type != 0xEF:
+				continue
+			var cur = g
+			for hop in 8:
+				if cur == null or cur.link_next < 1:
+					break
+				cur = l217.map.entities_by_off.get(cur.link_next)
+				if cur == target:
+					gates.append(g)
+					break
+		_check(gates.size() >= 2, "%d proximity gates chain to the objective" % gates.size())
+		if target != null and gates.size() >= 2:
+			var g0 = gates[0]
+			l217.action.tick(0.016, Vector3(float(g0.x), -float(g0.y), -float(g0.z)))
+			_check(seen == [2], "tripping a gate fires objective [M3] from its node (%s)" % str(seen))
+			_check(target.link_act_type == 0xFF and (target.state_byte & 1) == 0,
+				"the objective record is retired (act 0xFF, bit 0 clear)")
+			var g1 = gates[1]
+			var p1 := Vector3(float(g1.x), -float(g1.y), -float(g1.z))
+			l217.action.tick(0.016, p1 + Vector3(9000.0, 0.0, 0.0))
+			l217.action.tick(0.016, p1)
+			_check(seen == [2], "a second gate cannot fire the spent objective (%s)" % str(seen))
+
+	# MAP.213: a crate with the "act on death" bit (state 04) chains to
+	# the crate stacked on it, whose act 0x1B means "demolished by the
+	# chain". The prop is not a proximity gate (the 0xEF handler skips
+	# state & 6 == 4), and shooting it to pieces takes the top crate too.
+	var l213: LevelLoader.Level = LevelLoader.new().load_level("MAP.213")
+	if l213 != null:
+		var base = null
+		var top = null
+		for e in l213.map.entities:
+			if (e.flags & 3) == 1 and e.link_act_type == 0xEF and (e.state_byte & 6) == 4 and e.link_next > 0:
+				var t = l213.map.entities_by_off.get(e.link_next)
+				if t != null and t.link_act_type == 0x1B and l213.action._nodes.has(t.file_off):
+					base = e
+					top = t
+					break
+		_check(base != null, "MAP.213 has a crate whose death chain demolishes the crate on it")
+		if base != null:
+			_check(not l213.action._prox.has(base), "a state-04 0xEF prop is not a proximity gate")
+			var tnode: Node3D = l213.action._nodes[top.file_off]
+			l213.action.on_player_hit(base.file_off, 500.0)
+			l213.action.tick(0.016, Vector3(1e9, 0.0, 1e9))
+			_check(l213.action._spent.has(top.file_off) and not tnode.visible,
+				"0x1B: the stacked crate is demolished with the one shot")
 
 ## Phase 2 — map transitions: marker sets on both ends of an exit, the
 ## per-map state overlay round trip, doorway touch arming and the

@@ -667,12 +667,17 @@ func _begin_level(name: String) -> void:
 				if level.action != null and c.has_method("file_off") 						and level.action.is_mover_off(c.file_off()):
 					_make_animatable(c)
 		add_child(level.entities)
+	# The Behaviour branch (scripts/level/behaviour.gd): the chains and
+	# the cues. Signals first — a cue armed in the MAP data fires in its
+	# _ready, the moment it enters the tree.
+	if level.behaviour != null:
+		level.behaviour.objective_complete.connect(_on_objective_complete)
+		level.behaviour.hint_message.connect(_on_hint_message)
+		level.behaviour.mission_failed.connect(_on_mission_failed)
+		add_child(level.behaviour)
 	if level.action != null:
 		level.action.teleport_requested.connect(_on_teleport_requested)
 		level.action.drop_requested.connect(_on_drop_requested)
-		level.action.objective_complete.connect(_on_objective_complete)
-		level.action.hint_message.connect(_on_hint_message)
-		level.action.mission_failed.connect(_on_mission_failed)
 		level.action.space = get_world_3d().direct_space_state
 		level.action.player_body = player
 		if not player.pickup_message.is_connected(_set_status):
@@ -2981,6 +2986,8 @@ func _clear_level() -> void:
 		_current_level.sprites.queue_free()
 	if _current_level.sky and is_instance_valid(_current_level.sky):
 		_current_level.sky.queue_free()
+	if _current_level.behaviour and is_instance_valid(_current_level.behaviour):
+		_current_level.behaviour.queue_free()
 	if _water != null and is_instance_valid(_water):
 		_water.queue_free()
 	_water = null

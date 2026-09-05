@@ -6,12 +6,14 @@
 ## start.
 ##
 ## The node IS the player: the stream is the cached clip, so the
-## editor's inspector can audition it.
-##
-## F1 (2026-09-05): generated and inert — action_system.gd still runs
-## the records.
+## editor's inspector can audition it. Live since F2 (2026-09-05): the
+## Behaviour root fires it when a chain flip enables it.
 
 extends AudioStreamPlayer3D
+
+## The level the DOS one-shots play at (action_system.gd used -4 dB);
+## the wall in between takes its share (Audio.occlusion_db).
+const BASE_DB: float = -4.0
 
 @export var id: int = 0
 @export var act: int = 0
@@ -23,5 +25,7 @@ extends AudioStreamPlayer3D
 
 ## What a chain flip does to this node.
 func fire() -> void:
-	if stream != null:
-		play()
+	if stream == null or not is_inside_tree():
+		return
+	volume_db = BASE_DB + Audio.occlusion_db(global_position)
+	play()

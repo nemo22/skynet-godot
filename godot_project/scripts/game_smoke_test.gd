@@ -594,7 +594,7 @@ func _run() -> void:
 		_check(cover_node.global_position.distance_to(cbase) > 100.0,
 			"silo cover door slides open from the bit-0-less proximity gate (%.0f u)" % cover_node.global_position.distance_to(cbase))
 		var objs: Array = []
-		lvl.action.objective_complete.connect(func(i: int) -> void: objs.append(i))
+		lvl.behaviour.objective_complete.connect(func(i: int) -> void: objs.append(i))
 		lvl.action.on_player_activate(0x2f8f)             # missile button
 		var hades: Node3D = lvl.action._nodes.get(0x47f0)
 		var hbase: Vector3 = hades.global_position
@@ -667,7 +667,7 @@ func _check_jeep_objective() -> void:
 	if jeep == null:
 		return
 	var objs: Array = []
-	lvl.action.objective_complete.connect(func(i: int) -> void: objs.append(i))
+	lvl.behaviour.objective_complete.connect(func(i: int) -> void: objs.append(i))
 	# Stand on the jeep: every gate around it trips in the same tick.
 	lvl.action.tick(0.016, Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z)))
 	lvl.action.tick(0.016, Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z)))
