@@ -2664,7 +2664,9 @@ func _show_end_screen(title: String, color: Color, respawnable: bool,
 	cl.process_mode = Node.PROCESS_MODE_ALWAYS
 	add_child(cl)
 	_game_over = cl
-	print("[skynet] end screen: %s" % title)
+	_game_over_next = next_map
+	_game_over_respawnable = respawnable
+	print("[skynet] end screen: %s (next %s)" % [title, next_map if next_map != "" else "-"])
 	var dim := ColorRect.new()
 	dim.color = Color(0.02, 0.03, 0.05, 0.85)
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -2734,9 +2736,11 @@ func _advance_to(map_name: String) -> void:
 ## level load to the briefing's BEGIN button. Returns false (load the
 ## level now) for sub-maps or maps without a briefing file.
 func _maybe_show_briefing(map_name: String) -> bool:
-	var sfx: int = _suffix(map_name)
-	if sfx < 200 or sfx % 10 != 0:
+	# A mission starts on its CAMPAIGN_SEQUENCE map — MAP.252 for mission
+	# 5, not a map ending in 0 (that rule skipped its briefing).
+	if not _campaign_maps.has(map_name):
 		return false                        # sub-map / not a mission start
+	var sfx: int = _mission_of(map_name)
 	var bsa := BSAReader.new()
 	if not bsa.open(SkynetPaths.gamedata_path("MDMDBRIF.BSA"),
 			SkynetPaths.variant):
@@ -3200,6 +3204,13 @@ func _briefing_teardown() -> void:
 		_briefing_overlay.queue_free()
 		_briefing_overlay = null
 
+## What the end screen offers, for the keyboard: Enter/Space take the
+## first choice (NEXT MISSION or RESPAWN); Esc does nothing there — it
+## used to open the pause menu over the banner, whose MAIN MENU is the
+## one way out of that (2026-09-05, "namiesto ďalšej misie menu").
+var _game_over_next: String = ""
+var _game_over_respawnable: bool = false
+
 func _game_over_button(text: String, cb: Callable) -> Button:
 	var b := Button.new()
 	b.text = text
@@ -3262,6 +3273,15 @@ func _input(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 	var k: int = event.keycode
+	if _game_over != null and is_instance_valid(_game_over):
+		# The end screen has the keyboard: Enter/Space = the first button.
+		if k == KEY_ENTER or k == KEY_KP_ENTER or k == KEY_SPACE:
+			if _game_over_respawnable:
+				_game_over_respawn()
+			elif _game_over_next != "":
+				_advance_to(_game_over_next)
+		get_viewport().set_input_as_handled()
+		return
 	# (Esc/~ inside the pause menu or console are theirs — this node is
 	# paused while either is up.)
 	if k == KEY_ESCAPE:
