@@ -62,7 +62,7 @@ var _mi: MeshInstance3D = null
 var _light: OmniLight3D = null
 ## The bolt's light at full strength, and how far it flies before it
 ## gets there (so it never lights the one who fired it).
-const LIGHT_ENERGY: float = 2.0
+const LIGHT_ENERGY: float = 0.5       # at Render.LIGHT_REF
 const LIGHT_RAMP: float = 260.0
 var _travelled: float = 0.0
 var _done: bool = false
@@ -163,6 +163,7 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 		# žiariace na bielo", 2026-09-05).
 		_light.light_energy = 0.0
 		_light.omni_range = maxf(_splash, 420.0)
+		_light.omni_attenuation = Render.OMNI_DECAY
 		add_child(_light)
 
 ## The soft halo that makes a bolt readable in flight. It must be a
@@ -219,7 +220,7 @@ func _physics_process(delta: float) -> void:
 	var to := global_position + _dir * _speed * delta
 	_travelled += _speed * delta
 	if _light != null:
-		_light.light_energy = LIGHT_ENERGY * clampf(_travelled / LIGHT_RAMP, 0.0, 1.0)
+		_light.light_energy = Render.energy(LIGHT_ENERGY * clampf(_travelled / LIGHT_RAMP, 0.0, 1.0))
 	var space := get_world_3d().direct_space_state
 	var q := PhysicsRayQueryParameters3D.create(global_position, to)
 	q.collide_with_areas = true                # actor hitboxes are Area3D

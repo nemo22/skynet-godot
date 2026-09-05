@@ -90,9 +90,9 @@ func setup(at: Vector3, tint: Color = Color.WHITE,
 		FxParticles.sparks(get_parent(), at, Vector3.UP, 5, 220.0, tint)
 		_light = OmniLight3D.new()
 		_light.light_color = tint
-		_light.light_energy = 4.0
+		_light.light_energy = Render.energy(1.2)
 		_light.omni_range = 600.0
-		_light.omni_attenuation = 1.2
+		_light.omni_attenuation = Render.OMNI_DECAY
 		add_child(_light)
 
 func _process(delta: float) -> void:
@@ -105,4 +105,4 @@ func _process(delta: float) -> void:
 	var k: float = _t / LIFETIME              # 1 → 0
 	_sprite.modulate.a = k
 	if _light != null:
-		_light.light_energy = 4.0 * k
+		_light.light_energy = Render.energy(1.2 * k)

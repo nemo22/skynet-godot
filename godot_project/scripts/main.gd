@@ -404,6 +404,17 @@ static func _cli_vec3(s: String) -> Vector3:
 
 ## Apply the automation switches once a level is up: place the camera,
 ## then capture a screenshot and optionally quit.
+static func _all_omni(root: Node) -> Array:
+	var out: Array = []
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		if n is OmniLight3D:
+			out.append(n)
+	return out
+
 ## `--mat-debug=…`: turn features off on every material the level draws
 ## (shared objects, so the enemy frames follow too).
 func _mat_debug(what: String) -> void:
@@ -474,6 +485,15 @@ func _cli_after_level() -> void:
 			print("[skynet] --quit-after elapsed")
 			Net.leave()
 			get_tree().quit())
+	if _cli.has("light-scale"):
+		# Agent diagnostics: multiply every point light in the level, to
+		# find the intensity that reads right before it goes into a const.
+		var s: float = float(_cli["light-scale"])
+		var n: int = 0
+		for l in _all_omni(self):
+			l.light_energy *= s
+			n += 1
+		print("[cli] light-scale %.2f on %d lights" % [s, n])
 	if _cli.has("mat-debug"):
 		# Agent diagnostics: strip one material feature from EVERY mesh
 		# in the level (`--mat-debug=noemission|nonormal|nospec|unshaded`,
@@ -486,9 +506,11 @@ func _cli_after_level() -> void:
 		var parts: PackedStringArray = String(_cli["near"]).split(":")
 		var nodes: Array = get_tree().get_nodes_in_group(parts[0])
 		var ni: int = int(parts[1]) if parts.size() > 1 else 0
+		# "group:N:dist" stands that far off instead (a skull wants 120).
+		var dist: float = float(parts[2]) if parts.size() > 2 else 260.0
 		if ni < nodes.size() and nodes[ni] is Node3D:
 			var tgt: Vector3 = (nodes[ni] as Node3D).global_position
-			var eye: Vector3 = tgt + Vector3(-260.0, 120.0, 0.0)
+			var eye: Vector3 = tgt + Vector3(-dist, dist * 0.46, 0.0)
 			_cli["pos"] = "%f,%f,%f" % [eye.x, eye.y, eye.z]
 			var d: Vector3 = tgt + Vector3(0.0, 30.0, 0.0) - eye
 			_cli["yaw"] = str(rad_to_deg(atan2(-d.x, -d.z)))
@@ -1042,67 +1064,168 @@ func _light_level(level: LevelLoader.Level) -> void:
 ##
 ## Biggest fittings first, and only a handful cast shadows — an omni
 ## shadow is a cubemap each.
-const EMIT_LIGHT_MAX: int = 32
+## A lamp per EMIT_CELL of lit surface, hung EMIT_DROP off it. 128 is
+## a hall of panels plus its corridors; omnis without shadows are
+## cheap in the clustered renderer.
+const EMIT_LIGHT_MAX: int = 128
 const EMIT_LIGHT_SHADOWS: int = 4
+const EMIT_CELL: float = 900.0
+const EMIT_DROP: float = 60.0
 const EMIT_LIGHT_COLOR: Color = Color(1.0, 0.94, 0.84)
-## 1.9 blew out the wall under every ceiling strip; the fittings still
-## emit on their own (Render.EMISSION_ENERGY), the lamp is the spill.
-const EMIT_LIGHT_ENERGY: float = 1.3
-## Interior map lights in ENHANCED: the DOS intensity scale, capped —
-## a 3.5 × 1.6 lamp at 6000 u range was most of the "burnt out" rooms.
-const MAP_LIGHT_MAX_ENHANCED: float = 1.8
-const MAP_LIGHT_ATTENUATION_ENHANCED: float = 1.5
+## Intensities at Render.LIGHT_REF (3 m): the fitting's own lamp, and
+## the cap on a DOS map light indoors (Render.energy turns them into
+## Godot energies; the fitting itself emits on its own).
+## Measured on MAP.214's corridor and MAP.218's room with --light-scale
+## (2026-09-05): a strip lamp sits 100-150 u from the walls of a
+## corridor and a dozen of them overlap, so it wants a tenth of what a
+## lone lamp in a hall would.
+const EMIT_LIGHT_ENERGY: float = 0.14
+const MAP_LIGHT_MAX_ENHANCED: float = 0.3
 const EMIT_RANGE_SCALE: float = 9.0      # x the fitting's own size
 const EMIT_RANGE_MIN: float = 750.0
 const EMIT_RANGE_MAX: float = 3200.0
 
+## Where the light IS: the lit texels of the emission masks, found on
+## the geometry. Every triangle of an emissive surface is read against
+## its mask through its UVs; the lit ones are gathered into EMIT_CELL-
+## sized cells in the mesh's own frame (so a lamp rides its mover) and
+## each cell gets an omni hung EMIT_DROP in front of the surface, on
+## its visible side. A ceiling of forty panels becomes a grid of lamps,
+## a corridor gets one under every pair of strips, a console a small
+## one over its screens.
+##
+## The first cut hung one lamp per emissive MESH at its centre and
+## skipped anything over 1400 u as "a building, not a lamp" — which is
+## exactly what a corridor segment or a hall ceiling is, so the strips
+## glowed and lit nothing ("celá chodba je temná", 2026-09-05).
 func _place_emissive_lights(level: LevelLoader.Level) -> int:
 	if not Render.enhanced() or level.entities == null:
 		return 0
-	var cands: Array = []
+	var masks: Dictionary = {}               # Texture2D → Image / false
+	var cells: Array = []                    # [weight, mi, pos, normal, extent]
 	for c in level.entities.get_children():
 		if not (c is MeshInstance3D):
 			continue
 		var mi := c as MeshInstance3D
 		if mi.mesh == null:
 			continue
-		var lit := false
+		var local: Dictionary = {}           # cell key → accumulator
 		for si in mi.mesh.get_surface_count():
 			var m: Material = mi.mesh.surface_get_material(si)
-			if m is BaseMaterial3D and (m as BaseMaterial3D).emission_enabled:
-				lit = true
-				break
-		if not lit:
-			continue
-		var b: AABB = mi.mesh.get_aabb()
-		var span: float = maxf(b.size.x, maxf(b.size.y, b.size.z))
-		# A whole emissive BUILDING is not a lamp.
-		if span > 1400.0:
-			continue
-		cands.append([span, mi, b])
-	cands.sort_custom(func(a, bb) -> bool: return float(a[0]) > float(bb[0]))
+			if not (m is BaseMaterial3D):
+				continue
+			var bm := m as BaseMaterial3D
+			if not bm.emission_enabled or bm.emission_texture == null:
+				continue
+			var img: Image = _mask_image(bm.emission_texture, masks)
+			if img == null:
+				continue
+			var arrays: Array = mi.mesh.surface_get_arrays(si)
+			var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+			var uvs_v = arrays[Mesh.ARRAY_TEX_UV]
+			if uvs_v == null:
+				continue
+			var uvs: PackedVector2Array = uvs_v
+			var nrm_v = arrays[Mesh.ARRAY_NORMAL]
+			var nrm: PackedVector3Array = nrm_v if nrm_v != null else PackedVector3Array()
+			var idx_v = arrays[Mesh.ARRAY_INDEX]
+			var idx: PackedInt32Array = idx_v if idx_v != null else PackedInt32Array()
+			var count: int = idx.size() if idx.size() > 0 else verts.size()
+			var t: int = 0
+			while t + 2 < count:
+				var ia: int = idx[t] if idx.size() > 0 else t
+				var ib: int = idx[t + 1] if idx.size() > 0 else t + 1
+				var ic: int = idx[t + 2] if idx.size() > 0 else t + 2
+				t += 3
+				var a: Vector3 = verts[ia]
+				var b: Vector3 = verts[ib]
+				var cc: Vector3 = verts[ic]
+				var cr: Vector3 = (b - a).cross(cc - a)
+				var area: float = cr.length() * 0.5
+				if area <= 0.0:
+					continue
+				var s: Dictionary = _lit_samples(img, uvs[ia], uvs[ib], uvs[ic])
+				var hits: Array = s["hits"]
+				if hits.is_empty():
+					continue
+				# The lit part of the triangle, not the triangle: a strip
+				# across one corner of a wall quad puts the lamp under
+				# the strip.
+				var centre := Vector3.ZERO
+				for bc in hits:
+					centre += a + (b - a) * (bc as Vector2).x + (cc - a) * (bc as Vector2).y
+				centre /= float(hits.size())
+				var w: float = area * float(hits.size()) / float(s["total"])
+				# The stored normal is the visible side; the fan winding
+				# puts the raw cross product at the back.
+				var n: Vector3 = (nrm[ia] + nrm[ib] + nrm[ic]) if nrm.size() > ic else -cr
+				var key := Vector3i(int(floor(centre.x / EMIT_CELL)),
+					int(floor(centre.y / EMIT_CELL)), int(floor(centre.z / EMIT_CELL)))
+				if not local.has(key):
+					local[key] = [0.0, Vector3.ZERO, Vector3.ZERO, centre, centre]
+				var acc: Array = local[key]
+				acc[0] += w
+				acc[1] += centre * w
+				acc[2] += n.normalized() * w
+				acc[3] = (acc[3] as Vector3).min(centre)
+				acc[4] = (acc[4] as Vector3).max(centre)
+		for key in local:
+			var acc: Array = local[key]
+			var w: float = acc[0]
+			cells.append([w, mi, (acc[1] as Vector3) / w, (acc[2] as Vector3).normalized(),
+				((acc[4] as Vector3) - (acc[3] as Vector3)).length()])
+	# The brightest cells first, up to the budget; a few cast shadows.
+	cells.sort_custom(func(x, y) -> bool: return float(x[0]) > float(y[0]))
 	var made: int = 0
-	for item in cands:
+	for cell in cells:
 		if made >= EMIT_LIGHT_MAX:
 			break
-		var mi: MeshInstance3D = item[1]
-		var b: AABB = item[2]
+		var mi: MeshInstance3D = cell[1]
 		var l := OmniLight3D.new()
-		# Just under the fitting, so a ceiling strip throws its light
-		# down the corridor instead of into the slab it is fixed to.
-		# Hung clear of the fitting: an omni sitting inside the slab it is
-		# fixed to just blows that slab out and lights nothing else.
-		l.position = b.get_center() - Vector3(0.0, b.size.y * 0.5 + 70.0, 0.0)
+		l.position = (cell[2] as Vector3) + (cell[3] as Vector3) * EMIT_DROP
 		l.light_color = EMIT_LIGHT_COLOR
-		l.light_energy = EMIT_LIGHT_ENERGY
-		l.omni_range = clampf(float(item[0]) * EMIT_RANGE_SCALE,
-			EMIT_RANGE_MIN, EMIT_RANGE_MAX)
-		l.omni_attenuation = 1.2
+		l.light_energy = Render.energy(EMIT_LIGHT_ENERGY)
+		l.omni_range = clampf(float(cell[4]) * 1.2 + 600.0, EMIT_RANGE_MIN, EMIT_RANGE_MAX)
+		l.omni_attenuation = Render.OMNI_DECAY
 		l.shadow_enabled = made < EMIT_LIGHT_SHADOWS
 		l.add_to_group("maplight")
 		mi.add_child(l)
 		made += 1
 	return made
+
+## The emission mask as an Image (decompressed), cached per texture.
+static func _mask_image(tex: Texture2D, cache: Dictionary) -> Image:
+	if cache.has(tex):
+		var v = cache[tex]
+		return v if v is Image else null
+	var img: Image = tex.get_image()
+	if img != null and img.is_compressed():
+		img.decompress()
+	cache[tex] = img if img != null else false
+	return img
+
+## Which points of a triangle are lit in its mask: a barycentric grid
+## dense enough to catch a strip a few texels wide across a whole wall
+## quad (seven samples per triangle missed every corridor strip),
+## sampled with wrap. Returns {hits: [Vector2(s, t) …], total: n}.
+static func _lit_samples(img: Image, u0: Vector2, u1: Vector2, u2: Vector2) -> Dictionary:
+	var w: int = img.get_width()
+	var h: int = img.get_height()
+	var px: float = maxf(maxf((u1 - u0).length(), (u2 - u0).length()), (u2 - u1).length()) * float(maxi(w, h))
+	var n: int = clampi(int(px / 5.0), 2, 14)
+	var hits: Array = []
+	var total: int = 0
+	for i in n + 1:
+		for j in n + 1 - i:
+			var s: float = float(i) / float(n)
+			var t: float = float(j) / float(n)
+			var uv: Vector2 = u0 + (u1 - u0) * s + (u2 - u0) * t
+			total += 1
+			var x: int = posmod(int(floor(uv.x * w)), w)
+			var y: int = posmod(int(floor(uv.y * h)), h)
+			if img.get_pixel(x, y).v > 0.5:
+				hits.append(Vector2(s, t))
+	return {"hits": hits, "total": total}
 
 ## Build the OmniLight3D for every enabled variant-2 entity. Outdoors the
 ## lamps are warmer and dimmer than an interior fixture, and none of them
@@ -1125,14 +1248,17 @@ func _place_map_lights(level: LevelLoader.Level, outdoor: bool) -> int:
 			# whole frame out.
 			l.light_color = LAMP_COLOR
 			l.light_energy = clampf(l.light_energy * OUTDOOR_LAMP_SCALE, 0.15, 0.9)
+			if Render.enhanced():
+				l.light_energy = Render.energy(l.light_energy)
+				l.omni_attenuation = Render.OMNI_DECAY
 			l.shadow_enabled = false
 		else:
 			if Render.enhanced():
 				# Per-pixel lit walls take a lamp much harder than the
 				# DOS per-vertex look did: capped, and falling off
 				# faster, or the wall under the lamp goes white.
-				l.light_energy = minf(l.light_energy, MAP_LIGHT_MAX_ENHANCED)
-				l.omni_attenuation = MAP_LIGHT_ATTENUATION_ENHANCED
+				l.light_energy = Render.energy(minf(l.light_energy, MAP_LIGHT_MAX_ENHANCED))
+				l.omni_attenuation = Render.OMNI_DECAY
 			# The first few interior lamps cast shadows (a cubemap each).
 			l.shadow_enabled = Render.enhanced() and n < 6
 		l.add_to_group("maplight")      # agent aid: --near=maplight:N
@@ -3730,7 +3856,9 @@ func _build_status_ui() -> void:
 ## with their own PICKUP SPRITES as icons; a compass strip along the
 ## bottom centre. The reference is the Future Shock HUD, which does
 ## exactly this and which Marek likes.
-const MIN_HUD_MARGIN: float = 26.0
+## Tighter and nearer the corner since 2026-09-05 ("status bar trochu
+## menší, viac doľava ku kraju").
+const MIN_HUD_MARGIN: float = 14.0
 const MIN_HUD_TINT := Color(0.62, 0.94, 0.70)
 const MIN_HUD_WIDTH: float = 300.0
 const COMPASS_SPAN: float = 110.0        # degrees across the strip
@@ -3768,37 +3896,45 @@ func _build_hud_minimal(canvas: CanvasLayer) -> void:
 	plate.anchor_bottom = 1.0
 	plate.offset_left = MIN_HUD_MARGIN
 	plate.offset_right = MIN_HUD_MARGIN + MIN_HUD_WIDTH
-	plate.offset_top = -168.0
+	plate.offset_top = -132.0
 	plate.offset_bottom = -MIN_HUD_MARGIN
 	_min_hud.add_child(plate)
 	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 6)
+	col.add_theme_constant_override("separation", 4)
 	col.alignment = BoxContainer.ALIGNMENT_END
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	plate.add_child(col)
-	var hp: Array = _min_row(col, "HEALTH", Color(0.85, 0.16, 0.13), Color(1.0, 0.55, 0.30), 118.0, 10.0)
+	var hp: Array = _min_row(col, "HEALTH", Color(0.85, 0.16, 0.13), Color(1.0, 0.55, 0.30), 96.0, 8.0)
 	_health_label = hp[0]
 	_health_fill = hp[1]
-	var ar: Array = _min_row(col, "ARMOUR", Color(0.16, 0.38, 0.85), Color(0.55, 0.85, 1.0), 118.0, 7.0)
+	var ar: Array = _min_row(col, "ARMOUR", Color(0.16, 0.38, 0.85), Color(0.55, 0.85, 1.0), 96.0, 6.0)
 	_armor_label = ar[0]
 	_armor_fill = ar[1]
-	var rad: Array = _min_row(col, "RAD", Color(0.72, 0.55, 0.05), Color(1.0, 0.95, 0.35), 118.0, 7.0)
+	var rad: Array = _min_row(col, "RAD", Color(0.72, 0.55, 0.05), Color(1.0, 0.95, 0.35), 96.0, 6.0)
 	_rad_fill = rad[1]
 	_rad_row = rad[2]
 	_rad_row.visible = false
-	# --- weapon and thrown item, side by side under the gauges ---
+	# --- the weapon line: icon, rounds, name; then the thrown item and
+	# its count — one row on one baseline, so the number sits by the gun
+	# and the gauges sit right above it ("zarovnať počet nábojov pri
+	# zbrani … posunie sa nižšie aj health a armour", 2026-09-05).
 	var guns := HBoxContainer.new()
-	guns.add_theme_constant_override("separation", 18)
+	guns.add_theme_constant_override("separation", 8)
 	guns.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	col.add_child(guns)
-	var w_box: Array = _min_slot(guns, 74.0, 22)
-	_weapon_icon = w_box[0]
-	_ammo_label = w_box[1]
-	_weapon_label = w_box[2]
-	var s_box: Array = _min_slot(guns, 52.0, 17)
-	_second_icon = s_box[0]
-	_second_label = s_box[1]
-	s_box[2].visible = false                 # the name lives on one line
+	_weapon_icon = _min_icon(guns, 48.0)
+	_ammo_label = _min_label(guns, HORIZONTAL_ALIGNMENT_RIGHT, 18, 1.0)
+	_ammo_label.custom_minimum_size = Vector2(50.0, 0.0)
+	_ammo_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_weapon_label = _min_label(guns, HORIZONTAL_ALIGNMENT_LEFT, 10, 0.55)
+	_weapon_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(10.0, 0.0)
+	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	guns.add_child(gap)
+	_second_icon = _min_icon(guns, 34.0)
+	_second_label = _min_label(guns, HORIZONTAL_ALIGNMENT_LEFT, 14, 1.0)
+	_second_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	# --- compass, bottom centre ---
 	_compass = Control.new()
 	_compass.custom_minimum_size = COMPASS_SIZE
@@ -3815,28 +3951,18 @@ func _build_hud_minimal(canvas: CanvasLayer) -> void:
 	_compass.draw.connect(_draw_compass)
 	_min_hud.add_child(_compass)
 
-## An icon with its number beside it, and a caption under the pair.
-func _min_slot(parent: Control, icon: float, size: int) -> Array:
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 1)
-	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	parent.add_child(box)
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 8)
-	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	box.add_child(row)
+## A small item picture (the DOS sprite of the gun or the grenade),
+## `w` wide and half as tall, centred.
+func _min_icon(parent: Control, w: float) -> TextureRect:
 	var ico := TextureRect.new()
-	ico.custom_minimum_size = Vector2(icon, icon * 0.5)
+	ico.custom_minimum_size = Vector2(w, w * 0.5)
 	ico.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	ico.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	ico.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	ico.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	ico.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	row.add_child(ico)
-	var num := _min_label(row, HORIZONTAL_ALIGNMENT_RIGHT, size, 1.0)
-	num.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	num.custom_minimum_size = Vector2(52.0, 0.0)
-	var cap := _min_label(box, HORIZONTAL_ALIGNMENT_LEFT, 11, 0.55)
-	return [ico, num, cap]
+	parent.add_child(ico)
+	return ico
 
 ## A dim, softly framed plate to keep the read-out legible over anything.
 func _min_panel() -> PanelContainer:

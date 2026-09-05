@@ -176,9 +176,9 @@ func setup(at: Vector3, radius: float,
 			FxParticles.smoke_column(scene, at, _radius)
 		_light = OmniLight3D.new()
 		_light.light_color = Color(1.0, 0.7, 0.4)
-		_light.light_energy = 6.0
+		_light.light_energy = Render.energy(3.0)
 		_light.omni_range = maxf(_radius * 5.0, 600.0)
-		_light.omni_attenuation = 1.3
+		_light.omni_attenuation = Render.OMNI_DECAY
 		add_child(_light)
 
 func _process(delta: float) -> void:
@@ -199,7 +199,7 @@ func _process(delta: float) -> void:
 			var sz: float = float(pf[3]) * grow
 			mi.scale = Vector3(sz, sz, sz)
 		if _light != null:
-			_light.light_energy = 6.0 * (1.0 - tt) * (1.0 - tt)
+			_light.light_energy = Render.energy(3.0 * (1.0 - tt) * (1.0 - tt))
 		return
 	var step: float = 1.0 / ANIM_FPS
 	while _t >= step:
@@ -210,4 +210,4 @@ func _process(delta: float) -> void:
 			return
 		_sprite.texture = _frames[_idx]
 		if _light != null:
-			_light.light_energy = 6.0 * (1.0 - float(_idx) / float(_frames.size()))
+			_light.light_energy = Render.energy(3.0 * (1.0 - float(_idx) / float(_frames.size())))

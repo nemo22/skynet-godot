@@ -130,6 +130,23 @@ func override_path(rel: String) -> String:
 
 ## Apply the mode's look to a material. `kind`: "model", "terrain",
 ## "sprite", "sky". `normal` is the derived normal map (ENHANCED).
+## Point lights in game units. Godot 4 falls an OmniLight3D off as
+## window(d / range) × d^(-omni_attenuation) with d in WORLD units, and
+## this world's unit is about two centimetres: with energy 2 a wall 200
+## units from a lamp got a hundredth of it, which is why the corridor
+## strips glowed and lit nothing ("je fajn že tie svetlá hore svietia,
+## ale nič neosvetľujú", 2026-09-05). Flattening the exponent instead
+## (0.2) lit whole corridors to white. So: the exponent stays 1 (light
+## falls as 1/d, a natural look) and every light states its intensity
+## AT LIGHT_REF units — three metres — which energy() turns into the
+## Godot energy that gives exactly that there.
+const OMNI_DECAY: float = 1.0
+const LIGHT_REF: float = 150.0
+
+## Godot light_energy for an intensity of `at_ref` at LIGHT_REF units.
+static func energy(at_ref: float) -> float:
+	return at_ref * LIGHT_REF
+
 ## How hard a lit texel glows. Enough to read as a light source and to
 ## feed the glow pass, not enough to blow the texture out.
 ##

@@ -66,14 +66,13 @@ func setup(sprite_index: int, world_w: float, world_h: float, seed: int) -> void
 	FxParticles.fire_smoke(self, w, h, flame_base)
 	_light = OmniLight3D.new()
 	_light.light_color = Color(1.0, 0.58, 0.22)
-	# A fire lights the room, it does not bleach it: at 4.0 the wall
-	# sign next to the burning pile in MAP.218 was a white rectangle
-	# ("interiéry miestami strašne prepálené", 2026-09-05). Capped, and
-	# a steeper falloff keeps the near field under the tonemapper's knee.
-	_base_energy = clampf(h / 90.0, 0.9, 2.0)
-	_light.light_energy = _base_energy
+	# Intensity at Render.LIGHT_REF (3 m): a fire lights the room, it
+	# does not bleach it — measured with --light-scale on the burning
+	# pile in MAP.218 (2026-09-05).
+	_base_energy = clampf(h / 450.0, 0.18, 0.32)
+	_light.light_energy = Render.energy(_base_energy)
 	_light.omni_range = clampf(h * 9.0, 500.0, 2400.0)
-	_light.omni_attenuation = 1.8
+	_light.omni_attenuation = Render.OMNI_DECAY
 	_light.position = Vector3(0.0, flame_base + h * 0.35, 0.0)
 	if _shadow_count < SHADOW_LIGHTS:
 		_light.shadow_enabled = true
@@ -267,4 +266,4 @@ func _process(_delta: float) -> void:
 		return
 	var s: float = float(Time.get_ticks_msec()) * 0.001
 	var flicker: float = 0.82 + 0.12 * sin(s * 9.3 + _phase) + 0.06 * sin(s * 23.7 + _phase * 2.0)
-	_light.light_energy = _base_energy * flicker
+	_light.light_energy = Render.energy(_base_energy * flicker)

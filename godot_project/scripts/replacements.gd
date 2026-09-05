@@ -21,6 +21,7 @@ const CFG_NAME: String = "replace.cfg"
 const PickupModels := preload("res://scripts/pickup_models.gd")
 const WeaponModels := preload("res://scripts/weapon_models.gd")
 const FireEffect := preload("res://scripts/fire_effect.gd")
+const PropModels := preload("res://scripts/prop_models.gd")
 
 ## ENHANCED: give a Pickup (a Sprite3D) a small 3D model instead of its
 ## billboard — the node keeps its logic, the texture is dropped.
@@ -97,6 +98,8 @@ static func _load() -> void:
 static func has_sprite(bank: int, rec: int) -> bool:
 	if not Render.enhanced():
 		return false
+	if PropModels.has(bank, rec):
+		return true
 	_load()
 	return _sprites.has("T%03d_%03d" % [bank, rec])
 
@@ -110,6 +113,9 @@ static func has_mesh(name: String) -> bool:
 ## <rec>: its base is at the node origin (put it on the ground), scaled
 ## to the sprite's world size. `seed` picks the random yaw.
 static func sprite_node(bank: int, rec: int, world_w: float, world_h: float, seed: int) -> Node3D:
+	# The lamp post and the skulls are modelled here, not downloaded.
+	if PropModels.has(bank, rec):
+		return PropModels.build(bank, rec, world_w, world_h, seed)
 	var e: Dictionary = _sprites.get("T%03d_%03d" % [bank, rec], {})
 	if e.is_empty():
 		return null
