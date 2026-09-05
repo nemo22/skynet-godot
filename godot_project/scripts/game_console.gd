@@ -5,8 +5,11 @@
 ##
 ## Every line goes to `handler.run_command(line) -> String`; the
 ## reply is printed below it. The game is paused while the console is
-## down (single player, like Quake). Up/Down walk the history, Esc or
-## `~` close it.
+## down (single player, like Quake). Up/Down walk the history, Tab
+## completes a command (twice lists the candidates), PgUp/PgDn/wheel
+## scroll the log and hold the position until End or the bottom, Esc or
+## `~` close it. Everything the engine prints is echoed, whether the
+## console is down or not (Marek, 2026-09-05: "ako to má Quake").
 extends CanvasLayer
 
 signal closed
@@ -15,14 +18,17 @@ var handler: Object = null
 var is_open: bool = false
 
 const HEIGHT_FRAC: float = 0.5
-const MAX_LINES: int = 400
+const MAX_LINES: int = 1500
 
 var _panel: PanelContainer = null
 var _log: RichTextLabel = null
 var _line: LineEdit = null
 var _history: Array[String] = []
 var _hist_pos: int = 0
-var _log_shown: int = 0          # engine log lines already in the panel
+var _log_seq: int = 0            # Log.total already echoed into the panel
+var _following: bool = true      # glued to the bottom (until scrolled up)
+var _tab_matches: Array = []     # completion candidates of the last Tab
+var _tab_prefix: String = ""
 ## Engine output (Log autoload) is echoed while the console is down;
 ## `log off` in the console silences it.
 var echo_engine: bool = true
@@ -48,35 +54,43 @@ func _ready() -> void:
 	_log = RichTextLabel.new()
 	_log.scroll_following = true
 	_log.selection_enabled = true
+	_log.focus_mode = Control.FOCUS_NONE      # Tab must not leave the line
 	_log.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_log.add_theme_font_size_override("normal_font_size", 16)
 	_log.add_theme_font_size_override("mono_font_size", 16)
 	_log.add_theme_color_override("default_color", Color(0.8, 0.92, 0.82))
 	vb.add_child(_log)
+	_log.get_v_scroll_bar().value_changed.connect(_on_scrolled)
 	_line = LineEdit.new()
-	_line.placeholder_text = "command  (help)"
+	_line.placeholder_text = "command  (help, Tab completes)"
 	_line.add_theme_font_size_override("font_size", 17)
 	_line.text_submitted.connect(_on_submit)
+	_line.text_changed.connect(func(_t: String) -> void: _tab_matches = [])
 	vb.add_child(_line)
 	get_viewport().size_changed.connect(_layout)
 	_layout()
-	say("[color=#88dd99]SkyNET console[/color] — type [b]help[/b]; Esc or ~ closes. Engine output is echoed here ([b]log off[/b] to hide).")
+	say("[color=#88dd99]SkyNET console[/color] — type [b]help[/b]; Tab completes; PgUp/PgDn scroll; Esc or ~ closes. Engine output is echoed here ([b]log off[/b] to hide).")
+	_flush_engine_log()
 	Log.line.connect(_on_engine_line)
 
-## Engine log lines: buffered ones are flushed when the console opens,
-## live ones appended while it is down.
-func _on_engine_line(text: String, error: bool) -> void:
-	if not is_open or not echo_engine:
-		return
+## Engine log lines go into the panel as they come, open or not, so the
+## console is never behind when it drops down.
+func _on_engine_line(_text: String, _error: bool) -> void:
 	_flush_engine_log()
 
+## Echo every Log line not yet shown. Log.lines is a ring: the number of
+## lines pushed in total says where in the ring to start.
 func _flush_engine_log() -> void:
 	var all: Array = Log.lines
-	if _log_shown > all.size():
-		_log_shown = 0
-	while _log_shown < all.size():
-		var e: Array = all[_log_shown]
-		_log_shown += 1
+	var missing: int = Log.total - _log_seq
+	if missing <= 0:
+		return
+	var start: int = all.size() - missing
+	if start < 0:
+		say("[color=#6f8a7a]… %d lines scrolled out of the engine buffer[/color]" % -start)
+		start = 0
+	for i in range(start, all.size()):
+		var e: Array = all[i]
 		if not echo_engine:
 			continue
 		var t: String = String(e[0]).replace("[", "[lb]")
@@ -84,6 +98,67 @@ func _flush_engine_log() -> void:
 			say("[color=#ff8a70]%s[/color]" % t)
 		else:
 			say("[color=#9fb4a8]%s[/color]" % t)
+	_log_seq = Log.total
+
+## The log keeps its place once you scroll up; End or reaching the
+## bottom glues it to the newest line again.
+func _on_scrolled(value: float) -> void:
+	var bar := _log.get_v_scroll_bar()
+	var at_bottom: bool = value >= bar.max_value - bar.page - 2.0
+	if at_bottom != _following:
+		_following = at_bottom
+		_log.scroll_following = at_bottom
+
+func _scroll_by(pages: float) -> void:
+	var bar := _log.get_v_scroll_bar()
+	bar.value = clampf(bar.value + pages * maxf(bar.page - 24.0, 24.0), 0.0, bar.max_value - bar.page)
+	_on_scrolled(bar.value)
+
+func _scroll_to_end() -> void:
+	var bar := _log.get_v_scroll_bar()
+	bar.value = bar.max_value - bar.page
+	_following = true
+	_log.scroll_following = true
+
+## Tab: complete the command word. One match fills it in; several fill
+## the common prefix and, on the second Tab, list them.
+func _complete() -> void:
+	var names: Array = []
+	if handler != null:
+		var v = handler.get("COMMAND_NAMES")
+		if v is Array:
+			names = v
+	names = names + ["log", "clear"]
+	var text: String = _line.text
+	var word: String = text.split(" ", false)[0] if not text.strip_edges().is_empty() else ""
+	if text.contains(" ") and text.strip_edges().find(" ") >= 0:
+		return                                  # arguments are the command's business
+	var matches: Array = []
+	for n in names:
+		if String(n).begins_with(word.to_lower()) and not matches.has(n):
+			matches.append(n)
+	matches.sort()
+	if matches.is_empty():
+		return
+	if matches.size() == 1:
+		_line.text = String(matches[0]) + " "
+		_line.caret_column = _line.text.length()
+		_tab_matches = []
+		return
+	# The common prefix of every match.
+	var prefix: String = String(matches[0])
+	for m in matches:
+		var k: int = 0
+		while k < prefix.length() and k < String(m).length() and prefix[k] == String(m)[k]:
+			k += 1
+		prefix = prefix.substr(0, k)
+	if _tab_matches == matches and _tab_prefix == prefix:
+		say("[color=#ffd27a]] %s[/color]" % word)
+		say("  " + "  ".join(matches))
+	_tab_matches = matches
+	_tab_prefix = prefix
+	_line.text = prefix
+	_line.caret_column = prefix.length()
 
 func _layout() -> void:
 	var vp: Vector2 = get_viewport().get_visible_rect().size
@@ -99,6 +174,7 @@ func open(preset: String = "") -> void:
 	get_tree().paused = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_flush_engine_log()
+	_scroll_to_end()
 	_line.text = preset
 	_line.grab_focus()
 	_line.caret_column = preset.length()
@@ -138,6 +214,22 @@ func _input(event: InputEvent) -> void:
 	if k.keycode == KEY_ESCAPE or is_toggle_key(event):
 		close()
 		get_viewport().set_input_as_handled()
+	elif k.keycode == KEY_TAB:
+		_complete()
+		get_viewport().set_input_as_handled()
+	elif k.keycode == KEY_PAGEUP:
+		_scroll_by(-1.0)
+		get_viewport().set_input_as_handled()
+	elif k.keycode == KEY_PAGEDOWN:
+		_scroll_by(1.0)
+		get_viewport().set_input_as_handled()
+	elif k.keycode == KEY_HOME and k.ctrl_pressed:
+		_log.get_v_scroll_bar().value = 0.0
+		_on_scrolled(0.0)
+		get_viewport().set_input_as_handled()
+	elif k.keycode == KEY_END and k.ctrl_pressed:
+		_scroll_to_end()
+		get_viewport().set_input_as_handled()
 	elif k.keycode == KEY_UP and not _history.is_empty():
 		_hist_pos = maxi(_hist_pos - 1, 0)
 		_line.text = _history[_hist_pos]
@@ -158,10 +250,14 @@ func _on_submit(text: String) -> void:
 		_history.append(cmd)
 	_hist_pos = _history.size()
 	say("[color=#ffd27a]] %s[/color]" % cmd)
+	_scroll_to_end()
 	if cmd == "log off" or cmd == "log on":
 		echo_engine = cmd == "log on"
-		_log_shown = Log.lines.size()
+		_log_seq = Log.total
 		say("engine output %s" % ("on" if echo_engine else "off"))
+		return
+	if cmd == "clear":
+		_log.clear()
 		return
 	run(cmd)
 

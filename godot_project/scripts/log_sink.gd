@@ -8,9 +8,12 @@ extends Node
 
 signal line(text: String, error: bool)
 
-const LINES: int = 600
+const LINES: int = 2000
 
 var lines: Array = []            # [text, error]
+## Lines ever pushed — `lines` is a ring, so a reader remembers how many
+## it has consumed and takes the tail from there.
+var total: int = 0
 
 class Sink extends Logger:
 	var owner: Node = null
@@ -44,6 +47,7 @@ func _push(text: String, error: bool) -> void:
 		if t.is_empty():
 			continue
 		lines.append([t, error])
+		total += 1
 		if lines.size() > LINES:
 			lines.pop_front()
 		line.emit(t, error)

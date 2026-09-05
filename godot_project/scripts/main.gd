@@ -479,6 +479,9 @@ func _cli_after_level() -> void:
 		for c in String(_cli["console"]).split(";"):
 			if not c.strip_edges().is_empty():
 				print("[cli] ] %s → %s" % [c.strip_edges(), await run_command(c.strip_edges())])
+	if _cli.has("console-open"):
+		# Automation: drop the console itself (a screenshot of its UI).
+		open_console(String(_cli["console-open"]))
 	if _cli.has("quit-after"):
 		# Automation: leave after N seconds (a headless client in a test).
 		get_tree().create_timer(float(_cli["quit-after"])).timeout.connect(func() -> void:
@@ -3371,6 +3374,18 @@ func cheat_state() -> Dictionary:
 		"willnotstop": bool(player.get("god_mode")) if is_instance_valid(player) else false,
 		"noclip": bool(player.noclip) if is_instance_valid(player) else false,
 	}
+
+## Every word run_command answers to — the console's Tab completion.
+const COMMAND_NAMES: Array = [
+	"ammo", "armor", "arnold", "bake", "bane", "boom", "bots", "brightness",
+	"cheats", "class", "counters", "drop", "dump", "enemies", "exit", "fly",
+	"gamma", "give", "god", "heal", "health", "help", "hp", "illbeback", "load",
+	"map", "maps", "menu", "moon", "music", "nextlevel", "nitrous", "noclip",
+	"objectives", "occlusion", "options", "pause", "players", "pos", "quit",
+	"rebake", "render", "save", "secondary", "sf2", "shoot", "showspawns",
+	"slugs", "speed", "superuzi", "surgery", "throw", "tp", "use", "version",
+	"weapon", "weaponview", "where", "who", "whoami", "win",
+]
 
 const HELP_TEXT := """[b]commands[/b]
   help · cheats · version · maps · map <MAP.NNN|nnn> · pos · tp x y z
