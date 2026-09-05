@@ -16,6 +16,8 @@ func _ready() -> void:
 		if a.begins_with("--") and a.find("=") > 0:
 			cli[a.substr(2, a.find("=") - 2)] = a.substr(a.find("=") + 1)
 	var out_dir: String = String(cli.get("out", "."))
+	if cli.has("terrain"):
+		preload("res://tools/terrain_census.gd").run(String(cli["terrain"]))
 	if cli.has("maps"):
 		var bsa := BSAReader.new()
 		bsa.open(SkynetPaths.gamedata_path("MDMDMAP2.BSA"), SkynetPaths.variant)
@@ -116,7 +118,7 @@ func _ready() -> void:
 	if cli.has("strings"):
 		dump_strings(String(cli["strings"]))
 	if cli.has("tex"):
-		dump_tex(String(cli["tex"]))
+		dump_tex(String(cli["tex"]), String(cli.get("out", "")))
 	if cli.has("faces"):
 		dump_faces(String(cli["faces"]))
 	if cli.has("frames"):
@@ -463,7 +465,7 @@ static func dump_names(spec: String) -> void:
 	bsa.close()
 
 ## --tex=266:1,0:60: does TEXTURE.<bank> record <rec> resolve?
-static func dump_tex(spec: String) -> void:
+static func dump_tex(spec: String, out_dir: String = "") -> void:
 	for s in spec.split(","):
 		var p := s.split(":")
 		if p.size() < 2:
@@ -474,6 +476,11 @@ static func dump_tex(spec: String) -> void:
 		print("  rec w=%d h=%d pixels=%d" % [r.width, r.height, r.pixels.size()] if r != null else "  rec: none")
 		print("  TEXTURE.%03d rec %d: %s (file records: %d)" % [int(p[0]), int(p[1]),
 			("%dx%d" % [t.get_width(), t.get_height()]) if t != null else "MISSING", tf.records.size() if tf != null else -1])
+		if t != null and out_dir != "":
+			# --out=DIR: the record as PNG (index 0 transparent), to look at.
+			var png: String = "%s/T%03d_%03d.png" % [out_dir, int(p[0]), int(p[1])]
+			Assets.texture(int(p[0]), int(p[1]), true).get_image().save_png(png)
+			print("  -> %s" % png)
 
 ## --strings=JEEP,HK: STRINGS.PRS entries whose key or text contains a word.
 static func dump_strings(spec: String) -> void:

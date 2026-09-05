@@ -62,7 +62,7 @@ const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
 ## Bump when the bake changes shape (invalidates every saved scene).
 ## 8 = the Behaviour branch (2026-09-05); 9 = its root script and the
 ## 0x1B demolition targets as Damageables.
-const BAKE_VERSION: int = 9
+const BAKE_VERSION: int = 10
 
 # ---------------------------------------------------------------------
 # Paths

@@ -348,6 +348,8 @@ func load_level(map_name: String) -> Level:
 		var wld_bytes := SkynetPaths.read_bytes(wld_path)
 		if not wld_bytes.is_empty():
 			level.wld = WldTerrain.parse(wld_bytes)
+			if level.wld != null:
+				level.wld.fine_rect = play_box(level.map).grow(WldTerrain.FINE_MARGIN)
 			print("[level] WLD.%s loaded" % level.map_suffix)
 		else:
 			push_warning("[level] outdoor flag set but WLD.%s missing"
@@ -393,7 +395,11 @@ func load_level(map_name: String) -> Level:
 	# Terrain mesh — built once and served from the asset cache
 	# (converted/terrain/WLD.NNN.res); the tiles come from TEXTURE.302.
 	if level.wld and level.terrain == null:
-		var terrain_mesh := Assets.terrain(level.map_suffix, level.wld)
+		# ENHANCED ground is a different surface (the fine mesh inside the
+		# play box), so it has its own mesh key and its own shape.
+		var fine: bool = Render.enhanced() and level.wld.fine_rect.has_area()
+		var tkey: String = level.map_suffix + (".fine" if fine else "")
+		var terrain_mesh := Assets.terrain(tkey, level.wld)
 		if terrain_mesh:
 			level.terrain = MeshInstance3D.new()
 			level.terrain.name = "Terrain"
@@ -401,7 +407,7 @@ func load_level(map_name: String) -> Level:
 			# The ground's collision shape is cached like everything else
 			# (converted/shape/WLD_NNN.res): 130 000 triangles is a slow
 			# thing to re-derive on every level start.
-			LevelScene.add_collision(level.terrain, "WLD_" + level.map_suffix)
+			LevelScene.add_collision(level.terrain, "WLD_" + tkey)
 
 	# Entities (variant 1 only) ------------------------------------
 	level.entities = Node3D.new()
@@ -1072,3 +1078,19 @@ static func spawn_item(level: Level, pos: Vector3, si: int) -> Sprite3D:
 	if PickupData.AMBIENT.has(si):
 		Audio.attach_loop_3d(int(PickupData.AMBIENT[si]), spr, -10.0)
 	return spr
+
+## The box the map is played in: every entity of every variant (meshes,
+## lights, sprites and markers — the enemy spawns and exits lie past the
+## last building), in DOS world X/Z. The ENHANCED terrain is fine inside
+## it (WldTerrain.fine_rect); outside, a 65536 u square of nothing keeps
+## the DOS planes.
+static func play_box(m: MapFile.MapFile) -> Rect2:
+	var lo := Vector2(INF, INF)
+	var hi := Vector2(-INF, -INF)
+	for e in m.entities:
+		var p := Vector2(float(e.x), float(e.z))
+		lo = lo.min(p)
+		hi = hi.max(p)
+	if lo.x > hi.x:
+		return Rect2()
+	return Rect2(lo, hi - lo)
