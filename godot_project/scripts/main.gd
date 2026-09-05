@@ -1900,6 +1900,7 @@ func _process(delta: float) -> void:
 	# Entity action system — movers, proximity triggers, teleports.
 	if _current_level != null and _current_level.action != null \
 			and is_instance_valid(player):
+		_current_level.action.drive_through = int(player.vehicle) != 0
 		_current_level.action.tick(delta, player.global_position)
 	if _health_label != null and is_instance_valid(player):
 		var hp: int = int(maxf(0.0, player.health))

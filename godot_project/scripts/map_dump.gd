@@ -29,6 +29,8 @@ func _ready() -> void:
 				continue
 			var m := MapFile.parse(bytes)
 			var outdoor: bool = bytes.size() > 9028 and bytes[9028] != 0
+			if bytes.size() > 9032:
+				print("   header +9028 flag = %d (u32 %d)" % [bytes[9028], bytes[9028] | (bytes[9029] << 8) | (bytes[9030] << 16) | (bytes[9031] << 24)])
 			if cli.has("find"):
 				find_entities(m, String(cli["find"]))
 			var markers: Dictionary = {}

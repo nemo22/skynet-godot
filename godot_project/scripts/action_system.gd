@@ -190,6 +190,12 @@ var _prox_latched: Dictionary = {} # file_off → true while player inside
 var _armed: Dictionary = {}       # file_off → armed earlier this tick
 var _touch_latched: Dictionary = {} # teleport file_off → player touching
 var _teleport_fired: bool = false   # one map change per level instance
+## In a vehicle an armed exit fires as the player passes it — the HK
+## flies into the tunnel mouth of MAP.270 (0xF1 button → 0xF0 sprite) and
+## the DOS handler changes the map the tick the exit is enabled; nobody
+## presses a key in a cockpit (Marek, 2026-09-05). On foot the use key
+## stays (the truck doors).
+var drive_through: bool = false
 var _unhandled_logged: Dictionary = {}
 
 func setup(map: MapFile.MapFile) -> void:
@@ -508,6 +514,8 @@ func tick(delta: float, player_pos: Vector3) -> void:
 		if _armed.has(e.file_off):
 			e.state_byte |= 1
 		_touch_latched[e.file_off] = touching
+		if drive_through and (e.state_byte & 1) != 0 and (touching or _armed.has(e.file_off)):
+			_fire_teleport(e)
 	if not _armed.is_empty():
 		_armed.clear()
 
