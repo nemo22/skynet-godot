@@ -226,6 +226,32 @@ func setup(map: MapFile.MapFile) -> void:
 ## death" bit alone is NOT a gate: the DESK0S of MAP.461 (state 04, HP
 ## 50) or a stacked crate on MAP.213 fires its chain from ObjHit when it
 ## breaks, and walking past it does nothing.
+## 11-bit DOS Euler angles (pitch, yaw, roll — sub+0/+4/+8) → Godot basis:
+## Rz(-roll)·Rx(+pitch)·Ry(+yaw), the DOS matrix (FUN_0014e100) conjugated
+## by the Y/Z flip. Floats, so an animation can add a fraction.
+static func euler_basis(pitch: float, yaw: float, roll: float) -> Basis:
+	var b := Basis()
+	b = b.rotated(Vector3.UP, yaw * TAU / 2048.0)
+	b = b.rotated(Vector3.RIGHT, pitch * TAU / 2048.0)
+	b = b.rotated(Vector3.BACK, -roll * TAU / 2048.0)
+	return b
+
+## A swing/rot mover after `delta` 11-bit units about DOS axis `axis_i`
+## (0 pitch, 1 yaw, 2 roll). The DOS handler (0x137c6b) adds to ONE Euler
+## component of the entity and the renderer rebuilds the matrix from the
+## three — so the motion is neither a local nor a world rotation but the
+## Euler composition with that component advanced. The old
+## `base * Basis(axis, angle)` was right for yaw only: the two halves of
+## MAP.281's drawbridge (0xC3/0xC4, roll ±512) swung one down, one UP
+## (Marek, 2026-09-05: "ten druhý sa zle rotuje").
+static func swing_basis(euler: Vector3, axis_i: int, delta: float) -> Basis:
+	var e := euler
+	match axis_i:
+		0: e.x += delta
+		1: e.y += delta
+		_: e.z += delta
+	return euler_basis(e.x, e.y, e.z)
+
 static func gate_runs(e: MapFile.Entity) -> bool:
 	if e.link_act_type != ACT_PROX_GATE:
 		return false
@@ -259,6 +285,7 @@ func register_node(e: MapFile.Entity, node: Node3D) -> void:
 			"progress": 0.0,
 			"dir": 1.0,
 			"base": node.transform,
+			"euler": Vector3(float(e.off_x & 0x7FF), float(e.off_y & 0x7FF), float(e.off_z & 0x7FF)),
 		}
 
 ## Register the damage-stage meshes for a destructible entity (built by
@@ -753,18 +780,11 @@ func _apply_mover_transform(node: Node3D, m: Dictionary) -> void:
 		node.transform = Transform3D(base.basis,
 			base.origin + dos_axis(int(m["axis"])) * (m["progress"] * sign))
 		return
-	# Swing/rot: rotate about the DOS axis in entity-local space.
-	# DOS→Godot conjugation keeps X/Y angle signs, negates Z.
-	var angle: float = m["progress"] * sign * TAU / 2048.0
-	var axis_i: int = m["axis"]
-	var axis := Vector3.RIGHT
-	if axis_i == 1:
-		axis = Vector3.UP
-	elif axis_i == 2:
-		axis = Vector3.BACK
-		angle = -angle
+	# Swing/rot: advance one Euler component of the entity (see
+	# swing_basis) — the base basis IS euler_basis(euler) at progress 0.
+	var euler: Vector3 = m.get("euler", Vector3.ZERO)
 	node.transform = Transform3D(
-		base.basis * Basis(axis, angle), base.origin)
+		swing_basis(euler, int(m["axis"]), m["progress"] * sign), base.origin)
 	# The AnimatableBody3D child follows through the global-transform
 	# notification (main.gd _make_animatable keeps sync_to_physics off).
 

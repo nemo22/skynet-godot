@@ -201,11 +201,11 @@ static func entity_pos(e: MapFile.Entity) -> Vector3:
 ## DOS matrix conjugated by the Y/Z flip (level_loader.gd, verified
 ## against FUN_0014e100).
 static func entity_basis(e: MapFile.Entity) -> Basis:
-	var b := Basis()
-	b = b.rotated(Vector3.UP, (e.off_y & 0x7FF) * TAU / 2048.0)
-	b = b.rotated(Vector3.RIGHT, (e.off_x & 0x7FF) * TAU / 2048.0)
-	b = b.rotated(Vector3.BACK, -(e.off_z & 0x7FF) * TAU / 2048.0)
-	return b
+	return ActionSystem.euler_basis(float(e.off_x & 0x7FF), float(e.off_y & 0x7FF), float(e.off_z & 0x7FF))
+
+## The entity's raw 11-bit Euler triple (pitch, yaw, roll).
+static func entity_euler(e: MapFile.Entity) -> Vector3:
+	return Vector3(float(e.off_x & 0x7FF), float(e.off_y & 0x7FF), float(e.off_z & 0x7FF))
 
 # ---------------------------------------------------------------------
 # Movers: the 0x59b00 slot → travel, direction, speed → an animation
@@ -246,20 +246,13 @@ static func mover_params(act: int) -> Dictionary:
 
 ## The basis of a swung or spun mover at `progress` (signed 11-bit
 ## units) — ActionSystem._apply_mover_transform, swing branch.
-static func swing_basis(base: Basis, axis_i: int, progress: float) -> Basis:
-	var angle: float = progress * TAU / 2048.0
-	var axis := Vector3.RIGHT
-	if axis_i == 1:
-		axis = Vector3.UP
-	elif axis_i == 2:
-		axis = Vector3.BACK
-		angle = -angle
-	return base * Basis(axis, angle)
-
 ## The "move" animation of a mover: its Body from rest (t = 0) to the
 ## end of the travel, at the DOS speed. Position keys for the slides,
 ## rotation keys every SWING_KEY_STEP for the swings; a rotator loops.
-static func mover_animation(p: Dictionary, base: Basis) -> Animation:
+## `euler` is the entity's raw Euler triple (entity_euler), `base` the
+## basis it yields — the swings advance one Euler component
+## (ActionSystem.swing_basis), the slides move along a DOS axis.
+static func mover_animation(p: Dictionary, euler: Vector3, base: Basis) -> Animation:
 	var anim := Animation.new()
 	var fam: String = p["family"]
 	var span: float = p["span"]
@@ -286,7 +279,7 @@ static func mover_animation(p: Dictionary, base: Basis) -> Animation:
 		for k in steps + 1:
 			var f: float = float(k) / float(steps)
 			anim.rotation_track_insert_key(t, dur * f,
-				swing_basis(base, int(p["axis"]), span * f * sign).get_rotation_quaternion())
+				ActionSystem.swing_basis(euler, int(p["axis"]), span * f * sign).get_rotation_quaternion())
 		if fam == "rot":
 			anim.loop_mode = Animation.LOOP_LINEAR
 	return anim
@@ -532,7 +525,7 @@ static func _mover(e: MapFile.Entity, name: String, report: Dictionary) -> Node:
 	n.state = e.state_byte
 	n.hp = e.hp
 	var base := entity_basis(e)
-	var anim := mover_animation(p, base)
+	var anim := mover_animation(p, entity_euler(e), base)
 	n.duration = anim.length
 	var lib := AnimationLibrary.new()
 	lib.add_animation(ANIM, anim)
