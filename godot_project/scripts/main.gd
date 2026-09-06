@@ -2364,7 +2364,21 @@ static func _maptype(level: LevelLoader.Level) -> int:
 static func _vehicle_for_map(map_name: String) -> int:
 	var sfx: int = _suffix(map_name)
 	if SkynetPaths.game == "shock":
-		return 0                     # Future Shock's vehicle missions: table not found yet
+		# Future Shock keeps no mission table; its briefings say which
+		# missions are driven or flown (020 "find HQ … pull the car in",
+		# 040/100 "drive the carload…", 170 "drive to the TDTS complex";
+		# 060 "take H/K through the drainage tunnel", 110 "fly through
+		# river canyon", 120 tank convoy, 160 the TDTS fence) — the
+		# walkthrough's jeep missions 2/8/15 and HK missions 5/9/10/14
+		# in its own numbering.
+		if sfx < 10 or sfx >= 200:
+			return 0
+		match (sfx / 10) * 10:
+			20, 40, 100, 170:
+				return 1
+			60, 110, 120, 160:
+				return 2
+		return 0
 	if sfx < 200 or sfx >= 300:
 		return 0
 	match (sfx - 200) / 10:

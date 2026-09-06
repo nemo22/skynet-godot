@@ -16,6 +16,15 @@ func _initialize() -> void:
 		quit(1)
 		return
 	var filt: String = args[2].to_upper() if args.size() > 2 else ""
+	if filt.begins_with("DUMP:"):
+		# probe_bsa.gd -- <archive> <variant> DUMP:<entry>[,<entry>…] — print entries as text.
+		for nm in filt.substr(5).split(","):
+			var bytes: PackedByteArray = b.read(nm)
+			print("=== %s (%d bytes)" % [nm, bytes.size()])
+			print(bytes.get_string_from_ascii().left(900))
+		b.close()
+		quit()
+		return
 	var n := 0
 	var families: Dictionary = {}
 	for e in b.entries():

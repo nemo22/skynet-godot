@@ -31,6 +31,18 @@ func _ready() -> void:
 			var outdoor: bool = bytes.size() > 9028 and bytes[9028] != 0
 			if bytes.size() > 9032:
 				print("   header +9028 flag = %d (u32 %d)" % [bytes[9028], bytes[9028] | (bytes[9029] << 8) | (bytes[9030] << 16) | (bytes[9031] << 24)])
+			if cli.has("header"):
+				# --header: the u32 words from +9000 on (a vehicle-mode hunt).
+				var words: Array = []
+				for k in 24:
+					var o: int = 9000 + k * 4
+					if o + 4 <= bytes.size():
+						words.append(bytes[o] | (bytes[o + 1] << 8) | (bytes[o + 2] << 16) | (bytes[o + 3] << 24))
+				print("   header u32 @9000: %s" % [words])
+				var head: Array = []
+				for k in 16:
+					head.append(bytes[k] | (bytes[k + 1] << 8) | (bytes[k + 2] << 16) | (bytes[k + 3] << 24) if false else bytes[k * 4] | (bytes[k * 4 + 1] << 8) | (bytes[k * 4 + 2] << 16) | (bytes[k * 4 + 3] << 24))
+				print("   header u32 @0: %s" % [head])
 			if cli.has("find"):
 				find_entities(m, String(cli["find"]))
 			var markers: Dictionary = {}
