@@ -43,6 +43,21 @@ const CAMPAIGN_SEQUENCE: Array = [
 	"MAP.210", "MAP.220", "MAP.230", "MAP.240",
 	"MAP.252", "MAP.260", "MAP.270", "MAP.280",
 ]
+## Terminator: Future Shock — mission n starts on MAP.0n0 (briefings
+## 010.TXT…190.TXT in its MDMDBRIF.BSA); shock.exe keeps no map table
+## like Skynet.exe's 0x34846 (searched 2026-09-06).
+const CAMPAIGN_SEQUENCE_SHOCK: Array = [
+	"MAP.010", "MAP.020", "MAP.030", "MAP.040", "MAP.050", "MAP.060", "MAP.070",
+	"MAP.080", "MAP.090", "MAP.100", "MAP.110", "MAP.120", "MAP.130", "MAP.140",
+	"MAP.150", "MAP.160", "MAP.170", "MAP.180", "MAP.190",
+]
+
+static func _campaign_sequence() -> Array:
+	return CAMPAIGN_SEQUENCE_SHOCK if SkynetPaths.game == "shock" else CAMPAIGN_SEQUENCE
+
+## The first mission's map number in this game's numbering.
+static func _mission_base() -> int:
+	return 10 if SkynetPaths.game == "shock" else 200
 
 @onready var player: CharacterBody3D = $Player
 @onready var camera: Camera3D = $Player/Camera3D
@@ -174,7 +189,7 @@ func _ready() -> void:
 	# mission number is (map_number - 200) / 10, so a mission's entry map
 	# is the one whose number ends in 0. Completing a mission advances to
 	# the next such map.
-	for m in CAMPAIGN_SEQUENCE:
+	for m in _campaign_sequence():
 		if _maps.has(m):
 			_campaign_maps.append(m)
 	print("[skynet] campaign: %d missions" % _campaign_maps.size())
@@ -2255,7 +2270,7 @@ var _objectives_left: int = 0
 ## 250.TXT.
 static func _mission_of(map_name: String) -> int:
 	var sfx: int = _suffix(map_name)
-	return (sfx / 10) * 10 if sfx >= 200 else -1
+	return (sfx / 10) * 10 if sfx >= _mission_base() else -1
 
 ## Load the mission script when the mission changes; keep the counter
 ## while moving between the maps of one mission.
@@ -2273,7 +2288,7 @@ func _ensure_mission_script(map_name: String) -> void:
 	var bsa := BSAReader.new()
 	if not bsa.open(SkynetPaths.gamedata_path("MDMDBRIF.BSA"), SkynetPaths.variant):
 		return
-	var txt := bsa.read("%d.TXT" % key)
+	var txt := bsa.read("%03d.TXT" % key)
 	bsa.close()
 	if txt.is_empty():
 		return
@@ -2348,6 +2363,8 @@ static func _maptype(level: LevelLoader.Level) -> int:
 ## Sub-maps belong to their mission (map / 10).
 static func _vehicle_for_map(map_name: String) -> int:
 	var sfx: int = _suffix(map_name)
+	if SkynetPaths.game == "shock":
+		return 0                     # Future Shock's vehicle missions: table not found yet
 	if sfx < 200 or sfx >= 300:
 		return 0
 	match (sfx - 200) / 10:
@@ -2360,7 +2377,7 @@ static func _vehicle_for_map(map_name: String) -> int:
 ## Mission "main" maps end in 0 (mission = (map - 200) / 10).
 static func _is_campaign_main(map_name: String) -> bool:
 	var sfx: int = _suffix(map_name)
-	return sfx >= 200 and sfx % 10 == 0
+	return sfx >= _mission_base() and sfx % 10 == 0
 
 ## Name of the map currently loaded ("" when none).
 func _level_name() -> String:
@@ -2758,7 +2775,7 @@ func _maybe_show_briefing(map_name: String) -> bool:
 	if not bsa.open(SkynetPaths.gamedata_path("MDMDBRIF.BSA"),
 			SkynetPaths.variant):
 		return false
-	var txt := bsa.read("%d.TXT" % sfx)
+	var txt := bsa.read("%03d.TXT" % sfx)
 	bsa.close()
 	if txt.is_empty():
 		return false
@@ -2799,7 +2816,7 @@ func _load_brief_textures(map_num: int, lines: Array) -> Dictionary:
 	out["_ui"] = ui
 	if not pal_scene.is_empty():
 		out["_backdrop"] = ImgFile.parse(bsa.read("TACTBAK.IMG"), pal_scene)
-		var intro := bsa.read("BRIEF%d.IMG" % map_num)
+		var intro := bsa.read("BRIEF%03d.IMG" % map_num)
 		if not intro.is_empty():
 			out["_intro"] = ImgFile.parse(intro, pal_scene)
 	if not pal_ui.is_empty():

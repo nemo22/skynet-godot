@@ -247,6 +247,56 @@ func palette_bytes() -> PackedByteArray:
 				return b
 	return PackedByteArray()
 
+## The OTHER game's data directory, when it sits where the installer
+## put it: SkyNET at <root>/gamedata (or GAMEDATA), Future Shock at
+## <root>/shock/GAMEDATA — or wherever user://gamedata.cfg says
+## ([paths] skynet= / shock=). "" when there is none.
+func other_game_dir() -> String:
+	var want: String = "shock" if game == "skynet" else "skynet"
+	var cfg := ConfigFile.new()
+	if cfg.load(GAMEDATA_CFG) == OK:
+		var d: String = String(cfg.get_value("paths", want, ""))
+		if _has_data(d):
+			return d
+	var cands: Array[String] = []
+	var root: String = gamedata_dir.get_base_dir()
+	if game == "skynet":
+		for sub in ["shock/GAMEDATA", "shock/gamedata", "SHOCK/GAMEDATA", "futureshock/GAMEDATA"]:
+			cands.append(root + "/" + sub)
+			cands.append(gamedata_dir + "/" + sub)
+	else:
+		var up: String = root.get_base_dir()
+		for sub in ["gamedata", "GAMEDATA", "skynet/gamedata", "skynet/GAMEDATA"]:
+			cands.append(up + "/" + sub)
+			cands.append(root + "/" + sub)
+	for c in cands:
+		if _has_data(c) and c.trim_suffix("/") != gamedata_dir.trim_suffix("/"):
+			return c
+	return ""
+
+## Start the game again on another data directory — the menu's FUTURE
+## SHOCK entry (and, from Future Shock, the way back). Every autoload
+## opened its archives on this directory, so a fresh process is the
+## honest way to switch. The engine arguments are kept (an editor run
+## keeps its --path), --gamedata is replaced.
+func relaunch_with_gamedata(dir: String) -> bool:
+	if not _has_data(dir):
+		return false
+	var args: PackedStringArray = PackedStringArray()
+	for a in OS.get_cmdline_args():
+		if not a.begins_with("--gamedata="):
+			args.append(a)
+	var user: PackedStringArray = PackedStringArray()
+	for a in OS.get_cmdline_user_args():
+		if not a.begins_with("--gamedata=") and not a.begins_with("--map="):
+			user.append(a)
+	user.append("--gamedata=" + dir)
+	args.append("--")
+	args.append_array(user)
+	var pid: int = OS.create_process(OS.get_executable_path(), args)
+	print("[paths] relaunch %s %s → pid %d" % [OS.get_executable_path().get_file(), " ".join(args), pid])
+	return pid > 0
+
 ## Remember a data directory chosen in the menu.
 func set_gamedata_dir(dir: String) -> bool:
 	if not _has_data(dir):

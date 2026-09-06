@@ -176,7 +176,7 @@ func _ready() -> void:
 	Audio.play_music(Audio.TITLE_TRACK)
 	_scan_maps()
 	if SkynetPaths.selected_map == "" and not _maps.is_empty():
-		SkynetPaths.selected_map = "MAP.210" if _maps.has("MAP.210") else _maps[0]
+		SkynetPaths.selected_map = _first_campaign_map()
 	_apply_display_settings()
 	_build()
 	_maybe_import()
@@ -527,10 +527,39 @@ func _build_newgame_screen(newgame_tex: Variant) -> Control:
 	# in-game mission briefing once the campaign's first map has loaded.
 	panel.add_child(_img_hotspot(NG_ONE_RECT, s,
 		func() -> void: _on_map_chosen(_first_campaign_map())))
-	# TUTORIAL and FUTURE SHOCK are intentionally inert for now.
+	# FUTURE SHOCK starts the first game on its own data directory (from
+	# Future Shock the same entry leads back to SkyNET) — a fresh process
+	# on the other GAMEDATA. TUTORIAL is still inert.
+	panel.add_child(_img_hotspot(NG_FSHOCK_RECT, s, _on_other_game))
 	panel.add_child(_img_hotspot(NG_EXIT_RECT, s,
 		func() -> void: _show_screen(_screen_main)))
 	return root
+
+## A line of feedback at the foot of the menu, gone after a few seconds.
+func _status_line(text: String) -> void:
+	print("[menu] %s" % text)
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", 20)
+	l.add_theme_color_override("font_color", Color(0.95, 0.8, 0.5))
+	l.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	l.position.y -= 60.0
+	add_child(l)
+	get_tree().create_timer(4.0).timeout.connect(func() -> void:
+		if is_instance_valid(l):
+			l.queue_free())
+
+func _on_other_game() -> void:
+	var dir: String = SkynetPaths.other_game_dir()
+	if dir.is_empty():
+		_status_line("%s data not found — expected %s" % [
+			"Future Shock" if SkynetPaths.game == "skynet" else "SkyNET",
+			"<game>/shock/GAMEDATA" if SkynetPaths.game == "skynet" else "<game>/gamedata"])
+		return
+	if SkynetPaths.relaunch_with_gamedata(dir):
+		get_tree().quit()
+	else:
+		_status_line("could not start on %s" % dir)
 
 ## A dimmed screen with a centred fixed-size panel hosting DOS .IMG art.
 ## Returns [root, panel]; absolute-positioned hotspots go on `panel`.
@@ -987,13 +1016,15 @@ func _process(delta: float) -> void:
 ## missions. Falls back to the next "main" map (suffix >= 210, ending in
 ## 0), then to whatever map is first.
 func _first_campaign_map() -> String:
-	if _maps.has("MAP.210"):
-		return "MAP.210"
+	var first: String = "MAP.010" if SkynetPaths.game == "shock" else "MAP.210"
+	if _maps.has(first):
+		return first
+	var base: int = 10 if SkynetPaths.game == "shock" else 210
 	for m in _maps:
 		var sfx := _suffix(m)
-		if sfx >= 210 and sfx % 10 == 0:
+		if sfx >= base and sfx % 10 == 0:
 			return m
-	return _maps[0] if not _maps.is_empty() else "MAP.210"
+	return _maps[0] if not _maps.is_empty() else first
 
 ## LOAD GAME — the original LOAD.IMG panel with 10 save slots
 ## (user://saves/slot_NN.save, see save_game.gd; slot 1 is the F6
