@@ -10,7 +10,7 @@ const WldTerrain := preload("res://scripts/loaders/wld_terrain.gd")
 
 static func run(list: String) -> void:
 	var bsa := BSAReader.new()
-	bsa.open(SkynetPaths.gamedata_path("MDMDMAP2.BSA"), SkynetPaths.variant)
+	bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant)
 	for s in list.split(","):
 		var name := "MAP.%03d" % int(s)
 		var bytes := bsa.read(name)
