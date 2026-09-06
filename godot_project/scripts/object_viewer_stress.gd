@@ -11,7 +11,7 @@ const TextureCache := preload("res://scripts/loaders/texture_cache.gd")
 func _ready() -> void:
 	var imgs := BSAReader.new()
 	imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"), SkynetPaths.variant)
-	var pal_bytes := imgs.read("SKYNET.COL")
+	var pal_bytes := SkynetPaths.palette_bytes()
 	imgs.close()
 	var cache := TextureCache.new(Palette.parse(pal_bytes), SkynetPaths.gamedata_dir)
 

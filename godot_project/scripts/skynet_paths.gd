@@ -247,6 +247,46 @@ func palette_bytes() -> PackedByteArray:
 				return b
 	return PackedByteArray()
 
+## Any .COL palette by name: the image archive first (SkyNET keeps them
+## there), then loose in GAMEDATA (Future Shock). Empty when absent.
+func col_bytes(name: String) -> PackedByteArray:
+	var BSAReader = load("res://scripts/loaders/bsa_reader.gd")
+	var imgs = BSAReader.new()
+	if imgs.open(gamedata_path("MDMDIMGS.BSA"), variant):
+		var b: PackedByteArray = imgs.read(name)
+		imgs.close()
+		if not b.is_empty():
+			return b
+	var p: String = gamedata_path(name)
+	if FileAccess.file_exists(p):
+		return FileAccess.get_file_as_bytes(p)
+	return PackedByteArray()
+
+## The first of several palettes that exists (see col_bytes).
+func first_col_bytes(names: Array) -> PackedByteArray:
+	for n in names:
+		var b: PackedByteArray = col_bytes(String(n))
+		if not b.is_empty():
+			return b
+	return PackedByteArray()
+
+## The briefing/menu UI palette: BRIEF.COL in the archive (SkyNET) or
+## loose (Future Shock); the game palette when neither exists.
+func ui_palette_bytes() -> PackedByteArray:
+	var BSAReader = load("res://scripts/loaders/bsa_reader.gd")
+	var imgs = BSAReader.new()
+	if imgs.open(gamedata_path("MDMDIMGS.BSA"), variant):
+		var b: PackedByteArray = imgs.read("BRIEF.COL")
+		imgs.close()
+		if not b.is_empty():
+			return b
+	var p: String = gamedata_path("BRIEF.COL")
+	if FileAccess.file_exists(p):
+		var b: PackedByteArray = FileAccess.get_file_as_bytes(p)
+		if not b.is_empty():
+			return b
+	return palette_bytes()
+
 ## The OTHER game's data directory, when it sits where the installer
 ## put it: SkyNET at <root>/gamedata (or GAMEDATA), Future Shock at
 ## <root>/shock/GAMEDATA — or wherever user://gamedata.cfg says

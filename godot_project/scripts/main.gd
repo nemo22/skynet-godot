@@ -2816,7 +2816,7 @@ func _load_brief_textures(map_num: int, lines: Array) -> Dictionary:
 	if not bsa.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"),
 			SkynetPaths.variant):
 		return out
-	var pal_ui := Palette.parse(bsa.read("BRIEF.COL"))
+	var pal_ui := Palette.parse(SkynetPaths.ui_palette_bytes())
 	var pal_scene := Palette.parse(bsa.read("BRIEF2.COL"))
 	if pal_scene.is_empty():
 		pal_scene = pal_ui
@@ -4278,9 +4278,7 @@ func _load_panel_texture(name: String = "PANEL0.IMG", transparent0: bool = false
 	if not bsa.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"),
 			SkynetPaths.variant):
 		return null
-	var pal_bytes := bsa.read("SKYNET.COL")
-	if pal_bytes.is_empty():
-		pal_bytes = bsa.read("BRIEF.COL")
+	var pal_bytes := SkynetPaths.palette_bytes()
 	var panel_bytes := bsa.read(name)
 	bsa.close()
 	var palette := Palette.parse(pal_bytes)

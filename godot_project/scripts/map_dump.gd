@@ -142,7 +142,8 @@ func _ready() -> void:
 	if cli.has("img"):
 		var imgs := BSAReader.new()
 		imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"), SkynetPaths.variant)
-		var pal := Palette.parse(imgs.read(String(cli.get("pal", "MENU.COL"))))
+		# --pal=NAME.COL: from the archive or loose in GAMEDATA (Future Shock).
+		var pal := Palette.parse(SkynetPaths.col_bytes(String(cli.get("pal", "MENU.COL"))))
 		for nm in String(cli["img"]).split(","):
 			var tex: ImageTexture = ImgFile.parse(imgs.read(nm), pal)
 			if tex == null:

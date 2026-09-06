@@ -63,7 +63,7 @@ static func _load_sprite() -> Texture2D:
 	if not imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"),
 			SkynetPaths.variant):
 		return null
-	var pal_bytes: PackedByteArray = imgs.read("SKYNET.COL")
+	var pal_bytes: PackedByteArray = SkynetPaths.palette_bytes()
 	imgs.close()
 	var palette := Palette.parse(pal_bytes)
 	var bytes := SkynetPaths.read_bytes(

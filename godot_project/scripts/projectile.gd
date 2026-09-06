@@ -79,7 +79,7 @@ static func _model_mesh(name: String) -> ArrayMesh:
 	if not imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"),
 			SkynetPaths.variant):
 		return null
-	var pal_bytes := imgs.read("SKYNET.COL")
+	var pal_bytes := SkynetPaths.palette_bytes()
 	imgs.close()
 	var palette := Palette.parse(pal_bytes)
 	var enms := BSAReader.new()

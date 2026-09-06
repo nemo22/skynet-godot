@@ -237,6 +237,15 @@ func _maybe_import() -> void:
 		_on_join_typed.call_deferred()
 		return
 	for a in args:
+		if a.begins_with("--menu-shot="):
+			# Agent aid: capture the menu after it settled, then quit.
+			var out: String = a.substr(12).strip_edges()
+			get_tree().create_timer(1.5).timeout.connect(func() -> void:
+				await RenderingServer.frame_post_draw
+				var img: Image = get_viewport().get_texture().get_image()
+				print("[menu] screenshot %s (%s)" % [out, error_string(img.save_png(out))])
+				get_tree().quit())
+			break
 		if a.begins_with("--map="):
 			SkynetPaths.selected_map = a.substr(6).strip_edges().to_upper()
 			# _ready is still adding children — switch scenes afterwards.
@@ -357,10 +366,19 @@ func _load_images() -> Dictionary:
 		return out
 	# SkyNET title screen (SKYNTRMP.IMG) — unlike FutureShock's START.IMG
 	# it carries no baked menu bar, so MAIN1.IMG is overlaid separately.
-	var title_pal := Palette.parse(imgs.read("SKYNTRMP.COL"))
-	out["TITLE"] = ImgFile.parse(imgs.read("SKYNTRMP.IMG"), title_pal)
-	var menu_pal := Palette.parse(imgs.read("MENU.COL"))
-	out["BAR"] = ImgFile.parse(imgs.read("MAIN1.IMG"), menu_pal)
+	# Future Shock: START.IMG with its loose START.COL; its menu palette
+	# is LOGOMENU.COL beside the game data (no MENU.COL in the archive).
+	if SkynetPaths.game == "shock":
+		var title_pal := Palette.parse(SkynetPaths.first_col_bytes(["START.COL", "LOGOMENU.COL", "SHOCK.COL"]))
+		out["TITLE"] = ImgFile.parse(imgs.read("START.IMG"), title_pal)
+	else:
+		var title_pal := Palette.parse(imgs.read("SKYNTRMP.COL"))
+		out["TITLE"] = ImgFile.parse(imgs.read("SKYNTRMP.IMG"), title_pal)
+	var menu_pal := Palette.parse(SkynetPaths.first_col_bytes(["MENU.COL", "START.COL", "SHOCK.COL"]))
+	# Future Shock's START.IMG has the menu bar baked in (checked 2026-09-06:
+	# OPTIONS/LOAD render right with START.COL, wrong with LOGOMENU.COL).
+	if SkynetPaths.game != "shock":
+		out["BAR"] = ImgFile.parse(imgs.read("MAIN1.IMG"), menu_pal)
 	out["OPTIONS"] = ImgFile.parse(imgs.read("OPTIONS.IMG"), menu_pal)
 	out["LOAD"] = ImgFile.parse(imgs.read("LOAD.IMG"), menu_pal)
 	out["CONTROLS"] = ImgFile.parse(imgs.read("CONTROLS.IMG"), menu_pal)
@@ -519,7 +537,26 @@ func _build_newgame_screen(newgame_tex: Variant) -> Control:
 		pic.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		panel.add_child(pic)
 	else:
+		# No NETGAME1.IMG (Future Shock has no network dialog): plain
+		# buttons instead of hotspots over invisible art.
 		panel.add_child(_heading("NEW GAME"))
+		var vb := VBoxContainer.new()
+		vb.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+		vb.position = Vector2(panel.custom_minimum_size.x * 0.5 - 200.0, 120.0)
+		vb.add_theme_constant_override("separation", 16)
+		panel.add_child(vb)
+		var other: String = "SKYNET" if SkynetPaths.game == "shock" else "FUTURE SHOCK"
+		for it in [["ONE PLAYER", func() -> void: _on_map_chosen(_first_campaign_map())],
+				[other, _on_other_game],
+				["EXIT", func() -> void: _show_screen(_screen_main)]]:
+			var b := Button.new()
+			b.text = String(it[0])
+			b.custom_minimum_size = Vector2(400, 56)
+			b.add_theme_font_size_override("font_size", 26)
+			b.focus_mode = Control.FOCUS_NONE
+			b.pressed.connect(it[1])
+			vb.add_child(b)
+		return root
 
 	panel.add_child(_img_hotspot(NG_MULTI_RECT, s,
 		func() -> void: _show_screen(_screen_netjoin)))

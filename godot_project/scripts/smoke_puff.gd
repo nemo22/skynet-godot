@@ -27,9 +27,7 @@ static func _load_palette() -> PackedColorArray:
 	if not imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"),
 			SkynetPaths.variant):
 		return PackedColorArray()
-	var pal_bytes: PackedByteArray = imgs.read("SKYNET.COL")
-	if pal_bytes.is_empty():
-		pal_bytes = imgs.read("BRIEF.COL")
+	var pal_bytes: PackedByteArray = SkynetPaths.palette_bytes()
 	imgs.close()
 	if pal_bytes.is_empty():
 		return PackedColorArray()
