@@ -331,8 +331,8 @@ func _maybe_import() -> void:
 
 func _scan_maps() -> void:
 	var bsa := BSAReader.new()
-	if not bsa.open(SkynetPaths.gamedata_path("MDMDMAP2.BSA"), SkynetPaths.variant):
-		push_error("[menu] cannot open MDMDMAP2.BSA")
+	if not bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant):
+		push_error("[menu] cannot open %s" % SkynetPaths.map_archive)
 		return
 	for e in bsa.entries():
 		if e.name.to_upper().begins_with("MAP."):

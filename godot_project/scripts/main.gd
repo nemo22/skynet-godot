@@ -654,8 +654,8 @@ func _dump_enemies() -> void:
 
 func _scan_maps() -> void:
 	var bsa := BSAReader.new()
-	if not bsa.open(SkynetPaths.gamedata_path("MDMDMAP2.BSA"), SkynetPaths.variant):
-		push_error("[skynet] cannot open MDMDMAP2.BSA to enumerate maps")
+	if not bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant):
+		push_error("[skynet] cannot open %s to enumerate maps" % SkynetPaths.map_archive)
 		return
 	for e in bsa.entries():
 		if e.name.to_upper().begins_with("MAP."):
@@ -1272,11 +1272,14 @@ func _place_map_lights(level: LevelLoader.Level, outdoor: bool) -> int:
 		return 0
 	var n := 0
 	for e in level.map.entities:
-		if (e.flags & 3) != 2 or e.light_enable <= 0:
+		if (e.flags & 3) != 2:
 			continue
+		# A light that starts off (enable word ≤ 0) still gets its node —
+		# a chain may switch it on (act 0x01) or flicker it (0x02).
+		var starts_on: bool = e.light_enable > 0
 		var l := OmniLight3D.new()
 		l.position = Vector3(float(e.x), -float(e.y), -float(e.z))
-		l.omni_range = clampf(float(e.light_enable) * LIGHT_RANGE_PER_UNIT, 400.0, 6000.0)
+		l.omni_range = clampf(float(absi(e.light_enable)) * LIGHT_RANGE_PER_UNIT, 400.0, 6000.0)
 		l.omni_attenuation = 1.0
 		l.light_energy = clampf(float(e.light_intensity) / LIGHT_ENERGY_DIV, 0.4, 3.5)
 		if outdoor:
@@ -1299,8 +1302,14 @@ func _place_map_lights(level: LevelLoader.Level, outdoor: bool) -> int:
 			# The first few interior lamps cast shadows (a cubemap each).
 			l.shadow_enabled = Render.enhanced() and n < 6
 		l.add_to_group("maplight")      # agent aid: --near=maplight:N
+		l.visible = starts_on
+		l.set_meta("file_off", e.file_off)
+		level.map_lights[e.file_off] = l
 		level.entities.add_child(l)
-		n += 1
+		if starts_on:
+			n += 1
+	if level.action != null:
+		level.action.map_lights = level.map_lights
 	return n
 
 static func _shade_recursive(n: Node, cache: Dictionary) -> void:

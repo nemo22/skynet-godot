@@ -60,7 +60,11 @@ const PickupData := preload("res://scripts/pickup_data.gd")
 ##   "jump"    0x137ad0 (0x30-35): instant translate by SIGNED p6.
 ##   "slide5f" 0x137d41: p4 speed base, p6<<4 travel (as before).
 ##   "rot"     continuous rotators (never stop).
-## The odd 0xbd..0xc0 pair (0x137b33) is untraced — treated as swings.
+##   0xbd-0xc0 (0x137b33/0x137bce, disassembled 2026-09-06): diagonal
+##             slides (x and z by the same step, the second pair x
+##             negated) — but their table limit word is 0, so the step
+##             is cancelled on the first tick: they flip their parity,
+##             clear their bit and never move. A zero slide here.
 const MOVER_TABLE: Dictionary = {
 	0x30: ["jump", 0, 512], 0x31: ["jump", 0, 65024],
 	0x32: ["jump", 1, 512], 0x33: ["jump", 1, 65024],
@@ -91,8 +95,8 @@ const MOVER_TABLE: Dictionary = {
 	0xa6: ["swing", 1, 688], 0xa7: ["swing", 1, 256], 0xa8: ["swing", 1, 256],
 	0xa9: ["swing", 1, 512], 0xaa: ["swing", 1, 512],
 	0xab: ["swing", 1, 1024], 0xac: ["swing", 1, 1024],
-	0xbd: ["swing", 1, 512], 0xbe: ["swing", 1, 512],
-	0xbf: ["swing", 1, 512], 0xc0: ["swing", 1, 512],
+	0xbd: ["slide", 0, 0], 0xbe: ["slide", 0, 0],
+	0xbf: ["slide", 0, 0], 0xc0: ["slide", 0, 0],
 	0xc1: ["swing", 2, 256], 0xc2: ["swing", 2, 256],
 	0xc3: ["swing", 2, 512], 0xc4: ["swing", 2, 512],
 	0xc5: ["swing", 2, 1024], 0xc6: ["swing", 2, 1024],
@@ -108,6 +112,18 @@ const ACT_DESTRUCT_B: int = 0x19
 ## fence ring with its NODE00 gate (MAP.280), the bridge rails with the
 ## button (MAP.260). 243 entities in 56 maps.
 const ACT_DEMOLISH: int = 0x1B
+## Light handlers (0x137700.., disassembled 2026-09-06) — chains drive
+## the variant-2 map lights: 0x01 toggles the light (XOR of the enable
+## word's sign bit, one-shot), 0x02 flickers it while its bit is set
+## (a random toggle about every other tick), 0x03 strobes (toggle every
+## tick), 0x0d-0x0f fade UP by (act-12)/4 of the intensity per trigger,
+## 0x10-0x12 fade DOWN by the same. 0x0a/0x0c are `ret` (nothing).
+const ACT_LIGHT_TOGGLE: int = 0x01
+const ACT_LIGHT_FLICKER: int = 0x02
+const ACT_LIGHT_STROBE: int = 0x03
+const ACT_LIGHT_FADE_UP_FIRST: int = 0x0D
+const ACT_LIGHT_FADE_DOWN_LAST: int = 0x12
+const LIGHT_FX_TICK: float = 1.0 / 20.0
 const ACT_PROX_GATE: int = 0xEF     # 60-unit player-proximity gate
 const ACT_PROX_CHAIN_A: int = 0xF1  # radius 256 (table +4)
 const ACT_PROX_CHAIN_B: int = 0xF2  # radius 1024 (table +4)
@@ -164,6 +180,12 @@ var _nodes: Dictionary = {}       # file_off → Node3D (visual, optional)
 var _movers: Dictionary = {}      # file_off → mover runtime state
 var _prox: Array = []             # entities with a proximity act type
 var _teleports: Array = []        # entities with act 0xF0
+var _light_ents: Array = []       # variant-2 lights with a light act
+## file_off → OmniLight3D placed by main (_place_map_lights); a light
+## act flips the record and this node follows.
+var map_lights: Dictionary = {}
+var _light_fx_clock: float = 0.0
+var _light_strobe_on: Dictionary = {}   # file_off → visible (flicker/strobe state)
 var _destruct_nodes: Array = []   # entities with acts 0x18/0x19
 var _demolish_nodes: Array = []   # entities with act 0x1B
 ## The level's Behaviour branch (scripts/level/behaviour.gd): the chain
@@ -214,6 +236,8 @@ func setup(map: MapFile.MapFile) -> void:
 			_prox.append(e)
 		elif act == ACT_TELEPORT:
 			_teleports.append(e)
+		elif (e.flags & 3) == 2 and is_light_act(act):
+			_light_ents.append(e)
 		elif is_destructible(act):
 			_destruct_nodes.append(e)
 		elif act == ACT_DEMOLISH:
@@ -251,6 +275,49 @@ static func swing_basis(euler: Vector3, axis_i: int, delta: float) -> Basis:
 		1: e.y += delta
 		_: e.z += delta
 	return euler_basis(e.x, e.y, e.z)
+
+static func is_light_act(act: int) -> bool:
+	return act == ACT_LIGHT_TOGGLE or act == ACT_LIGHT_FLICKER or act == ACT_LIGHT_STROBE \
+		or (act >= ACT_LIGHT_FADE_UP_FIRST and act <= ACT_LIGHT_FADE_DOWN_LAST)
+
+## The light record `e` as the map shows it: on when the enable word is
+## positive (the DOS toggle flips its sign bit).
+func _light_apply(e: MapFile.Entity) -> void:
+	var l = map_lights.get(e.file_off)
+	if l == null or not is_instance_valid(l):
+		return
+	var on: bool = e.light_enable > 0
+	if _light_strobe_on.has(e.file_off):
+		on = on and bool(_light_strobe_on[e.file_off])
+	(l as Node3D).visible = on
+
+## One-shot light acts, run when the light's bit 0 is set (DOS runs the
+## handler each tick the bit is on; toggle and the fades clear it).
+func _light_step(e: MapFile.Entity, fx_tick: bool) -> void:
+	var act: int = e.link_act_type
+	if act == ACT_LIGHT_TOGGLE:
+		e.light_enable = -e.light_enable if e.light_enable != 0 else 1
+		e.state_byte &= ~1
+		_light_apply(e)
+	elif act == ACT_LIGHT_FLICKER or act == ACT_LIGHT_STROBE:
+		if not fx_tick:
+			return
+		var cur: bool = bool(_light_strobe_on.get(e.file_off, true))
+		if act == ACT_LIGHT_STROBE or randf() < 0.5:
+			cur = not cur
+		_light_strobe_on[e.file_off] = cur
+		_light_apply(e)
+	else:
+		# Fade by (act - 12)/4 of the current intensity, up or down.
+		var l = map_lights.get(e.file_off)
+		var f: float = float(act - 0x0C) / 4.0
+		if act >= 0x10:
+			f = -float(act - 0x0C) / 4.0
+		if l != null and is_instance_valid(l):
+			(l as OmniLight3D).light_energy = maxf((l as OmniLight3D).light_energy * (1.0 + f), 0.0)
+		e.light_intensity = maxi(int(float(e.light_intensity) * (1.0 + f)), 0)
+		e.state_byte &= ~1
+		_light_apply(e)
 
 static func gate_runs(e: MapFile.Entity) -> bool:
 	if e.link_act_type != ACT_PROX_GATE:
@@ -460,7 +527,7 @@ func _do_action(e: MapFile.Entity) -> void:
 			or act == ACT_PROX_CHAIN_A or act == ACT_PROX_CHAIN_B \
 			or act == ACT_TELEPORT or is_destructible(act) or act == ACT_DEMOLISH \
 			or (act >= ACT_HINT_FIRST and act <= ACT_FAIL) or act == ACT_VOICE \
-			or SOUND_ONESHOT.has(act):
+			or SOUND_ONESHOT.has(act) or ((e.flags & 3) == 2 and is_light_act(act)):
 		return                                  # tick() / the hit path / the cue nodes
 	if not _unhandled_logged.has(act):
 		_unhandled_logged[act] = true
@@ -472,6 +539,19 @@ func _do_action(e: MapFile.Entity) -> void:
 func tick(delta: float, player_pos: Vector3) -> void:
 	if _map == null:
 		return
+	# Lights ------------------------------------------------------
+	if not _light_ents.is_empty():
+		_light_fx_clock += delta
+		var fx_tick: bool = _light_fx_clock >= LIGHT_FX_TICK
+		if fx_tick:
+			_light_fx_clock = 0.0
+		for e in _light_ents:
+			if (e.state_byte & 1) != 0 or _armed.has(e.file_off):
+				_light_step(e, fx_tick)
+			elif _light_strobe_on.has(e.file_off):
+				# The chain took the bit away: the flicker ends on.
+				_light_strobe_on.erase(e.file_off)
+				_light_apply(e)
 	# Movers ------------------------------------------------------
 	for off in _movers:
 		var e: MapFile.Entity = _map.entities_by_off.get(off)

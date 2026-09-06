@@ -27,8 +27,7 @@ func _ready() -> void:
 	if not imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"), SkynetPaths.variant):
 		status.text = "ERROR opening MDMDIMGS.BSA"
 		return
-	var pal_bytes := imgs.read("SKYNET.COL")
-	if pal_bytes.is_empty(): pal_bytes = imgs.read("BRIEF.COL")
+	var pal_bytes := SkynetPaths.palette_bytes()
 	imgs.close()
 	_palette = Palette.parse(pal_bytes)
 	if _palette.is_empty():

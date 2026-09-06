@@ -20,7 +20,7 @@ func _ready() -> void:
 		preload("res://tools/terrain_census.gd").run(String(cli["terrain"]))
 	if cli.has("maps"):
 		var bsa := BSAReader.new()
-		bsa.open(SkynetPaths.gamedata_path("MDMDMAP2.BSA"), SkynetPaths.variant)
+		bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant)
 		for s in String(cli["maps"]).split(","):
 			var name := "MAP.%03d" % int(s)
 			var bytes := bsa.read(name)

@@ -232,6 +232,9 @@ class Level:
 	var map: MapFile.MapFile
 	var wld: WldTerrain.WLD
 	var terrain: MeshInstance3D
+	## file_off → OmniLight3D for every variant-2 light (main places them,
+	## the action system switches them).
+	var map_lights: Dictionary = {}
 	var entities: Node3D                 # variant-1 .3D meshes
 	var enemies: Node3D                  # variant-3 enemy-marker actors
 	var sprites: Node3D                  # variant-3 billboard sprites + pickups
@@ -289,8 +292,7 @@ func load_level(map_name: String) -> Level:
 	if not imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"), SkynetPaths.variant):
 		push_error("[level] cannot open MDMDIMGS.BSA")
 		return null
-	var pal_bytes := imgs.read("SKYNET.COL")
-	if pal_bytes.is_empty(): pal_bytes = imgs.read("BRIEF.COL")
+	var pal_bytes := SkynetPaths.palette_bytes()
 	imgs.close()
 	var palette := Palette.parse(pal_bytes)
 	if palette.is_empty():
@@ -299,8 +301,8 @@ func load_level(map_name: String) -> Level:
 
 	# MAP ----------------------------------------------------------
 	var maps := BSAReader.new()
-	if not maps.open(SkynetPaths.gamedata_path("MDMDMAP2.BSA"), SkynetPaths.variant):
-		push_error("[level] cannot open MDMDMAP2.BSA")
+	if not maps.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant):
+		push_error("[level] cannot open %s" % SkynetPaths.map_archive)
 		return null
 	var map_bytes := maps.read(map_name)
 	maps.close()

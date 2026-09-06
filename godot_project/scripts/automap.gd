@@ -155,7 +155,7 @@ func _build_bars() -> void:
 	var bottom: ImageTexture = null
 	_grid_tex = null
 	if imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"), SkynetPaths.variant):
-		var pal := Palette.parse(imgs.read("SKYNET.COL"))
+		var pal := Palette.parse(SkynetPaths.palette_bytes())
 		top = _img("MAPBAR1.IMG", imgs, pal)
 		grid = _img("MAPGRID.IMG", imgs, pal)
 		bottom = _img("MAPBAR2.IMG", imgs, pal)

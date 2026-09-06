@@ -72,7 +72,11 @@ func _ready() -> void:
 	# A development checkout links res://converted → the cache so the
 	# editor can open map scenes; address the cache through the link
 	# then, so every saved resource references res:// paths.
-	if not root.begins_with("res://") and DirAccess.dir_exists_absolute("res://converted") 			and FileAccess.file_exists("res://converted/VERSION"):
+	# (Only for SkyNET: Future Shock's textures share record numbers with
+	# SkyNET's and must never land in the same cache.)
+	if SkynetPaths.game == "skynet" and not root.begins_with("res://") \
+			and DirAccess.dir_exists_absolute("res://converted") \
+			and FileAccess.file_exists("res://converted/VERSION"):
 		root = "res://converted"
 	# A release mounts the whole cache as converted.pck (SkynetPaths
 	# .PACKS) — same res://converted path, but read-only.
@@ -200,13 +204,7 @@ func clear() -> void:
 ## The shared game palette (SKYNET.COL).
 func palette() -> PackedColorArray:
 	if _palette.is_empty():
-		var imgs := BSAReader.new()
-		if imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"), SkynetPaths.variant):
-			var b := imgs.read("SKYNET.COL")
-			if b.is_empty():
-				b = imgs.read("BRIEF.COL")
-			imgs.close()
-			_palette = Palette.parse(b)
+		_palette = Palette.parse(SkynetPaths.palette_bytes())
 	return _palette
 
 # ---------------------------------------------------------------------
@@ -617,6 +615,10 @@ func cfa_frames(name: String) -> Array:
 func use_project_link() -> bool:
 	if root.begins_with("res://"):
 		return true
+	# The link points at the SkyNET cache; a Future Shock bake must stay
+	# in its own directory (its record numbers collide with SkyNET's).
+	if SkynetPaths.game != "skynet":
+		return false
 	if not DirAccess.dir_exists_absolute("res://converted"):
 		return false
 	var probe := "res://converted/VERSION"
@@ -758,7 +760,7 @@ func import_all(progress: Callable = Callable()) -> int:
 	# what the game loads). Both are built here so the first run pays
 	# for the whole conversion and nothing is derived during play.
 	var maps := BSAReader.new()
-	if maps.open(SkynetPaths.gamedata_path("MDMDMAP2.BSA"), SkynetPaths.variant):
+	if maps.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant):
 		for e in maps.entries():
 			var mn: String = e.name.to_upper()
 			if mn.begins_with("MAP."):

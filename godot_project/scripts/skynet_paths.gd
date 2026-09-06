@@ -22,6 +22,12 @@ enum BsaVariant {
 
 var gamedata_dir: String = GAMEDATA_DIR
 var variant: int = BsaVariant.SKYNET_FULL
+## Which game the data directory holds: "skynet" (SkyNET, MDMDMAP2.BSA)
+## or "shock" (Terminator: Future Shock, MDMDMAPS.BSA). The archives use
+## different keys and the map archive has a different name; everything
+## else asks `map_archive` instead of naming the file.
+var game: String = "skynet"
+var map_archive: String = "MDMDMAP2.BSA"
 ## Back-compat alias (some viewers / log lines still reference it).
 var game_root: String = GAMEDATA_DIR
 
@@ -31,7 +37,8 @@ var game_root: String = GAMEDATA_DIR
 ## line, the path remembered in user://gamedata.cfg, res://gamedata
 ## (bundled), or a `gamedata` folder next to / above the project or exe.
 const GAMEDATA_CFG := "user://gamedata.cfg"
-const PROBE_FILE := "MDMDMAP2.BSA"
+const PROBE_FILE := "MDMDMAP2.BSA"           # SkyNET
+const PROBE_FILE_SHOCK := "MDMDMAPS.BSA"     # Future Shock
 
 func _ready() -> void:
 	var found := locate_gamedata()
@@ -40,7 +47,12 @@ func _ready() -> void:
 	else:
 		gamedata_dir = found
 		game_root = found
-	print("[paths] gamedata: %s" % gamedata_dir)
+	if not FileAccess.file_exists("%s/%s" % [gamedata_dir, PROBE_FILE]) \
+			and FileAccess.file_exists("%s/%s" % [gamedata_dir, PROBE_FILE_SHOCK]):
+		game = "shock"
+		variant = BsaVariant.FUTURESHOCK_FULL
+		map_archive = PROBE_FILE_SHOCK
+	print("[paths] gamedata: %s (%s)" % [gamedata_dir, game])
 	_mount_packs()
 
 # --- resource packs (release layout) ---------------------------------
@@ -167,7 +179,8 @@ static func _pack_dir(p: PCKPacker, abs_dir: String, prefix: String, n: Array,
 		_pack_dir(p, abs_dir + "/" + sub, prefix + "/" + sub, n, skip)
 
 static func _has_data(dir: String) -> bool:
-	return not dir.is_empty() and FileAccess.file_exists("%s/%s" % [dir, PROBE_FILE])
+	return not dir.is_empty() and (FileAccess.file_exists("%s/%s" % [dir, PROBE_FILE])
+		or FileAccess.file_exists("%s/%s" % [dir, PROBE_FILE_SHOCK]))
 
 ## The converted-asset cache lives NEXT TO the game data (the player
 ## asked for a portable install: <game>/gamedata + <game>/converted),
@@ -212,6 +225,27 @@ static func locate_gamedata() -> String:
 			if _has_data(cand):
 				return cand
 	return ""
+
+## The game palette: SkyNET keeps SKYNET.COL (or BRIEF.COL) inside
+## MDMDIMGS.BSA; Future Shock ships SHOCK.COL / BRIEF.COL loose in
+## GAMEDATA. Every palette reader goes through here.
+func palette_bytes() -> PackedByteArray:
+	var BSAReader = load("res://scripts/loaders/bsa_reader.gd")
+	var imgs = BSAReader.new()
+	if imgs.open(gamedata_path("MDMDIMGS.BSA"), variant):
+		for nm in ["SKYNET.COL", "BRIEF.COL"]:
+			var b: PackedByteArray = imgs.read(nm)
+			if not b.is_empty():
+				imgs.close()
+				return b
+		imgs.close()
+	for nm in ["SHOCK.COL", "BRIEF.COL", "SKYNET.COL"]:
+		var p: String = gamedata_path(nm)
+		if FileAccess.file_exists(p):
+			var b: PackedByteArray = FileAccess.get_file_as_bytes(p)
+			if not b.is_empty():
+				return b
+	return PackedByteArray()
 
 ## Remember a data directory chosen in the menu.
 func set_gamedata_dir(dir: String) -> bool:
