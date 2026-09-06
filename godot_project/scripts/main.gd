@@ -489,9 +489,20 @@ func _cli_after_level() -> void:
 	if _cli.has("god"):
 		player.set("god_mode", true)
 	if _cli.has("console"):
-		# Automation: run console commands once the level is up
-		# (`--console=win;next`), each reply goes to the log.
-		for c in String(_cli["console"]).split(";"):
+		# Automation: run console commands once the FIRST level is up
+		# (`--console=win;next`), each reply goes to the log. Commands for
+		# a later map go in --console-<suffix>= (e.g. --console-013=tp …;use),
+		# run when that map comes up.
+		var cmds: String = String(_cli["console"])
+		_cli.erase("console")
+		for c in cmds.split(";"):
+			if not c.strip_edges().is_empty():
+				print("[cli] ] %s → %s" % [c.strip_edges(), await run_command(c.strip_edges())])
+	var per_map: String = "console-" + (_current_level.map_suffix if _current_level != null else "")
+	if _cli.has(per_map):
+		var cmds2: String = String(_cli[per_map])
+		_cli.erase(per_map)
+		for c in cmds2.split(";"):
 			if not c.strip_edges().is_empty():
 				print("[cli] ] %s → %s" % [c.strip_edges(), await run_command(c.strip_edges())])
 	if _cli.has("console-open"):
@@ -3475,7 +3486,7 @@ func cheat_state() -> Dictionary:
 
 ## Every word run_command answers to — the console's Tab completion.
 const COMMAND_NAMES: Array = [
-	"ammo", "armor", "arnold", "bake", "bane", "boom", "bots", "brightness",
+	"ammo", "armor", "arnold", "bake", "bane", "boom", "bots", "brightness", "killall",
 	"cheats", "class", "counters", "drop", "dump", "enemies", "exit", "fly",
 	"gamma", "give", "god", "heal", "health", "help", "hp", "illbeback", "load",
 	"map", "maps", "menu", "moon", "music", "nextlevel", "nitrous", "noclip",
@@ -3753,6 +3764,14 @@ func run_command(line: String) -> String:
 %s" % [_mission_key,
 				_objectives_left, todo.size(), "
 ".join(todo)]
+		"killall":
+			# Agent aid: every enemy dies where it stands (state tests).
+			var k: int = 0
+			for e in get_tree().get_nodes_in_group("enemy"):
+				if e.has_method("take_damage"):
+					e.take_damage(100000.0)
+					k += 1
+			return "killed %d" % k
 		"boom":
 			if not is_instance_valid(player):
 				return "no player"

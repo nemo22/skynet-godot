@@ -162,7 +162,7 @@ func _ready() -> void:
 static func dump_inventory(dir: String, maps_arg: String) -> void:
 	DirAccess.make_dir_recursive_absolute(dir + "/sprites")
 	var bsa := BSAReader.new()
-	bsa.open(SkynetPaths.gamedata_path("MDMDMAP2.BSA"), SkynetPaths.variant)
+	bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant)
 	var names: Array = []
 	if maps_arg.is_empty():
 		for e in bsa.entries():
@@ -353,7 +353,7 @@ static func find_entities(m, name_part: String) -> void:
 static func dump_links(spec: String) -> void:
 	var MapFile = load("res://scripts/loaders/map_file.gd")
 	var bsa := BSAReader.new()
-	bsa.open(SkynetPaths.gamedata_path("MDMDMAP2.BSA"), SkynetPaths.variant)
+	bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant)
 	for s in spec.split(","):
 		var name := "MAP.%03d" % int(s)
 		var bytes := bsa.read(name)
@@ -391,7 +391,7 @@ static func dump_links(spec: String) -> void:
 static func dump_radiation(spec: String) -> void:
 	var MapFile = load("res://scripts/loaders/map_file.gd")
 	var bsa := BSAReader.new()
-	bsa.open(SkynetPaths.gamedata_path("MDMDMAP2.BSA"), SkynetPaths.variant)
+	bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant)
 	for sfx in spec.split(","):
 		var name := "MAP.%03d" % int(sfx)
 		var bytes := bsa.read(name)
@@ -448,7 +448,7 @@ static func make_pack(spec: String) -> void:
 static func dump_names(spec: String) -> void:
 	var MapFile = load("res://scripts/loaders/map_file.gd")
 	var bsa := BSAReader.new()
-	bsa.open(SkynetPaths.gamedata_path("MDMDMAP2.BSA"), SkynetPaths.variant)
+	bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant)
 	for s in spec.split(","):
 		var name := "MAP.%03d" % int(s)
 		var bytes := bsa.read(name)
