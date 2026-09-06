@@ -766,6 +766,12 @@ func _begin_level(name: String) -> void:
 				if level.action != null and c.has_method("file_off") 						and level.action.is_mover_off(c.file_off()):
 					_make_animatable(c)
 		add_child(level.entities)
+		if _cli.has("spawn-probe"):
+			var outside: int = 0
+			for c in level.entities.get_children():
+				if c is Node3D and not (c as Node3D).is_inside_tree():
+					outside += 1
+			print("[spawn-probe] entities: %d children, %d outside the tree" % [level.entities.get_child_count(), outside])
 	# The Behaviour branch (scripts/level/behaviour.gd): the chains and
 	# the cues. Signals first — a cue armed in the MAP data fires in its
 	# _ready, the moment it enters the tree.
@@ -918,10 +924,59 @@ func _frame_camera(level: LevelLoader.Level) -> void:
 ## a marker under a walkway (MAP.271: 174 u below the pipe floor) or
 ## under a hillside is lifted onto the first upward-facing surface above
 ## it when nothing is within reach below. Returns the adjusted point.
+const SLAB_REACH: float = 320.0
 func _lift_to_floor(pos: Vector3) -> Vector3:
 	var space := get_world_3d().direct_space_state
 	if space == null:
 		return pos
+	if _cli.has("spawn-probe"):
+		# Agent aid: what is above and below the spawn point.
+		var qd := PhysicsRayQueryParameters3D.create(pos + Vector3(0.0, 400.0, 0.0), pos - Vector3(0.0, 600.0, 0.0))
+		var hd := space.intersect_ray(qd)
+		var qu := PhysicsRayQueryParameters3D.create(pos + Vector3(0.0, 2.0, 0.0), pos + Vector3(0.0, 900.0, 0.0))
+		var hu := space.intersect_ray(qu)
+		print("[spawn-probe] marker feet y=%.1f; from +400 down hits y=%s n=%s; up from +2 hits y=%s n=%s" % [pos.y,
+			str((hd["position"] as Vector3).y) if hd.has("position") else "-", str(hd.get("normal", "-")),
+			str((hu["position"] as Vector3).y) if hu.has("position") else "-", str(hu.get("normal", "-"))])
+		var qn := PhysicsRayQueryParameters3D.create(pos + Vector3(0.0, 40.0, 0.0), pos - Vector3(0.0, 60.0, 0.0))
+		var hn := space.intersect_ray(qn)
+		print("[spawn-probe] near ray +40..-60 hits y=%s n=%s collider=%s" % [
+			str((hn["position"] as Vector3).y) if hn.has("position") else "-", str(hn.get("normal", "-")),
+			str((hn["collider"] as Node).get_parent().name) if hn.has("collider") and (hn["collider"] as Node).get_parent() else "-"])
+	# A marker UNDER its floor slab (Future Shock's interiors put the start
+	# 90–240 u below the deck: MAP.013 feet 35 / floor 128, MAP.017 27 /
+	# 264): the ray up hits the slab's underside close above, and the
+	# floor the marker "has" below is some lower deck. DOS's cell scan
+	# (FUN_00138500) lands the player on the slab; so do we — its top is
+	# found from above.
+	var near_floor := PhysicsRayQueryParameters3D.create(pos + Vector3(0.0, 40.0, 0.0), pos - Vector3(0.0, 60.0, 0.0))
+	near_floor.collide_with_areas = false
+	var near := space.intersect_ray(near_floor)
+	var standing: bool = near.has("position")
+	if standing:
+		# Feet onto that floor: a marker hovering 35 u above the deck under
+		# a low slab (MAP.013) put the capsule into the slab and the clear-
+		# spot search walked it out of the room.
+		var fy: float = (near["position"] as Vector3).y + 1.0
+		if absf(fy - pos.y) > 2.0:
+			print("[skynet] spawn %.0f u off its floor — set down on it" % (pos.y - fy))
+			return Vector3(pos.x, fy, pos.z)
+		return pos
+	if not standing:
+		var up0 := PhysicsRayQueryParameters3D.create(pos + Vector3(0.0, 2.0, 0.0), pos + Vector3(0.0, SLAB_REACH, 0.0))
+		up0.collide_with_areas = false
+		var under := space.intersect_ray(up0)
+		if under.has("position") and (under["normal"] as Vector3).y < -0.5:
+			var uy: float = (under["position"] as Vector3).y
+			# (Past the underside by a hair: a DOS floor is one double-sided
+			# polygon, its top IS its underside.)
+			var top_q := PhysicsRayQueryParameters3D.create(Vector3(pos.x, uy + SLAB_REACH, pos.z), Vector3(pos.x, uy - 1.0, pos.z))
+			top_q.collide_with_areas = false
+			var top := space.intersect_ray(top_q)
+			if top.has("position") and (top["normal"] as Vector3).y > 0.5:
+				var y: float = (top["position"] as Vector3).y + 1.0
+				print("[skynet] spawn %.0f u under its floor — lifted onto it" % (y - pos.y))
+				return Vector3(pos.x, y, pos.z)
 	var down := PhysicsRayQueryParameters3D.create(pos + Vector3(0.0, 40.0, 0.0), pos - Vector3(0.0, 600.0, 0.0))
 	down.collide_with_areas = false
 	if space.intersect_ray(down).has("position"):
@@ -1917,6 +1972,8 @@ func _process(delta: float) -> void:
 					continue
 				var n: Node3D = c
 				if _seen_meshes.has(n.get_instance_id()):
+					continue
+				if not n.is_inside_tree():
 					continue
 				if here.distance_to(n.global_position) < 6000.0 \
 						and camera.is_position_in_frustum(n.global_position):

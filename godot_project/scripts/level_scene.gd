@@ -62,7 +62,7 @@ const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
 ## Bump when the bake changes shape (invalidates every saved scene).
 ## 8 = the Behaviour branch (2026-09-05); 9 = its root script and the
 ## 0x1B demolition targets as Damageables.
-const BAKE_VERSION: int = 10
+const BAKE_VERSION: int = 11
 
 # ---------------------------------------------------------------------
 # Paths
@@ -216,6 +216,14 @@ static func _save_now(level, map_name: String) -> String:
 	# only records those overrides for instances the root marks editable.
 	_mark_editable(root, root)
 	var ps := PackedScene.new()
+	# Sibling names must be unique in the packed scene. The loader names a
+	# mesh after its entity (JWALL08 ×6), the tree auto-renames the copies
+	# ("@MeshInstance3D@878") and PackedScene saves those; on instantiate
+	# Godot 4 regenerates such names, two siblings can collide, and a
+	# child whose name collides never enters the tree — invisible, and an
+	# error every frame from anything asking for its global transform (40
+	# walls of Future Shock's MAP.010, 19 of MAP.210, 2026-09-06).
+	_unique_sibling_names(root)
 	var err: int = ps.pack(root)
 	var out: String = ""
 	if err == OK:
@@ -889,3 +897,26 @@ static func range_limit(n: Node, far: float) -> void:
 		g.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 	for c in n.get_children():
 		range_limit(c, far)
+
+## Rename every node whose name is auto-generated ("@Class@id") or clashes
+## with a sibling: <base>_<n>, the base being the mesh it carries or its
+## class. Deterministic, so a re-bake gives the same names.
+static func _unique_sibling_names(node: Node) -> void:
+	var seen: Dictionary = {}
+	for c in node.get_children():
+		var base: String = String(c.name)
+		if base.begins_with("@") or base.is_empty():
+			base = c.get_class()
+			if c is MeshInstance3D and (c as MeshInstance3D).mesh != null:
+				var rp: String = (c as MeshInstance3D).mesh.resource_path.get_file().get_basename()
+				if not rp.is_empty():
+					base = rp
+		var nm: String = base
+		var k: int = 1
+		while seen.has(nm):
+			k += 1
+			nm = "%s_%d" % [base, k]
+		seen[nm] = true
+		if nm != String(c.name):
+			c.name = nm
+		_unique_sibling_names(c)
