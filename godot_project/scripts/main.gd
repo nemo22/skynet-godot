@@ -273,6 +273,41 @@ static func _make_animatable(mi: MeshInstance3D) -> void:
 			mi.add_child(ab)
 			return
 
+## wallmap x0,z0,x1,z1,step,y: where a player capsule fits at height y —
+## the question a ray cannot answer (a wall is invisible to a downward
+## ray whose start is below its top). '.' free, '#' blocked, '?' no
+## physics world.
+func _wallmap(spec: String) -> void:
+	var v: PackedStringArray = spec.split(",")
+	if v.size() < 6:
+		print("[wallmap] need x0,z0,x1,z1,step,y")
+		return
+	var x0 := int(v[0]); var z0 := int(v[1]); var x1 := int(v[2])
+	var z1 := int(v[3]); var step := maxi(int(v[4]), 1); var y := float(v[5])
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		print("[wallmap] no physics world")
+		return
+	var shape := CapsuleShape3D.new()
+	shape.radius = 22.0
+	shape.height = 80.0
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = shape
+	if is_instance_valid(player) and player is CollisionObject3D:
+		q.exclude = [(player as CollisionObject3D).get_rid()]
+	print("[wallmap] x %d..%d z %d..%d step %d at y %.0f (rows = z, columns = x); '.' fits, '#' blocked"
+		% [x0, x1, z0, z1, step, y])
+	var z := z0
+	while z <= z1:
+		var line := ""
+		var x := x0
+		while x <= x1:
+			q.transform = Transform3D(Basis(), Vector3(float(x), y + 40.0, float(z)))
+			line += "#" if not space.intersect_shape(q, 1).is_empty() else "."
+			x += step
+		print("  %6d %s" % [z, line])
+		z += step
+
 ## --floormap=x0,z0,x1,z1,step,y: ASCII plan of the collision floor at
 ## level `y` (agent aid for "can't get there" reports). Per cell a ray
 ## from y+90 down 700 u: '.' floor within 40 u of y, '#' wall/obstacle
@@ -390,6 +425,7 @@ func _cli_place() -> void:
 		_walk_stuck = 0.0
 		player.noclip = false
 		player.velocity = Vector3.ZERO
+		_walk_best = 1e9
 		print("[walk] start at %s toward %s for %.1f s" % [player.global_position, _walk_target, _walk_limit])
 	if _cli.has("yaw") or _cli.has("pitch"):
 		var yaw := deg_to_rad(float(_cli.get("yaw", rad_to_deg(player.rotation.y))))
@@ -1890,6 +1926,7 @@ var _walk_route: Array = []
 var _walk_stuck: float = 0.0
 var _walk_last := Vector3.ZERO
 var _walk_limit: float = 0.0
+var _walk_best: float = 1e9        # closest approach to the target so far
 var _walk_t: float = -1.0
 var _walk_log: float = 0.0
 
@@ -1907,7 +1944,14 @@ func _walk_step(delta: float) -> void:
 		arrived = false
 	# Stuck diagnosis: no motion while pushing → print the contacts.
 	if not arrived:
-		if p.distance_to(_walk_last) < 0.5:
+		# Not "did I move" but "did I get closer": a capsule pressed against
+		# a wall slides and jitters a couple of units every frame, and that
+		# used to hide every stuck report.
+		var gained: float = _walk_best - to.length()
+		if gained > 4.0:
+			_walk_best = to.length()
+			_walk_stuck = minf(_walk_stuck, 0.0)
+		if gained <= 4.0:
 			_walk_stuck += delta
 			if _walk_stuck > 1.0:
 				_walk_stuck = -3.0
@@ -3486,7 +3530,7 @@ func cheat_state() -> Dictionary:
 
 ## Every word run_command answers to — the console's Tab completion.
 const COMMAND_NAMES: Array = [
-	"ammo", "armor", "arnold", "bake", "bane", "boom", "bots", "brightness", "killall",
+	"ammo", "armor", "arnold", "bake", "bane", "boom", "bots", "brightness", "killall", "wait", "floormap", "wallmap", "walkto", "movers",
 	"cheats", "class", "counters", "drop", "dump", "enemies", "exit", "fly",
 	"gamma", "give", "god", "heal", "health", "help", "hp", "illbeback", "load",
 	"map", "maps", "menu", "moon", "music", "nextlevel", "nitrous", "noclip",
@@ -3764,6 +3808,47 @@ func run_command(line: String) -> String:
 %s" % [_mission_key,
 				_objectives_left, todo.size(), "
 ".join(todo)]
+		"wait":
+			# Agent aid: let the world run before the next console command
+			# (a gate needs a tick, a door a second to swing).
+			var secs: float = float(args[0]) if args.size() > 0 and args[0].is_valid_float() else 1.0
+			await get_tree().create_timer(clampf(secs, 0.0, 30.0), false).timeout
+			return "waited %.1f s" % secs
+		"movers":
+			# Agent aid: what every mover is doing right now.
+			if _current_level == null or _current_level.action == null:
+				return "no level"
+			return _current_level.action.mover_report()
+		"walkto":
+			# Agent aid: drive the player at a point (the --walk driver),
+			# after a door has opened or a lift has come down.
+			if args.size() < 2:
+				return "usage: walkto x z [secs]"
+			_walk_route.clear()
+			_walk_target = Vector2(float(args[0]), float(args[1]))
+			_walk_limit = float(args[2]) if args.size() > 2 else 6.0
+			_walk_t = 0.0
+			_walk_stuck = 0.0
+			_walk_best = 1e9
+			_walk_last = player.global_position if is_instance_valid(player) else Vector3.ZERO
+			if is_instance_valid(player):
+				player.set("noclip", false)
+			return "walking to %s" % _walk_target
+		"wallmap":
+			# Agent aid: where a player-sized capsule FITS, at one height.
+			# The floormap casts a ray down and cannot see a vertical wall
+			# whose top is above the ray; this asks the physics world the
+			# question the player asks. '.' = free, '#' = blocked.
+			if args.is_empty():
+				return "usage: wallmap x0,z0,x1,z1,step,y"
+			_wallmap(" ".join(args))
+			return ""
+		"floormap":
+			# Agent aid: the --floormap plan, at any moment.
+			if args.is_empty():
+				return "usage: floormap x0,z0,x1,z1,step,y"
+			_floormap(" ".join(args))
+			return ""
 		"killall":
 			# Agent aid: every enemy dies where it stands (state tests).
 			var k: int = 0

@@ -181,6 +181,9 @@ var _movers: Dictionary = {}      # file_off → mover runtime state
 var _prox: Array = []             # entities with a proximity act type
 var _teleports: Array = []        # entities with act 0xF0
 var _light_ents: Array = []       # variant-2 lights with a light act
+## Message/objective entities no chain points at: the player's own to
+## trigger with the use key (see setup).
+var _use_msgs: Array = []
 ## file_off → OmniLight3D placed by main (_place_map_lights); a light
 ## act flips the record and this node follows.
 var map_lights: Dictionary = {}
@@ -238,6 +241,15 @@ func setup(map: MapFile.MapFile) -> void:
 			_teleports.append(e)
 		elif (e.flags & 3) == 2 and is_light_act(act):
 			_light_ents.append(e)
+		elif act >= ACT_HINT_FIRST and act <= ACT_FAIL:
+			# An objective or hint that NO chain points at can only be the
+			# player's to fire: MAP.252's 24PCTURE carries mission 5's only
+			# objective (the missile data on the wardroom wall) and MAP.280
+			# has a hint on a doorway sprite. Nothing else in either map
+			# can set their bit, so the mission could not be finished
+			# (2026-09-07). Chain-driven ones keep to their chain.
+			if not _is_chain_target(map, e):
+				_use_msgs.append(e)
 		elif is_destructible(act):
 			_destruct_nodes.append(e)
 		elif act == ACT_DEMOLISH:
@@ -275,6 +287,13 @@ static func swing_basis(euler: Vector3, axis_i: int, delta: float) -> Basis:
 		1: e.y += delta
 		_: e.z += delta
 	return euler_basis(e.x, e.y, e.z)
+
+## Does any other entity's chain point at `e`?
+static func _is_chain_target(map: MapFile.MapFile, e: MapFile.Entity) -> bool:
+	for o in map.entities:
+		if o != e and o.link_next > 0 and o.link_next == e.file_off:
+			return true
+	return false
 
 static func is_light_act(act: int) -> bool:
 	return act == ACT_LIGHT_TOGGLE or act == ACT_LIGHT_FLICKER or act == ACT_LIGHT_STROBE \
@@ -364,6 +383,28 @@ func is_damageable_off(off: int) -> bool:
 	return _hp.has(off) or _destr.has(off)
 
 ## True when the entity at `off` is a mover (door/gate/lift/rotator).
+## One line per mover: what it is, how far it has moved and which way —
+## the console's `movers`.
+func mover_report() -> String:
+	var out: PackedStringArray = PackedStringArray()
+	for off in _movers:
+		var m: Dictionary = _movers[off]
+		var e: MapFile.Entity = _map.entities_by_off.get(off) if _map != null else null
+		var nm: String = MapFile.entity_name(_map, e) if e != null else "?"
+		var span: float = absf(float(m["limit"]))
+		if String(m["family"]) == "slide5f":
+			span = absf(float(int(m["limit"]) << 4))
+		var n = _nodes.get(off)
+		var bx: String = "-"
+		if n != null and is_instance_valid(n) and n is Node3D:
+			var b: Basis = (n as Node3D).global_transform.basis
+			bx = "X%s Y%s" % [str(b.x.round()), str(b.y.round())]
+		out.append("@%05x %-8s %-7s act %02x state %02x progress %.0f/%.0f dir %+.0f sign %+.0f axis %d %s" % [
+			off, nm, String(m["family"]), e.link_act_type if e else 0, e.state_byte if e else 0,
+			float(m["progress"]), span, float(m["dir"]), float(m.get("sign", 1.0)), int(m["axis"]), bx])
+	return "
+".join(out) if out.size() > 0 else "no movers"
+
 func is_mover_off(off: int) -> bool:
 	return _movers.has(off)
 
@@ -427,7 +468,7 @@ func on_player_activate(file_off: int, player_pos: Vector3 = Vector3.INF) -> boo
 	# though their state byte carries no "act on hit" bit.
 	var usable: bool = (e.state_byte & 2) != 0 \
 		or gate_runs(e) or e.link_act_type == ACT_PROX_CHAIN_A \
-		or e.link_act_type == ACT_PROX_CHAIN_B
+		or e.link_act_type == ACT_PROX_CHAIN_B or _use_msgs.has(e)
 	if not usable:
 		return false
 	# A gate whose chain ends in an exit (the truck DOOR in MAP.211/212,
@@ -679,8 +720,10 @@ func _reachable(from: Vector3, target: Vector3) -> bool:
 func use_nearby(player_pos: Vector3) -> bool:
 	var best: MapFile.Entity = null
 	var best_d: float = USE_REACH
-	for e in _prox:
-		if (e.flags & 3) != 1 or _spent.has(e.file_off):
+	for e in _prox + _use_msgs:
+		if _spent.has(e.file_off):
+			continue
+		if (e.flags & 3) != 1 and not _use_msgs.has(e):
 			continue
 		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
 		if not _within(epos, player_pos, USE_REACH):

@@ -133,6 +133,61 @@ func _ready() -> void:
 		dump_strings(String(cli["strings"]))
 	if cli.has("scan"):
 		scan_colours(String(cli["scan"]))
+	if cli.has("faces"):
+		# --faces=NAME: how many faces use which texture (archive/record),
+		# so a strangely coloured surface can be traced to its art.
+		var Mesh3DL = load("res://scripts/loaders/mesh_3d.gd")
+		for nm in String(cli["faces"]).split(","):
+			var up: String = nm.to_upper()
+			var bytes: PackedByteArray = PackedByteArray()
+			for arc in ["MDMDOBJS.BSA", "MDMDENMS.BSA"]:
+				var b := BSAReader.new()
+				if not b.open(SkynetPaths.gamedata_path(arc), SkynetPaths.variant):
+					continue
+				bytes = b.read(up + ".3D")
+				b.close()
+				if not bytes.is_empty():
+					break
+			if bytes.is_empty():
+				print("%s: not found" % up)
+				continue
+			var m = Mesh3DL.parse(bytes, up)
+			if m == null:
+				print("%s: parse failed" % up)
+				continue
+			var hist: Dictionary = {}
+			for f in m.faces:
+				hist[f.type] = int(hist.get(f.type, 0)) + 1
+			var keys: Array = hist.keys()
+			keys.sort()
+			var parts: PackedStringArray = PackedStringArray()
+			for k in keys:
+				parts.append("%d/%d x%d" % [int(k) >> 7, int(k) & 0x7F, int(hist[k])])
+			print("%s: %d faces, %d texture ids: %s" % [up, m.faces.size(), keys.size(), ", ".join(parts)])
+	if cli.has("mesh"):
+		# --mesh=24SUBDOR,BIGDOOR: bounds and the collider the port builds.
+		var LevelBehaviour = load("res://scripts/level_behaviour.gd")
+		for nm in String(cli["mesh"]).split(","):
+			var up: String = nm.to_upper()
+			var am: ArrayMesh = null
+			for arc in ["MDMDOBJS.BSA", "MDMDENMS.BSA"]:
+				var b := BSAReader.new()
+				if not b.open(SkynetPaths.gamedata_path(arc), SkynetPaths.variant):
+					continue
+				var bytes: PackedByteArray = b.read(up + ".3D")
+				b.close()
+				if bytes.is_empty():
+					continue
+				am = Assets.mesh(up + ".3D", bytes)
+				break
+			if am == null:
+				print("%s: not found" % up)
+				continue
+			var aabb: AABB = am.get_aabb()
+			var box: Dictionary = LevelBehaviour.box_shape(am)
+			print("%s: aabb pos %s size %s, %d surfaces; door_like=%s → box %s at %s"
+				% [up, aabb.position, aabb.size, am.get_surface_count(),
+				   LevelBehaviour.is_door_like(am), (box["shape"] as BoxShape3D).size, box["centre"]])
 	if cli.has("tex"):
 		dump_tex(String(cli["tex"]), String(cli.get("out", "")))
 	if cli.has("faces"):
