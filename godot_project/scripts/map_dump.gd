@@ -16,6 +16,8 @@ func _ready() -> void:
 		if a.begins_with("--") and a.find("=") > 0:
 			cli[a.substr(2, a.find("=") - 2)] = a.substr(a.find("=") + 1)
 	var out_dir: String = String(cli.get("out", "."))
+	if cli.has("wldmatch"):
+		preload("res://tools/wldmatch.gd").run(String(cli["wldmatch"]))
 	if cli.has("mats"):
 		preload("res://tools/terrain_mats.gd").run(String(cli["mats"]))
 	if cli.has("terrain"):

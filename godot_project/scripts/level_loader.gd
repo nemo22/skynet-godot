@@ -244,6 +244,9 @@ class Level:
 	var enemy_count: int = 0
 	var is_outdoor: bool = false
 	var map_suffix: String = ""           # e.g. "210"
+	## Which heightmap the ground came from — the map's own, or a
+	## borrowed one when the game ships none (Future Shock 040/080).
+	var wld_suffix: String = ""
 	var map_bytes: PackedByteArray = PackedByteArray()   # the MAP file as loaded
 	var terrain_tex: TextureNNN.TexFile   # TEXTURE.NNN for map-specific terrain materials
 	## Player spawn read from the MAP markers (DOS-faithful):
@@ -322,6 +325,7 @@ func load_level(map_name: String) -> Level:
 		return null
 	level.map_bytes = map_bytes
 	level.map_suffix = map_name.split(".")[-1]
+	level.wld_suffix = level.map_suffix
 	# Indoor/outdoor flag at MAP+9028 (sub_153A8B reads `MAP[+9028] == 1`).
 	if map_bytes.size() > 9028 + 4:
 		var flag: int = map_bytes[9028] | (map_bytes[9029] << 8) \
@@ -347,12 +351,31 @@ func load_level(map_name: String) -> Level:
 	# WLD (outdoor only) -------------------------------------------
 	if level.is_outdoor:
 		var wld_path := SkynetPaths.gamedata_path("WLD.%s" % level.map_suffix)
-		var wld_bytes := SkynetPaths.read_bytes(wld_path)
+		var wld_bytes := PackedByteArray()
+		if FileAccess.file_exists(wld_path):
+			wld_bytes = SkynetPaths.read_bytes(wld_path)
+		if wld_bytes.is_empty():
+			# Future Shock ships no WLD.040 and no WLD.080, yet both are
+			# outdoor city maps — without a heightmap the whole level
+			# floats over nothing and the player falls 14 000 units out
+			# of the world. DOS opens `gamedata\wld.NNN` and, when the
+			# file is not there, simply keeps whatever heightmap is
+			# already in memory; we cannot know which one that was, so we
+			# ask the level itself (see _best_fit_wld).
+			var borrowed: String = _best_fit_wld(level.map)
+			if not borrowed.is_empty():
+				level.wld_suffix = borrowed
+				wld_bytes = SkynetPaths.read_bytes(
+					SkynetPaths.gamedata_path("WLD.%s" % borrowed))
 		if not wld_bytes.is_empty():
 			level.wld = WldTerrain.parse(wld_bytes)
 			if level.wld != null:
 				level.wld.fine_rect = play_box(level.map).grow(WldTerrain.FINE_MARGIN)
-			print("[level] WLD.%s loaded" % level.map_suffix)
+			if level.wld_suffix == level.map_suffix:
+				print("[level] WLD.%s loaded" % level.map_suffix)
+			else:
+				print("[level] WLD.%s missing — standing the level on WLD.%s"
+					% [level.map_suffix, level.wld_suffix])
 		else:
 			push_warning("[level] outdoor flag set but WLD.%s missing"
 				% level.map_suffix)
@@ -400,7 +423,7 @@ func load_level(map_name: String) -> Level:
 		# ENHANCED ground is a different surface (the fine mesh inside the
 		# play box), so it has its own mesh key and its own shape.
 		var fine: bool = Render.enhanced() and level.wld.fine_rect.has_area()
-		var tkey: String = level.map_suffix + (".fine" if fine else "")
+		var tkey: String = level.wld_suffix + (".fine" if fine else "")
 		var terrain_mesh := Assets.terrain(tkey, level.wld)
 		if terrain_mesh:
 			level.terrain = MeshInstance3D.new()
@@ -814,6 +837,52 @@ static func _death_parts_for(enemy_type: int, enms: BSAReader,
 			continue
 		out.append([frames[0], Vector3(float(p[1]), -float(p[2]), -float(p[3]))])
 	return out
+
+## Which heightmap does this map actually stand on? Score every WLD in
+## the game directory by how many of the map's ENEMY markers land within
+## a step of its ground — an enemy marker is always on the floor, while a
+## building's origin may be at its base or its centre. For Future Shock's
+## MAP.040 the answer is unambiguous: WLD.030 puts 88 % of the 196
+## markers on the ground, the next best manages 21 %.
+##
+## Returns "" when nothing fits well enough to be called this map's
+## ground.
+const WLD_FIT_STEP: float = 60.0
+const WLD_FIT_MIN: float = 0.33
+
+static func _best_fit_wld(map: MapFile.MapFile) -> String:
+	if map == null:
+		return ""
+	var dir: String = SkynetPaths.gamedata_dir
+	var d := DirAccess.open(dir)
+	if d == null:
+		return ""
+	var pts: Array = []
+	for e in map.entities:
+		if (e.flags & 3) == 3 and e.marker_type == 2:
+			pts.append(Vector3(float(e.x), -float(e.y + 0x10), float(e.z)))
+	if pts.size() < 8:
+		return ""
+	var best: String = ""
+	var best_on: int = 0
+	for f in d.get_files():
+		if not f.begins_with("WLD."):
+			continue
+		var w = WldTerrain.parse(SkynetPaths.read_bytes("%s/%s" % [dir, f]))
+		if w == null:
+			continue
+		var on: int = 0
+		for p in pts:
+			if absf(p.y - WldTerrain.height_at_world(w, p.x, p.z)) <= WLD_FIT_STEP:
+				on += 1
+		if on > best_on:
+			best_on = on
+			best = f.substr(4)
+	if float(best_on) < float(pts.size()) * WLD_FIT_MIN:
+		return ""
+	print("[level] heightmap fit: WLD.%s carries %d of %d ground markers"
+		% [best, best_on, pts.size()])
+	return best
 
 static func _enemy_frames_for(enemy_type: int, enms: BSAReader,
 		objs: BSAReader, frame_cache: Dictionary,

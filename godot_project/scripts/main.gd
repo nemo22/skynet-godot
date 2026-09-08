@@ -762,8 +762,11 @@ func _scan_maps() -> void:
 		push_error("[skynet] cannot open %s to enumerate maps" % SkynetPaths.map_archive)
 		return
 	for e in bsa.entries():
-		if e.name.to_upper().begins_with("MAP."):
-			_maps.append(e.name.to_upper())
+		var nm: String = e.name.to_upper()
+		# Future Shock's archive also holds MAP.JTE and MAP.TXT — text,
+		# not levels. A map's suffix is a number.
+		if nm.begins_with("MAP.") and nm.split(".")[-1].is_valid_int():
+			_maps.append(nm)
 	bsa.close()
 	_maps.sort_custom(func(a, b): return _suffix(a) < _suffix(b))
 	print("[skynet] %d maps available: %s..%s"
