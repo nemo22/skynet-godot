@@ -43,7 +43,7 @@ const MapScene   := preload("res://scripts/editor/map_scene.gd")
 const LevelScene := preload("res://scripts/level_scene.gd")
 
 ## Bump whenever a loader changes its output.
-const CACHE_VERSION: int = 8
+const CACHE_VERSION: int = 9   # 2026-09-08: emission masks were saved empty
 const SAVE_FLAGS: int = ResourceSaver.FLAG_COMPRESS | ResourceSaver.FLAG_CHANGE_PATH
 
 ## Cache root ("" when disabled with --no-cache).
@@ -413,6 +413,15 @@ func emission(bank: int, rec: int) -> Texture2D:
 		if img.is_compressed():
 			img.decompress()
 		img.convert(Image.FORMAT_RGBA8)
+		# get_data() of a MIPMAPPED image returns the whole chain, and
+		# create_from_data(w, h, false, …) then rejects it — the mask came
+		# out 0x0 and saved as an empty PortableCompressedTexture2D, which
+		# the renderer draws as its magenta checkerboard (Marek: "tá
+		# ružová musí byť chýbajúca textúra", 2026-09-05). Only the
+		# records small enough to skip the resize below were hit; resize
+		# drops the mipmaps by itself.
+		if img.has_mipmaps():
+			img.clear_mipmaps()
 		# A mask, not a texture: half resolution is plenty, and the scan
 		# below is GDScript over every byte — at the ENHANCED 4x upscale
 		# that would be a million iterations per record.
@@ -451,6 +460,9 @@ func emission(bank: int, rec: int) -> Texture2D:
 		if frac < EMISSION_MIN or frac > EMISSION_MAX:
 			return null
 		var out := Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, dst)
+		if out == null or out.is_empty():
+			push_warning("[assets] emission mask %d/%d came out empty" % [bank, rec])
+			return null
 		out.generate_mipmaps()
 		return _portable(out))
 	return r as Texture2D

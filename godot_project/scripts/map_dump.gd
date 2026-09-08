@@ -133,6 +133,52 @@ func _ready() -> void:
 		dump_strings(String(cli["strings"]))
 	if cli.has("scan"):
 		scan_colours(String(cli["scan"]))
+	if cli.has("pcttest"):
+		# Why an emission mask saves empty: PortableCompressedTexture2D
+		# round-trip with and without mipmaps / alpha.
+		for mips in [false, true]:
+			for alpha in [false, true]:
+				var w := 64
+				var data := PackedByteArray()
+				data.resize(w * w * 4)
+				for i in w * w:
+					data[i * 4] = 255
+					data[i * 4 + 1] = 128
+					data[i * 4 + 2] = 0
+					data[i * 4 + 3] = 255 if alpha else 255
+				var img := Image.create_from_data(w, w, false, Image.FORMAT_RGBA8, data)
+				if mips:
+					img.generate_mipmaps()
+				var pct := PortableCompressedTexture2D.new()
+				pct.keep_compressed_buffer = true
+				pct.create_from_image(img, PortableCompressedTexture2D.COMPRESSION_MODE_LOSSLESS)
+				var path := "user://pcttest_%s_%s.res" % [mips, alpha]
+				var err := ResourceSaver.save(pct, path, ResourceSaver.FLAG_COMPRESS | ResourceSaver.FLAG_CHANGE_PATH)
+				var back = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
+				var bytes := FileAccess.get_file_as_bytes(path)
+				print("  mips=%s alpha=%s: in-memory %dx%d, saved %d bytes (%s), reloaded %dx%d" % [
+					mips, alpha, pct.get_width(), pct.get_height(), bytes.size(), error_string(err),
+					(back as Texture2D).get_width() if back is Texture2D else -1,
+					(back as Texture2D).get_height() if back is Texture2D else -1])
+	if cli.has("emi"):
+		# --emi=199:7,296:6 [--out=DIR]: the ENHANCED emission mask of a
+		# record — what the lit pixels of that texture are.
+		for spec2 in String(cli["emi"]).split(","):
+			var q := spec2.split(":")
+			if q.size() < 2:
+				continue
+			var bank2: int = int(q[0])
+			var rec2: int = int(q[1])
+			var em: Texture2D = Assets.emission(bank2, rec2)
+			if em == null:
+				print("  E%03d_%03d: no mask (not emissive)" % [bank2, rec2])
+				continue
+			var ei: Image = em.get_image()
+			print("  E%03d_%03d: %s %dx%d, image %s" % [bank2, rec2, em.get_class(),
+				em.get_width(), em.get_height(),
+				("%dx%d fmt %d" % [ei.get_width(), ei.get_height(), ei.get_format()]) if ei != null else "NULL"])
+			if ei != null and out_dir != "":
+				ei.save_png("%s/E%03d_%03d.png" % [out_dir, bank2, rec2])
 	if cli.has("faces"):
 		# --faces=NAME: how many faces use which texture (archive/record),
 		# so a strangely coloured surface can be traced to its art.
@@ -577,23 +623,31 @@ static func dump_bsa(arc: String, filt: String) -> void:
 	names.sort()
 	print("%s: %s" % [arc, " ".join(names)])
 
-## --scan=magenta|red|<r,g,b,tol>: every TEXTURE record (banks 0..450)
-## whose average opaque colour is near the target — to find which art a
-## strange-coloured surface in a screenshot comes from.
+## --scan=magenta|<r,g,b,tol>: every TEXTURE record with a big share of
+## pixels near a colour — how a strangely coloured surface is traced to
+## its art. Banks come from the game data directory, so nothing is out
+## of range (the first cut stopped at 450 and missed TEXTURE.473).
 static func scan_colours(spec: String) -> void:
-	var target := Color(1.0, 0.2, 0.9)
-	var tol: float = 0.3
-	match spec:
-		"magenta": target = Color(0.85, 0.25, 0.8)
-		"red": target = Color(0.7, 0.1, 0.1)
-		_:
-			var f := spec.split(",")
-			if f.size() >= 3:
-				target = Color(float(f[0]), float(f[1]), float(f[2]))
-			if f.size() >= 4:
-				tol = float(f[3])
+	var target := Color(0.85, 0.25, 0.8)
+	var tol: float = 0.35
+	if spec != "magenta":
+		var f := spec.split(",")
+		if f.size() >= 3:
+			target = Color(float(f[0]), float(f[1]), float(f[2]))
+		if f.size() >= 4:
+			tol = float(f[3])
+	var banks: Array = []
+	var d := DirAccess.open(SkynetPaths.gamedata_dir)
+	if d != null:
+		for f in d.get_files():
+			if f.to_upper().begins_with("TEXTURE."):
+				var n: int = int(f.get_extension())
+				if not banks.has(n):
+					banks.append(n)
+	banks.sort()
+	print("[scan] %d texture banks, target %s tol %.2f" % [banks.size(), target, tol])
 	var found := 0
-	for bank in 451:
+	for bank in banks:
 		var tf = Assets._tex_file(bank)
 		if tf == null:
 			continue
@@ -604,20 +658,18 @@ static func scan_colours(spec: String) -> void:
 			var img: Image = t.get_image()
 			if img == null:
 				continue
-			var acc := Color(0, 0, 0, 0)
+			var hits := 0
 			var n := 0
-			var step: int = maxi(1, mini(img.get_width(), img.get_height()) / 24)
+			var step: int = maxi(1, mini(img.get_width(), img.get_height()) / 32)
 			for y in range(0, img.get_height(), step):
 				for x in range(0, img.get_width(), step):
 					var c := img.get_pixel(x, y)
-					if c.a > 0.5:
-						acc += c
-						n += 1
-			if n == 0:
-				continue
-			var avg := Color(acc.r / n, acc.g / n, acc.b / n)
-			var d: float = Vector3(avg.r - target.r, avg.g - target.g, avg.b - target.b).length()
-			if d < tol:
+					if c.a <= 0.5:
+						continue
+					n += 1
+					if Vector3(c.r - target.r, c.g - target.g, c.b - target.b).length() < tol:
+						hits += 1
+			if n > 0 and float(hits) / float(n) > 0.15:
 				found += 1
-				print("  T%03d_%03d %dx%d avg (%.2f %.2f %.2f) d=%.2f" % [bank, rec, img.get_width(), img.get_height(), avg.r, avg.g, avg.b, d])
-	print("[scan] %d records near %s" % [found, spec])
+				print("  T%03d_%03d %dx%d — %d%% of pixels" % [bank, rec, img.get_width(), img.get_height(), 100 * hits / n])
+	print("[scan] %d records" % found)

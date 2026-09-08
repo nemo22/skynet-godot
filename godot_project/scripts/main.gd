@@ -3530,7 +3530,7 @@ func cheat_state() -> Dictionary:
 
 ## Every word run_command answers to — the console's Tab completion.
 const COMMAND_NAMES: Array = [
-	"ammo", "armor", "arnold", "bake", "bane", "boom", "bots", "brightness", "killall", "wait", "floormap", "wallmap", "walkto", "movers",
+	"ammo", "armor", "arnold", "bake", "bane", "boom", "bots", "brightness", "killall", "wait", "floormap", "wallmap", "walkto", "movers", "what",
 	"cheats", "class", "counters", "drop", "dump", "enemies", "exit", "fly",
 	"gamma", "give", "god", "heal", "health", "help", "hp", "illbeback", "load",
 	"map", "maps", "menu", "moon", "music", "nextlevel", "nitrous", "noclip",
@@ -3814,6 +3814,83 @@ func run_command(line: String) -> String:
 			var secs: float = float(args[0]) if args.size() > 0 and args[0].is_valid_float() else 1.0
 			await get_tree().create_timer(clampf(secs, 0.0, 30.0), false).timeout
 			return "waited %.1f s" % secs
+		"what":
+			# Agent aid: what is under the crosshair — node, mesh, material,
+			# albedo texture. "that surface is the wrong colour" reports used
+			# to need a texture hunt.
+			if camera == null:
+				return "no camera"
+			var space := get_world_3d().direct_space_state
+			if space == null:
+				return "no physics world"
+			var from: Vector3 = camera.global_position
+			if args.size() > 0 and args[0] == "grid":
+				# `what grid`: 7x7 rays over the view — every material on
+				# screen at once, with its albedo texture.
+				var vp: Vector2 = get_viewport().get_visible_rect().size
+				var seen: Dictionary = {}
+				for gy in 7:
+					for gx in 7:
+						var sp := Vector2(vp.x * (float(gx) + 0.5) / 7.0, vp.y * (float(gy) + 0.5) / 7.0)
+						var o: Vector3 = camera.project_ray_origin(sp)
+						var d: Vector3 = camera.project_ray_normal(sp)
+						var gq := PhysicsRayQueryParameters3D.create(o, o + d * 6000.0)
+						gq.collide_with_areas = false
+						if is_instance_valid(player) and player is CollisionObject3D:
+							gq.exclude = [(player as CollisionObject3D).get_rid()]
+						var gh := space.intersect_ray(gq)
+						if not gh.has("collider"):
+							continue
+						var gn: Node = gh["collider"] as Node
+						var gm: MeshInstance3D = null
+						var gw: Node = gn
+						while gw != null and gm == null:
+							if gw is MeshInstance3D:
+								gm = gw
+							gw = gw.get_parent()
+						if gm == null or gm.mesh == null:
+							continue
+						for si in gm.mesh.get_surface_count():
+							var sm: Material = gm.get_active_material(si)
+							if sm is BaseMaterial3D and (sm as BaseMaterial3D).albedo_texture != null:
+								var tp: String = (sm as BaseMaterial3D).albedo_texture.resource_path.get_file()
+								seen["%s|%s" % [gm.name, tp]] = true
+				var names: Array = seen.keys()
+				names.sort()
+				return "%d mesh/texture pairs in view:\n  %s" % [names.size(), "\n  ".join(names)]
+			var dir: Vector3 = -camera.global_transform.basis.z
+			var rq := PhysicsRayQueryParameters3D.create(from, from + dir * 6000.0)
+			rq.collide_with_areas = false
+			if is_instance_valid(player) and player is CollisionObject3D:
+				rq.exclude = [(player as CollisionObject3D).get_rid()]
+			var hit := space.intersect_ray(rq)
+			if not hit.has("collider"):
+				return "nothing within 6000 u"
+			var node: Node = hit["collider"] as Node
+			var mi: MeshInstance3D = null
+			var walk: Node = node
+			while walk != null and mi == null:
+				if walk is MeshInstance3D:
+					mi = walk
+				walk = walk.get_parent()
+			var out: String = "hit %s at %s (%.0f u)" % [node.name, str(hit["position"]).left(40),
+				from.distance_to(hit["position"])]
+			if mi == null:
+				return out + " — no mesh"
+			out += "\n  mesh %s (%s), %d surfaces" % [mi.name,
+				mi.mesh.resource_path.get_file() if mi.mesh else "-",
+				mi.mesh.get_surface_count() if mi.mesh else 0]
+			for si in (mi.mesh.get_surface_count() if mi.mesh else 0):
+				var mat: Material = mi.get_active_material(si)
+				var tex_path: String = "-"
+				var col: String = "-"
+				if mat is BaseMaterial3D:
+					var bm: BaseMaterial3D = mat
+					tex_path = bm.albedo_texture.resource_path if bm.albedo_texture else "(no texture)"
+					col = str(bm.albedo_color)
+				out += "\n  surface %d: %s albedo %s tex %s" % [si,
+					mat.get_class() if mat else "no material", col, tex_path]
+			return out
 		"movers":
 			# Agent aid: what every mover is doing right now.
 			if _current_level == null or _current_level.action == null:
