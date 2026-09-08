@@ -59,7 +59,12 @@ const PickupData := preload("res://scripts/pickup_data.gd")
 ##             p4 by p6 11-bit units at 512/s (90°/s). 210DOOR0/1.
 ##   "jump"    0x137ad0 (0x30-35): instant translate by SIGNED p6.
 ##   "slide5f" 0x137d41: p4 speed base, p6<<4 travel (as before).
-##   "rot"     continuous rotators (never stop).
+##   "rot"     turn about one axis: with an angle (0x36-0x38, 1024 =
+##             180 deg) a half turn that stops and reverses — the
+##             wall monitors are flat two-sided panels and the turn
+##             IS the picture change ("tam mala zbehnúť animácia
+##             alebo sa vymeniť obraz"); with no angle (0x39-0x3e)
+##             a continuous rotator (radar dish, globe, sky dome).
 ##   0xbd-0xc0 (0x137b33/0x137bce, disassembled 2026-09-06): diagonal
 ##             slides (x and z by the same step, the second pair x
 ##             negated) — but their table limit word is 0, so the step
@@ -846,8 +851,10 @@ func _step_mover(off: int, e: MapFile.Entity, delta: float) -> void:
 	if node == null or not is_instance_valid(node):
 		return
 	var fam: String = m["family"]
-	if fam == "rot":
-		# Continuous rotator — never stops while enabled.
+	if fam == "rot" and m["limit"] == 0.0:
+		# Continuous rotator — never stops while enabled. Only the acts
+		# whose handler carries NO angle spin like this: the radar DISH
+		# (0x3b), the GLOBE, MAP.232's sky dome.
 		m["progress"] = fmod(m["progress"] + ROT_SPEED * delta, 2048.0)
 		_apply_mover_transform(node, m)
 		return
