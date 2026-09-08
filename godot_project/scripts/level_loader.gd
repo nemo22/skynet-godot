@@ -859,8 +859,16 @@ static func _best_fit_wld(map: MapFile.MapFile) -> String:
 		return ""
 	var pts: Array = []
 	for e in map.entities:
-		if (e.flags & 3) == 3 and e.marker_type == 2:
+		if (e.flags & 3) == 3 and e.marker_type >= 0:
 			pts.append(Vector3(float(e.x), -float(e.y + 0x10), float(e.z)))
+	if pts.size() < 8:
+		# A map with almost no markers (Future Shock's demo levels
+		# MAP.001/002 carry only a start and a facing) has to be scored
+		# on its buildings instead — looser, but better than a level
+		# left hanging over nothing.
+		for e in map.entities:
+			if (e.flags & 3) == 1:
+				pts.append(Vector3(float(e.x), -float(e.y), float(e.z)))
 	if pts.size() < 8:
 		return ""
 	var best: String = ""
