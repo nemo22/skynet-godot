@@ -65,6 +65,11 @@ const FLYER_LOOKAHEAD: float = 400.0
 ## How far above the feet a floor plate may sit for a sunk actor to pop
 ## back out onto it (corridor ceilings are 128+ above the floor).
 const SINK_RECOVER: float = 110.0
+## Machine segments (state 10) hurt by contact: how far past the
+## claw the swipe still lands, how hard, and how often.
+const MACHINE_MARGIN: float = 60.0
+const MACHINE_HIT_DAMAGE: float = 9.0
+const MACHINE_HIT_INTERVAL: float = 1.9
 ## Wander leg length / interval when the player is not perceived.
 const WANDER_RADIUS: float = 1200.0
 ## Max uphill slope a walker takes (radians). Only the terminator family
@@ -171,6 +176,11 @@ var _type_id: int = -1
 var _t: Dictionary = {}                        # AIData.TYPES entry
 var _brain: EnemyAI = null                     # AIS interpreter
 var _segs: Array = []                          # turret segments (see _build_segments)
+## Script-only machines bolted to this actor (DOS state 10): the
+## grabber arm, the welding arm, the torture rig. Each runs its own
+## AIS script, which plays the animation blocks — and swipes at the
+## player who walks into it.
+var _machines: Array = []
 var _segs_built: bool = false
 var _cds: Dictionary = {}                      # shooter node → cooldown
 var _wander_target: Vector3 = Vector3.ZERO
@@ -360,6 +370,8 @@ func _tick_data(delta: float) -> void:
 			_move_data(delta, sense)
 	for seg in _segs:
 		_aim_segment(seg, delta)
+	for m in _machines:
+		_tick_machine(m, delta, sense)
 	# Root shooter.
 	var fp: Array = _brain.fire_params()
 	if not fp.is_empty() and not _has_segment_node(self):
@@ -562,6 +574,8 @@ func _collect_segs(n: Node) -> void:
 				var sst: int = int(td.get("st", 0))
 				if sst == 2 or sst == 8:
 					_segs.append(_make_seg(c as Node3D, td, ty))
+				elif sst == 10 and c.has_meta("seg_frames"):
+					_machines.append(_make_machine(c as Node3D, td, ty))
 		_collect_segs(c)
 
 func _make_seg(node: Node3D, td: Dictionary, ty: int) -> Dictionary:
@@ -573,6 +587,62 @@ func _make_seg(node: Node3D, td: Dictionary, ty: int) -> Dictionary:
 		"range": float(td.get("range", 800)),
 		"rest_yaw": node.rotation.y, "rest_pitch": node.rotation.x,
 		"hp": float(td.get("hp", 0))}
+
+## A script-only machine segment (state 10). It gets its own brain —
+## the AIS script is what makes the arm swing and pick things up — plus
+## the reach of the arm, taken from the model itself.
+func _make_machine(node: Node3D, td: Dictionary, ty: int) -> Dictionary:
+	var frames: Array = node.get_meta("seg_frames", [])
+	# The claw, per frame: the vertex farthest from the segment's own
+	# origin. An arm's AABB is mostly empty air when it leans, so the
+	# box would "grab" the player from across the room; the tip is what
+	# actually sweeps.
+	var tips := PackedVector3Array()
+	for f in frames:
+		var tip := Vector3.ZERO
+		if f is Mesh and (f as Mesh).get_surface_count() > 0:
+			var arr: Array = (f as Mesh).surface_get_arrays(0)
+			var vs: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+			var best: float = -1.0
+			for v in vs:
+				var l: float = v.length_squared()
+				if l > best:
+					best = l
+					tip = v
+		tips.append(tip)
+	return {"node": node, "t": td, "type": ty, "frames": frames,
+		"tips": tips, "brain": EnemyAI.new(ty), "cd": 0.0}
+
+## Run one machine segment: its script drives the frames, and anything
+## the arm sweeps through gets hit. DOS gives these types no fire
+## params — the grabber hurts by touch ("keď hráč k nemu príde, tak ho
+## zraňuje"), once per swing rather than continuously.
+func _tick_machine(m: Dictionary, delta: float, sense: Dictionary) -> void:
+	var node: Node3D = m["node"]
+	if not is_instance_valid(node):
+		return
+	var brain = m["brain"]
+	brain.tick(delta, sense)
+	var frames: Array = m["frames"]
+	if brain.frame_changed and not frames.is_empty():
+		var fi: int = clampi(brain.frame, 0, frames.size() - 1)
+		(node as MeshInstance3D).mesh = frames[fi]
+	for sid in brain.sounds:
+		Audio.play_id_3d(int(sid), node.global_position, -8.0)
+	m["cd"] = maxf(float(m["cd"]) - delta, 0.0)
+	if _player == null or float(m["cd"]) > 0.0:
+		return
+	# The claw as it is POSED this frame has to actually reach the
+	# player — not a bubble around the arm's base.
+	var tips: PackedVector3Array = m["tips"]
+	if tips.is_empty():
+		return
+	var fi: int = clampi(brain.frame, 0, tips.size() - 1)
+	var tip: Vector3 = node.global_transform * tips[fi]
+	if tip.distance_to(_player.global_position + Vector3(0.0, 40.0, 0.0)) <= MACHINE_MARGIN:
+		m["cd"] = MACHINE_HIT_INTERVAL
+		_player.take_damage(MACHINE_HIT_DAMAGE)
+		Audio.play_sfx_3d("HIT2.RAW", tip, -4.0)
 
 func _has_segment_node(n: Node3D) -> bool:
 	for s in _segs:

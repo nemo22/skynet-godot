@@ -905,6 +905,13 @@ static func _attach_segments(parent: Node3D, enemy_type: int,
 		# The segment's own DOS type — enemy.gd builds its turret AI
 		# (aim axis / limits / fire params) from it.
 		smi.set_meta("seg_type", child_type)
+		# A script-only machine (state 10: the grabber arm, the welding
+		# arm, the torture rig) animates itself — hand it the whole frame
+		# strip so enemy.gd can run its AIS script over it. "V pôvodnej
+		# verzii hry toto rameno je animované, točí sa a ako keby
+		# prekladalo veci" — GRABBER.3D has 33 frames we never played.
+		if frames.size() > 1 and child_type < AIData.TYPES.size() 				and int(AIData.TYPES[child_type].get("st", -1)) == 10:
+			smi.set_meta("seg_frames", frames)
 		# DOS Y-down → Godot Y-up: negate Y and Z, as for meshes/entities.
 		smi.position = Vector3(
 			float(seg[1]), -float(seg[2]), -float(seg[3]))
