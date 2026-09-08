@@ -68,6 +68,13 @@ const SINK_RECOVER: float = 110.0
 ## Machine segments (state 10) hurt by contact: how far past the
 ## claw the swipe still lands, how hard, and how often.
 const MACHINE_MARGIN: float = 60.0
+## A weaponless chaser (DOS state 6 with no fire params and no armed
+## segments — type 1 `globe`, whose `near` is 25) is a flying mine:
+## it closes on the player and detonates. How far past `near` the
+## contact counts, and the blast it (and a dormant trap) throws.
+const KAMIKAZE_REACH: float = 40.0
+const BLAST_RADIUS: float = 250.0
+const BLAST_DAMAGE: float = 30.0
 const MACHINE_HIT_DAMAGE: float = 9.0
 const MACHINE_HIT_INTERVAL: float = 1.9
 ## Wander leg length / interval when the player is not perceived.
@@ -181,6 +188,7 @@ var _segs: Array = []                          # turret segments (see _build_seg
 ## AIS script, which plays the animation blocks — and swipes at the
 ## player who walks into it.
 var _machines: Array = []
+var _kamikaze: int = -1                        # -1 unknown, 0 no, 1 yes
 var _segs_built: bool = false
 var _cds: Dictionary = {}                      # shooter node → cooldown
 var _wander_target: Vector3 = Vector3.ZERO
@@ -358,6 +366,12 @@ func _tick_data(delta: float) -> void:
 		Audio.play_id_3d(int(sid), global_position + Vector3(0.0, 40.0, 0.0), -6.0)
 	if _passive or _player == null:
 		return
+	# A weaponless chaser is a flying mine — it does not shoot, it
+	# arrives. `near` is where DOS parks it: right on top of the player.
+	if st == 6 and _is_kamikaze() and bool(sense.get("see", false)) 			and global_position.distance_to(
+				_player.global_position + Vector3(0.0, 40.0, 0.0)) 				<= float(_t.get("near", 40)) + KAMIKAZE_REACH:
+		_detonate_trap()
+		return
 	# Legacy alert voice on first perception.
 	if _seen and not sense.get("see", false):
 		pass
@@ -458,6 +472,13 @@ func _move_data(delta: float, sense: Dictionary) -> void:
 		var dy: float = want_y - global_position.y
 		var vmax: float = (FLYER_CLIMB_SPEED if dy > 0.0 else FLYER_SINK_SPEED) * delta
 		global_position.y += clampf(dy, -vmax, vmax)
+	elif st == 6 and _flying and _is_kamikaze() and see:
+		# A flying mine homes in three dimensions: `near` parks it 25
+		# units from the player, but only on the flat, so without this
+		# it hovers over his head and never touches him.
+		var want_y: float = _player.global_position.y + 40.0
+		var dy: float = want_y - global_position.y
+		global_position.y += clampf(dy, -speed * delta, speed * delta)
 	elif not _flying:
 		_snap_to_ground()
 
@@ -985,7 +1006,16 @@ func take_damage(amount: float, by_player: bool = true) -> void:
 	elif _state == State.IDLE and _brain == null:
 		_set_chase()
 
-## Dormant trap: detonate (DOS state 12 — effect + sound 0x26).
+## True for an actor that has no way to shoot: no fire params of its
+## own and no armed segment bolted on. Cached — the segments are built
+## once.
+func _is_kamikaze() -> bool:
+	if _kamikaze < 0:
+		_kamikaze = 1 if (Array(_t.get("fire", [])).is_empty() and _segs.is_empty()) else 0
+	return _kamikaze == 1
+
+## Dormant trap / flying mine: detonate (DOS state 12 — effect + sound
+## 0x26) and throw a blast at the player.
 func _detonate_trap() -> void:
 	if _state == State.DEAD:
 		return
@@ -994,8 +1024,20 @@ func _detonate_trap() -> void:
 	Audio.play_id_3d(DEATH_SOUND_ID, centre, -2.0)
 	Audio.play_sfx_3d("EXPLO1.RAW", centre, -2.0)
 	_spawn_explosion(centre, _body_size * 0.55)
+	_blast(centre)
 	_fling_parts(centre)
 	queue_free()
+
+## Explosion damage on the player: full at the centre, nothing at
+## BLAST_RADIUS. Without this a mine that reaches the player just puffs.
+func _blast(centre: Vector3) -> void:
+	if _player == null or not is_instance_valid(_player):
+		return
+	var d: float = centre.distance_to(
+		_player.global_position + Vector3(0.0, 40.0, 0.0))
+	if d >= BLAST_RADIUS:
+		return
+	_player.take_damage(BLAST_DAMAGE * (1.0 - d / BLAST_RADIUS))
 
 ## Destroy the machine: DOS EnemyKill — instant explosion plus the
 ## type's wreck parts flung ballistically.
