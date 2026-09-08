@@ -290,7 +290,7 @@ func _wallmap(spec: String) -> void:
 		print("[wallmap] no physics world")
 		return
 	var shape := CapsuleShape3D.new()
-	shape.radius = 22.0
+	shape.radius = float(v[6]) if v.size() > 6 else 22.0
 	shape.height = 80.0
 	var q := PhysicsShapeQueryParameters3D.new()
 	q.shape = shape
