@@ -75,6 +75,35 @@ const TREX_LEG: Dictionary = {
 	"walk": [4, 20, 10.0, true],
 }
 
+## Ground speed of a walker, in units per second, measured from its own
+## walk cycle by `tools/walk_probe.gd`.
+##
+## A DOS walker (AI state 7, handler 0x13be00) does NOT travel at the
+## `speed` in the enemy type table. Every animation frame the handler
+## calls 0x13c104, which takes a reference vertex of the model
+## (`ref[prev] - ref[cur]`, a per-frame byte table picks which one),
+## rotates it by the actor's yaw and adds it to the position — root
+## motion off the planted foot. The cycles are authored in place, so the
+## planted foot slides backwards through the model by exactly the
+## distance the actor advances; the probe measures that.
+##
+## The table value is roughly twice as fast (endoskeleton 140 vs 59),
+## which is what "terminátori sa nejak moc rýchlo hýbu" looks like: the
+## model glides over its own footsteps.
+const WALK_SPEED: Dictionary = {
+	"endoskel": 60.0, "endorfl": 59.0,
+	"t600pst": 59.0, "t600rfl": 59.0,
+	"t800pst": 59.0, "t800rfl": 59.0,
+	"raptor": 74.0,                       # table 100
+	"spidbot": 57.0,                      # table 100
+	"t-rexleg": 74.0,                     # table 150
+}
+
+## Measured walk speed for a mesh base name, or 0.0 when the cycle has
+## not been measured (turrets, vehicles, drones — they have no gait).
+static func walk_speed(mesh_base: String) -> float:
+	return float(WALK_SPEED.get(mesh_base.to_lower(), 0.0))
+
 ## Look up a mesh's animation table by base name (case-insensitive).
 ## Returns an empty Dictionary when the mesh has no fan-port entry —
 ## enemy.gd then falls back to the full-strip heuristic.

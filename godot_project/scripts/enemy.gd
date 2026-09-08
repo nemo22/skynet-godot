@@ -191,6 +191,13 @@ func configure(type_id: int) -> void:
 			max_health = float(_t["hp"])
 		if int(_t.get("speed", 0)) > 0:
 			move_speed = float(_t["speed"]) * SPEED_SCALE
+		# …but a walker's ground speed is its walk cycle's, not the
+		# table's: DOS moves state-7 actors by the model's own root
+		# motion (see EnemyAnim.WALK_SPEED).
+		if int(_t.get("st", -1)) == 7:
+			var ws: float = EnemyAnim.walk_speed(String(_t.get("n", "")))
+			if ws > 0.0:
+				move_speed = ws
 		if int(_t.get("turn", 0)) > 0:
 			turn_speed = float(_t["turn"]) / 2048.0 * TAU
 
