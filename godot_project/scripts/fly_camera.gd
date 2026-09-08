@@ -18,6 +18,11 @@ extends CharacterBody3D
 ## Jump apex = v²/2g: 950 → ~100 u (a crate, not a truck). The old 1800
 ## reached 360 u — four eye heights, far above the DOS hop (2026-09-03).
 @export var jump_speed: float = 950.0
+## Extra horizontal speed carried through a jump taken at full
+## sprint. Scales with how fast the player actually left the
+## ground, so a standing jump is unchanged.
+const JUMP_RUN_BOOST: float = 0.35
+var _air_boost: float = 0.0
 @export var mouse_sensitivity: float = 0.003
 @export var touch_look_speed: float = 2.2
 
@@ -59,6 +64,7 @@ static var god_mode: bool = false
 var ui_move: Vector2 = Vector2.ZERO   # x = strafe (+right), y = forward (+)
 var ui_look: Vector2 = Vector2.ZERO   # x = yaw rate, y = pitch rate, -1..1
 var ui_vert: float = 0.0              # >0 = jump (walk) / rise (noclip)
+var ui_sprint: bool = false           # touch/automation RUN, same as Shift
 
 @export var max_health: float = 100.0
 var health: float = 100.0
@@ -801,7 +807,7 @@ func _hover(delta: float, fwd_in: float, str_in: float) -> void:
 		vert -= 1.0
 	var want: Vector3 = -look.z * fwd_in * HK_SPEED * speed_boost \
 		+ look.x * str_in * HK_STRAFE + Vector3.UP * vert * HK_CLIMB
-	if Controls.is_pressed("sprint"):
+	if _sprinting():
 		want *= 1.4
 	velocity = velocity.move_toward(want, HK_ACCEL * delta)
 	# Ground clearance: push up when the surface below comes too close.
@@ -818,6 +824,10 @@ func _hover(delta: float, fwd_in: float, str_in: float) -> void:
 				velocity.y = maxf(velocity.y, (HK_MIN_ALTITUDE - clearance) * 4.0)
 	move_and_slide()
 	_update_engine()
+
+## RUN: the Shift key, or the on-screen / automation button.
+func _sprinting() -> bool:
+	return ui_sprint or Controls.is_pressed("sprint")
 
 ## Grounded movement: walk on surfaces, gravity, jump, wall collision.
 ## --- Water (DOS 0x120c83 water level, 0x12e56b breath) ---------------
@@ -922,17 +932,28 @@ func _walk(delta: float, fwd_in: float, str_in: float) -> void:
 	var horiz := -basis_y.z * fwd_in + basis_y.x * str_in
 	if horiz.length() > 1.0:
 		horiz = horiz.normalized()
-	var speed := walk_speed * speed_boost * class_speed
-	if Controls.is_pressed("sprint"):
-		speed *= sprint_multiplier
-	velocity.x = horiz.x * speed
-	velocity.z = horiz.z * speed
-
+	var base: float = walk_speed * speed_boost * class_speed
+	var speed: float = base * (sprint_multiplier if _sprinting() else 1.0)
 	if is_on_floor():
 		var jump: bool = Controls.is_pressed("up") or ui_vert > 0.0
+		if jump:
+			# A run-up has to buy distance — "jump so Shiftom (behom) by
+			# mal hráč skočiť ďalej", and the gaps between the roofs need
+			# it. The take-off speed decides the whole arc, so the boost
+			# is fixed here rather than read again in mid-air; the
+			# vertical impulse is untouched (it matches the DOS jump —
+			# 0x3c0000 = 60 units in a frame at 0x11bdfd — and raising it
+			# would put the player on ledges the level never offers).
+			_air_boost = JUMP_RUN_BOOST * clampf(
+				(speed - base) / maxf(base * (sprint_multiplier - 1.0), 1.0), 0.0, 1.0)
+		else:
+			_air_boost = 0.0
 		velocity.y = jump_speed if jump else 0.0
 	else:
+		speed *= 1.0 + _air_boost
 		velocity.y -= gravity * delta
+	velocity.x = horiz.x * speed
+	velocity.z = horiz.z * speed
 	var before := global_position
 	var on_floor_before: bool = is_on_floor()
 	move_and_slide()
@@ -1029,7 +1050,7 @@ func _fly(_delta: float, fwd_in: float, str_in: float) -> void:
 		vert -= 1.0
 	var dir := -look.z * fwd_in + look.x * str_in + Vector3.UP * vert
 	var speed := fly_speed
-	if Controls.is_pressed("sprint"):
+	if _sprinting():
 		speed *= sprint_multiplier
 	velocity = Vector3.ZERO
 	if dir.length_squared() > 0.0:

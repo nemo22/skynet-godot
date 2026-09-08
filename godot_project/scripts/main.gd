@@ -684,6 +684,13 @@ func _cli_after_level() -> void:
 		print("[probe] after settle: pos=%s on_floor=%s" % [player.global_position, player.is_on_floor()])
 		if _cli.has("quit-after-shot"):
 			get_tree().quit()
+	elif _cli.has("jumptest"):
+		# --jumptest[=run|walk]: measure the jump the player actually
+		# gets — run forward, jump, and report the gap cleared and the
+		# height reached ("jump so Shiftom by mal skočiť ďalej").
+		await _jump_test(String(_cli.get("jumptest", "run")))
+		if _cli.has("quit-after-shot"):
+			get_tree().quit()
 	elif _cli.has("dump-enemies"):
 		# Agent diagnostics: settle, then print every enemy's placement
 		# against the surface under it (sunken / floating actors).
@@ -691,6 +698,37 @@ func _cli_after_level() -> void:
 		_dump_enemies()
 		if _cli.has("quit-after-shot"):
 			get_tree().quit()
+
+## Agent diagnostic: run forward, jump, and print how far and how high
+## the player got. `mode` = "run" (Shift held) or "walk".
+func _jump_test(mode: String) -> void:
+	if not is_instance_valid(player):
+		return
+	player.noclip = false
+	await get_tree().create_timer(1.0, true, false, true).timeout
+	player.ui_sprint = mode != "walk"
+	player.ui_move = Vector2(0.0, 1.0)
+	# Run up first, so the take-off speed is the sprint speed.
+	for _i in 40:
+		await get_tree().physics_frame
+	var takeoff: Vector3 = player.global_position
+	var peak: float = takeoff.y
+	player.ui_vert = 1.0
+	for _i in 3:
+		await get_tree().physics_frame
+	player.ui_vert = 0.0
+	var frames: int = 0
+	while not player.is_on_floor() and frames < 600:
+		peak = maxf(peak, player.global_position.y)
+		frames += 1
+		await get_tree().physics_frame
+	var land: Vector3 = player.global_position
+	player.ui_move = Vector2.ZERO
+	player.ui_sprint = false
+	print("[jump] %s: takeoff %s land %s  gap %.0f u  rise %.0f u  air %.2f s" % [
+		mode, takeoff.round(), land.round(),
+		Vector2(land.x - takeoff.x, land.z - takeoff.z).length(),
+		peak - takeoff.y, float(frames) / 60.0])
 
 func _dump_enemies() -> void:
 	var space := get_world_3d().direct_space_state
