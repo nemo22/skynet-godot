@@ -231,6 +231,13 @@ func _ready() -> void:
 				continue
 			var aabb: AABB = am.get_aabb()
 			var box: Dictionary = LevelBehaviour.box_shape(am)
+			for si in am.get_surface_count():
+				var smat: Material = am.surface_get_material(si)
+				if smat is BaseMaterial3D:
+					var bm2: BaseMaterial3D = smat
+					print("  surface %d: tex %s albedo %s" % [si,
+						bm2.albedo_texture.resource_path.get_file() if bm2.albedo_texture else "NONE (fallback colour)",
+						bm2.albedo_color])
 			print("%s: aabb pos %s size %s, %d surfaces; door_like=%s → box %s at %s"
 				% [up, aabb.position, aabb.size, am.get_surface_count(),
 				   LevelBehaviour.is_door_like(am), (box["shape"] as BoxShape3D).size, box["centre"]])

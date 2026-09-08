@@ -524,26 +524,6 @@ func _cli_after_level() -> void:
 		return
 	if _cli.has("god"):
 		player.set("god_mode", true)
-	if _cli.has("console"):
-		# Automation: run console commands once the FIRST level is up
-		# (`--console=win;next`), each reply goes to the log. Commands for
-		# a later map go in --console-<suffix>= (e.g. --console-013=tp …;use),
-		# run when that map comes up.
-		var cmds: String = String(_cli["console"])
-		_cli.erase("console")
-		for c in cmds.split(";"):
-			if not c.strip_edges().is_empty():
-				print("[cli] ] %s → %s" % [c.strip_edges(), await run_command(c.strip_edges())])
-	var per_map: String = "console-" + (_current_level.map_suffix if _current_level != null else "")
-	if _cli.has(per_map):
-		var cmds2: String = String(_cli[per_map])
-		_cli.erase(per_map)
-		for c in cmds2.split(";"):
-			if not c.strip_edges().is_empty():
-				print("[cli] ] %s → %s" % [c.strip_edges(), await run_command(c.strip_edges())])
-	if _cli.has("console-open"):
-		# Automation: drop the console itself (a screenshot of its UI).
-		open_console(String(_cli["console-open"]))
 	if _cli.has("quit-after"):
 		# Automation: leave after N seconds (a headless client in a test).
 		get_tree().create_timer(float(_cli["quit-after"])).timeout.connect(func() -> void:
@@ -584,6 +564,29 @@ func _cli_after_level() -> void:
 		else:
 			print("[cli] near: no node %s #%d" % [parts[0], ni])
 	_cli_place()
+	# The console runs AFTER --pos/--near have placed the player: a
+	# `tp`/`shoot`/`use` script fired from the map's start point
+	# otherwise (2026-09-08).
+	if _cli.has("console"):
+		# Automation: run console commands once the FIRST level is up
+		# (`--console=win;next`), each reply goes to the log. Commands for
+		# a later map go in --console-<suffix>= (e.g. --console-013=tp …;use),
+		# run when that map comes up.
+		var cmds: String = String(_cli["console"])
+		_cli.erase("console")
+		for c in cmds.split(";"):
+			if not c.strip_edges().is_empty():
+				print("[cli] ] %s → %s" % [c.strip_edges(), await run_command(c.strip_edges())])
+	var per_map: String = "console-" + (_current_level.map_suffix if _current_level != null else "")
+	if _cli.has(per_map):
+		var cmds2: String = String(_cli[per_map])
+		_cli.erase(per_map)
+		for c in cmds2.split(";"):
+			if not c.strip_edges().is_empty():
+				print("[cli] ] %s → %s" % [c.strip_edges(), await run_command(c.strip_edges())])
+	if _cli.has("console-open"):
+		# Automation: drop the console itself (a screenshot of its UI).
+		open_console(String(_cli["console-open"]))
 	if _cli.has("floormap") or _cli.has("slice"):
 		await get_tree().physics_frame
 		await get_tree().physics_frame
@@ -3735,6 +3738,9 @@ func run_command(line: String) -> String:
 					_level_name(), gp.x, gp.y, gp.z,
 					rad_to_deg(p.rotation.y),
 					rad_to_deg(p.get_node("Camera3D").rotation.x) if p.has_node("Camera3D") else 0.0])
+				lines.append("health %.0f  armour %.0f%%  weapon %s  vehicle %d" % [
+					float(p.health), float(p.armor) * 100.0,
+					str(p.get("weapon_name")), int(p.vehicle)])
 				lines.append("relaunch:  --map=%s --pos=%.0f,%.0f,%.0f --yaw=%.0f --noclip --god"
 					% [_level_name(), gp.x, gp.y + 75.0, gp.z, rad_to_deg(p.rotation.y)])
 			lines.append("fps %d  draw calls %d  primitives %d  video mem %.1f MB" % [
@@ -3812,7 +3818,7 @@ func run_command(line: String) -> String:
 			# Agent aid: let the world run before the next console command
 			# (a gate needs a tick, a door a second to swing).
 			var secs: float = float(args[0]) if args.size() > 0 and args[0].is_valid_float() else 1.0
-			await get_tree().create_timer(clampf(secs, 0.0, 30.0), false).timeout
+			await get_tree().create_timer(clampf(secs, 0.0, 30.0), true, false, true).timeout
 			return "waited %.1f s" % secs
 		"what":
 			# Agent aid: what is under the crosshair — node, mesh, material,
@@ -3976,7 +3982,18 @@ func run_command(line: String) -> String:
 			for e in get_tree().get_nodes_in_group("enemy"):
 				if e is Node3D and is_instance_valid(e):
 					var gp: Vector3 = (e as Node3D).global_position
-					lines.append("  %-20s type %3d  at %.0f %.0f %.0f" % [e.name, int(e.get("_type_id")), gp.x, gp.y, gp.z])
+					# The hitbox too: "I had to aim at the exact centre" reports
+					# are answered by comparing it with the meshes it covers.
+					var hb: String = "-"
+					for a in (e as Node3D).get_children():
+						if a is Area3D:
+							for cs in (a as Area3D).get_children():
+								if cs is CollisionShape3D and (cs as CollisionShape3D).shape is BoxShape3D:
+									var bs: Vector3 = ((cs as CollisionShape3D).shape as BoxShape3D).size
+									hb = "%.0fx%.0fx%.0f at %s" % [bs.x, bs.y, bs.z, str((cs as CollisionShape3D).position.round())]
+					lines.append("  %-20s type %3d  at %.0f %.0f %.0f  hitbox %s  hp %.0f" % [
+						e.name, int(e.get("_type_id")), gp.x, gp.y, gp.z, hb,
+						float(e.get("health")) if "health" in e else -1.0])
 			return "%d enemies\n%s" % [lines.size(), "\n".join(lines)]
 		"counters", "ctal":
 			return "hostiles tracked %d, map state for %d maps, prev map %s" % [
