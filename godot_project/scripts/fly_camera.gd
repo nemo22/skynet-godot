@@ -205,6 +205,14 @@ const HK_STRAFE: float = 1400.0
 const HK_CLIMB: float = 900.0
 const HK_ACCEL: float = 2200.0
 const HK_MIN_ALTITUDE: float = 150.0
+## …and a ceiling over it. DOS caps how high the gunship may climb
+## ("v DOS hre bolo limitované, ako vysoko môže hráč vyletieť
+## s hkčkom"); without it mission 7 is won by climbing over the
+## canyon and crossing the map, instead of shooting through it.
+## The band is the enemy fighter's own: hk_ftr flies at `alt` 384
+## (284 over the ground), the player gets roughly twice that.
+const HK_MAX_ALTITUDE: float = 700.0
+const HK_CEILING_PROBE: float = 20000.0
 ## The vehicle this player is in (VEH_*). Set by the level (mission
 ## table: MAP.220/260 jeep, MAP.270 HK) or, in a deathmatch, by
 ## climbing into a parked one.
@@ -813,8 +821,11 @@ func _hover(delta: float, fwd_in: float, str_in: float) -> void:
 	# Ground clearance: push up when the surface below comes too close.
 	var space := get_world_3d().direct_space_state
 	if space != null:
+		# Long enough to find the ground from the top of the band, not
+		# just from just above the floor — the ceiling needs the same
+		# measurement the floor push does.
 		var q := PhysicsRayQueryParameters3D.create(global_position + Vector3(0.0, 20.0, 0.0),
-			global_position - Vector3(0.0, HK_MIN_ALTITUDE + 40.0, 0.0))
+			global_position - Vector3(0.0, HK_CEILING_PROBE, 0.0))
 		q.collide_with_areas = false
 		q.exclude = [get_rid()]
 		var hit := space.intersect_ray(q)
@@ -822,6 +833,11 @@ func _hover(delta: float, fwd_in: float, str_in: float) -> void:
 			var clearance: float = global_position.y - (hit["position"] as Vector3).y
 			if clearance < HK_MIN_ALTITUDE and velocity.y < HK_CLIMB * 0.5:
 				velocity.y = maxf(velocity.y, (HK_MIN_ALTITUDE - clearance) * 4.0)
+			elif clearance > HK_MAX_ALTITUDE:
+				# Firm, but not a wall: the higher the gunship gets, the
+				# harder it sinks back into its band.
+				velocity.y = minf(velocity.y, -minf(
+					(clearance - HK_MAX_ALTITUDE) * 2.0, HK_CLIMB))
 	move_and_slide()
 	_update_engine()
 

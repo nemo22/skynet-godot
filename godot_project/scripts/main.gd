@@ -23,6 +23,7 @@ const FntFont     := preload("res://scripts/loaders/fnt_font.gd")
 const SaveGame    := preload("res://scripts/save_game.gd")
 const GameConsole := preload("res://scripts/game_console.gd")
 const Explosion := preload("res://scripts/explosion.gd")
+const EnemyRef := preload("res://scripts/enemy.gd")
 const FxParticles := preload("res://scripts/fx_particles.gd")
 var _ash: GPUParticles3D = null
 const PauseMenu   := preload("res://scripts/pause_menu.gd")
@@ -2389,6 +2390,8 @@ func _setup_water(level: LevelLoader.Level) -> void:
 	var y: float = _water_level(level)
 	if is_instance_valid(player):
 		player.water_level = y
+	EnemyRef.water_y = y                  # ground actors stay out of it
+	EnemyRef.terrain_wld = level.wld      # …and out of the painted lakes
 	if _water_tint != null and is_instance_valid(_water_tint):
 		_water_tint.visible = false
 	if y == INF:

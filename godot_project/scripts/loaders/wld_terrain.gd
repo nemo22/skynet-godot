@@ -302,6 +302,21 @@ static func corner_height(w: WLD, col: int, row: int) -> float:
 	var b: int = sample_byte(w, 0, col, row)
 	return float(HEIGHT_CURVE[b & 0x7F])
 
+## Terrain tiles that are water. Outdoor lakes are painted into the
+## MATERIAL layer, not marked with a 103/104 water marker: the MAP.270 /
+## MAP.272 lake is ids 58/59/61 of TEXTURE.302 — measured with
+## `map_dump --mats=`, the only blue tiles any campaign heightmap uses
+## (id 58 avg RGB 0.22/0.39/0.47 over 288 cells).
+const WATER_MATERIALS: Array = [58, 59, 61]
+
+## True when the terrain under world (X, DOS Z) is a water tile. `dos_z`
+## is the DOS coordinate, i.e. -godot_z, like `height_at_world`.
+static func is_water_at(w: WLD, wx: float, dos_z: float) -> bool:
+	if w == null or w.layers.size() < 3:
+		return false
+	var c: Vector2i = cell_for_world(wx, dos_z)
+	return WATER_MATERIALS.has(sample_byte(w, 2, c.x, c.y) & 0x3F)
+
 ## Heightmap (col, row) under a world (X, Z).
 ## DOS uses (K - z) >> 8 & 0xFF — the mask wraps row into [0,255].
 static func cell_for_world(wx: float, wz: float) -> Vector2i:

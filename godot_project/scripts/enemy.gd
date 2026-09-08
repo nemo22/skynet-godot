@@ -38,6 +38,7 @@ const Tracer := preload("res://scripts/tracer.gd")
 const MuzzleFlash := preload("res://scripts/muzzle_flash.gd")
 const EnemyAI := preload("res://scripts/enemy_ai.gd")
 const AIData := preload("res://scripts/enemy_ai_data.gd")
+const WldTerrain := preload("res://scripts/loaders/wld_terrain.gd")
 
 enum State { IDLE, CHASE, ATTACK, DEAD }
 
@@ -65,6 +66,16 @@ const FLYER_LOOKAHEAD: float = 400.0
 ## How far above the feet a floor plate may sit for a sunk actor to pop
 ## back out onto it (corridor ceilings are 128+ above the floor).
 const SINK_RECOVER: float = 110.0
+## The level's water surface (INF when the map is dry), set by main
+## when the level comes up. A ground actor will not drive into it —
+## "tank nemôže jazdiť po vode!!! ponoril by sa" (MAP.270's lake).
+## An actor that is ALREADY in the water (the flooded decks of
+## MAP.252-254) is not affected.
+static var water_y: float = INF
+## The level's heightmap, for the lakes that are painted into the
+## terrain material instead of being marked (MAP.270).
+static var terrain_wld: WldTerrain.WLD = null
+const WATER_EDGE: float = 8.0
 ## Machine segments (state 10) hurt by contact: how far past the
 ## claw the swipe still lands, how hard, and how often.
 const MACHINE_MARGIN: float = 60.0
@@ -452,7 +463,8 @@ func _move_data(delta: float, sense: Dictionary) -> void:
 		var fwd: Vector3 = -global_transform.basis.z
 		var step: Vector3 = fwd * speed * delta
 		var ground_bound: bool = st != 9 and not _flying
-		if _path_blocked(step) or (ground_bound and (_too_steep(fwd) or _drop_ahead(fwd))):
+		if _path_blocked(step) or (ground_bound and (_too_steep(fwd)
+				or _drop_ahead(fwd) or _water_ahead(fwd))):
 			_blocked = true
 			if st == 9:
 				rotation.y += 1.2 * delta          # flyer: veer off the wall
@@ -466,12 +478,35 @@ func _move_data(delta: float, sense: Dictionary) -> void:
 		# craft AND p8 ahead, so a rising hillside is climbed before it
 		# is hit, and a strafing pass stays well over the player's head.
 		var min_alt: float = maxf(float(_t.get("alt", 384)) - 100.0, FLYER_MIN_ALT)
-		var ahead: Vector3 = -global_transform.basis.z * maxf(float(_t.get("avoid", 400)), FLYER_LOOKAHEAD)
-		var floor_y: float = maxf(_surface_at(global_position), _surface_at(global_position + ahead))
+		var reach: float = maxf(float(_t.get("avoid", 400)), FLYER_LOOKAHEAD)
+		var fwd_n: Vector3 = -global_transform.basis.z
+		# Sample the whole path, not just its far end: one probe ahead
+		# missed a hillside rising in between and the craft flew into it
+		# ("nepriateľské hkčko v polke v kopci").
+		var floor_y: float = _surface_at(global_position)
+		for f in [0.34, 0.67, 1.0]:
+			floor_y = maxf(floor_y, _surface_at(global_position + fwd_n * (reach * f)))
 		var want_y: float = maxf(_player.global_position.y + 31.0, floor_y + min_alt)
 		var dy: float = want_y - global_position.y
-		var vmax: float = (FLYER_CLIMB_SPEED if dy > 0.0 else FLYER_SINK_SPEED) * delta
+		# Below the floor of its band it is already in the hill: climb out
+		# as fast as it takes, not at the cruising rate.
+		var urgent: bool = global_position.y < floor_y + min_alt * 0.5
+		var vmax: float = (FLYER_CLIMB_SPEED * (3.0 if urgent else 1.0) if dy > 0.0
+			else FLYER_SINK_SPEED) * delta
 		global_position.y += clampf(dy, -vmax, vmax)
+	elif _flying and not (st == 6 and _is_kamikaze() and see):
+		# Every other flyer keeps clear of the ground. The state-6
+		# chasers (the scouts) have no altitude logic of their own: they
+		# chased horizontally at their marker height and slid into the
+		# hillsides. Checked every fourth tick — the correction is
+		# gradual and a ray per actor per frame is not worth it.
+		if _ticks % 4 == 0:
+			var fwd2: Vector3 = -global_transform.basis.z
+			var fl: float = maxf(_surface_at(global_position),
+				_surface_at(global_position + fwd2 * FLYER_LOOKAHEAD))
+			var need: float = fl + FLYER_MIN_ALT - global_position.y
+			if need > 0.0:
+				global_position.y += minf(need, FLYER_CLIMB_SPEED * delta * 4.0)
 	elif st == 6 and _flying and _is_kamikaze() and see:
 		# A flying mine homes in three dimensions: `near` parks it 25
 		# units from the player, but only on the flat, so without this
@@ -498,6 +533,18 @@ func _surface_at(at: Vector3) -> float:
 	q.collide_with_areas = false
 	var hit := space.intersect_ray(q)
 	return (hit["position"] as Vector3).y if hit.has("position") else at.y
+
+## True when the ground one step ahead is under the level's water and
+## the actor is not already in it: dry land stays dry land.
+func _water_ahead(fwd: Vector3) -> bool:
+	var ahead: Vector3 = global_position + fwd * 120.0
+	if WldTerrain.is_water_at(terrain_wld, ahead.x, -ahead.z):
+		return true                        # a painted lake (MAP.270)
+	if water_y == INF:
+		return false
+	if global_position.y + _foot_offset <= water_y:
+		return false                       # already wading / submerged
+	return _surface_at(ahead) < water_y - WATER_EDGE
 
 ## True when the floor 120 units ahead is missing or more than MAX_DROP
 ## below the feet — a platform edge, not a ramp.
@@ -732,7 +779,12 @@ func _try_fire(node: Node3D, fp: Array, delta: float, _td: Dictionary) -> void:
 	if not _has_los():
 		return
 	var rate: float = maxf(float(fp[5]), 1.0)
-	_cds[node] = (FIRE_RATE_DIV / rate) * randf_range(0.8, 1.3)
+	# DIFFICULTY scales the rate of fire. DOS rolls `rand() & 1023 <
+	# rate * factor`; dividing the interval comes to the same thing.
+	# This path (every actor with DOS table data — which is nearly all
+	# of them) was missing it, so MEDIUM shot 1.6x and LOW 4x too often:
+	# "toto vyzerá skôr na najvyššiu obtiažnosť než na strednú".
+	_cds[node] = (FIRE_RATE_DIV / rate) * randf_range(0.8, 1.3) / maxf(Settings.enemy_fire_scale(), 0.01)
 	_shoot(muzzle, to.normalized(), int(fp[3]), absf(float(fp[4])))
 
 ## Spawn the shot for DOS ammo type `ammo` (table 0x40728).
