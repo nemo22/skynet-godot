@@ -213,6 +213,7 @@ const HK_MIN_ALTITUDE: float = 150.0
 ## (284 over the ground), the player gets roughly twice that.
 const HK_MAX_ALTITUDE: float = 700.0
 const HK_CEILING_PROBE: float = 20000.0
+const HK_ROOF_PROBE: float = 4000.0
 ## The vehicle this player is in (VEH_*). Set by the level (mission
 ## table: MAP.220/260 jeep, MAP.270 HK) or, in a deathmatch, by
 ## climbing into a parked one.
@@ -833,13 +834,27 @@ func _hover(delta: float, fwd_in: float, str_in: float) -> void:
 			var clearance: float = global_position.y - (hit["position"] as Vector3).y
 			if clearance < HK_MIN_ALTITUDE and velocity.y < HK_CLIMB * 0.5:
 				velocity.y = maxf(velocity.y, (HK_MIN_ALTITUDE - clearance) * 4.0)
-			elif clearance > HK_MAX_ALTITUDE:
+			elif clearance > HK_MAX_ALTITUDE and not _roofed(space):
 				# Firm, but not a wall: the higher the gunship gets, the
 				# harder it sinks back into its band.
 				velocity.y = minf(velocity.y, -minf(
 					(clearance - HK_MAX_ALTITUDE) * 2.0, HK_CLIMB))
 	move_and_slide()
 	_update_engine()
+
+## True when something is directly overhead: the gunship is inside a
+## tunnel, a shaft or a hangar, and the altitude cap does not apply
+## there. MAP.271's tunnel is flown at y ~4950 and its exit teleport
+## sits at 7676 — 2 700 units up a shaft — so a cap measured against the
+## floor below would seal the mission in ("exit z tunelov je vyssie ako
+## ten limit"). Out under open sky the cap holds.
+func _roofed(space: PhysicsDirectSpaceState3D) -> bool:
+	var q := PhysicsRayQueryParameters3D.create(
+		global_position + Vector3(0.0, 40.0, 0.0),
+		global_position + Vector3(0.0, HK_ROOF_PROBE, 0.0))
+	q.collide_with_areas = false
+	q.exclude = [get_rid()]
+	return not space.intersect_ray(q).is_empty()
 
 ## RUN: the Shift key, or the on-screen / automation button.
 func _sprinting() -> bool:

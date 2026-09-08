@@ -904,6 +904,7 @@ func _begin_level(name: String) -> void:
 		level.sky.position = player.global_position
 	_set_sky_fill(level, name)
 	_light_level(level)
+	_fit_map_light_energy(level)
 	# Re-apply this map's state overlay when we have been here before.
 	_apply_map_state(level, name)
 
@@ -1221,6 +1222,64 @@ func _light_level(level: LevelLoader.Level) -> void:
 	print("[level] interior: %d map lights, %d lit fittings, %d shaded materials"
 		% [_place_map_lights(level, false), fittings, cache.size()])
 
+## How bright a map fixture may be is not a property of the fixture but
+## of the ROOM it hangs in — and specifically of how far it is from the
+## FLOOR it has to light. A corridor lamp sits ~130 units over your
+## head and blows the plaster out at any more energy; MAP.285's hall
+## fittings hang 450-716 above their floor and at the same cap lit
+## nothing at all. Neither the DOS `range` field (our own clamp floors
+## it at 400 for everything) nor the nearest surface tells them apart —
+## every one of 285's fittings has a wall or a pipe within 21-85 units.
+## The drop to the floor does, and it is exactly the distance the
+## energy/d falloff has to cover. A ceiling lamp in a normal room keeps
+## the cap it had before ("chodby sú znovu prepálené"); only a fixture
+## high over its floor is allowed more.
+const LIGHT_FIT_REF: float = 150.0     # drop at which the flat cap holds
+const LIGHT_FIT_MAX: float = 4.0
+const LIGHT_FIT_PROBE: float = 1500.0
+
+func _fit_map_light_energy(level: LevelLoader.Level) -> void:
+	if not Render.enhanced() or level.is_outdoor or level.map_lights.is_empty():
+		return
+	await get_tree().physics_frame
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return
+	var raised: int = 0
+	for off in level.map_lights:
+		var l: OmniLight3D = level.map_lights[off]
+		if not is_instance_valid(l) or not l.has_meta("dos_energy"):
+			continue
+		# How much room the fixture has, in six directions. The MEDIAN is
+		# the honest one: a corridor lamp sees a wall in most of them,
+		# a hall fitting sees far in most of them, and neither the
+		# nearest surface (285's lamps all have a ledge within 85 u) nor
+		# the drop to the floor (85-101 u — they hang over walkways)
+		# tells the two apart.
+		var ds := PackedFloat32Array()
+		for d in [Vector3.UP, Vector3.DOWN, Vector3.LEFT, Vector3.RIGHT,
+				Vector3.FORWARD, Vector3.BACK]:
+			var q := PhysicsRayQueryParameters3D.create(l.global_position,
+				l.global_position + (d as Vector3) * LIGHT_FIT_PROBE)
+			q.collide_with_areas = false
+			var hit := space.intersect_ray(q)
+			ds.append(l.global_position.distance_to(hit["position"])
+				if hit.has("position") else LIGHT_FIT_PROBE)
+		var arr: Array = Array(ds)
+		arr.sort()
+		var drop: float = (float(arr[2]) + float(arr[3])) * 0.5
+		var cap: float = MAP_LIGHT_MAX_ENHANCED * clampf(
+			drop / LIGHT_FIT_REF, 1.0, LIGHT_FIT_MAX)
+		if OS.get_cmdline_user_args().has("--lightfit"):
+			print("[lightfit] %s median=%.0f dists=%s cap=%.2f" % [l.name, drop, str(arr), cap])
+		var want: float = minf(float(l.get_meta("dos_energy")), cap)
+		if want > MAP_LIGHT_MAX_ENHANCED + 0.001:
+			raised += 1
+		l.light_energy = Render.energy(want)
+	if raised > 0:
+		print("[level] %d of %d map lights have room around them — brighter"
+			% [raised, level.map_lights.size()])
+
 ## --- lights from the art ---------------------------------------------
 ## A DOS interior has no light entities worth the name — a corridor gets
 ## one or two, and the rest of its light is PAINTED: bright strips down
@@ -1247,7 +1306,6 @@ const EMIT_LIGHT_COLOR: Color = Color(1.0, 0.94, 0.84)
 ## lone lamp in a hall would.
 const EMIT_LIGHT_ENERGY: float = 0.10       # a bright-walled corridor was bleaching at 0.14
 const MAP_LIGHT_MAX_ENHANCED: float = 0.3
-const MAP_LIGHT_REF_RANGE: float = 250.0    # a corridor fixture
 const EMIT_RANGE_SCALE: float = 9.0      # x the fitting's own size
 const EMIT_RANGE_MIN: float = 750.0
 const EMIT_RANGE_MAX: float = 3200.0
@@ -1459,15 +1517,11 @@ func _place_map_lights(level: LevelLoader.Level, outdoor: bool) -> int:
 			if Render.enhanced():
 				# Per-pixel lit walls take a lamp much harder than the
 				# DOS per-vertex look did: capped, and falling off
-				# faster, or the wall under the lamp goes white. The cap
-				# scales with the fixture's OWN DOS range, which is the
-				# level author saying how big a volume it lights: a
-				# corridor lamp (400) stays where it was, MAP.285's hall
-				# fittings (700-1000) may carry what the room needs —
-				# capped flat, that hall was black.
-				var cap: float = MAP_LIGHT_MAX_ENHANCED * clampf(
-					l.omni_range / MAP_LIGHT_REF_RANGE, 1.0, 4.0)
-				l.light_energy = Render.energy(minf(l.light_energy, cap))
+				# faster, or the wall under the lamp goes white. The room
+				# the fixture actually hangs in raises that cap once the
+				# level is in the tree (_fit_map_light_energy).
+				l.set_meta("dos_energy", l.light_energy)
+				l.light_energy = Render.energy(minf(l.light_energy, MAP_LIGHT_MAX_ENHANCED))
 				l.omni_attenuation = Render.OMNI_DECAY
 			# The first few interior lamps cast shadows (a cubemap each).
 			l.shadow_enabled = Render.enhanced() and n < 6
