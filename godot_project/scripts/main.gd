@@ -1244,6 +1244,7 @@ const EMIT_LIGHT_COLOR: Color = Color(1.0, 0.94, 0.84)
 ## lone lamp in a hall would.
 const EMIT_LIGHT_ENERGY: float = 0.10       # a bright-walled corridor was bleaching at 0.14
 const MAP_LIGHT_MAX_ENHANCED: float = 0.3
+const MAP_LIGHT_REF_RANGE: float = 250.0    # a corridor fixture
 const EMIT_RANGE_SCALE: float = 9.0      # x the fitting's own size
 const EMIT_RANGE_MIN: float = 750.0
 const EMIT_RANGE_MAX: float = 3200.0
@@ -1455,8 +1456,15 @@ func _place_map_lights(level: LevelLoader.Level, outdoor: bool) -> int:
 			if Render.enhanced():
 				# Per-pixel lit walls take a lamp much harder than the
 				# DOS per-vertex look did: capped, and falling off
-				# faster, or the wall under the lamp goes white.
-				l.light_energy = Render.energy(minf(l.light_energy, MAP_LIGHT_MAX_ENHANCED))
+				# faster, or the wall under the lamp goes white. The cap
+				# scales with the fixture's OWN DOS range, which is the
+				# level author saying how big a volume it lights: a
+				# corridor lamp (400) stays where it was, MAP.285's hall
+				# fittings (700-1000) may carry what the room needs —
+				# capped flat, that hall was black.
+				var cap: float = MAP_LIGHT_MAX_ENHANCED * clampf(
+					l.omni_range / MAP_LIGHT_REF_RANGE, 1.0, 4.0)
+				l.light_energy = Render.energy(minf(l.light_energy, cap))
 				l.omni_attenuation = Render.OMNI_DECAY
 			# The first few interior lamps cast shadows (a cubemap each).
 			l.shadow_enabled = Render.enhanced() and n < 6
@@ -1583,7 +1591,7 @@ const GRADE_CONTRAST: float = 1.07
 const GRADE_BRIGHTNESS: float = 0.96
 ## Exposure for a photographed panorama from the pack (see below).
 const SKY_ENERGY_NIGHT: float = 0.09
-const SKY_ENERGY_DUSK: float = 0.55
+const SKY_ENERGY_DUSK: float = 0.18
 
 ## Time of day is per mission, not per texture: the DOS sky code
 ## (FUN_00133b67) draws the SKY_SKY.3D dusk dome only for the maps in the
@@ -1845,7 +1853,7 @@ func _apply_render_env(level: LevelLoader.Level, env: Environment, fill: Color) 
 		else:
 			sun.rotation_degrees = DUSK_SUN_ROT
 			sun.light_color = Color(1.0, 0.68, 0.42)
-			sun.light_energy = 2.0
+			sun.light_energy = 1.2
 		sun.shadow_opacity = 0.85
 		sun.shadow_blur = 1.5
 	var sky := Sky.new()
