@@ -2070,6 +2070,7 @@ func _process(delta: float) -> void:
 				player.take_damage(_rad_dose * delta, false)
 		else:
 			_rad_dose = 0.0
+		_update_radiation_feedback(delta)
 		if _rad_fill != null:
 			_rad_fill.anchor_right = clampf(_rad_dose / RAD_MAX_DOSE, 0.0, 1.0)
 		if _rad_row != null:
@@ -2163,6 +2164,16 @@ func _on_use_pressed(pos: Vector3) -> void:
 ## dose as a rate per SECOND and scales it by delta instead.
 const RAD_MAX_DOSE: float = 50.0        # per source, DOS min(r*50, 12800) >> 8
 var _rad_sources: Array = []            # [{pos: Vector3, strength: float}]
+## Being irradiated has to be felt, not just measured: DOS clicks a
+## Geiger counter and washes the screen red, and without either the
+## player just dies for no visible reason (Marek, 2026-09-06: "mám
+## pocit, že tie radiačné zóny nefungujú" — they did, they killed him
+## in four seconds, silently).
+const RAD_CLICK_SLOW: float = 0.7      # seconds between clicks at a trace
+const RAD_CLICK_FAST: float = 0.05     # …and in a lethal core
+const RAD_TINT_MAX: float = 0.3
+var _rad_click_left: float = 0.0
+var _rad_tint: ColorRect = null
 var _rad_dose: float = 0.0              # current dose, HP per second
 ## Marker type 7: how many degrees the map's north is turned.
 var _compass_north: float = 0.0
@@ -2194,6 +2205,33 @@ func _collect_radiation(level: LevelLoader.Level) -> void:
 		print("[skynet] %d radiation sources" % _rad_sources.size())
 
 ## Dose at `at` in HP per second (0 when clear).
+## The Geiger counter and the red wash, both scaled by the dose. Silent
+## and invisible above zero would be a bug of its own: the DOS player
+## hears the counter run away before the health bar moves.
+func _update_radiation_feedback(delta: float) -> void:
+	var f: float = clampf(_rad_dose / RAD_MAX_DOSE, 0.0, 1.0)
+	if _rad_tint == null or not is_instance_valid(_rad_tint):
+		if f <= 0.0:
+			return
+		_rad_tint = ColorRect.new()
+		_rad_tint.color = Color(0.75, 0.05, 0.03, 0.0)
+		_rad_tint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_rad_tint.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		var cl := CanvasLayer.new()
+		cl.layer = 4                      # over the world, under the HUD panel
+		cl.add_child(_rad_tint)
+		add_child(cl)
+	# A slow pulse so it reads as a warning, not as damage taken.
+	var pulse: float = 0.75 + 0.25 * sin(float(Time.get_ticks_msec()) * 0.006)
+	_rad_tint.color.a = minf(f * RAD_TINT_MAX * pulse, RAD_TINT_MAX)
+	if f <= 0.0:
+		_rad_click_left = 0.0
+		return
+	_rad_click_left -= delta
+	if _rad_click_left <= 0.0:
+		_rad_click_left = lerpf(RAD_CLICK_SLOW, RAD_CLICK_FAST, f)
+		Audio.play_sfx("GEIGER1.RAW" if f < 0.5 else "GEIGER2.RAW")
+
 func _radiation_dose(at: Vector3) -> float:
 	var dose: float = 0.0
 	for src in _rad_sources:
@@ -3841,7 +3879,7 @@ func run_command(line: String) -> String:
 						var o: Vector3 = camera.project_ray_origin(sp)
 						var d: Vector3 = camera.project_ray_normal(sp)
 						var gq := PhysicsRayQueryParameters3D.create(o, o + d * 6000.0)
-						gq.collide_with_areas = false
+						gq.collide_with_areas = true
 						if is_instance_valid(player) and player is CollisionObject3D:
 							gq.exclude = [(player as CollisionObject3D).get_rid()]
 						var gh := space.intersect_ray(gq)
@@ -3866,7 +3904,7 @@ func run_command(line: String) -> String:
 				return "%d mesh/texture pairs in view:\n  %s" % [names.size(), "\n  ".join(names)]
 			var dir: Vector3 = -camera.global_transform.basis.z
 			var rq := PhysicsRayQueryParameters3D.create(from, from + dir * 6000.0)
-			rq.collide_with_areas = false
+			rq.collide_with_areas = true          # enemy hitboxes are Area3D
 			if is_instance_valid(player) and player is CollisionObject3D:
 				rq.exclude = [(player as CollisionObject3D).get_rid()]
 			var hit := space.intersect_ray(rq)
@@ -3993,7 +4031,7 @@ func run_command(line: String) -> String:
 									hb = "%.0fx%.0fx%.0f at %s" % [bs.x, bs.y, bs.z, str((cs as CollisionShape3D).position.round())]
 					lines.append("  %-20s type %3d  at %.0f %.0f %.0f  hitbox %s  hp %.0f" % [
 						e.name, int(e.get("_type_id")), gp.x, gp.y, gp.z, hb,
-						float(e.get("health")) if "health" in e else -1.0])
+						float(e.get("_health")) if e.get("_health") != null else -1.0])
 			return "%d enemies\n%s" % [lines.size(), "\n".join(lines)]
 		"counters", "ctal":
 			return "hostiles tracked %d, map state for %d maps, prev map %s" % [
