@@ -452,7 +452,7 @@ static func find_entities(m, name_part: String) -> void:
 		if (e.flags & 3) != 1:
 			continue
 		var nm: String = MapFile.entity_name(m, e)
-		if nm.to_upper().contains(name_part.to_upper()):
+		if name_part == "*" or nm.to_upper().contains(name_part.to_upper()):
 			print("   %s at godot (%d, %d, %d)" % [nm, e.x, -e.y, -e.z])
 
 ## --links=231: every entity that takes part in an action chain (state
