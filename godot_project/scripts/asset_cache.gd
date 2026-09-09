@@ -87,6 +87,7 @@ func _ready() -> void:
 	# buffer right after decoding it — and then saves as an EMPTY texture.
 	PortableCompressedTexture2D.set_keep_all_compressed_buffers(true)
 	_check_version()
+	_check_category_versions()
 	print("[assets] cache at %s%s" % [root, " (read-only pack)" if read_only else ""])
 	if Render.enhanced() and not read_only:
 		_refresh_overrides()
@@ -143,6 +144,46 @@ func _exit_tree() -> void:
 	# Drop the session references before the servers shut down.
 	_mem.clear()
 	_tex_files.clear()
+
+## Some changes only affect ONE kind of asset. Wiping the whole 840 MB
+## cache for them costs the player a full reconversion, so those carry
+## their own stamp and only their own directory is dropped.
+##
+## nrm 2 / prop 2 (2026-09-09): normal maps are capped at 256 (512 for
+## the pack's hand-made ones) and replacement props are decimated to
+## 8 000 triangles. Uncapped, MAP.210 pulled 141 MB of resources per
+## load; capped, 87.5 MB — and one Poly Haven rock alone was 16.3 MB and
+## 739 469 triangles.
+const CATEGORY_VERSIONS: Dictionary = {"enhanced/nrm": 2, "enhanced/prop": 2}
+
+func _check_category_versions() -> void:
+	if read_only or root.is_empty():
+		return
+	for kind in CATEGORY_VERSIONS:
+		var dir: String = "%s/%s" % [root, kind]
+		if not DirAccess.dir_exists_absolute(dir):
+			continue
+		var stamp: String = dir + "/.version"
+		var have: int = -1
+		var f := FileAccess.open(stamp, FileAccess.READ)
+		if f != null:
+			have = int(f.get_as_text().strip_edges())
+			f.close()
+		var want: int = int(CATEGORY_VERSIONS[kind])
+		if have == want:
+			continue
+		var d := DirAccess.open(dir)
+		var n: int = 0
+		if d != null:
+			for file in d.get_files():
+				if d.remove(file) == OK:
+					n += 1
+		var w := FileAccess.open(stamp, FileAccess.WRITE)
+		if w != null:
+			w.store_string(str(want))
+			w.close()
+		print("[assets] %s rebuilt from version %d to %d (%d files dropped)"
+			% [kind, have, want, n])
 
 ## Wipe the cache when its format version changed.
 func _check_version() -> void:
@@ -333,6 +374,11 @@ func normal_map(bank: int, rec: int) -> Texture2D:
 			var nimg := Image.load_from_file(np)
 			if nimg != null:
 				nimg.convert(Image.FORMAT_RGBA8)
+				# Capped like the derived ones, only higher: these are
+				# authored from photographs, so they keep more, but a
+				# 1024² lossless normal map is 3 MB of CPU decode at
+				# every level load (measured 2026-09-09: ~21 ms per MB).
+				Render.cap_size(nimg, Render.NORMAL_MAX_PACK)
 				nimg.generate_mipmaps()
 				return _portable(nimg)
 		var img: Image = _texture_image(bank, rec, false)

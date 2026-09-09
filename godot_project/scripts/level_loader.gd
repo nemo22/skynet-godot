@@ -287,8 +287,23 @@ class Level:
 var use_baked: bool = true
 
 ## Load a level by its MAP basename (e.g. "MAP.210").
+## Phase timing for the load. `--load-trace` prints where the seconds
+## of a level load actually go, instead of guessing.
+static var _trace: Array = []
+static var _trace_t0: int = 0
+static var _trace_on: bool = OS.get_cmdline_user_args().has("--load-trace")
+
+static func _phase(what: String) -> void:
+	if not _trace_on:
+		return
+	var now: int = Time.get_ticks_usec()
+	_trace.append([what, now - _trace_t0])
+	_trace_t0 = now
+
 func load_level(map_name: String) -> Level:
 	var level := Level.new()
+	_trace = []
+	_trace_t0 = Time.get_ticks_usec()
 
 	# Palette (shared) ---------------------------------------------
 	var imgs := BSAReader.new()
@@ -348,6 +363,7 @@ func load_level(map_name: String) -> Level:
 		brif.close()
 	level.transfrm = transfrm
 
+	_phase("read+parse map")
 	# WLD (outdoor only) -------------------------------------------
 	if level.is_outdoor:
 		var wld_path := SkynetPaths.gamedata_path("WLD.%s" % level.map_suffix)
@@ -380,6 +396,7 @@ func load_level(map_name: String) -> Level:
 			push_warning("[level] outdoor flag set but WLD.%s missing"
 				% level.map_suffix)
 
+	_phase("wld")
 	# The baked level scene: terrain, static geometry and their collision,
 	# the occluders and the ENHANCED dressing, all in Godot's own format
 	# (scripts/level_scene.gd). It carries a hash of this MAP, so an
@@ -417,6 +434,7 @@ func load_level(map_name: String) -> Level:
 		if not tex302_bytes.is_empty():
 			level.terrain_tex = TextureNNN.parse(tex302_bytes)
 
+	_phase("baked scene")
 	# Terrain mesh — built once and served from the asset cache
 	# (converted/terrain/WLD.NNN.res); the tiles come from TEXTURE.302.
 	if level.wld and level.terrain == null:
@@ -471,6 +489,7 @@ func load_level(map_name: String) -> Level:
 	var n: int = 0
 	var failed_reads: Dictionary = {}
 	var failed_parses: Dictionary = {}
+	_phase("terrain mesh")
 	for e in level.map.entities:
 		if (e.flags & 3) != 1: continue
 		var name: String = MapFile.entity_name(level.map, e)
@@ -591,6 +610,7 @@ func load_level(map_name: String) -> Level:
 	# markers (FUN_0011c519 MapScanMarkers / FUN_00129f39 in skynet_gh.c).
 	# Each marker's enemy-type ID is at sub+10 and selects the mesh via
 	# the ENEMY_MESH table; meshes live in MDMDENMS.BSA.
+	_phase("entity meshes")
 	level.enemies = Node3D.new()
 	level.enemies.name = "Enemies"
 	var en: int = 0
@@ -683,6 +703,7 @@ func load_level(map_name: String) -> Level:
 			% [et, et, enemy_hist[et], nm, fc])
 
 	# --- Billboard sprites + pickups (variant-3 non-marker) ---------
+	_phase("enemies")
 	_build_sprites(level, palette)
 	# Meshes that arrived through the baked scene skip Assets.mesh(),
 	# so the cache-era emission correction runs over the tree here.
@@ -732,6 +753,7 @@ func load_level(map_name: String) -> Level:
 	else:
 		print("[level] no player-start marker (marker_type 0)")
 
+	_phase("sprites+spawn")
 	# --- Sky (SKY_SKY.3D — global engine sky for outdoor maps) -------
 	# DOS draws SKY_SKY.3D pinned to the camera every frame for outdoor
 	# maps (FUN_00133bbb). The moon/stars are textured faces of this
@@ -817,6 +839,12 @@ func load_level(map_name: String) -> Level:
 		LevelScene.save_from(level, map_name)
 		print("[level] %s: bake took %d ms" % [map_name, Time.get_ticks_msec() - t0])
 
+	_phase("sky+rest")
+	if _trace_on:
+		var parts: Array = []
+		for t in _trace:
+			parts.append("%s %.0f ms" % [t[0], float(t[1]) / 1000.0])
+		print("[load-trace] %s: %s" % [map_name, " | ".join(parts)])
 	return level
 
 ## Resolve an enemy marker's animation frames by enemy-type ID (marker

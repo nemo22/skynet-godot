@@ -92,11 +92,17 @@ static func take(map_name: String, map_bytes: PackedByteArray) -> Dictionary:
 		return {}
 	# Straight off disk: a rebake writes the same path, and a stale copy
 	# left in the resource cache would keep being handed back.
+	var _t0: int = Time.get_ticks_usec()
 	var packed := ResourceLoader.load(p, "PackedScene",
 		ResourceLoader.CACHE_MODE_IGNORE) as PackedScene
+	var _t1: int = Time.get_ticks_usec()
 	if packed == null:
 		return {}
 	var root: Node = packed.instantiate()
+	if OS.get_cmdline_user_args().has("--load-trace"):
+		print("[load-trace]   %s: ResourceLoader.load %.0f ms, instantiate %.0f ms"
+			% [map_name, float(_t1 - _t0) / 1000.0,
+			   float(Time.get_ticks_usec() - _t1) / 1000.0])
 	if root == null:
 		return {}
 	if int(root.get("bake_version")) != BAKE_VERSION \
@@ -811,7 +817,8 @@ static func _prop_ref(bank: int, rec: int, cache: Dictionary) -> Dictionary:
 		tpl.rotation = Vector3.ZERO
 		var s_ref: float = float(fit["scale"])
 		var mesh := Assets.fetch("prop", key, func() -> Resource:
-			var m: ArrayMesh = Replacements.with_lods(_flatten(tpl))
+			var m: ArrayMesh = Replacements.with_lods(
+				Replacements.cap_detail(_flatten(tpl)))
 			_weather(m)
 			return m) as ArrayMesh
 		tpl.free()

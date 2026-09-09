@@ -294,6 +294,100 @@ static func _template(path: String) -> Node3D:
 ## even though "there is nothing there" (2026-09-04). Nothing in the
 ## glTF files carries LODs, and a runtime-loaded mesh never goes through
 ## the importer, so it is done here — once per model, at load.
+## Poly Haven ships one mesh per model at full scan density — the
+## `_1k` in the file name is the TEXTURE size, not a mesh LOD. Imported
+## whole, `sand_rocks_small_01` arrives as 386 857 vertices and 739 469
+## triangles for one scattered rock: 16.3 MB on disk (a third of a
+## second of load on its own, measured 2026-09-09) and three quarters of
+## a million triangles submitted whenever it is on screen.
+##
+## So the BASE mesh is capped before the LOD chain is built. Godot's own
+## simplifier (ImporterMesh.generate_lods, meshoptimizer) gives a ladder
+## of index buffers; we take the least aggressive rung that fits the
+## budget and compact the vertex arrays down to what it still references.
+const MAX_PROP_TRIS: int = 8000
+
+static func cap_detail(src: ArrayMesh, max_tris: int = MAX_PROP_TRIS) -> ArrayMesh:
+	if src == null or src.get_surface_count() == 0:
+		return src
+	var need: bool = false
+	for si in src.get_surface_count():
+		var ia = src.surface_get_arrays(si)[Mesh.ARRAY_INDEX]
+		if ia != null and ia.size() > max_tris * 3:
+			need = true
+			break
+	if not need:
+		return src
+	var out := ArrayMesh.new()
+	for si in src.get_surface_count():
+		var arrays: Array = src.surface_get_arrays(si)
+		var idx: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
+		if src.surface_get_primitive_type(si) != Mesh.PRIMITIVE_TRIANGLES 				or idx.size() <= max_tris * 3:
+			out.add_surface_from_arrays(src.surface_get_primitive_type(si), arrays)
+			out.surface_set_material(out.get_surface_count() - 1, src.surface_get_material(si))
+			continue
+		var im := ImporterMesh.new()
+		im.add_surface(Mesh.PRIMITIVE_TRIANGLES, arrays, [], {},
+			src.surface_get_material(si), src.surface_get_name(si))
+		im.generate_lods(25.0, 60.0, [])
+		var pick: PackedInt32Array = idx
+		for li in im.get_surface_lod_count(0):
+			var cand: PackedInt32Array = im.get_surface_lod_indices(0, li)
+			pick = cand
+			if cand.size() <= max_tris * 3:
+				break
+		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, _compact(arrays, pick))
+		out.surface_set_material(out.get_surface_count() - 1, src.surface_get_material(si))
+	return out
+
+## Rebuild a surface's arrays keeping only the vertices `idx` still uses.
+static func _compact(arrays: Array, idx: PackedInt32Array) -> Array:
+	var remap: Dictionary = {}
+	var order: PackedInt32Array = PackedInt32Array()
+	var new_idx := PackedInt32Array()
+	new_idx.resize(idx.size())
+	for i in idx.size():
+		var v: int = idx[i]
+		if not remap.has(v):
+			remap[v] = order.size()
+			order.append(v)
+		new_idx[i] = remap[v]
+	var out: Array = []
+	out.resize(Mesh.ARRAY_MAX)
+	for a in [Mesh.ARRAY_VERTEX, Mesh.ARRAY_NORMAL]:
+		var src_v = arrays[a]
+		if src_v != null and src_v.size() > 0:
+			var dst := PackedVector3Array()
+			dst.resize(order.size())
+			for i in order.size():
+				dst[i] = src_v[order[i]]
+			out[a] = dst
+	for a in [Mesh.ARRAY_TEX_UV, Mesh.ARRAY_TEX_UV2]:
+		var src_uv = arrays[a]
+		if src_uv != null and src_uv.size() > 0:
+			var dst := PackedVector2Array()
+			dst.resize(order.size())
+			for i in order.size():
+				dst[i] = src_uv[order[i]]
+			out[a] = dst
+	var src_c = arrays[Mesh.ARRAY_COLOR]
+	if src_c != null and src_c.size() > 0:
+		var dc := PackedColorArray()
+		dc.resize(order.size())
+		for i in order.size():
+			dc[i] = src_c[order[i]]
+		out[Mesh.ARRAY_COLOR] = dc
+	var src_t = arrays[Mesh.ARRAY_TANGENT]
+	if src_t != null and src_t.size() >= order.size() * 4:
+		var dt := PackedFloat32Array()
+		dt.resize(order.size() * 4)
+		for i in order.size():
+			for k in 4:
+				dt[i * 4 + k] = src_t[order[i] * 4 + k]
+		out[Mesh.ARRAY_TANGENT] = dt
+	out[Mesh.ARRAY_INDEX] = new_idx
+	return out
+
 static func with_lods(src: ArrayMesh) -> ArrayMesh:
 	if src == null or src.get_surface_count() == 0:
 		return src

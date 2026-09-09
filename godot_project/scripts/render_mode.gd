@@ -262,11 +262,36 @@ static func enhance_image(img: Image, crisp: bool = false) -> Image:
 	return out
 
 ## A tangent-space normal map from a colour image (height = luminance).
+##
+## Capped in size on purpose. The albedo is upscaled x4 (EPX + Lanczos)
+## for its sharp edges, but a normal map derived from that upscale
+## carries no detail the DOS art ever had — and stored lossless at
+## 1024x1024 it costs 3 MB on disk and a CPU decode at every level load.
+## Measured 2026-09-09: of the 141 MB of resources MAP.210 pulls in
+## ENHANCED, 55.7 MB were normal maps.
+const NORMAL_MAX: int = 256
+## The pack's hand-made normal maps come off photographs, so they keep
+## twice the detail of a derived one — but not 1024².
+const NORMAL_MAX_PACK: int = 512
+
+## Shrink `img` in place so neither side exceeds `most`. Returns true when
+## it actually resized.
+static func cap_size(img: Image, most: int) -> bool:
+	var big: int = maxi(img.get_width(), img.get_height())
+	if big <= most:
+		return false
+	var k: float = float(most) / float(big)
+	img.resize(maxi(int(round(float(img.get_width()) * k)), 1),
+		maxi(int(round(float(img.get_height()) * k)), 1),
+		Image.INTERPOLATE_LANCZOS)
+	return true
+
 static func normal_from(img: Image, strength: float = 4.0) -> Image:
 	var n: Image = img.duplicate()
 	n.convert(Image.FORMAT_RGBA8)
 	if n.has_mipmaps():
 		n.clear_mipmaps()
+	cap_size(n, NORMAL_MAX)
 	n.bump_map_to_normal_map(strength)
 	n.generate_mipmaps()
 	return n

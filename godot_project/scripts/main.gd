@@ -685,6 +685,12 @@ func _cli_after_level() -> void:
 		print("[probe] after settle: pos=%s on_floor=%s" % [player.global_position, player.is_on_floor()])
 		if _cli.has("quit-after-shot"):
 			get_tree().quit()
+	elif _cli.has("perf"):
+		# --perf[=secs]: stand still and measure the FRAME TIMES, because
+		# "it stutters" is about the worst frames, not the average.
+		await _perf_probe(float(_cli.get("perf", 8.0)))
+		if _cli.has("quit-after-shot"):
+			get_tree().quit()
 	elif _cli.has("jumptest"):
 		# --jumptest[=run|walk]: measure the jump the player actually
 		# gets — run forward, jump, and report the gap cleared and the
@@ -730,6 +736,53 @@ func _jump_test(mode: String) -> void:
 		mode, takeoff.round(), land.round(),
 		Vector2(land.x - takeoff.x, land.z - takeoff.z).length(),
 		peak - takeoff.y, float(frames) / 60.0])
+
+## Frame-time probe. Prints the distribution, not just the average: a
+## mean of 8 ms with a 90 ms worst frame is exactly what "docela dost to
+## sekalo" feels like, and an average hides it.
+func _perf_probe(secs: float) -> void:
+	# Uncapped, or every number is just the vsync interval.
+	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+	Engine.max_fps = 0
+	await get_tree().create_timer(1.0, true, false, true).timeout   # let the level settle
+	var ms: PackedFloat32Array = PackedFloat32Array()
+	var spikes: Array = []
+	var t0: int = Time.get_ticks_msec()
+	var t_end: int = t0 + int(secs * 1000.0)
+	var last: int = Time.get_ticks_usec()
+	while Time.get_ticks_msec() < t_end:
+		await get_tree().process_frame
+		var now: int = Time.get_ticks_usec()
+		var dt: float = float(now - last) / 1000.0
+		ms.append(dt)
+		if dt > 20.0 and spikes.size() < 24:
+			spikes.append("%.2fs:%.0fms" % [float(Time.get_ticks_msec() - t0) / 1000.0, dt])
+		last = now
+	if ms.size() < 8:
+		print("[perf] too few frames")
+		return
+	var arr: Array = Array(ms)
+	arr.sort()
+	var sum: float = 0.0
+	for v in arr:
+		sum += v
+	var over_33: int = 0
+	for v in arr:
+		if v > 33.3:
+			over_33 += 1
+	print("[perf] %s %s: %d frames | mean %.1f ms (%.0f fps) | median %.1f | 95th %.1f | 99th %.1f | worst %.1f | %d frames over 33 ms (%.1f%%)"
+		% [_level_name(), "ENHANCED" if Render.enhanced() else "DOS", arr.size(),
+		   sum / float(arr.size()), 1000.0 / (sum / float(arr.size())),
+		   float(arr[arr.size() / 2]), float(arr[int(arr.size() * 0.95)]),
+		   float(arr[int(arr.size() * 0.99)]), float(arr[arr.size() - 1]),
+		   over_33, 100.0 * float(over_33) / float(arr.size())])
+	if not spikes.is_empty():
+		print("[perf]   spikes over 20 ms at %s" % " ".join(spikes))
+	print("[perf]   draw calls %d, primitives %d, video mem %.0f MB, objects %d" % [
+		Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
+		Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),
+		Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0,
+		Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME)])
 
 func _dump_enemies() -> void:
 	var space := get_world_3d().direct_space_state
