@@ -2178,8 +2178,11 @@ func _process(delta: float) -> void:
 		if _rad_fill != null:
 			_rad_fill.anchor_right = clampf(_rad_dose / RAD_MAX_DOSE, 0.0, 1.0)
 		if _rad_row != null:
-			# Only worth the space when there is something to worry about.
-			_rad_row.visible = _rad_dose > 0.0
+			# On a map that HAS radiation the gauge stays up even at zero.
+			# A bar that appears only once you are already being cooked is
+			# no warning at all — DOS keeps the PANEL0 gauge on screen the
+			# whole time ("radiácia sa mi v enhanced verzii nezobrazovala").
+			_rad_row.visible = not _rad_sources.is_empty()
 		_fade_hurt(delta)
 		if _water != null:
 			_update_water_tint()

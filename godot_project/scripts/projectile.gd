@@ -47,6 +47,10 @@ const GLOW_SCALE: float = 0.24
 const NEAR_CLIP: float = 320.0
 
 var _dir: Vector3 = Vector3.FORWARD
+## True when the model's body sits on +Z (the laser bolts) rather
+## than on -Z (the rockets).
+var _body_forward: bool = false
+var _is_bolt: bool = false
 var _speed: float = 3000.0
 var _life: float = 5.0
 var _damage: float = 0.0
@@ -129,16 +133,22 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 		am = _model_mesh(model_name)
 	if am != null:
 		_mi.mesh = am
-		# The .3D missiles are authored nose-forward along the axis the
-		# (x,-y,-z) conversion maps to Godot -Z, which looking_at aims.
-		var up := Vector3.UP if absf(_dir.y) < 0.99 else Vector3.RIGHT
-		_mi.basis = Basis.looking_at(_dir, up)
+		# The .3D projectiles do NOT agree on which way they point.
+		# ROCKET.3D carries its body at negative Z (nose forward, which is
+		# what looking_at aims); LASER1/2/3.3D carry theirs at POSITIVE Z
+		# (bounds z -8.7 .. +111.6). Aimed by the same rule both ways, the
+		# bolt's 120 u blade trails backwards out of the muzzle, over the
+		# cockpit — "výstrely sú renderované ako keby z boku". So ask the
+		# model where its body is instead of assuming.
+		_body_forward = am.get_aabb().get_center().z > 0.0
+		_mi.basis = _bolt_basis()
 		# LASER1/2/3.3D are 120 u long but only 3x7 u thick. On a 320x200
 		# DOS screen that was a bright hairline you could not miss; at a
 		# modern resolution the same bolt is a sub-pixel thread, which is
 		# why incoming fire read as "nothing visible at all" (2026-09-04).
 		# Fatten the bolt and give it a halo instead of speeding it up.
-		if _model_is_bolt(model_name):
+		_is_bolt = _model_is_bolt(model_name)
+		if _is_bolt:
 			_mi.basis = _mi.basis.scaled(Vector3(BOLT_FATTEN, BOLT_FATTEN, 1.0))
 		_add_glow(am.get_aabb().size.z)
 	else:
@@ -189,6 +199,25 @@ func _add_glow(length: float) -> void:
 	g.visible = false
 	add_child(g)
 
+## Where the bolt points, and which way its flat face is turned. A DOS
+## bolt is a blade 3.4 u wide and 6.7 u tall: edge-on it is a hairline,
+## so it is rolled about the flight axis to keep the wide face toward the
+## camera, the way any engine draws a beam.
+func _bolt_basis() -> Basis:
+	var body: Vector3 = _dir if _body_forward else -_dir
+	var wide := Vector3.UP
+	var cam := get_viewport().get_camera_3d() if is_inside_tree() else null
+	if cam != null:
+		var to_cam: Vector3 = global_position - cam.global_position
+		var w: Vector3 = body.cross(to_cam)
+		if w.length_squared() > 1.0e-6:
+			wide = w.normalized()
+	if absf(wide.dot(body)) > 0.99:
+		wide = Vector3.RIGHT if absf(body.y) > 0.9 else Vector3.UP
+	var z: Vector3 = body.normalized()
+	var y: Vector3 = (wide - z * wide.dot(z)).normalized()
+	return Basis(y.cross(z), y, z)
+
 static func _model_is_bolt(name: String) -> bool:
 	return name.to_upper().begins_with("LASER")
 
@@ -217,6 +246,10 @@ func _physics_process(delta: float) -> void:
 				if c is MeshInstance3D:
 					(c as MeshInstance3D).visible = true
 
+	if _is_bolt and _mi != null:
+		# Re-roll every frame: the bolt has to keep its face to a camera
+		# that is itself moving.
+		_mi.basis = _bolt_basis().scaled(Vector3(BOLT_FATTEN, BOLT_FATTEN, 1.0))
 	var to := global_position + _dir * _speed * delta
 	_travelled += _speed * delta
 	if _light != null:
