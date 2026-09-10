@@ -778,6 +778,10 @@ func _perf_probe(secs: float) -> void:
 		   over_33, 100.0 * float(over_33) / float(arr.size())])
 	if not spikes.is_empty():
 		print("[perf]   spikes over 20 ms at %s" % " ".join(spikes))
+	print("[perf]   process %.2f ms, physics %.2f ms (of the frame) | %s" % [
+		Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
+		Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0,
+		ProjectSettings.get_setting("physics/3d/physics_engine", "?")])
 	print("[perf]   draw calls %d, primitives %d, video mem %.0f MB, objects %d" % [
 		Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
 		Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),
