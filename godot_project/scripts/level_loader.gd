@@ -584,7 +584,7 @@ func load_level(map_name: String) -> Level:
 		b = b.rotated(Vector3.RIGHT,  pitch_rad)
 		b = b.rotated(Vector3.BACK,  -roll_rad)
 		mi.transform = Transform3D(b, pos)
-		if not wants_action:
+		if not wants_action and not _sealed_door(name, mi.mesh):
 			# Shared with every other copy of this mesh, in this map and
 			# in all the others (converted/shape/). Movers and
 			# destructibles keep main.gd's treatment: a door leaf
@@ -877,6 +877,25 @@ static func _death_parts_for(enemy_type: int, enms: BSAReader,
 ## ground.
 const WLD_FIT_STEP: float = 60.0
 const WLD_FIT_MIN: float = 0.33
+
+## A door leaf that nothing can ever open must not be allowed to seal a
+## route. MAP.210's transport carries `DOOR01` across the only way into
+## its cargo box, and the DOS link record for it is
+## `00 00 00 00 00 fe ff ff ff 00` — act **0x00**, no chain, no HP. It
+## never moves. In DOS you walk through it because collision there comes
+## from an object cylinder/box and the leaf is a single plane 0.004 units
+## thick; the port builds an exact trimesh out of it and gets a wall.
+##
+## Narrow on purpose: the mesh must be a single plane AND the entity must
+## have no action AND the name must say door. Plenty of other flat quads
+## are load-bearing — `039FLOOR` is 256×256×0 and is a floor.
+const DOOR_PLANE: float = 2.0
+
+static func _sealed_door(mesh_name: String, mesh: Mesh) -> bool:
+	if mesh == null or not mesh_name.to_upper().contains("DOOR"):
+		return false
+	var sz: Vector3 = mesh.get_aabb().size
+	return minf(sz.x, minf(sz.y, sz.z)) < DOOR_PLANE
 
 static func _best_fit_wld(map: MapFile.MapFile) -> String:
 	if map == null:
