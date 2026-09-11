@@ -6,8 +6,8 @@
 [ext_resource type="Script" path="res://scripts/touch_controls.gd" id="4_touch"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_player"]
-radius = 26.0
-height = 88.0
+radius = 16.0
+height = 76.0
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1_main")
@@ -25,7 +25,7 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 200, 0)
 script = ExtResource("3_player")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="Player"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 44, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 38, 0)
 shape = SubResource("CapsuleShape3D_player")
 
 [node name="Camera3D" type="Camera3D" parent="Player"]

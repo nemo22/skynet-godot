@@ -525,6 +525,13 @@ func _cli_after_level() -> void:
 		return
 	if _cli.has("god"):
 		player.set("god_mode", true)
+	if _cli.has("player-radius"):
+		# Agent aid: a thinner or wider player body, to measure what the
+		# levels were built for (--solve reads this same shape).
+		var pcs: CollisionShape3D = player.get_node_or_null("CollisionShape3D")
+		if pcs != null and pcs.shape is CapsuleShape3D:
+			(pcs.shape as CapsuleShape3D).radius = float(_cli["player-radius"])
+			print("[cli] player capsule radius %.0f" % (pcs.shape as CapsuleShape3D).radius)
 	if _cli.has("quit-after"):
 		# Automation: leave after N seconds (a headless client in a test).
 		get_tree().create_timer(float(_cli["quit-after"])).timeout.connect(func() -> void:
@@ -585,6 +592,16 @@ func _cli_after_level() -> void:
 		for c in cmds2.split(";"):
 			if not c.strip_edges().is_empty():
 				print("[cli] ] %s → %s" % [c.strip_edges(), await run_command(c.strip_edges())])
+	if _cli.has("solve"):
+		# Automation: play the mission through with collisions, map after
+		# map, until it is complete or stuck (scripts/mission_solver.gd).
+		var solver: Node = get_node_or_null("MissionSolver")
+		if solver == null:
+			solver = load("res://scripts/mission_solver.gd").new()
+			solver.name = "MissionSolver"
+			solver.set("main", self)
+			add_child(solver)
+		solver.call("level_ready")
 	if _cli.has("console-open"):
 		# Automation: drop the console itself (a screenshot of its UI).
 		open_console(String(_cli["console-open"]))
@@ -865,8 +882,45 @@ func _load_current() -> void:
 ## Load and show the level geometry for `name` — called directly for
 ## non-mission maps, or from the briefing's BEGIN button once the player
 ## has read the mission briefing.
+## Loose furniture the player walks past, not into. A chair is 30 × 51
+## × 24 units; MAP.252's cabin has three, and with the exact trimesh of
+## every mesh they seal the room mission 5 starts in at EVERY body width
+## the --solve sweep tried (radius 26 down to 14) — the only way out was
+## to shoot the chairs ("nedá sa ani vyjsť z kajuty"). Such pieces keep
+## their collider — bullets, grenades and the crosshair still hit them,
+## so a chair can still be shot to bits — but on FURNITURE_LAYER, which
+## the player's body (collision_mask 1) does not collide with. Movers
+## (doors, lifts) never qualify.
+const FURNITURE_LAYER: int = 1 << 4
+const FURNITURE_MAX_SIDE: float = 48.0
+const FURNITURE_MAX_HEIGHT: float = 80.0
+
+func _unblock_furniture(level: LevelLoader.Level) -> void:
+	if level.entities == null:
+		return
+	var n: int = 0
+	for c in level.entities.get_children():
+		if not (c is MeshInstance3D) or (c as MeshInstance3D).mesh == null:
+			continue
+		if level.action != null and c.has_method("file_off") and level.action.is_mover_off(c.file_off()):
+			continue
+		var sz: Vector3 = (c as MeshInstance3D).mesh.get_aabb().size
+		if maxf(sz.x, sz.z) > FURNITURE_MAX_SIDE or sz.y > FURNITURE_MAX_HEIGHT:
+			continue
+		for b in c.get_children():
+			if b is StaticBody3D:
+				(b as StaticBody3D).collision_layer = FURNITURE_LAYER
+				n += 1
+	if n > 0:
+		print("[level] %d small props made walk-through" % n)
+
 func _begin_level(name: String) -> void:
 	print("[skynet] loading %s" % name)
+	if _cli.has("debug-collisions"):
+		# Agent aid: draw every collision shape (wireframes) — where a box
+		# really sits, not where its mesh is drawn. Must be on before the
+		# level's bodies enter the tree.
+		get_tree().debug_collisions_hint = true
 	_ensure_mission_script(name)
 	await get_tree().process_frame
 
@@ -915,6 +969,7 @@ func _begin_level(name: String) -> void:
 				if level.action != null and c.has_method("file_off") 						and level.action.is_mover_off(c.file_off()):
 					_make_animatable(c)
 		add_child(level.entities)
+		_unblock_furniture(level)
 		if _cli.has("spawn-probe"):
 			var outside: int = 0
 			for c in level.entities.get_children():
@@ -3744,7 +3799,7 @@ const COMMAND_NAMES: Array = [
 	"objectives", "occlusion", "options", "pause", "players", "pos", "quit",
 	"rebake", "render", "save", "secondary", "sf2", "shoot", "showspawns",
 	"slugs", "speed", "superuzi", "surgery", "throw", "tp", "use", "version",
-	"weapon", "weaponview", "where", "who", "whoami", "win", "look",
+	"weapon", "weaponview", "where", "who", "whoami", "win", "look", "bodyat", "collfaces",
 ]
 
 const HELP_TEXT := """[b]commands[/b]
@@ -3805,6 +3860,82 @@ func run_command(line: String) -> String:
 				return "usage: tp x y z"
 			p.set_spawn(Vector3(float(args[0]), float(args[1]), float(args[2])), p.rotation.y, false)
 			return "teleported"
+		"collfaces":
+			# Agent aid: the COLLISION triangles of every mesh named NAME whose
+			# centre lies in the box x0,z0,x1,z1 — world vertices and the normal
+			# of the winding. A one-sided DOS face the renderer culls still
+			# collides from behind (backface_collision); this finds it.
+			if _current_level == null or _current_level.entities == null or args.size() < 2:
+				return "usage: collfaces NAME x0,z0,x1,z1"
+			var want: String = args[0].to_upper()
+			var bxs: PackedStringArray = args[1].split(",")
+			if bxs.size() < 4:
+				return "usage: collfaces NAME x0,z0,x1,z1"
+			var x0: float = minf(float(bxs[0]), float(bxs[2]))
+			var x1: float = maxf(float(bxs[0]), float(bxs[2]))
+			var z0: float = minf(float(bxs[1]), float(bxs[3]))
+			var z1: float = maxf(float(bxs[1]), float(bxs[3]))
+			var shown: int = 0
+			for mi in _current_level.entities.get_children():
+				if not (mi is MeshInstance3D) or String(mi.get_meta("mesh_name", mi.name)).to_upper() != want:
+					continue
+				for bd in mi.get_children():
+					for cs in bd.get_children():
+						if not (cs is CollisionShape3D) or not ((cs as CollisionShape3D).shape is ConcavePolygonShape3D):
+							continue
+						var cxf: Transform3D = (cs as CollisionShape3D).global_transform
+						var tri: PackedVector3Array = ((cs as CollisionShape3D).shape as ConcavePolygonShape3D).get_faces()
+						for ti in range(0, tri.size() - 2, 3):
+							var va: Vector3 = cxf * tri[ti]
+							var vb: Vector3 = cxf * tri[ti + 1]
+							var vc: Vector3 = cxf * tri[ti + 2]
+							var cen: Vector3 = (va + vb + vc) / 3.0
+							if cen.x < x0 or cen.x > x1 or cen.z < z0 or cen.z > z1:
+								continue
+							var nrm: Vector3 = (vb - va).cross(vc - va).normalized()
+							print("[collfaces] %s @%s tri %d: %s %s %s  n=%s" % [want, (mi as Node3D).global_position.snapped(Vector3.ONE),
+								ti / 3, va.snapped(Vector3.ONE), vb.snapped(Vector3.ONE), vc.snapped(Vector3.ONE), nrm.snapped(Vector3(0.01, 0.01, 0.01))])
+							shown += 1
+							if shown >= 60:
+								return "60 shown (cut)"
+			return "%d collision triangles" % shown
+		"bodyat":
+			# Agent aid: every collider a player-sized body (radius + safe
+			# margin) standing with its feet at x y z overlaps — "what exactly
+			# am I stuck on", with the shape type and where a box really is.
+			if p == null or args.size() < 3:
+				return "usage: bodyat x y z [radius]"
+			var feet := Vector3(float(args[0]), float(args[1]), float(args[2]))
+			var pcs: CollisionShape3D = p.get_node_or_null("CollisionShape3D")
+			var body: CapsuleShape3D = pcs.shape as CapsuleShape3D
+			var cap := CapsuleShape3D.new()
+			cap.radius = float(args[3]) if args.size() > 3 else body.radius + float(p.get("safe_margin"))
+			cap.height = body.height + float(p.get("safe_margin"))
+			var bq := PhysicsShapeQueryParameters3D.new()
+			bq.shape = cap
+			bq.transform = Transform3D(Basis(), feet + Vector3(0.0, pcs.position.y + 4.0, 0.0))
+			bq.collision_mask = p.collision_mask
+			bq.exclude = [p.get_rid()]
+			var hits: Array = get_world_3d().direct_space_state.intersect_shape(bq, 16)
+			if hits.is_empty():
+				return "free (radius %.0f)" % cap.radius
+			var found := PackedStringArray()
+			for h in hits:
+				var hc = h.get("collider")
+				if not (hc is Node):
+					continue
+				var hpar: Node = (hc as Node).get_parent()
+				var hname: String = String(hpar.get_meta("mesh_name", hpar.name)) if hpar != null else String((hc as Node).name)
+				var kinds := PackedStringArray()
+				for sc in (hc as Node).get_children():
+					if sc is CollisionShape3D and (sc as CollisionShape3D).shape != null:
+						var sh: Shape3D = (sc as CollisionShape3D).shape
+						var k: String = sh.get_class().replace("Shape3D", "")
+						if sh is BoxShape3D:
+							k += " %s at %s" % [(sh as BoxShape3D).size.snapped(Vector3.ONE), (sc as CollisionShape3D).global_position.snapped(Vector3.ONE)]
+						kinds.append(k)
+				found.append("%s [%s] layer %d" % [hname, ", ".join(kinds), (hc as CollisionObject3D).collision_layer if hc is CollisionObject3D else 0])
+			return "overlaps (radius %.0f): %s" % [cap.radius, "; ".join(found)]
 		"look":
 			# Agent aid: turn the view, in degrees. After `throw now`, a `tp`
 			# and a `look` put the camera beside the rocket already in flight

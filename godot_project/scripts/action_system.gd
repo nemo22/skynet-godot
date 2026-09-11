@@ -247,13 +247,17 @@ func setup(map: MapFile.MapFile) -> void:
 		elif (e.flags & 3) == 2 and is_light_act(act):
 			_light_ents.append(e)
 		elif act >= ACT_HINT_FIRST and act <= ACT_FAIL:
-			# An objective or hint that NO chain points at can only be the
-			# player's to fire: MAP.252's 24PCTURE carries mission 5's only
-			# objective (the missile data on the wardroom wall) and MAP.280
-			# has a hint on a doorway sprite. Nothing else in either map
-			# can set their bit, so the mission could not be finished
-			# (2026-09-07). Chain-driven ones keep to their chain.
-			if not _is_chain_target(map, e):
+			# A HINT that no chain points at is the player's to fire with
+			# the use key (MAP.280's doorway sprite). Objectives and the
+			# fail act are NOT: they keep to their chains. On 2026-09-07 the
+			# rule covered objectives too, because MAP.252's 24PCTURE looked
+			# like mission 5's only one — it is not. Mission 5's [M1]
+			# ("Made it!") is the jeep, HUMMERTK on MAP.250, fired by the
+			# eight 0xEF gates around it; the picture in the cabin was a
+			# shortcut that finished the mission the moment the player
+			# looked at the wall he starts beside (the --solve run proved
+			# it: "use 24PCTURE", PASS after one second).
+			if act < ACT_OBJECTIVE_FIRST and not _is_chain_target(map, e):
 				_use_msgs.append(e)
 		elif is_destructible(act):
 			_destruct_nodes.append(e)
@@ -730,15 +734,23 @@ func activate_teleport(player_pos: Vector3) -> bool:
 func _reachable(from: Vector3, target: Vector3) -> bool:
 	if space == null:
 		return true
-	var to: Vector3 = target + Vector3(0.0, 40.0, 0.0)
-	var q := PhysicsRayQueryParameters3D.create(from, to)
-	q.collide_with_areas = false
-	if player_body != null:
-		q.exclude = [player_body.get_rid()]
-	var hit := space.intersect_ray(q)
-	if not hit.has("position"):
-		return true
-	return (hit["position"] as Vector3).distance_to(to) < 48.0
+	# `from` is the player's FEET (use_pressed sends global_position). One
+	# ray from the floor ran through MAP.252's torpedo-room shell 22 u from
+	# the player, so the exit into it never fired (found by --solve,
+	# 2026-09-11). Look from the eye and the chest to the sprite's middle
+	# and its foot; a closed door leaf (108 u tall) still blocks all four.
+	for fy in [75.0, 40.0]:
+		for ty in [40.0, 8.0]:
+			var a: Vector3 = from + Vector3(0.0, fy, 0.0)
+			var b: Vector3 = target + Vector3(0.0, ty, 0.0)
+			var q := PhysicsRayQueryParameters3D.create(a, b)
+			q.collide_with_areas = false
+			if player_body != null:
+				q.exclude = [player_body.get_rid()]
+			var hit := space.intersect_ray(q)
+			if not hit.has("position") or (hit["position"] as Vector3).distance_to(b) < 48.0:
+				return true
+	return false
 
 ## Use key with nothing activatable under the crosshair: operate the
 ## nearest wall button / lever the player stands at. DOS fires these by

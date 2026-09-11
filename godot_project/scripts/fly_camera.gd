@@ -189,9 +189,20 @@ const VEH_EYE: Array = [75.0, 92.0, 110.0]
 ## Capsule (radius, height) per vehicle — the HUMMER is 106×75×227, the
 ## HK_FTR 357×205×501; a rounder body slides over terrain and rubble.
 ## On foot the DOS player is a cylinder that ignores ceilings; interior
-## doorways are as small as 70 × 105 u (MAP.231 ROM4 → corridor), so
-## the capsule stays well inside that with the safe margin added.
-const VEH_CAPSULE: Array = [[22.0, 80.0], [55.0, 110.0], [110.0, 220.0]]
+## doorways are as small as 70 × 105 u (MAP.231 ROM4 → corridor). The foot
+## body was 26 (the scene) or 22 (after a vehicle), plus the 4 u safe
+## margin — 52-60 u across, and the submarine of mission 5 is narrower
+## than that: --solve found the cabin, the mess hall and the torpedo-room
+## corridor impassable at an effective radius of 26 and passable at 20
+## (2026-09-11). 16 + 4 is that 20: a 40 u body, the proportions of a man
+## whose eyes are at 75, and still well inside the smallest doorway.
+## Height 76, not 88: DOS ignores ceilings for the player, and the port's
+## 88 u body (92 with the margin) could not pass the 88 u lintel in front
+## of the submarine's engine-room bulkhead (floormap ceil, 2026-09-11).
+## The top, 80 with the margin, still sits above the eyes at 75.
+## Same as the Player capsule in main.tscn, so leaving a vehicle does not
+## change the body.
+const VEH_CAPSULE: Array = [[16.0, 76.0], [55.0, 110.0], [110.0, 220.0]]
 ## Jeep: DOS mission 2/6 driving — throttle with inertia, mouse steers.
 const JEEP_MAX_SPEED: float = 1800.0
 const JEEP_REVERSE_SPEED: float = 700.0
@@ -400,6 +411,7 @@ func set_vehicle(v: int) -> void:
 		cap.height = float(VEH_CAPSULE[v][1])
 		cs.shape = cap
 		cs.position = Vector3(0.0, cap.height * 0.5, 0.0)
+		_swim_body = false              # a fresh capsule, standing height
 	if v == VEH_HK:
 		# Lift off the ground so the hover starts clear of the terrain.
 		global_position.y += 60.0
@@ -893,12 +905,45 @@ var _bubble_t: float = 0.0
 func eye_position() -> Vector3:
 	return _cam.global_position if _cam != null else global_position
 
+## Swimming, the body is short: a swimmer lies in the water. MAP.253's
+## flooded passage runs under a sloping deck only 83-75 u over its floor;
+## the standing body (76 + the 4 u margin) cannot pass it, while the DOS
+## player, whose body ignores ceilings, swims straight through (found by
+## --solve, 2026-09-11). Out of the water the body stands up again as
+## soon as a standing body fits over its head — never inside a ceiling.
+const SWIM_BODY_HEIGHT: float = 44.0
+var _swim_body: bool = false
+
+func _set_swim_body(on: bool) -> void:
+	if on == _swim_body or vehicle != VEH_FOOT:
+		return
+	var cs: CollisionShape3D = get_node_or_null("CollisionShape3D")
+	if cs == null or not (cs.shape is CapsuleShape3D):
+		return
+	var cap: CapsuleShape3D = cs.shape
+	var h: float = SWIM_BODY_HEIGHT if on else float(VEH_CAPSULE[VEH_FOOT][1])
+	if not on:
+		var tall := CapsuleShape3D.new()
+		tall.radius = cap.radius
+		tall.height = h
+		var q := PhysicsShapeQueryParameters3D.new()
+		q.shape = tall
+		q.transform = Transform3D(Basis(), global_position + Vector3(0.0, h * 0.5 + safe_margin, 0.0))
+		q.collision_mask = collision_mask
+		q.exclude = [get_rid()]
+		if not get_world_3d().direct_space_state.intersect_shape(q, 1).is_empty():
+			return                         # no room to stand yet: stay low
+	cap.height = h
+	cs.position = Vector3(0.0, h * 0.5, 0.0)
+	_swim_body = on
+
 ## Feet below the surface — the swimming test.
 func _water_check() -> void:
 	var was_in: bool = in_water
 	var was_under: bool = head_under
 	in_water = global_position.y < water_level
 	head_under = eye_position().y < water_level - HEAD_ROOM
+	_set_swim_body(in_water)
 	if in_water != was_in:
 		Audio.play_id(SND_SPLASH, -4.0)
 		if in_water:
