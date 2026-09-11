@@ -5,7 +5,6 @@
 extends Node3D
 
 const Explosion := preload("res://scripts/explosion.gd")
-const FxParticles := preload("res://scripts/fx_particles.gd")
 
 const GRAVITY: float = 2600.0
 const MAX_LIFE: float = 2.5
@@ -41,7 +40,6 @@ func setup(at: Vector3, vel: Vector3, part: Mesh = null) -> void:
 		mat.albedo_color = Color(0.32, 0.30, 0.34)      # scorched metal
 		_mi.material_override = mat
 	add_child(_mi)
-	FxParticles.trail(self, 34.0, Color(0.3, 0.28, 0.27, 0.5), true)
 
 func _physics_process(delta: float) -> void:
 	_life -= delta

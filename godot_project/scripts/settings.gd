@@ -35,7 +35,6 @@ const DETAIL_FOG_SCALE: Array = [1408.0 / 2432.0, 2176.0 / 2432.0, 1.0]
 
 signal difficulty_changed(level: int)
 signal detail_changed(level: int)
-signal weapon_view_changed(model: bool)
 
 ## RESOLUTION on the DOS screen is the video mode: 320x200 or 640x480.
 ## This port always opens a modern window, so the setting drives the 3D
@@ -71,19 +70,13 @@ var window_size: int = 0                # index into available_sizes()
 ## Music: false = the port's synthesised tones (the retro sound), true =
 ## samples out of a General MIDI SoundFont found next to the game data.
 var wavetable: bool = false
-## The weapon in the player's hands: false = the DOS hand-drawn CFA
-## animation (with the soldier's gloves), true = the ENHANCED 3D model.
-## The art is the better-looking of the two, so it stays the default.
-var weapon_3d: bool = false
-## Brightness per look, a multiplier on the DOS gamma or the ENHANCED
-## exposure (main.gd). Taste differs — the DOS look went from "darker
-## and flatter than the original" to "až moc svetlá" in a day — so it
-## is the player's knob, not a constant.
+## Brightness, a multiplier on the DOS gamma (main.gd). Taste differs —
+## the DOS look went from "darker and flatter than the original" to "až
+## moc svetlá" in a day — so it is the player's knob, not a constant.
 signal brightness_changed(value: float)
 const BRIGHTNESS_MIN: float = 0.5
 const BRIGHTNESS_MAX: float = 1.8
 var brightness_dos: float = 1.0
-var brightness_enhanced: float = 1.0
 
 func _ready() -> void:
 	var cfg := ConfigFile.new()
@@ -92,14 +85,11 @@ func _ready() -> void:
 		detail = clampi(int(cfg.get_value("video", "detail", HIGH)), LOW, HIGH)
 		reverse_stereo = bool(cfg.get_value("audio", "reverse_stereo", false))
 		resolution = clampi(int(cfg.get_value("video", "resolution", RES_NATIVE)), 0, 2)
-		weapon_3d = bool(cfg.get_value("video", "weapon_3d", false))
 		window_mode = clampi(int(cfg.get_value("video", "window_mode", WIN_WINDOWED)),
 			WIN_WINDOWED, WIN_FULLSCREEN)
 		window_size = int(cfg.get_value("video", "window_size", 0))
 		wavetable = bool(cfg.get_value("audio", "wavetable", false))
 		brightness_dos = clampf(float(cfg.get_value("video", "brightness_dos", 1.0)),
-			BRIGHTNESS_MIN, BRIGHTNESS_MAX)
-		brightness_enhanced = clampf(float(cfg.get_value("video", "brightness_enhanced", 1.0)),
 			BRIGHTNESS_MIN, BRIGHTNESS_MAX)
 	get_tree().root.size_changed.connect(apply_resolution)
 	get_window().content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
@@ -112,27 +102,22 @@ func save() -> void:
 	cfg.set_value("video", "detail", detail)
 	cfg.set_value("audio", "reverse_stereo", reverse_stereo)
 	cfg.set_value("video", "resolution", resolution)
-	cfg.set_value("video", "weapon_3d", weapon_3d)
 	cfg.set_value("video", "window_mode", window_mode)
 	cfg.set_value("video", "window_size", window_size)
 	cfg.set_value("audio", "wavetable", wavetable)
 	cfg.set_value("video", "brightness_dos", brightness_dos)
-	cfg.set_value("video", "brightness_enhanced", brightness_enhanced)
 	cfg.save(CFG_PATH)
 
-## The brightness of the look in force (Render.mode).
+## The multiplier on the DOS gamma.
 func brightness() -> float:
-	return brightness_enhanced if Render.enhanced() else brightness_dos
+	return brightness_dos
 
 func set_brightness(v: float) -> void:
 	v = clampf(snappedf(v, 0.05), BRIGHTNESS_MIN, BRIGHTNESS_MAX)
-	if Render.enhanced():
-		brightness_enhanced = v
-	else:
-		brightness_dos = v
+	brightness_dos = v
 	save()
 	brightness_changed.emit(v)
-	print("[settings] brightness %.2f (%s)" % [v, Render.NAMES[Render.mode]])
+	print("[settings] brightness %.2f" % v)
 
 func set_difficulty(level: int) -> void:
 	difficulty = clampi(level, LOW, HIGH)
@@ -214,11 +199,6 @@ func apply_resolution() -> void:
 		vp.scaling_3d_scale = 1.0
 	else:
 		vp.scaling_3d_scale = clampf(want / float(vp.size.x), 0.1, 1.0)
-
-func set_weapon_3d(on: bool) -> void:
-	weapon_3d = on
-	save()
-	weapon_view_changed.emit(on)
 
 signal wavetable_changed(on: bool)
 

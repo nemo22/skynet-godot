@@ -12,7 +12,6 @@
 
 extends Node3D
 
-const FxParticles := preload("res://scripts/fx_particles.gd")
 const TextureNNN := preload("res://scripts/loaders/texture_nnn.gd")
 const Palette := preload("res://scripts/loaders/palette.gd")
 const BSAReader := preload("res://scripts/loaders/bsa_reader.gd")
@@ -54,7 +53,6 @@ static func _load_texture() -> Texture2D:
 	return _texture
 
 var _sprite: Sprite3D = null
-var _light: OmniLight3D = null
 var _t: float = LIFETIME
 
 ## Spawn a flash centred at `at`. `tint` modulates the texture (white =
@@ -84,14 +82,6 @@ func setup(at: Vector3, tint: Color = Color.WHITE,
 		max_dim = 1.0
 	_sprite.pixel_size = size / max_dim
 	add_child(_sprite)
-	if Render.enhanced():
-		FxParticles.sparks(get_parent(), at, Vector3.UP, 5, 220.0, tint)
-		_light = OmniLight3D.new()
-		_light.light_color = tint
-		_light.light_energy = Render.energy(1.2)
-		_light.omni_range = 600.0
-		_light.omni_attenuation = Render.OMNI_DECAY
-		add_child(_light)
 
 func _process(delta: float) -> void:
 	if _sprite == null:
@@ -102,5 +92,3 @@ func _process(delta: float) -> void:
 		return
 	var k: float = _t / LIFETIME              # 1 → 0
 	_sprite.modulate.a = k
-	if _light != null:
-		_light.light_energy = Render.energy(1.2 * k)

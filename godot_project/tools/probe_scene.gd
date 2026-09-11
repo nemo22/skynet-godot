@@ -1,7 +1,7 @@
 ## Inspect a baked level scene without starting the game.
 ##
 ##   godot --headless --path . --script res://tools/probe_scene.gd \
-##       -- res://converted/enhanced/maps/MAP.220.level.scn
+##       -- res://converted/maps/MAP.220.level.scn
 ##
 ## Prints how many nodes of each type the scene stores, then instantiates
 ## it and counts the collision bodies and shapes — the quickest way to

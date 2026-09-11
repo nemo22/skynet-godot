@@ -1,8 +1,7 @@
 ## The pool of burning fuel a molotov leaves behind. Anything standing in
 ## it — the player included — takes damage every second until it goes
-## out. ENHANCED draws it with the same shader flame the map's fires use
-## (fire_effect.gd); DOS/RETRO keeps to the sprite puffs the original
-## engine had, so the look matches the render mode.
+## out. It burns in the fire puffs of effects bank 356, the sprites the
+## original engine had.
 ##
 ## The molotov itself is DOS weapon record 15, ammo pool 6 — the item the
 ## engine selects as the secondary by default (0x44396). Its blast is
@@ -10,14 +9,10 @@
 
 extends Node3D
 
-const FireEffect := preload("res://scripts/fire_effect.gd")
 const Explosion := preload("res://scripts/explosion.gd")
-const FxParticles := preload("res://scripts/fx_particles.gd")
 
 const BURN_TIME: float = 5.0
 const TICK: float = 1.0                 # damage interval
-const FIRE_SPRITE: int = 27659          # 216_011 — a flame billboard
-const FLAME_SPOTS: int = 4
 
 var _left: float = BURN_TIME
 var _tick: float = 0.0
@@ -41,19 +36,9 @@ func setup(at: Vector3, radius: float, blast: float, thrower: Node) -> void:
 		global_position = at
 		return
 	global_position = Vector3(at.x, floor_y + 0.5, at.z)
-	if Render.enhanced():
-		# A few low flames spread over the puddle rather than one tall fire.
-		for i in FLAME_SPOTS:
-			var a: float = TAU * float(i) / float(FLAME_SPOTS) + randf()
-			var r: float = _radius * 0.5 * sqrt(randf())
-			var f := FireEffect.new()
-			add_child(f)
-			f.position = Vector3(cos(a) * r, 0.0, sin(a) * r)
-			f.setup(FIRE_SPRITE, _radius * 0.45, _radius * 0.55, i * 7 + 3, "pool")
-	else:
-		var ex := Explosion.new()
-		add_child(ex)
-		ex.setup(at, _radius * 0.9, 356)
+	var ex := Explosion.new()
+	add_child(ex)
+	ex.setup(at, _radius * 0.9, 356)
 
 ## Y of the floor under `at` (up to 40 u above it, 320 below), NAN when
 ## there is none.

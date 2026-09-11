@@ -13,20 +13,20 @@
 ##
 ## setup() `cfg` keys:
 ##   model         ".3D" name in MDMDENMS.BSA ("" → sphere)
-##   color         tint for the sphere, light and trail
+##   color         tint for the sphere and the halo
 ##   speed         world units per second
 ##   life          seconds before it fizzles (DOS ammo +0x18 ticks)
 ##   splash        blast radius (0 = direct hit only)
 ##   hits          "enemy" (player shot) or "player" (enemy shot)
-##   trail         exhaust smoke along the flight (rockets, ENHANCED)
-##   light         OmniLight3D while flying
+##   trail         a motor glow at the tail (rockets). DOS leaves no smoke
+##                 while a rocket flies (skynet_gh.c:25860-25970); its one
+##                 effect is at the impact.
 ##   impact_bank   TEXTURE.NNN effect bank for the impact (0 = none)
 ##   impact_sound  .RAW played at the impact ("" = none)
 ##   radius        sphere radius when there is no model
 
 extends Node3D
 
-const FxParticles := preload("res://scripts/fx_particles.gd")
 const BSAReader    := preload("res://scripts/loaders/bsa_reader.gd")
 const Mesh3D       := preload("res://scripts/loaders/mesh_3d.gd")
 const Palette      := preload("res://scripts/loaders/palette.gd")
@@ -35,6 +35,8 @@ const Explosion    := preload("res://scripts/explosion.gd")
 
 ## .3D name → ArrayMesh, or false when the load failed (never retried).
 static var _mesh_cache: Dictionary = {}
+## The soft round sprite of the halos (_soft_dot), built once.
+static var _dot: Texture2D = null
 ## How much wider a laser bolt is drawn than its 3x7 u model (see setup).
 const BOLT_FATTEN: float = 2.0
 ## Halo diameter as a fraction of the bolt's length.
@@ -57,19 +59,11 @@ var _life: float = 5.0
 var _damage: float = 0.0
 var _splash: float = 0.0
 var _hits: String = "enemy"
-## ENHANCED exhaust smoke, left hanging in the air at the impact.
-var _trail_fx: GPUParticles3D = null
 var _impact_bank: int = 0
 var _impact_sound: String = ""
 var _color: Color = Color(1.0, 0.75, 0.4)
 var _owner: Node = null
 var _mi: MeshInstance3D = null
-var _light: OmniLight3D = null
-## The bolt's light at full strength, and how far it flies before it
-## gets there (so it never lights the one who fired it).
-const LIGHT_ENERGY: float = 0.5       # at Render.LIGHT_REF
-const LIGHT_RAMP: float = 260.0
-var _travelled: float = 0.0
 var _done: bool = false
 ## Hitboxes of actors this bolt passes through (the shooter, allies).
 var _ignore: Array[RID] = []
@@ -118,17 +112,6 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 	_life = float(cfg.get("life", 5.0))
 	_splash = float(cfg.get("splash", 0.0))
 	_hits = String(cfg.get("hits", "enemy"))
-	# Smoke behind a rocket is ENHANCED only. The DOS shot tick
-	# (skynet_gh.c:25860-25970) spawns nothing while a rocket flies; its
-	# one effect is at the impact (ammo +0x2a pieces of type +0x2e). The
-	# TEXTURE.237 "fire smoke" the port used to drop every 30 ms stacked
-	# into a column of yellow flame over the target (2026-09-11).
-	if bool(cfg.get("trail", false)) and FxParticles.on():
-		# The smoke starts where the rocket is first drawn (NEAR_CLIP).
-		var cam := get_viewport().get_camera_3d()
-		var hidden: float = maxf(NEAR_CLIP - cam.global_position.distance_to(from), 0.0) \
-			if cam != null else 0.0
-		_trail_fx = FxParticles.rocket_trail(self, _speed, _dir, hidden / maxf(_speed, 1.0))
 	_impact_bank = int(cfg.get("impact_bank", 0))
 	_impact_sound = String(cfg.get("impact_sound", ""))
 	_color = cfg.get("color", _color)
@@ -171,22 +154,9 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 	_mi.visible = false
 	add_child(_mi)
 
-	if bool(cfg.get("light", false)):
-		_light = OmniLight3D.new()
-		_light.light_color = _color
-		# Dark at the muzzle, full a body length on: a bolt that lit up
-		# at 2.6 right where it spawned painted the SHOOTER white — a
-		# raptor firing at you glowed from the chest down ("z predu celé
-		# žiariace na bielo", 2026-09-05).
-		_light.light_energy = 0.0
-		_light.omni_range = maxf(_splash, 420.0)
-		_light.omni_attenuation = Render.OMNI_DECAY
-		add_child(_light)
-
 ## The soft halo that makes a bolt readable in flight. It must be a
 ## round FALLOFF, not a flat quad: the first cut had no texture, so a
 ## walker's laser read as "a blue semi-transparent square" (2026-09-04).
-## FxParticles.dot() is the same radial dot the particle effects use.
 func _add_glow(length: float) -> void:
 	var qm := QuadMesh.new()
 	var d: float = maxf(length, 60.0) * GLOW_SCALE
@@ -198,7 +168,7 @@ func _add_glow(length: float) -> void:
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
 	m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-	m.albedo_texture = FxParticles.dot()
+	m.albedo_texture = _soft_dot()
 	m.albedo_color = Color(_color.r, _color.g, _color.b, 0.45)
 	m.disable_receive_shadows = true
 	g.material_override = m
@@ -221,7 +191,7 @@ func _add_exhaust(aabb: AABB) -> void:
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
 	m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-	m.albedo_texture = FxParticles.dot()
+	m.albedo_texture = _soft_dot()
 	m.albedo_color = Color(1.0, 0.72, 0.36, 1.0)
 	m.disable_receive_shadows = true
 	g.material_override = m
@@ -232,6 +202,21 @@ func _add_exhaust(aabb: AABB) -> void:
 	g.position = -_dir * tail
 	g.visible = false
 	add_child(g)
+
+## A 32x32 radial soft dot: bright in the middle, clear at the edge.
+static func _soft_dot() -> Texture2D:
+	if _dot != null:
+		return _dot
+	var n: int = 32
+	var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
+	for y in n:
+		for x in n:
+			var d: float = Vector2(x + 0.5 - n * 0.5, y + 0.5 - n * 0.5).length() / (n * 0.5)
+			var a: float = clampf(1.0 - d, 0.0, 1.0)
+			img.set_pixel(x, y, Color(1, 1, 1, a * a))
+	img.generate_mipmaps()
+	_dot = ImageTexture.create_from_image(img)
+	return _dot
 
 ## Where the bolt points, and which way its flat face is turned. A DOS
 ## bolt is a blade 3.4 u wide and 6.7 u tall: edge-on it is a hairline,
@@ -268,7 +253,7 @@ func _physics_process(delta: float) -> void:
 	# EQUAL to null, so that guard never fired, `_owner is …` below then
 	# raised "Left operand of 'is' is a previously freed instance" on
 	# every physics frame until the bolt landed — a stack trace per frame,
-	# which is what made ENHANCED stutter after every kill.
+	# which is what made the game stutter after every kill.
 	if not is_instance_valid(_owner):
 		_owner = null
 	_life -= delta
@@ -288,9 +273,6 @@ func _physics_process(delta: float) -> void:
 		# that is itself moving.
 		_mi.basis = _bolt_basis(BOLT_FATTEN)
 	var to := global_position + _dir * _speed * delta
-	_travelled += _speed * delta
-	if _light != null:
-		_light.light_energy = Render.energy(LIGHT_ENERGY * clampf(_travelled / LIGHT_RAMP, 0.0, 1.0))
 	var space := get_world_3d().direct_space_state
 	var q := PhysicsRayQueryParameters3D.create(global_position, to)
 	q.collide_with_areas = true                # actor hitboxes are Area3D
@@ -319,12 +301,6 @@ func _physics_process(delta: float) -> void:
 		_finish(hit["position"], true)
 		return
 	_finish(hit["position"], true)               # solid geometry
-
-func _process(_delta: float) -> void:
-	# The smoke box spans what the rocket flew since the last drawn
-	# frame (FxParticles.stretch_trail) — particles are emitted per frame.
-	if _trail_fx != null and not _done:
-		FxParticles.stretch_trail(_trail_fx, _dir, global_position)
 
 ## Enemy shots hurt the player, player shots hurt enemies; in a
 ## deathmatch every other actor is fair game. "none" = a replicated
@@ -391,8 +367,4 @@ func _finish(at: Vector3, impact: bool) -> void:
 				var ex := Explosion.new()
 				scene.add_child(ex)
 				ex.setup(at, maxf(_splash * 0.6, 45.0), _impact_bank)
-	# The smoke stays where it was laid; only the emitter stops. Freed
-	# with the rocket, the whole trail vanished the instant it hit.
-	FxParticles.detach(_trail_fx)
-	_trail_fx = null
 	queue_free()

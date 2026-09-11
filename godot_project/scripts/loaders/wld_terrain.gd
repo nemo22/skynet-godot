@@ -39,7 +39,6 @@
 
 extends RefCounted
 
-const Mesh3DLoader := preload("res://scripts/loaders/mesh_3d.gd")
 const CHUNK_TABLE_OFFSET: int = 0x90
 const CHUNK_HEADER_SIZE: int = 22
 const CHUNK_CELLS: int = 128
@@ -136,28 +135,6 @@ class WLD:
 	## layers[L] is a PackedByteArray of 65536 bytes, row-major
 	## (index = row * 256 + col).
 	var layers: Array[PackedByteArray] = []
-	## ENHANCED: the part of the map that is played on (DOS world X/Z,
-	## the entity box grown by FINE_MARGIN). Inside it the ground is the
-	## smooth surface of `height_smooth`, subdivided FINE_DIV times per
-	## cell; a FINE_TAPER-wide ring blends back to the DOS planes, and
-	## the rest of the 65536 u square stays at one plane per triangle.
-	## Empty = classic terrain everywhere (DOS look, or no map box).
-	var fine_rect: Rect2 = Rect2()
-	## Corner heights as one flat PackedFloat32Array, (GRID_W+1) per row,
-	## filled lazily by `_corners`.
-	var _corner_cache: PackedFloat32Array = PackedFloat32Array()
-
-## The smooth ground (ENHANCED, docs §P.12). The DOS heightmap has 256 u
-## cells and a 40 u height step, so a hill is a stack of terraces: one
-## sloped cell, a flat one, another slope. Measured over the outdoor
-## maps: 88–97 % of the cells are flat, the rest step 40–320 u in one
-## cell, and the box the entities stand in is 1–7 % of the map (26–37 %
-## on the vehicle maps). So only the box gets the fine surface, and only
-## its sloped cells get subdivided — a flat cell stays two triangles.
-const FINE_DIV: int = 4                  # sub-cells per cell (64 u)
-const FINE_MARGIN: float = 2048.0        # around the entity box
-const FINE_TAPER: float = 1024.0         # smooth → planar blend ring
-const FINE_EPS: float = 4.0              # normal finite-difference step
 
 ## Read a little-endian u32 from a byte array.
 static func _u32(bytes: PackedByteArray, off: int) -> int:
@@ -325,21 +302,14 @@ static func cell_for_world(wx: float, wz: float) -> Vector2i:
 	return Vector2i(col, row)
 
 ## Terrain Y at world (wx, wz) — the height of the ground the mesh
-## actually shows: the DOS planes (each cell split NW–SE) or, in ENHANCED
-## inside `w.fine_rect`, the smooth surface. Used for everything that
-## stands on the ground (sprites, props, spawns); it used to return the
-## cell's NW corner, which put a sprite on a slope up to a height step
-## in the air.
+## actually shows: the DOS planes, each cell split NW–SE. Used for
+## everything that stands on the ground (sprites, props, spawns); it used
+## to return the cell's NW corner, which put a sprite on a slope up to a
+## height step in the air.
 static func height_at_world(w: WLD, wx: float, wz: float) -> float:
 	if w == null:
 		return 0.0
-	var planar: float = height_planar(w, wx, wz)
-	if not Render.enhanced() or not w.fine_rect.has_area():
-		return planar
-	var k: float = fine_weight(w, wx, wz)
-	if k <= 0.0:
-		return planar
-	return lerpf(planar, height_smooth(w, wx, wz), k)
+	return height_planar(w, wx, wz)
 
 ## Cell-local (u, v) in [0, 1) at world (wx, wz): u east across the
 ## cell, v south (row direction).
@@ -360,83 +330,6 @@ static func height_planar(w: WLD, wx: float, wz: float) -> float:
 	if uv.x >= uv.y:
 		return h_nw + uv.x * (h_ne - h_nw) + uv.y * (h_se - h_ne)
 	return h_nw + uv.y * (h_sw - h_nw) + uv.x * (h_se - h_sw)
-
-## 1 inside the fine box, 0 outside the FINE_TAPER ring around it.
-static func fine_weight(w: WLD, wx: float, wz: float) -> float:
-	var r := w.fine_rect
-	var dx: float = maxf(maxf(r.position.x - wx, wx - r.end.x), 0.0)
-	var dz: float = maxf(maxf(r.position.y - wz, wz - r.end.y), 0.0)
-	return clampf(1.0 - maxf(dx, dz) / FINE_TAPER, 0.0, 1.0)
-
-## Corner heights, cached: index = row * (GRID_W + 1) + col, edges
-## clamped so the interpolant has neighbours everywhere.
-static func _corners(w: WLD) -> PackedFloat32Array:
-	if w._corner_cache.is_empty():
-		var cw: int = GRID_W + 1
-		var out := PackedFloat32Array()
-		out.resize(cw * (GRID_H + 1))
-		for r in GRID_H + 1:
-			for c in cw:
-				out[r * cw + c] = corner_height(w, mini(c, GRID_W - 1), mini(r, GRID_H - 1))
-		w._corner_cache = out
-	return w._corner_cache
-
-## Fritsch–Butland tangent from the two neighbouring slopes: zero at a
-## crest, a trough or next to a flat run (so a plateau stays exactly
-## flat and the whole S-curve lives in the sloped cell), the harmonic
-## mean otherwise (a straight slope stays straight).
-static func _mono_tangent(d0: float, d1: float) -> float:
-	if d0 * d1 <= 0.0:
-		return 0.0
-	return 2.0 * d0 * d1 / (d0 + d1)
-
-## Monotone cubic through q1 → q2 at t, with q0/q3 the outer neighbours.
-## Never overshoots: the result lies between q1 and q2.
-static func _mono1d(q0: float, q1: float, q2: float, q3: float, t: float) -> float:
-	var m1: float = _mono_tangent(q1 - q0, q2 - q1)
-	var m2: float = _mono_tangent(q2 - q1, q3 - q2)
-	var t2: float = t * t
-	var t3: float = t2 * t
-	return (2.0 * t3 - 3.0 * t2 + 1.0) * q1 + (t3 - 2.0 * t2 + t) * m1 \
-		+ (-2.0 * t3 + 3.0 * t2) * q2 + (t3 - t2) * m2
-
-## The smooth ground: a separable monotone cubic over the corner grid
-## (rows along X first, then the 4 row values along Z). It passes
-## through every corner, never leaves the range of the cell's own four
-## corners (so the terrain occluders and anything placed at a corner
-## stay valid), keeps flat cells flat and straight slopes straight, and
-## turns each terrace step into an S-curve inside its cell.
-static func height_smooth(w: WLD, wx: float, wz: float) -> float:
-	var hs := _corners(w)
-	var cw: int = GRID_W + 1
-	var c := cell_for_world(wx, wz)
-	var uv := _cell_uv(wx, wz)
-	var r0: float = 0.0
-	var r1: float = 0.0
-	var r2: float = 0.0
-	var r3: float = 0.0
-	var ca: int = clampi(c.x - 1, 0, GRID_W)
-	var cb: int = clampi(c.x, 0, GRID_W)
-	var cc: int = clampi(c.x + 1, 0, GRID_W)
-	var cd: int = clampi(c.x + 2, 0, GRID_W)
-	for j in 4:
-		var base: int = clampi(c.y - 1 + j, 0, GRID_H) * cw
-		var v: float = _mono1d(hs[base + ca], hs[base + cb], hs[base + cc], hs[base + cd], uv.x)
-		match j:
-			0: r0 = v
-			1: r1 = v
-			2: r2 = v
-			_: r3 = v
-	return _mono1d(r0, r1, r2, r3, uv.y)
-
-## The ground the ENHANCED fine mesh is built from: planar outside the
-## box, smooth inside, blended across the taper ring.
-static func height_fine(w: WLD, wx: float, wz: float) -> float:
-	var k: float = fine_weight(w, wx, wz)
-	var planar: float = height_planar(w, wx, wz)
-	if k <= 0.0:
-		return planar
-	return lerpf(planar, height_smooth(w, wx, wz), k)
 
 ## Per-cell vertex colour from WLD layer 2 (material id, &0x3F).
 ## Hand-tuned palette covering the dominant material ids on MAP.210.
@@ -505,11 +398,9 @@ static func corner_blended_color(w: WLD, col: int, row: int,
 ## `tile_textures` is an Array of Texture2D indexed by material id (built
 ## from TEXTURE.302). When empty, a vertex-colour fallback is used.
 static func build_terrain_mesh(w: WLD, tile_textures: Array = [],
-		tile_normals: Array = [], avg_colors: Array = []) -> ArrayMesh:
+		avg_colors: Array = []) -> ArrayMesh:
 	if w == null:
 		return null
-	if Render.enhanced() and w.fine_rect.has_area():
-		return _build_fine(w, tile_textures, tile_normals, avg_colors)
 	var has_tex: bool = not tile_textures.is_empty()
 
 	# Pre-compute the per-corner blended colours for every grid vertex.
@@ -613,22 +504,7 @@ static func build_terrain_mesh(w: WLD, tile_textures: Array = [],
 		arrays.resize(Mesh.ARRAY_MAX)
 		arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array(bk[0])
 		arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array(bk[1])
-		if Render.enhanced():
-			# Rolling hills instead of faceted cells: normals averaged over
-			# the shared grid corners (within the bucket).
-			arrays[Mesh.ARRAY_NORMAL] = Mesh3DLoader.smooth_normals(arrays[Mesh.ARRAY_VERTEX], arrays[Mesh.ARRAY_NORMAL], 80.0)
-			arrays[Mesh.ARRAY_TANGENT] = Mesh3DLoader._tangents_for(arrays[Mesh.ARRAY_VERTEX], arrays[Mesh.ARRAY_NORMAL], PackedVector2Array(bk[2]))
 		arrays[Mesh.ARRAY_TEX_UV] = PackedVector2Array(bk[2])
-		if Render.enhanced():
-			# UV2 from the world position: the ENHANCED detail layer
-			# (photo grain + normals) tiles evenly whatever the tile's
-			# own orientation.
-			var uv2 := PackedVector2Array()
-			var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-			uv2.resize(verts.size())
-			for vi in verts.size():
-				uv2[vi] = Vector2(verts[vi].x, verts[vi].z) / Render.DETAIL_WORLD_SIZE
-			arrays[Mesh.ARRAY_TEX_UV2] = uv2
 		arrays[Mesh.ARRAY_COLOR]  = PackedColorArray(bk[3])
 		var si: int = am.get_surface_count()
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
@@ -645,182 +521,10 @@ static func build_terrain_mesh(w: WLD, tile_textures: Array = [],
 			# fallback below). Depth comes from the fog instead.
 			smat.vertex_color_use_as_albedo = false
 			smat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-			var nrm: Texture2D = tile_normals[mat_id] if mat_id < tile_normals.size() else null
-			Render.style(smat, "terrain", nrm)
+			Render.style(smat, "terrain")
 		else:
 			# No tile — vertex colour IS the albedo.
 			smat.vertex_color_use_as_albedo = true
 			smat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_VERTEX
 		am.surface_set_material(si, smat)
 	return am
-
-# ---------------------------------------------------------------------
-# ENHANCED fine terrain
-# ---------------------------------------------------------------------
-## Same surfaces per material and the same world-planar tile UVs as the
-## classic mesh, but indexed, with the ground from `height_fine` and
-## normals from its finite differences. A cell is subdivided FINE_DIV ×
-## FINE_DIV when it lies in the fine box (or its taper ring) AND its four
-## corners differ; every other cell is the two DOS triangles, which the
-## interpolant reproduces exactly, so the two kinds meet without cracks.
-static func _build_fine(w: WLD, tile_textures: Array, tile_normals: Array,
-		avg_colors: Array) -> ArrayMesh:
-	var has_tex: bool = not tile_textures.is_empty()
-	var t0: int = Time.get_ticks_msec()
-	# The outer rect (box + taper) in cell coordinates: cells outside it
-	# are planar however sloped they are.
-	var outer: Rect2 = w.fine_rect.grow(FINE_TAPER)
-	var col0: int = clampi(int(floorf(outer.position.x / WORLD_PER_CELL)), 0, GRID_W - 1)
-	var col1: int = clampi(int(ceilf(outer.end.x / WORLD_PER_CELL)), 0, GRID_W - 1)
-	var row0: int = clampi(int(floorf((Z_FLIP_K - outer.end.y) / WORLD_PER_CELL)), 0, GRID_H - 1)
-	var row1: int = clampi(int(ceilf((Z_FLIP_K - outer.position.y) / WORLD_PER_CELL)), 0, GRID_H - 1)
-
-	var cw: int = GRID_W + 1
-	var corner_colors: Array = []
-	if not has_tex:
-		corner_colors.resize(cw * (GRID_H + 1))
-		for r in range(GRID_H + 1):
-			for c in range(GRID_W + 1):
-				corner_colors[r * cw + c] = corner_blended_color(w, c, r, avg_colors)
-
-	# bucket = [pos, norm, tan, uv, uv2, col, idx]
-	var buckets: Dictionary = {}
-	var fine_cells: int = 0
-	var n: int = FINE_DIV
-	for row in range(GRID_H - 1):
-		for col in range(GRID_W - 1):
-			var h_nw := corner_height(w, col, row)
-			var h_ne := corner_height(w, col + 1, row)
-			var h_sw := corner_height(w, col, row + 1)
-			var h_se := corner_height(w, col + 1, row + 1)
-			var sloped: bool = h_nw != h_ne or h_nw != h_sw or h_nw != h_se
-			var in_box: bool = col >= col0 and col <= col1 and row >= row0 and row <= row1
-			var div: int = n if (sloped and in_box) else 1
-			if div > 1:
-				fine_cells += 1
-
-			var b2: int = sample_byte(w, 2, col, row)
-			var orient: int = ((b2 & 0x40) >> 6) | ((b2 & 0x80) >> 6)
-			if TILE_ROT_CCW:
-				orient = (4 - orient) & 3
-			var mat_id: int = b2 & 0x3F
-			var bk = buckets.get(mat_id)
-			if bk == null:
-				bk = [PackedVector3Array(), PackedVector3Array(), PackedFloat32Array(),
-					PackedVector2Array(), PackedVector2Array(), PackedColorArray(), PackedInt32Array()]
-				buckets[mat_id] = bk
-			var bp: PackedVector3Array = bk[0]
-			var bn: PackedVector3Array = bk[1]
-			var bt: PackedFloat32Array = bk[2]
-			var bu: PackedVector2Array = bk[3]
-			var bu2: PackedVector2Array = bk[4]
-			var bc: PackedColorArray = bk[5]
-			var bi: PackedInt32Array = bk[6]
-			var first: int = bp.size()
-
-			# The tile's UV Jacobian is constant, so the tangent (the world
-			# direction along which U grows) and the bitangent (V) are one
-			# pair per tile: U/V per cell of world X and of world Z(Godot),
-			# the latter growing with the row.
-			var base_c := Vector2(float(col), float(row))
-			var uv_c: Vector2 = _tile_uv(base_c, orient, 0.5, 0.5)
-			var d_du: Vector2 = (_tile_uv(base_c, orient, 0.51, 0.5) - uv_c) / 0.01   # dUV per +X cell
-			var d_dv: Vector2 = (_tile_uv(base_c, orient, 0.5, 0.51) - uv_c) / 0.01   # dUV per +Z(Godot) cell
-			var tan_w := Vector3(d_du.x, 0.0, d_dv.x).normalized()   # gradient of U
-			var bit_w := Vector3(d_du.y, 0.0, d_dv.y).normalized()   # gradient of V
-
-			for j in div + 1:
-				for i in div + 1:
-					var wx: float = (float(col) + float(i) / float(div)) * WORLD_PER_CELL
-					var wz_dos: float = Z_FLIP_K - (float(row) + float(j) / float(div)) * WORLD_PER_CELL
-					var h: float
-					var nrm: Vector3
-					if div > 1:
-						h = height_fine(w, wx, wz_dos)
-						var hx: float = height_fine(w, wx + FINE_EPS, wz_dos)
-						var hz: float = height_fine(w, wx, wz_dos - FINE_EPS)   # south = -Z(DOS) = +Z(Godot)
-						nrm = Vector3(-(hx - h) / FINE_EPS, 1.0, -(hz - h) / FINE_EPS).normalized()
-					else:
-						# Corner of a planar cell: the corner height and the
-						# average slope around it (smooth shading).
-						h = corner_height(w, mini(col + i, GRID_W - 1), mini(row + j, GRID_H - 1))
-						var hx1: float = height_fine(w, wx + FINE_EPS, wz_dos)
-						var hx0: float = height_fine(w, wx - FINE_EPS, wz_dos)
-						var hz1: float = height_fine(w, wx, wz_dos - FINE_EPS)
-						var hz0: float = height_fine(w, wx, wz_dos + FINE_EPS)
-						nrm = Vector3(-(hx1 - hx0) / (2.0 * FINE_EPS), 1.0, -(hz1 - hz0) / (2.0 * FINE_EPS)).normalized()
-					bp.append(Vector3(wx, h, -wz_dos))
-					bn.append(nrm)
-					# Gram-Schmidt the tile tangent against the normal.
-					var t: Vector3 = (tan_w - nrm * nrm.dot(tan_w)).normalized()
-					var hand: float = 1.0 if nrm.cross(t).dot(bit_w) >= 0.0 else -1.0
-					bt.append(t.x); bt.append(t.y); bt.append(t.z); bt.append(hand)
-					bu.append(_tile_uv(base_c, orient, float(i) / float(div), float(j) / float(div)))
-					bu2.append(Vector2(wx, -wz_dos) / Render.DETAIL_WORLD_SIZE)
-					if not has_tex:
-						# Nearest corner's blended colour (fallback look only).
-						var cc: int = mini(col + int(round(float(i) / float(div))), GRID_W)
-						var cr: int = mini(row + int(round(float(j) / float(div))), GRID_H)
-						bc.append(corner_colors[cr * cw + cc])
-			# Two triangles per sub-cell, split NW–SE like the DOS cell.
-			var stride: int = div + 1
-			for j in div:
-				for i in div:
-					var v_nw: int = first + j * stride + i
-					var v_ne: int = v_nw + 1
-					var v_sw: int = v_nw + stride
-					var v_se: int = v_sw + 1
-					bi.append(v_nw); bi.append(v_ne); bi.append(v_se)
-					bi.append(v_nw); bi.append(v_se); bi.append(v_sw)
-
-	if buckets.is_empty():
-		return null
-	var am := ArrayMesh.new()
-	var mat_ids := buckets.keys()
-	mat_ids.sort()
-	var verts_total: int = 0
-	var tris_total: int = 0
-	for mat_id in mat_ids:
-		var bk: Array = buckets[mat_id]
-		var arrays: Array = []
-		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = bk[0]
-		arrays[Mesh.ARRAY_NORMAL] = bk[1]
-		arrays[Mesh.ARRAY_TANGENT] = bk[2]
-		arrays[Mesh.ARRAY_TEX_UV] = bk[3]
-		arrays[Mesh.ARRAY_TEX_UV2] = bk[4]
-		if not has_tex:
-			arrays[Mesh.ARRAY_COLOR] = bk[5]
-		arrays[Mesh.ARRAY_INDEX] = bk[6]
-		verts_total += (bk[0] as PackedVector3Array).size()
-		tris_total += (bk[6] as PackedInt32Array).size() / 3
-		var si: int = am.get_surface_count()
-		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		var smat := StandardMaterial3D.new()
-		smat.cull_mode = BaseMaterial3D.CULL_DISABLED
-		var tex: Texture2D = null
-		if has_tex and mat_id >= 0 and mat_id < tile_textures.size():
-			tex = tile_textures[mat_id]
-		if tex != null:
-			smat.albedo_texture = tex
-			smat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-			smat.vertex_color_use_as_albedo = false
-			smat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-			var nrm_tex: Texture2D = tile_normals[mat_id] if mat_id < tile_normals.size() else null
-			Render.style(smat, "terrain", nrm_tex)
-		else:
-			smat.vertex_color_use_as_albedo = true
-			smat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_VERTEX
-		am.surface_set_material(si, smat)
-	print("[terrain] fine mesh: box cells %d..%d x %d..%d, %d sloped cells subdivided %dx, %d vertices, %d triangles in %d surfaces (%d ms)"
-		% [col0, col1, row0, row1, fine_cells, FINE_DIV, verts_total, tris_total, am.get_surface_count(),
-		   Time.get_ticks_msec() - t0])
-	return am
-
-## World-planar tile UV at cell-local (u, v) with the layer-2 orientation
-## applied about the tile centre (the classic builder's rotation).
-static func _tile_uv(base_c: Vector2, orient: int, u: float, v: float) -> Vector2:
-	var q := Vector2(u, v)
-	for r_i in orient:
-		q = Vector2(1.0 - q.y, q.x)
-	return q + base_c

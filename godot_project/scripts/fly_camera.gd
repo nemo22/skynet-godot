@@ -26,7 +26,6 @@ var _air_boost: float = 0.0
 @export var mouse_sensitivity: float = 0.003
 @export var touch_look_speed: float = 2.2
 
-const FxParticles := preload("res://scripts/fx_particles.gd")
 const Tracer := preload("res://scripts/tracer.gd")
 const Projectile := preload("res://scripts/projectile.gd")
 const Grenade := preload("res://scripts/grenade.gd")
@@ -36,7 +35,6 @@ const CFAFile := preload("res://scripts/loaders/cfa_file.gd")
 const BSAReader := preload("res://scripts/loaders/bsa_reader.gd")
 const Palette := preload("res://scripts/loaders/palette.gd")
 const Explosion := preload("res://scripts/explosion.gd")
-const WeaponModels := preload("res://scripts/weapon_models.gd")
 ## How far ahead of the muzzle the player's own tracer starts, and how
 ## far it is allowed to reach.
 const TRACER_START: float = 420.0
@@ -371,9 +369,6 @@ func _reset_aim() -> void:
 
 func set_vehicle(v: int) -> void:
 	_reset_aim()
-	if _dust != null and is_instance_valid(_dust):
-		_dust.queue_free()
-	_dust = null
 	v = clampi(v, VEH_FOOT, VEH_HK)
 	if v == vehicle:
 		return
@@ -461,7 +456,7 @@ func _attach_cockpit(v: int) -> void:
 	var mi := MeshInstance3D.new()
 	mi.mesh = am
 	# Flat, as DOS draws it: seen from inside, every face looks back at the
-	# driver and no light reaches it — ENHANCED drew the whole frame black.
+	# driver, away from whatever light the level has.
 	for si in am.get_surface_count():
 		var sm: Material = am.surface_get_material(si)
 		if sm is BaseMaterial3D:
@@ -744,7 +739,6 @@ const RAM_RADIUS: float = 120.0
 const RAM_DAMAGE_PER_SPEED: float = 0.045
 const RAM_SELF_PER_SPEED: float = 0.012
 var _ram_cd: Dictionary = {}       # enemy instance id -> cooldown
-var _dust: GPUParticles3D = null   # ENHANCED wheel dust
 
 ## Direction the guns fire: where the camera looks. In the jeep the
 ## camera IS the turret - the mouse turns it, the keys drive the car -
@@ -837,10 +831,6 @@ func _drive(delta: float, fwd_in: float, str_in: float) -> void:
 	var before := global_position
 	move_and_slide()
 	_ram_check(fwd)
-	if _dust == null and FxParticles.on():
-		_dust = FxParticles.wheel_dust(self)
-	if _dust != null:
-		_dust.amount_ratio = clampf(absf(_veh_speed) / JEEP_MAX_SPEED, 0.0, 1.0) if is_on_floor() else 0.0
 	# A wall stops the jeep dead (and the momentum with it) — carcoll2.
 	if absf(_veh_speed) > 50.0 and global_position.distance_to(before) < absf(_veh_speed) * delta * 0.2:
 		if absf(_veh_speed) > 500.0:
@@ -1292,7 +1282,6 @@ func _shoot(idx: int = -1) -> void:
 		_vm_firing = true
 		_vm_idx = 0
 		_vm_t = 0.0
-		_vm3d_kick = 1.0                  # 3D view model recoil, one shot
 
 	var fwd: Vector3 = aim_dir()
 	# Where the shot comes FROM, and which way it actually flies.
@@ -1340,26 +1329,6 @@ func _shoot(idx: int = -1) -> void:
 	# the gun's muzzle; from 90 u a 36 u sprite filled a third of the
 	# screen, so it sits further out and smaller (a 2026-09-02 report).
 	mf.setup(muzzle + shot * 70.0, tint, 26.0 if kind == "shotgun" else 18.0)
-	# ENHANCED: what a shot leaves behind — a spent case out of the port
-	# for the slugthrowers, a wisp of smoke at the muzzle. The energy
-	# weapons get nothing: their muzzle flash already is the effect, and
-	# the coloured flare on top of it was part of what made the guns look
-	# like they were belching fire (2026-09-04).
-	if Render.enhanced():
-		var scene: Node = get_tree().current_scene
-		var right: Vector3 = global_transform.basis.x
-		if _cam != null:
-			right = _cam.global_transform.basis.x
-		var muzzle_at: Vector3 = muzzle + shot * 70.0
-		match kind:
-			"bullet":
-				FxParticles.casings(scene, muzzle + right * 14.0, right, fwd, 1)
-				FxParticles.muzzle_smoke(scene, muzzle_at, fwd, 16.0)
-			"shotgun":
-				FxParticles.casings(scene, muzzle + right * 14.0, right, fwd, 1)
-				FxParticles.muzzle_smoke(scene, muzzle_at, fwd, 26.0)
-			"rocket", "grenade":
-				FxParticles.muzzle_smoke(scene, muzzle_at, fwd, 34.0)
 
 	# Ballistic / straight projectiles take a separate path.
 	if kind == "grenade":
@@ -1403,9 +1372,8 @@ func _shoot(idx: int = -1) -> void:
 			var tr: MeshInstance3D = Tracer.new()
 			get_tree().current_scene.add_child(tr)
 			tr.setup(beam_from, beam_to, Color(1.0, 0.86, 0.55, 0.5), 2.0)
-	# Shotgun: a puff of smoke lingering at the muzzle (DOS mode only —
-	# ENHANCED already got its particle wisp above).
-	if kind == "shotgun" and not FxParticles.on():
+	# Shotgun: a puff of smoke lingering at the muzzle.
+	if kind == "shotgun":
 		var sm := SmokePuff.new()
 		get_tree().current_scene.add_child(sm)
 		sm.setup(muzzle + fwd * 30.0, 180.0)
@@ -1415,8 +1383,6 @@ func _shoot(idx: int = -1) -> void:
 			n = n.get_parent()
 		if n != null and n != self:
 			_deal(n, dmg)
-		elif FxParticles.on():
-			FxParticles.impact(get_tree().current_scene, endpoint, hit.get("normal", Vector3.UP))
 		else:
 			var puff := Explosion.new()
 			get_tree().current_scene.add_child(puff)
@@ -1442,15 +1408,15 @@ func _projectile_cfg(kind: String, w: Dictionary) -> Dictionary:
 			return {"model": "ROCKET.3D", "color": Color(1.0, 0.75, 0.4),
 				"speed": 3000.0, "life": 3.4,
 				"splash": float(w.get("splash", 512.0)),
-				"trail": true, "light": true, "impact_bank": 363,
+				"trail": true, "impact_bank": 363,
 				"impact_sound": "EXPLO3.RAW", "hits": "enemy"}
 		"laser":
 			return {"model": "LASER1.3D", "color": Color(1.0, 0.32, 0.22),
-				"speed": 9000.0, "life": 1.2, "splash": 0.0, "light": true,
+				"speed": 9000.0, "life": 1.2, "splash": 0.0,
 				"impact_bank": 364, "hits": "enemy"}
 		"plasma":
 			return {"model": "LASER2.3D", "color": Color(0.45, 0.7, 1.0),
-				"speed": 4000.0, "life": 1.2, "splash": 0.0, "light": true,
+				"speed": 4000.0, "life": 1.2, "splash": 0.0,
 				"impact_bank": 364, "hits": "enemy"}
 	return {"speed": 4000.0, "hits": "enemy"}
 
@@ -1744,46 +1710,12 @@ func _capture(on: bool) -> void:
 	_captured = on
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if on else Input.MOUSE_MODE_VISIBLE
 
-## Build the first-person weapon viewmodel overlay and load each weapon's
-## .CFA animation frames.
-## The optional 3D weapon in the hands (DETAIL → WEAPON VIEW). It hangs
-## off the camera at the same screen corner the DOS art occupies, kicks
-## back when it fires and sways a little as the player walks. The DOS
-## CFA art stays the default: it is hand-drawn WITH the soldier's
-## gloves, which a primitive model cannot match.
 ## How far the viewmodel is allowed to sink behind the HUD bar, in DOS
 ## pixels — the grip and the hands read better tucked slightly under it.
 const HUD_OVERLAP: float = 14.0
-##
-## It renders in its OWN viewport with its own camera. A gun held a
-## couple of dozen units from a 75-degree world camera sits deep in the
-## lens: the barrel splays outward, the receiver skews and the near half
-## swells — which is what "it has to be perspective-corrected" means
-## (2026-09-04). Every shooter solves it the same way: a second camera
-## with a narrow field of view and its own light rig, composited over
-## the world. It also retires the no-depth-test hack, because the level
-## is simply not in that viewport, so no wall can slice the gun.
-## The gun in your hands. It was drawn 34 units long half a metre from
-## a 40-degree lens, which is a third of the screen and so much
-## perspective that you looked at the SIDE of the receiver with the wire
-## stock coming at you rather than down the barrel (2026-09-04). Smaller,
-## further away, and only a few degrees off the view axis.
-const VM3D_LEN: float = 28.0            # model length in world units
-const VM3D_FOV: float = 40.0            # narrow: no wide-angle stretch
-const VM3D_POS := Vector3(9.0, -14.5, -48.0)
-const VM3D_YAW: float = 0.20
-const VM3D_PITCH: float = -0.05
-const VM3D_ROLL: float = -0.04
-## An upright pipe needs to sit lower and further out than a rifle.
-const VM3D_PIPE_POS := Vector3(17.0, -26.0, -78.0)
-const VM3D_PIPE_LEN: float = 52.0
-var _vm3d: Node3D = null
-var _vm3d_idx: int = -1
-var _vm3d_kick: float = 0.0
-var _vm_vp: SubViewport = null           # the viewmodel's own render target
-var _vm_cam3d: Camera3D = null
-var _vm_tex: TextureRect = null          # composites it over the world
 
+## Build the first-person weapon viewmodel overlay and load each weapon's
+## .CFA animation frames.
 func _build_viewmodel() -> void:
 	_vm_layer = CanvasLayer.new()
 	_vm_layer.layer = 2                       # above the 3D view, below the HUD
@@ -1825,15 +1757,8 @@ func _act_on(event: InputEvent) -> bool:
 func _process(delta: float) -> void:
 	if _viewmodel == null:
 		return
-	_update_viewmodel_3d(delta)
 	var frames: Array = _vm_cache.get(_weapon_idx, []) if vehicle == VEH_FOOT else []
-	# The CFA clock runs even when the 3D model is the one being drawn.
-	# It used to return here instead, so `_vm_firing` was set by the shot
-	# and never cleared — and the 3D recoil, which re-armed itself from
-	# that flag, kicked forever: "after one shot the gun shakes back and
-	# forth in a loop" (2026-09-04).
-	var showing_art: bool = not frames.is_empty() and _vm3d == null
-	_viewmodel.visible = showing_art
+	_viewmodel.visible = not frames.is_empty()
 	if frames.is_empty():
 		_vm_firing = false
 		return
@@ -1851,140 +1776,11 @@ func _process(delta: float) -> void:
 				_vm_idx = 0                   # back to the idle pose
 				_vm_firing = false
 				break
-	if not showing_art:
-		return
 	_viewmodel.texture = frames[_vm_idx]
 	_layout_viewmodel()
 
-## The viewmodel's private viewport: transparent, its own 3D world (so
-## the level's lights and fog never reach the gun) and a three-point rig
-## that shows off the chamfers.
-func _build_vm_viewport() -> void:
-	_vm_vp = SubViewport.new()
-	_vm_vp.transparent_bg = true
-	_vm_vp.own_world_3d = true
-	_vm_vp.handle_input_locally = false
-	_vm_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	_vm_vp.msaa_3d = Viewport.MSAA_4X
-	_vm_layer.add_child(_vm_vp)
-	var we := WorldEnvironment.new()
-	var env := Environment.new()
-	env.background_mode = Environment.BG_CLEAR_COLOR
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.26, 0.28, 0.34)
-	env.ambient_light_energy = 1.0
-	we.environment = env
-	_vm_vp.add_child(we)
-	_vm_cam3d = Camera3D.new()
-	_vm_cam3d.fov = VM3D_FOV
-	_vm_cam3d.near = 0.5
-	_vm_cam3d.far = 400.0
-	_vm_vp.add_child(_vm_cam3d)
-	# Key from the upper left front, a cool fill from the right, and a
-	# dim rim from behind to pick the silhouette off the world.
-	var key := DirectionalLight3D.new()
-	key.rotation_degrees = Vector3(-38.0, 34.0, 0.0)
-	key.light_energy = 0.55
-	key.light_color = Color(1.0, 0.96, 0.90)
-	_vm_vp.add_child(key)
-	var fill := DirectionalLight3D.new()
-	fill.rotation_degrees = Vector3(-8.0, -120.0, 0.0)
-	fill.light_energy = 0.32
-	fill.light_color = Color(0.62, 0.72, 0.95)
-	_vm_vp.add_child(fill)
-	var rim := DirectionalLight3D.new()
-	rim.rotation_degrees = Vector3(24.0, 168.0, 0.0)
-	rim.light_energy = 0.14
-	rim.light_color = Color(0.85, 0.88, 1.0)
-	_vm_vp.add_child(rim)
-	_vm_tex = TextureRect.new()
-	_vm_tex.texture = _vm_vp.get_texture()
-	_vm_tex.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_vm_tex.stretch_mode = TextureRect.STRETCH_SCALE
-	_vm_tex.visible = false
-	_vm_layer.add_child(_vm_tex)
-
-## Build / place the 3D weapon in the hands when the option is on.
-func _update_viewmodel_3d(delta: float) -> void:
-	var want: bool = Settings.weapon_3d and Render.enhanced() and vehicle == VEH_FOOT and health > 0.0
-	if not want:
-		if _vm3d != null and is_instance_valid(_vm3d):
-			_vm3d.queue_free()
-		_vm3d = null
-		_vm3d_idx = -1
-		if _vm_tex != null and is_instance_valid(_vm_tex):
-			_vm_tex.visible = false
-		return
-	if _vm_vp == null or not is_instance_valid(_vm_vp):
-		_build_vm_viewport()
-	if _vm3d_idx != _weapon_idx or _vm3d == null or not is_instance_valid(_vm3d):
-		if _vm3d != null and is_instance_valid(_vm3d):
-			_vm3d.queue_free()
-		var pipe: bool = String(WeaponModels.WEAPON_KINDS[_weapon_idx]) == "pipe"
-		# A length of scaffolding is longer than a rifle and much thinner.
-		_vm3d = WeaponModels.for_weapon(_weapon_idx,
-			VM3D_PIPE_LEN if pipe else VM3D_LEN,
-			(VM3D_PIPE_LEN * 0.16) if pipe else (VM3D_LEN * 0.34))
-		_vm3d_idx = _weapon_idx
-		if _vm3d == null:
-			_vm_tex.visible = false
-			return
-		# Models are built along +X; a +90 deg yaw sends +X to -Z, i.e.
-		# the barrel away from the camera. A PIPE is not a gun: nobody
-		# holds a length of scaffolding out in front of them like a
-		# barrel — you hold it UP, ready to swing, which is exactly what
-		# the DOS sprite draws (2026-09-04). Stand it on end and lean it
-		# back over the shoulder.
-		if String(WeaponModels.WEAPON_KINDS[_weapon_idx]) == "pipe":
-			_vm3d.rotation = Vector3(0.0, PI * 0.5 + 0.45, deg_to_rad(74.0))
-			_vm3d.position = VM3D_PIPE_POS
-		else:
-			_vm3d.rotation = Vector3(VM3D_PITCH, PI * 0.5 + VM3D_YAW, VM3D_ROLL)
-		_vm_cam3d.add_child(_vm3d)
-	_vm_tex.visible = true
-	_layout_vm3d()
-	# Recoil eases out from the kick the shot itself armed (_shoot).
-	var decay: float = 3.0 \
-		if String(WeaponModels.WEAPON_KINDS[_weapon_idx]) == "pipe" else 6.0
-	_vm3d_kick = maxf(_vm3d_kick - delta * decay, 0.0)
-	var speed: float = Vector2(velocity.x, velocity.z).length() / maxf(walk_speed, 1.0)
-	var t: float = float(Time.get_ticks_msec()) * 0.004
-	var sway := Vector3(sin(t) * 0.9, absf(cos(t)) * 0.7, 0.0) * clampf(speed, 0.0, 1.2)
-	if String(WeaponModels.WEAPON_KINDS[_weapon_idx]) == "pipe":
-		# A swing, not a recoil: the pipe goes up and back, then comes
-		# down and across the view. `_vm3d_kick` runs 1 -> 0 over the
-		# stroke, so (1 - kick) is the progress through it.
-		var swing: float = 1.0 - _vm3d_kick
-		var arc: float = sin(swing * PI)                 # 0 -> 1 -> 0
-		var down: float = smoothstep(0.25, 1.0, swing)
-		_vm3d.position = VM3D_PIPE_POS + sway + Vector3(
-			-arc * 26.0, arc * 16.0 - down * 10.0, arc * 14.0)
-		_vm3d.rotation = Vector3(
-			-arc * 0.55,
-			PI * 0.5 + 0.45 + arc * 0.5,
-			deg_to_rad(74.0) - down * 1.5)
-		return
-	_vm3d.position = VM3D_POS + sway + Vector3(0.0, _vm3d_kick * 1.6, _vm3d_kick * 4.5)
-	_vm3d.rotation = Vector3(VM3D_PITCH + _vm3d_kick * 0.20,
-		PI * 0.5 + VM3D_YAW, VM3D_ROLL)
-
-## The viewmodel viewport covers the WORLD area only — from the top of
-## the screen down to the HUD panel — so the gun's grip runs off the
-## bottom exactly where the panel starts, as the DOS art does.
-func _layout_vm3d() -> void:
-	var vp: Vector2 = get_viewport().get_visible_rect().size
-	var s: float = vp.y / 200.0
-	var hud_h: float = _hud_height(vp)
-	var size := Vector2i(int(vp.x), int(maxf(vp.y - hud_h + HUD_OVERLAP * s, 64.0)))
-	if _vm_vp.size != size:
-		_vm_vp.size = size
-		_vm_tex.texture = _vm_vp.get_texture()
-	_vm_tex.position = Vector2.ZERO
-	_vm_tex.size = Vector2(size)
-
-## How much of the window bottom the HUD bar takes. The level asks the
-## scene, because the ENHANCED HUD has no bar at all and the gun then
-## belongs at the very bottom of the window.
+## How much of the window bottom the HUD bar takes — the scene knows the
+## panel's scaled height.
 func _hud_height(vp: Vector2) -> float:
 	var sc: Node = get_tree().current_scene
 	if sc != null and sc.has_method("hud_height"):

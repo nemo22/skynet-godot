@@ -1,12 +1,12 @@
 ## Dev probe: what a baked level scene actually pulls off disk, and how
 ## much of it. Level load is ~21 ms per MB of resources plus ~0.3 ms per
 ## file (measured 2026-09-09), so this is the load-time budget.
-##   godot --headless --path . --script res://tools/deps_probe.gd -- res://converted/enhanced/maps/MAP.210.level.scn
+##   godot --headless --path . --script res://tools/deps_probe.gd -- res://converted/maps/MAP.210.level.scn
 extends SceneTree
 
 func _initialize() -> void:
 	var args := OS.get_cmdline_user_args()
-	var start: String = "res://converted/enhanced/maps/MAP.210.level.scn"
+	var start: String = "res://converted/maps/MAP.210.level.scn"
 	for a in args:
 		if a.begins_with("res://"):
 			start = a

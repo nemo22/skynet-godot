@@ -20,8 +20,6 @@ const GRAB_RANGE_V: float = 160.0     # vertical window (0xa0)
 const PICKUP_SOUND_ID: int = 179      # 0x11d670 → 0x12f3f7(0xb3)
 
 var _item: Array = []
-## ENHANCED: the 3D model standing in for the billboard (spun slowly).
-var model: Node3D = null
 var _player: Node3D = null
 var _bob_t: float = 0.0
 var _base_y: float = 0.0
@@ -40,11 +38,8 @@ func _ready() -> void:
 
 func _physics_process(delta: float) -> void:
 	# Gentle hover so pickups read as interactive, not scenery.
-	if model == null:
-		# DOS-style hover so billboards read as interactive; the ENHANCED
-		# models lie still on the ground like real objects.
-		_bob_t += delta
-		position.y = _base_y + sin(_bob_t * 3.0) * 14.0
+	_bob_t += delta
+	position.y = _base_y + sin(_bob_t * 3.0) * 14.0
 
 	if _player == null or not is_instance_valid(_player):
 		_player = get_tree().get_first_node_in_group("player")

@@ -137,52 +137,6 @@ func _ready() -> void:
 		dump_strings(String(cli["strings"]))
 	if cli.has("scan"):
 		scan_colours(String(cli["scan"]))
-	if cli.has("pcttest"):
-		# Why an emission mask saves empty: PortableCompressedTexture2D
-		# round-trip with and without mipmaps / alpha.
-		for mips in [false, true]:
-			for alpha in [false, true]:
-				var w := 64
-				var data := PackedByteArray()
-				data.resize(w * w * 4)
-				for i in w * w:
-					data[i * 4] = 255
-					data[i * 4 + 1] = 128
-					data[i * 4 + 2] = 0
-					data[i * 4 + 3] = 255 if alpha else 255
-				var img := Image.create_from_data(w, w, false, Image.FORMAT_RGBA8, data)
-				if mips:
-					img.generate_mipmaps()
-				var pct := PortableCompressedTexture2D.new()
-				pct.keep_compressed_buffer = true
-				pct.create_from_image(img, PortableCompressedTexture2D.COMPRESSION_MODE_LOSSLESS)
-				var path := "user://pcttest_%s_%s.res" % [mips, alpha]
-				var err := ResourceSaver.save(pct, path, ResourceSaver.FLAG_COMPRESS | ResourceSaver.FLAG_CHANGE_PATH)
-				var back = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
-				var bytes := FileAccess.get_file_as_bytes(path)
-				print("  mips=%s alpha=%s: in-memory %dx%d, saved %d bytes (%s), reloaded %dx%d" % [
-					mips, alpha, pct.get_width(), pct.get_height(), bytes.size(), error_string(err),
-					(back as Texture2D).get_width() if back is Texture2D else -1,
-					(back as Texture2D).get_height() if back is Texture2D else -1])
-	if cli.has("emi"):
-		# --emi=199:7,296:6 [--out=DIR]: the ENHANCED emission mask of a
-		# record — what the lit pixels of that texture are.
-		for spec2 in String(cli["emi"]).split(","):
-			var q := spec2.split(":")
-			if q.size() < 2:
-				continue
-			var bank2: int = int(q[0])
-			var rec2: int = int(q[1])
-			var em: Texture2D = Assets.emission(bank2, rec2)
-			if em == null:
-				print("  E%03d_%03d: no mask (not emissive)" % [bank2, rec2])
-				continue
-			var ei: Image = em.get_image()
-			print("  E%03d_%03d: %s %dx%d, image %s" % [bank2, rec2, em.get_class(),
-				em.get_width(), em.get_height(),
-				("%dx%d fmt %d" % [ei.get_width(), ei.get_height(), ei.get_format()]) if ei != null else "NULL"])
-			if ei != null and out_dir != "":
-				ei.save_png("%s/E%03d_%03d.png" % [out_dir, bank2, rec2])
 	if cli.has("faces"):
 		# --faces=NAME: how many faces use which texture (archive/record),
 		# so a strangely coloured surface can be traced to its art.
@@ -267,10 +221,10 @@ func _ready() -> void:
 		imgs.close()
 	get_tree().quit()
 
-## --inventory=DIR [--maps=210,220]: what the maps are made of, for the
-## ENHANCED replacement pack — every billboard sprite as a PNG
-## (DIR/sprites/T<bank>_<rec>.png) with its use count, every placed .3D
-## name with count and AABB, every enemy type. Writes DIR/inventory.txt.
+## --inventory=DIR [--maps=210,220]: what the maps are made of — every
+## billboard sprite as a PNG (DIR/sprites/T<bank>_<rec>.png) with its use
+## count, every placed .3D name with count and AABB, every enemy type.
+## Writes DIR/inventory.txt.
 static func dump_inventory(dir: String, maps_arg: String) -> void:
 	DirAccess.make_dir_recursive_absolute(dir + "/sprites")
 	var bsa := BSAReader.new()
@@ -553,10 +507,9 @@ static func dump_radiation(spec: String) -> void:
 	bsa.close()
 
 ## --makepack=SRC,PREFIX,OUT.pck: pack a directory into a Godot resource
-## pack the game can mount at run time. Used to build the release
-## `enhanced.pck` out of converted/enhanced_pack, and `converted.pck` out
-## of a finished asset cache (see SkynetPaths.PACKS / build_pack):
-##   --makepack=C:/games/skynet/converted/enhanced_pack,res://enhanced,C:/games/skynet/enhanced.pck
+## pack the game can mount at run time — `converted.pck` out of a
+## finished asset cache (see SkynetPaths.PACKS / build_pack):
+##   --makepack=C:/games/skynet/converted,res://converted,C:/games/skynet/converted.pck
 ## A fourth field lists directory names to leave out (";" separated).
 static func make_pack(spec: String) -> void:
 	var v: PackedStringArray = spec.split(",")

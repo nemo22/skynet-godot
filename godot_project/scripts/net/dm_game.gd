@@ -405,7 +405,6 @@ func _spawn_pickup_node(key: int) -> void:
 	var pos: Vector3 = pk["pos"]
 	var world_h: float = float(tex.get_height()) * px
 	p.position = Vector3(pos.x, pos.y + world_h * 0.5, pos.z)
-	LevelLoader.Replacements.dress_pickup(p, si, float(tex.get_width()) * px, world_h)
 	_pickups_root.add_child(p)
 	_pickup_nodes[key] = p
 

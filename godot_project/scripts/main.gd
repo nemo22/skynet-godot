@@ -12,8 +12,6 @@
 extends Node3D
 
 const LevelLoader := preload("res://scripts/level_loader.gd")
-const Replacements := preload("res://scripts/replacements.gd")
-const PickupData := preload("res://scripts/pickup_data.gd")
 const MidiSynth := preload("res://scripts/midi_synth.gd")
 const BSAReader   := preload("res://scripts/loaders/bsa_reader.gd")
 const ImgFile     := preload("res://scripts/loaders/img_file.gd")
@@ -24,8 +22,6 @@ const SaveGame    := preload("res://scripts/save_game.gd")
 const GameConsole := preload("res://scripts/game_console.gd")
 const Explosion := preload("res://scripts/explosion.gd")
 const EnemyRef := preload("res://scripts/enemy.gd")
-const FxParticles := preload("res://scripts/fx_particles.gd")
-var _ash: GPUParticles3D = null
 const PauseMenu   := preload("res://scripts/pause_menu.gd")
 const DmGame      := preload("res://scripts/net/dm_game.gd")
 const WldTerrain  := preload("res://scripts/loaders/wld_terrain.gd")
@@ -72,7 +68,7 @@ var _health_label: Label = null
 var _weapon_label: Label = null
 var _ammo_label: Label = null
 var _hud_panel: TextureRect = null     # PANEL0.IMG bottom HUD bar
-var _health_fill: Control = null     # HEALTH gauge fill
+var _health_fill: ColorRect = null   # HEALTH gauge fill
 var _rad_fill: Control = null        # RADIATION gauge fill
 var _hud_layer: CanvasLayer = null     # the whole gameplay HUD
 ## AUTOMAP (Tab): the paused 3D map view, and the set of entity nodes the
@@ -456,70 +452,6 @@ static func _cli_vec3(s: String) -> Vector3:
 
 ## Apply the automation switches once a level is up: place the camera,
 ## then capture a screenshot and optionally quit.
-static func _all_omni(root: Node) -> Array:
-	var out: Array = []
-	var stack: Array = [root]
-	while not stack.is_empty():
-		var n: Node = stack.pop_back()
-		for c in n.get_children():
-			stack.append(c)
-		if n is OmniLight3D:
-			out.append(n)
-	return out
-
-## `--mat-debug=…`: turn features off on every material the level draws
-## (shared objects, so the enemy frames follow too).
-func _mat_debug(what: String) -> void:
-	var flags: PackedStringArray = what.to_lower().split(",")
-	var done: Dictionary = {}
-	var stack: Array = [self]
-	while not stack.is_empty():
-		var n: Node = stack.pop_back()
-		for c in n.get_children():
-			stack.append(c)
-		var mats: Array = []
-		if n is MeshInstance3D:
-			var mi := n as MeshInstance3D
-			if mi.material_override != null:
-				mats.append(mi.material_override)
-			if mi.mesh != null:
-				for si in mi.mesh.get_surface_count():
-					mats.append(mi.mesh.surface_get_material(si))
-					mats.append(mi.get_surface_override_material(si))
-		for m in mats:
-			if not (m is BaseMaterial3D) or done.has(m):
-				continue
-			done[m] = true
-			var b := m as BaseMaterial3D
-			if "dump" in flags and b.emission_enabled:
-				var lit: String = "-"
-				if b.emission_texture != null:
-					var img: Image = b.emission_texture.get_image()
-					if img != null:
-						if img.is_compressed():
-							img.decompress()
-						var c: int = 0
-						for y in img.get_height():
-							for x in img.get_width():
-								if img.get_pixel(x, y).v > 0.5:
-									c += 1
-						lit = "%dx%d %.1f%% lit" % [img.get_width(), img.get_height(),
-							100.0 * c / maxf(img.get_width() * img.get_height(), 1)]
-				print("[mat] %-24s albedo %-14s emission %s %s colour %s x%.2f op %d"
-					% [n.name, b.albedo_texture.resource_path.get_file() if b.albedo_texture else "-",
-					   b.emission_texture.resource_path.get_file() if b.emission_texture else "NONE",
-					   lit, b.emission, b.emission_energy_multiplier, b.emission_operator])
-			if "noemission" in flags:
-				b.emission_enabled = false
-			if "nonormal" in flags:
-				b.normal_enabled = false
-			if "nospec" in flags:
-				b.metallic_specular = 0.0
-				b.metallic = 0.0
-			if "unshaded" in flags:
-				b.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	print("[cli] mat-debug %s on %d materials" % [what, done.size()])
-
 func _cli_after_level() -> void:
 	if _cli.is_empty() or not is_instance_valid(player):
 		return
@@ -538,21 +470,6 @@ func _cli_after_level() -> void:
 			print("[skynet] --quit-after elapsed")
 			Net.leave()
 			get_tree().quit())
-	if _cli.has("light-scale"):
-		# Agent diagnostics: multiply every point light in the level, to
-		# find the intensity that reads right before it goes into a const.
-		var s: float = float(_cli["light-scale"])
-		var n: int = 0
-		for l in _all_omni(self):
-			l.light_energy *= s
-			n += 1
-		print("[cli] light-scale %.2f on %d lights" % [s, n])
-	if _cli.has("mat-debug"):
-		# Agent diagnostics: strip one material feature from EVERY mesh
-		# in the level (`--mat-debug=noemission|nonormal|nospec|unshaded`,
-		# comma-separated; `dump` lists the emissive ones) — the bisect
-		# that found the white panels (2026-09-05).
-		_mat_debug(String(_cli["mat-debug"]))
 	if _cli.has("near"):
 		# Agent diagnostics: stand 260 u from the first node of a group
 		# ("pickup", "fire", "enemy"; "group:N" picks the N-th) facing it.
@@ -787,8 +704,8 @@ func _perf_probe(secs: float) -> void:
 	for v in arr:
 		if v > 33.3:
 			over_33 += 1
-	print("[perf] %s %s: %d frames | mean %.1f ms (%.0f fps) | median %.1f | 95th %.1f | 99th %.1f | worst %.1f | %d frames over 33 ms (%.1f%%)"
-		% [_level_name(), "ENHANCED" if Render.enhanced() else "DOS", arr.size(),
+	print("[perf] %s: %d frames | mean %.1f ms (%.0f fps) | median %.1f | 95th %.1f | 99th %.1f | worst %.1f | %d frames over 33 ms (%.1f%%)"
+		% [_level_name(), arr.size(),
 		   sum / float(arr.size()), 1000.0 / (sum / float(arr.size())),
 		   float(arr[arr.size() / 2]), float(arr[int(arr.size() * 0.95)]),
 		   float(arr[int(arr.size() * 0.99)]), float(arr[arr.size() - 1]),
@@ -1016,7 +933,6 @@ func _begin_level(name: String) -> void:
 		level.sky.position = player.global_position
 	_set_sky_fill(level, name)
 	_light_level(level)
-	_fit_map_light_energy(level)
 	# Re-apply this map's state overlay when we have been here before.
 	_apply_map_state(level, name)
 
@@ -1062,8 +978,7 @@ func _begin_level(name: String) -> void:
 	_apply_pending_player()
 	_collect_radiation(level)
 	_setup_water(level)
-	_setup_detail(level)
-	_compass_north = _marker_value(level, 7)
+	_setup_scenery(level)
 	_set_hud_mode(player.vehicle if is_instance_valid(player) else 0)
 	if _dm != null:
 		_dm.on_level_ready(level)
@@ -1256,31 +1171,13 @@ const LIGHT_RANGE_PER_UNIT: float = 10.0    # variant-2 sub+8 → world units
 const LIGHT_ENERGY_DIV: float = 14.0        # variant-2 intensity → energy
 const INDOOR_AMBIENT: Color = Color(0.62, 0.62, 0.68)
 const OUTDOOR_AMBIENT: Color = Color(0.55, 0.55, 0.65)
-## ENHANCED runs much darker and lets the fittings do the work.
-const INDOOR_AMBIENT_ENHANCED: Color = Color(0.36, 0.37, 0.43)
-const INDOOR_ENERGY_ENHANCED: float = 1.0
-## Outdoors the ambient comes from the sky itself, at this energy — but
-## a night sky alone left every slope facing away from the moon black
-## ("vonku sú niektoré pasáže extrémne tmavé", 2026-09-05), so it is
-## mixed with a flat floor: OUTDOOR_SKY_MIX of sky, the rest
-## OUTDOOR_AMBIENT.
-const OUTDOOR_SKY_AMBIENT: float = 0.6
-const OUTDOOR_SKY_MIX: float = 0.55
-## Sodium-ish tint for the street lamps (the DOS lamp sprite's heads are
-## white-hot, and the pools they throw read warm against the night).
-const LAMP_COLOR: Color = Color(1.0, 0.86, 0.62)
-const OUTDOOR_LAMP_SCALE: float = 0.35
 
-## One OmniLight3D per enabled variant-2 light entity, plus the interior
-## treatment (dim ambient, cached unshaded materials swapped for shaded
-## duplicates).
-##
-## Outdoor maps carry lights too — MAP.210 has 32, MAP.220 fifty — and
-## they are the street lamps: the DOS renderer never lit outdoor terrain
-## with them (the lamp SPRITE simply has bright pixels), so the port
-## ignored them as well. In ENHANCED, where the world is really lit,
-## they go in: that is what makes the lamps cast pools of light at night.
-## DOS/RETRO keeps the flat original look.
+## One OmniLight3D per enabled variant-2 light entity of an interior,
+## plus the interior treatment (cached unshaded materials swapped for
+## per-vertex shaded duplicates). Outdoor maps carry lights too - MAP.210
+## has 32, MAP.220 fifty, the street lamps - but the DOS renderer never
+## lit the terrain with them (the lamp SPRITE simply has bright pixels),
+## so outdoors only the flat ambient is set.
 func _light_level(level: LevelLoader.Level) -> void:
 	var we: WorldEnvironment = get_node_or_null("WorldEnvironment")
 	if we == null or we.environment == null:
@@ -1288,28 +1185,10 @@ func _light_level(level: LevelLoader.Level) -> void:
 	var env: Environment = we.environment
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	if level.is_outdoor:
-		if Render.enhanced():
-			# The SKY is the light. A night HDRI over the hills gives the
-			# ground its colour and its gradient and the moon gives it
-			# shape; a flat grey ambient at full energy did neither, it
-			# just made everything evenly bright whatever the time of day
-			# ("vonkajsok je konstantne osvetleny", 2026-09-04).
-			env.ambient_light_color = OUTDOOR_AMBIENT
-			if env.sky != null:
-				env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-				env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
-				# Part sky, part floor: the sky gives the gradient and the
-				# colour, the floor keeps the moon-shadowed slopes readable.
-				env.ambient_light_sky_contribution = OUTDOOR_SKY_MIX
-			env.ambient_light_energy = OUTDOOR_SKY_AMBIENT
-		else:
-			env.ambient_light_color = OUTDOOR_AMBIENT
-			env.ambient_light_energy = 1.25
+		env.ambient_light_color = OUTDOOR_AMBIENT
+		env.ambient_light_energy = 1.25
 		if sun != null:
 			sun.visible = true
-		if Render.enhanced():
-			print("[level] outdoor: %d lamp lights, %d lit fittings"
-				% [_place_map_lights(level, true), _place_emissive_lights(level)])
 		return
 	env.ambient_light_sky_contribution = 1.0
 	env.ambient_light_color = INDOOR_AMBIENT
@@ -1317,134 +1196,17 @@ func _light_level(level: LevelLoader.Level) -> void:
 	if sun != null:
 		sun.visible = false
 	var cache: Dictionary = {}
-	var fittings: int = 0
-	if Render.enhanced():
-		# Dark, and lit by the room's own fittings: the ceiling strips and
-		# the panels emit (Assets.emission), and each one carries a lamp.
-		env.ambient_light_color = INDOOR_AMBIENT_ENHANCED
-		env.ambient_light_energy = INDOOR_ENERGY_ENHANCED
-		fittings = _place_emissive_lights(level)
-	else:
-		_shade_recursive(level.entities, cache)
-		_shade_recursive(level.enemies, cache)
+	_shade_recursive(level.entities, cache)
+	_shade_recursive(level.enemies, cache)
 	if level.sprites != null:
 		for s in level.sprites.get_children():
 			if s is SpriteBase3D:
 				(s as SpriteBase3D).shaded = true
-	print("[level] interior: %d map lights, %d lit fittings, %d shaded materials"
-		% [_place_map_lights(level, false), fittings, cache.size()])
+	print("[level] interior: %d map lights, %d shaded materials"
+		% [_place_map_lights(level), cache.size()])
 
-## How bright a map fixture may be is not a property of the fixture but
-## of the ROOM it hangs in — and specifically of how far it is from the
-## FLOOR it has to light. A corridor lamp sits ~130 units over your
-## head and blows the plaster out at any more energy; MAP.285's hall
-## fittings hang 450-716 above their floor and at the same cap lit
-## nothing at all. Neither the DOS `range` field (our own clamp floors
-## it at 400 for everything) nor the nearest surface tells them apart —
-## every one of 285's fittings has a wall or a pipe within 21-85 units.
-## The drop to the floor does, and it is exactly the distance the
-## energy/d falloff has to cover. A ceiling lamp in a normal room keeps
-## the cap it had before ("chodby sú znovu prepálené"); only a fixture
-## high over its floor is allowed more.
-const LIGHT_FIT_REF: float = 150.0     # drop at which the flat cap holds
-const LIGHT_FIT_MAX: float = 4.0
-const LIGHT_FIT_PROBE: float = 1500.0
-
-func _fit_map_light_energy(level: LevelLoader.Level) -> void:
-	if not Render.enhanced() or level.is_outdoor or level.map_lights.is_empty():
-		return
-	await get_tree().physics_frame
-	var space := get_world_3d().direct_space_state
-	if space == null:
-		return
-	var raised: int = 0
-	for off in level.map_lights:
-		var l: OmniLight3D = level.map_lights[off]
-		if not is_instance_valid(l) or not l.has_meta("dos_energy"):
-			continue
-		# How much room the fixture has, in six directions. The MEDIAN is
-		# the honest one: a corridor lamp sees a wall in most of them,
-		# a hall fitting sees far in most of them, and neither the
-		# nearest surface (285's lamps all have a ledge within 85 u) nor
-		# the drop to the floor (85-101 u — they hang over walkways)
-		# tells the two apart.
-		var ds := PackedFloat32Array()
-		for d in [Vector3.UP, Vector3.DOWN, Vector3.LEFT, Vector3.RIGHT,
-				Vector3.FORWARD, Vector3.BACK]:
-			var q := PhysicsRayQueryParameters3D.create(l.global_position,
-				l.global_position + (d as Vector3) * LIGHT_FIT_PROBE)
-			q.collide_with_areas = false
-			var hit := space.intersect_ray(q)
-			ds.append(l.global_position.distance_to(hit["position"])
-				if hit.has("position") else LIGHT_FIT_PROBE)
-		var arr: Array = Array(ds)
-		arr.sort()
-		var drop: float = (float(arr[2]) + float(arr[3])) * 0.5
-		var cap: float = MAP_LIGHT_MAX_ENHANCED * clampf(
-			drop / LIGHT_FIT_REF, 1.0, LIGHT_FIT_MAX)
-		if OS.get_cmdline_user_args().has("--lightfit"):
-			print("[lightfit] %s median=%.0f dists=%s cap=%.2f" % [l.name, drop, str(arr), cap])
-		var want: float = minf(float(l.get_meta("dos_energy")), cap)
-		if want > MAP_LIGHT_MAX_ENHANCED + 0.001:
-			raised += 1
-		l.light_energy = Render.energy(want)
-	if raised > 0:
-		print("[level] %d of %d map lights have room around them — brighter"
-			% [raised, level.map_lights.size()])
-
-## --- lights from the art ---------------------------------------------
-## A DOS interior has no light entities worth the name — a corridor gets
-## one or two, and the rest of its light is PAINTED: bright strips down
-## the ceiling, lit panels, glowing consoles. In ENHANCED those texels
-## emit (Assets.emission), and here every mesh that emits also gets a
-## lamp, so the corridor is actually lit by the thing on its ceiling.
-##
-## Biggest fittings first, and only a handful cast shadows — an omni
-## shadow is a cubemap each.
-## A lamp per EMIT_CELL of lit surface, hung EMIT_DROP off it. 128 is
-## a hall of panels plus its corridors; omnis without shadows are
-## cheap in the clustered renderer.
-const EMIT_LIGHT_MAX: int = 128
-const EMIT_LIGHT_SHADOWS: int = 4
-const EMIT_CELL: float = 900.0
-const EMIT_DROP: float = 60.0
-const EMIT_LIGHT_COLOR: Color = Color(1.0, 0.94, 0.84)
-## Intensities at Render.LIGHT_REF (3 m): the fitting's own lamp, and
-## the cap on a DOS map light indoors (Render.energy turns them into
-## Godot energies; the fitting itself emits on its own).
-## Measured on MAP.214's corridor and MAP.218's room with --light-scale
-## (2026-09-05): a strip lamp sits 100-150 u from the walls of a
-## corridor and a dozen of them overlap, so it wants a tenth of what a
-## lone lamp in a hall would.
-const EMIT_LIGHT_ENERGY: float = 0.10       # a bright-walled corridor was bleaching at 0.14
-const MAP_LIGHT_MAX_ENHANCED: float = 0.3
-const EMIT_RANGE_SCALE: float = 9.0      # x the fitting's own size
-const EMIT_RANGE_MIN: float = 750.0
-const EMIT_RANGE_MAX: float = 3200.0
-## A lit patch whose world normal points down more than this is a ceiling
-## fitting; anything else (a wall panel, a screen) lends its lamp to the
-## ceiling above it: EMIT_CEILING_GAP under the top of its mesh, at
-## EMIT_WALL_SCALE of the energy.
-const EMIT_CEILING_NY: float = 0.5
-const EMIT_CEILING_GAP: float = 30.0
-const EMIT_WALL_SCALE: float = 0.6
-
-## Where the light IS: the lit texels of the emission masks, found on
-## the geometry. Every triangle of an emissive surface is read against
-## its mask through its UVs; the lit ones are gathered into EMIT_CELL-
-## sized cells in the mesh's own frame (so a lamp rides its mover) and
-## each cell gets an omni hung EMIT_DROP in front of the surface, on
-## its visible side. A ceiling of forty panels becomes a grid of lamps,
-## a corridor gets one under every pair of strips, a console a small
-## one over its screens.
-##
-## The first cut hung one lamp per emissive MESH at its centre and
-## skipped anything over 1400 u as "a building, not a lamp" — which is
-## exactly what a corridor segment or a hall ceiling is, so the strips
-## glowed and lit nothing ("celá chodba je temná", 2026-09-05).
-## Indoor sprites and their stand-in models rest on the floor the physics
-## world actually has under them. The DOS record's Y sits a little above
-## the floor and the port lifted the billboard's foot by a constant; the
+## Indoor sprites rest on the floor the physics world actually has under
+## them. The DOS record's Y sits a little above the floor and the port lifted the billboard's foot by a constant; the
 ## items still sank ("sprity zabiehajú do podlahy", 2026-09-05). Each
 ## sprite carries `bottom_off` (its foot relative to its origin); a ray
 ## from knee height finds the floor and the foot goes onto it, within a
@@ -1475,168 +1237,8 @@ func _settle_sprites(level: LevelLoader.Level) -> void:
 	if moved > 0:
 		print("[level] settled %d sprites onto the floor" % moved)
 
-func _place_emissive_lights(level: LevelLoader.Level) -> int:
-	if not Render.enhanced() or level.entities == null:
-		return 0
-	var masks: Dictionary = {}               # Texture2D → Image / false
-	var cells: Array = []                    # [weight, mi, pos, normal, extent]
-	for c in level.entities.get_children():
-		if not (c is MeshInstance3D):
-			continue
-		var mi := c as MeshInstance3D
-		if mi.mesh == null:
-			continue
-		var local: Dictionary = {}           # cell key → accumulator
-		for si in mi.mesh.get_surface_count():
-			var m: Material = mi.mesh.surface_get_material(si)
-			if not (m is BaseMaterial3D):
-				continue
-			var bm := m as BaseMaterial3D
-			if not bm.emission_enabled or bm.emission_texture == null:
-				continue
-			var img: Image = _mask_image(bm.emission_texture, masks)
-			if img == null:
-				continue
-			var arrays: Array = mi.mesh.surface_get_arrays(si)
-			var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-			var uvs_v = arrays[Mesh.ARRAY_TEX_UV]
-			if uvs_v == null:
-				continue
-			var uvs: PackedVector2Array = uvs_v
-			var nrm_v = arrays[Mesh.ARRAY_NORMAL]
-			var nrm: PackedVector3Array = nrm_v if nrm_v != null else PackedVector3Array()
-			var idx_v = arrays[Mesh.ARRAY_INDEX]
-			var idx: PackedInt32Array = idx_v if idx_v != null else PackedInt32Array()
-			var count: int = idx.size() if idx.size() > 0 else verts.size()
-			var t: int = 0
-			while t + 2 < count:
-				var ia: int = idx[t] if idx.size() > 0 else t
-				var ib: int = idx[t + 1] if idx.size() > 0 else t + 1
-				var ic: int = idx[t + 2] if idx.size() > 0 else t + 2
-				t += 3
-				var a: Vector3 = verts[ia]
-				var b: Vector3 = verts[ib]
-				var cc: Vector3 = verts[ic]
-				var cr: Vector3 = (b - a).cross(cc - a)
-				var area: float = cr.length() * 0.5
-				if area <= 0.0:
-					continue
-				var s: Dictionary = _lit_samples(img, uvs[ia], uvs[ib], uvs[ic])
-				var hits: Array = s["hits"]
-				if hits.is_empty():
-					continue
-				# The lit part of the triangle, not the triangle: a strip
-				# across one corner of a wall quad puts the lamp under
-				# the strip.
-				var centre := Vector3.ZERO
-				for bc in hits:
-					centre += a + (b - a) * (bc as Vector2).x + (cc - a) * (bc as Vector2).y
-				centre /= float(hits.size())
-				var w: float = area * float(hits.size()) / float(s["total"])
-				# The stored normal is the visible side; the fan winding
-				# puts the raw cross product at the back.
-				var n: Vector3 = (nrm[ia] + nrm[ib] + nrm[ic]) if nrm.size() > ic else -cr
-				var key := Vector3i(int(floor(centre.x / EMIT_CELL)),
-					int(floor(centre.y / EMIT_CELL)), int(floor(centre.z / EMIT_CELL)))
-				if not local.has(key):
-					local[key] = [0.0, Vector3.ZERO, Vector3.ZERO, centre, centre]
-				var acc: Array = local[key]
-				acc[0] += w
-				acc[1] += centre * w
-				acc[2] += n.normalized() * w
-				acc[3] = (acc[3] as Vector3).min(centre)
-				acc[4] = (acc[4] as Vector3).max(centre)
-		for key in local:
-			var acc: Array = local[key]
-			var w: float = acc[0]
-			cells.append([w, mi, (acc[1] as Vector3) / w, (acc[2] as Vector3).normalized(),
-				((acc[4] as Vector3) - (acc[3] as Vector3)).length()])
-	# The brightest cells first, up to the budget; a few cast shadows.
-	cells.sort_custom(func(x, y) -> bool: return float(x[0]) > float(y[0]))
-	var made: int = 0
-	var lifted: int = 0
-	for cell in cells:
-		if made >= EMIT_LIGHT_MAX:
-			break
-		var mi: MeshInstance3D = cell[1]
-		var xf: Transform3D = mi.global_transform
-		var pos: Vector3 = (cell[2] as Vector3) + (cell[3] as Vector3) * EMIT_DROP
-		var energy: float = EMIT_LIGHT_ENERGY
-		# Which way the lit patch faces in the WORLD (the submarine's pieces
-		# are tilted, a panel can be mounted anyhow). A ceiling fitting
-		# faces down and keeps its lamp EMIT_DROP under it. A lit WALL panel
-		# hung its lamp EMIT_DROP in front of the wall, which made the wall
-		# the brightest thing in the corridor, specular and all — "ako keby
-		# žiarili steny, to svetlo má ísť zo stropu" (Marek, 2026-09-11).
-		# The panel still glows; its light now comes from under the top of
-		# its mesh (a corridor piece's ceiling), just as far out, dimmer.
-		var facing: Vector3 = (xf.basis * (cell[3] as Vector3)).normalized()
-		if facing.y > -EMIT_CEILING_NY:
-			var world: Vector3 = xf * pos
-			world.y = maxf(world.y, _mesh_top_y(mi) - EMIT_CEILING_GAP)
-			pos = xf.affine_inverse() * world
-			energy *= EMIT_WALL_SCALE
-			lifted += 1
-		var l := OmniLight3D.new()
-		l.position = pos
-		l.light_color = EMIT_LIGHT_COLOR
-		l.light_energy = Render.energy(energy)
-		l.omni_range = clampf(float(cell[4]) * 1.2 + 600.0, EMIT_RANGE_MIN, EMIT_RANGE_MAX)
-		l.omni_attenuation = Render.OMNI_DECAY
-		l.shadow_enabled = made < EMIT_LIGHT_SHADOWS
-		l.add_to_group("maplight")
-		mi.add_child(l)
-		made += 1
-	if lifted > 0:
-		print("[level] %d of %d fitting lamps came from lit walls — hung under the ceiling instead" % [lifted, made])
-	return made
-
-## The highest point of a mesh in the world (its AABB's corners).
-static func _mesh_top_y(mi: MeshInstance3D) -> float:
-	var ab: AABB = mi.mesh.get_aabb()
-	var top: float = -INF
-	for i in 8:
-		top = maxf(top, (mi.global_transform * ab.get_endpoint(i)).y)
-	return top
-
-## The emission mask as an Image (decompressed), cached per texture.
-static func _mask_image(tex: Texture2D, cache: Dictionary) -> Image:
-	if cache.has(tex):
-		var v = cache[tex]
-		return v if v is Image else null
-	var img: Image = tex.get_image()
-	if img != null and img.is_compressed():
-		img.decompress()
-	cache[tex] = img if img != null else false
-	return img
-
-## Which points of a triangle are lit in its mask: a barycentric grid
-## dense enough to catch a strip a few texels wide across a whole wall
-## quad (seven samples per triangle missed every corridor strip),
-## sampled with wrap. Returns {hits: [Vector2(s, t) …], total: n}.
-static func _lit_samples(img: Image, u0: Vector2, u1: Vector2, u2: Vector2) -> Dictionary:
-	var w: int = img.get_width()
-	var h: int = img.get_height()
-	var px: float = maxf(maxf((u1 - u0).length(), (u2 - u0).length()), (u2 - u1).length()) * float(maxi(w, h))
-	var n: int = clampi(int(px / 5.0), 2, 14)
-	var hits: Array = []
-	var total: int = 0
-	for i in n + 1:
-		for j in n + 1 - i:
-			var s: float = float(i) / float(n)
-			var t: float = float(j) / float(n)
-			var uv: Vector2 = u0 + (u1 - u0) * s + (u2 - u0) * t
-			total += 1
-			var x: int = posmod(int(floor(uv.x * w)), w)
-			var y: int = posmod(int(floor(uv.y * h)), h)
-			if img.get_pixel(x, y).v > 0.5:
-				hits.append(Vector2(s, t))
-	return {"hits": hits, "total": total}
-
-## Build the OmniLight3D for every enabled variant-2 entity. Outdoors the
-## lamps are warmer and dimmer than an interior fixture, and none of them
-## casts shadows — there can be fifty on a map.
-func _place_map_lights(level: LevelLoader.Level, outdoor: bool) -> int:
+## Build the OmniLight3D for every enabled variant-2 entity of an interior.
+func _place_map_lights(level: LevelLoader.Level) -> int:
 	if level.map == null or level.entities == null:
 		return 0
 	var n := 0
@@ -1651,28 +1253,6 @@ func _place_map_lights(level: LevelLoader.Level, outdoor: bool) -> int:
 		l.omni_range = clampf(float(absi(e.light_enable)) * LIGHT_RANGE_PER_UNIT, 400.0, 6000.0)
 		l.omni_attenuation = 1.0
 		l.light_energy = clampf(float(e.light_intensity) / LIGHT_ENERGY_DIV, 0.4, 3.5)
-		if outdoor:
-			# Accents, not room lighting: a night street has dozens of
-			# these overlapping and the full interior energy blows the
-			# whole frame out.
-			l.light_color = LAMP_COLOR
-			l.light_energy = clampf(l.light_energy * OUTDOOR_LAMP_SCALE, 0.15, 0.9)
-			if Render.enhanced():
-				l.light_energy = Render.energy(l.light_energy)
-				l.omni_attenuation = Render.OMNI_DECAY
-			l.shadow_enabled = false
-		else:
-			if Render.enhanced():
-				# Per-pixel lit walls take a lamp much harder than the
-				# DOS per-vertex look did: capped, and falling off
-				# faster, or the wall under the lamp goes white. The room
-				# the fixture actually hangs in raises that cap once the
-				# level is in the tree (_fit_map_light_energy).
-				l.set_meta("dos_energy", l.light_energy)
-				l.light_energy = Render.energy(minf(l.light_energy, MAP_LIGHT_MAX_ENHANCED))
-				l.omni_attenuation = Render.OMNI_DECAY
-			# The first few interior lamps cast shadows (a cubemap each).
-			l.shadow_enabled = Render.enhanced() and n < 6
 		l.add_to_group("maplight")      # agent aid: --near=maplight:N
 		l.visible = starts_on
 		l.set_meta("file_off", e.file_off)
@@ -1714,14 +1294,6 @@ func _set_sky_fill(level: LevelLoader.Level, map_name: String = "") -> void:
 	var fill := Color(0.0, 0.0, 0.0)
 	var night: bool = level.is_outdoor and _is_night_map(map_name)
 	_clear_moon()
-	if _ash != null and is_instance_valid(_ash):
-		_ash.queue_free()
-	_ash = null
-	if _dust != null and is_instance_valid(_dust):
-		_dust.queue_free()
-	_dust = null
-	if level.is_outdoor and camera != null:
-		_ash = FxParticles.ambient_ash(camera)
 	if night:
 		# No dome on night maps: the flat palette-0x11 sky and the moon.
 		if level.sky != null and is_instance_valid(level.sky):
@@ -1775,28 +1347,14 @@ func _set_sky_fill(level: LevelLoader.Level, map_name: String = "") -> void:
 		env.fog_sky_affect = 0.0
 	_apply_render_env(level, env, fill)
 
-## --- ENHANCED rendering environment (docs §P) ------------------------------
-## The DOS dome (SKY_SKY.3D, painted mountains + moon) is replaced by a
-## real sky: a physical sunset / dusk sky when the dome is bright, a
-## generated star field with a moon when it is dark (a night map), or a
-## hand-made panorama from <converted>/enhanced_pack/sky/{sunset,night}.png. The
-## sun becomes a shadow-casting light that matches the sky, plus glow,
-## ACES tonemapping and volumetric light for the rays.
-const NIGHT_LUMA: float = 0.14
-## DOS-mode grading — the palette-ramp look, not raw linear output.
+## --- Rendering environment and sky ------------------------------------
+## The DOS grading — the palette-ramp look, not raw linear output.
 ## 1.30 matched the Win32 port's gamma (2026-09-04) and came back as
 ## "až moc svetlá" (2026-09-05); the player's own BRIGHTNESS setting
 ## multiplies this (Settings.brightness).
 const DOS_BRIGHTNESS: float = 1.15
 const DOS_CONTRAST: float = 1.06
 const DOS_SATURATION: float = 1.10
-## ENHANCED colour grading — the ash-choked look.
-const GRADE_SATURATION: float = 0.68
-const GRADE_CONTRAST: float = 1.07
-const GRADE_BRIGHTNESS: float = 0.96
-## Exposure for a photographed panorama from the pack (see below).
-const SKY_ENERGY_NIGHT: float = 0.09
-const SKY_ENERGY_DUSK: float = 0.18
 
 ## Time of day is per mission, not per texture: the DOS sky code
 ## (FUN_00133b67) draws the SKY_SKY.3D dusk dome only for the maps in the
@@ -1824,7 +1382,6 @@ const MOON_AIM_DEG: float = 4.5
 const MOON_HITS_TO_FALL: int = 24
 const MOON_MESSAGE: String = "OW!"
 
-var _dust: GPUParticles3D = null       # drifting dust banks (outdoor)
 var _moon: MeshInstance3D = null
 var _moon_hits: int = 0
 var _moon_fall_v: float = 0.0
@@ -1868,22 +1425,9 @@ func _clear_moon() -> void:
 	_moon_fall_v = 0.0
 	_moon_fall = 0.0
 
-## The night moon: the DOS sprite pinned to the camera (both modes; in
-## ENHANCED it glows a little so the bloom picks it up).
-##
-## ENHANCED swaps the 57 px sprite for a real lunar photomap on a SPHERE
-## — an equirectangular map wrapped on a ball is the only way to get the
-## limb right; painting half of one onto a flat quad smears the edges.
-## The map is Solar System Scope's 2k moon (CC BY 4.0), fetched into
-## <pack>/sky/moon.jpg by tools/enhanced_pack.py --sky.
+## The night moon: the DOS sprite pinned to the camera.
 func _make_moon() -> void:
 	_clear_moon()
-	if Render.enhanced():
-		var real: String = Render.override_path("sky/moon.jpg")
-		if real.is_empty():
-			real = Render.override_path("sky/moon.png")
-		if not real.is_empty() and _make_moon_sphere(real):
-			return
 	var tex: Texture2D = Assets.texture(MOON_BANK, MOON_REC, true)
 	if tex == null:
 		return
@@ -1904,74 +1448,22 @@ func _make_moon() -> void:
 	mat.alpha_scissor_threshold = 0.5
 	mat.disable_fog = true
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS if Render.enhanced() else BaseMaterial3D.TEXTURE_FILTER_NEAREST
-	if Render.enhanced():
-		mat.albedo_color = Color(1.25, 1.25, 1.2)
+	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
 	_moon.material_override = mat
 	_moon.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(_moon)
 	_update_moon()
-
-## The ENHANCED moon: a lunar photomap on an unshaded sphere, turned so
-## the near side (longitude 0, the middle of an equirectangular map) is
-## the face we see.
-func _make_moon_sphere(path: String) -> bool:
-	var img := Image.load_from_file(path)
-	if img == null or img.get_width() <= 0:
-		return false
-	img.generate_mipmaps()
-	var tex := ImageTexture.create_from_image(img)
-	_moon = MeshInstance3D.new()
-	_moon.name = "Moon"
-	var fov_w: float = 2.0 * MOON_DIST * tan(deg_to_rad(camera.fov * 0.5)) * (16.0 / 9.0)
-	var r: float = fov_w * MOON_SCREEN_FRAC * 0.5
-	var sm := SphereMesh.new()
-	sm.radius = r
-	sm.height = r * 2.0
-	sm.radial_segments = 48
-	sm.rings = 24
-	_moon.mesh = sm
-	var mat := StandardMaterial3D.new()
-	mat.albedo_texture = tex
-	mat.albedo_color = Color(1.15, 1.15, 1.12)
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.disable_fog = true
-	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
-	_moon.material_override = mat
-	_moon.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	add_child(_moon)
-	_update_moon()
-	return true
 
 func _update_moon() -> void:
 	if _moon == null or not is_instance_valid(_moon) or camera == null:
 		return
 	_moon.global_position = camera.global_position + _moon_dir() * MOON_DIST
-	if _moon.mesh is SphereMesh:
-		# Show the NEAR side. Godot's sphere puts u=0 at +Z, so the
-		# middle of an equirectangular map — longitude 0, the face we
-		# know — sits on -Z, which is exactly where look_at aims.
-		_moon.look_at(camera.global_position, Vector3.UP)
+
 ## Seconds the MISSION COMPLETE screen stays before the next mission.
 const AUTO_ADVANCE_SEC: float = 6.0
 
-## The DOS sky dome's top band tells the time of day: a red-dominant
-## fill is the sunset dome however dark, anything dim and neutral/blue
-## is night.
-static func _is_night_fill(fill: Color) -> bool:
-	var luma: float = fill.r * 0.3 + fill.g * 0.59 + fill.b * 0.11
-	if luma >= NIGHT_LUMA:
-		return false
-	var red_dominant: bool = fill.r > 0.12 and fill.r > (fill.g + fill.b) * 1.5
-	return not red_dominant
-var _star_sky_tex: Texture2D = null
-const DUSK_SKY_SHADER := preload("res://shaders/dusk_sky.gdshader")
-## Sun for the ENHANCED dusk: just above the horizon, south-west-ish.
-const DUSK_SUN_ROT := Vector3(-7.0, 200.0, 0.0)
-const NIGHT_SUN_ROT := Vector3(-38.0, 155.0, 0.0)
-
-## The BRIGHTNESS setting (OPTIONS → DISPLAY, console `brightness`) is
-## the DOS gamma or the ENHANCED exposure, and it applies at once.
+## The BRIGHTNESS setting (OPTIONS → DETAIL, console `brightness`) is the
+## DOS gamma, and it applies at once.
 func _watch_brightness() -> void:
 	if not Settings.brightness_changed.is_connected(_refresh_brightness):
 		Settings.brightness_changed.connect(_refresh_brightness)
@@ -1980,198 +1472,37 @@ func _refresh_brightness(_v: float = 1.0) -> void:
 	var we: WorldEnvironment = get_node_or_null("WorldEnvironment")
 	if we == null or we.environment == null:
 		return
-	if Render.enhanced():
-		we.environment.tonemap_exposure = Settings.brightness()
-	else:
-		we.environment.adjustment_brightness = DOS_BRIGHTNESS * Settings.brightness()
+	we.environment.adjustment_brightness = DOS_BRIGHTNESS * Settings.brightness()
 
 func _apply_render_env(level: LevelLoader.Level, env: Environment, fill: Color) -> void:
-	var enhanced: bool = Render.enhanced()
 	var night: bool = level.is_outdoor and _moon != null
 	if level.sky != null and is_instance_valid(level.sky):
-		level.sky.visible = not enhanced and not night
-	if not enhanced:
-		env.glow_enabled = false
-		env.volumetric_fog_enabled = false
-		env.tonemap_mode = Environment.TONE_MAPPER_LINEAR
-		env.ssao_enabled = false
-		# The DOS renderer draws through a palette ramp and its own
-		# gamma; the port's straight linear output came out darker and
-		# flatter than the original ever looked. The Win32 port solves
-		# it with fGamma / fContrast uniforms — same idea here
-		# (2026-09-04: "the shading and the brightness in that port are
-		# how I would want our DOS look").
-		env.adjustment_enabled = true
-		env.adjustment_brightness = DOS_BRIGHTNESS * Settings.brightness()
-		env.adjustment_contrast = DOS_CONTRAST
-		env.adjustment_saturation = DOS_SATURATION
-		_watch_brightness()
-		if sun != null:
-			sun.light_energy = 1.35
-			sun.light_color = Color(1.0, 0.97, 0.92)
-		if level.is_outdoor:
-			# Haze that reaches the horizon instead of swallowing the
-			# next hill: the sky colour, not a third of it, and pushed
-			# out with the far clip.
-			env.fog_light_color = fill.lerp(Color(0.16, 0.14, 0.16), 0.35)
-			env.fog_depth_begin = FOG_BEGIN * 1.9 * Settings.fog_scale()
-			env.fog_depth_end = FOG_END * 1.8 * Settings.fog_scale()
-		return
-	env.tonemap_mode = Environment.TONE_MAPPER_ACES
-	env.tonemap_exposure = Settings.brightness()
-	_watch_brightness()
-	# Nuclear winter grading: pull the colour out of the world and lift
-	# the contrast a little. Everything in this game happened after the
-	# bombs, and full-saturation photoscans read like a nature documentary
-	# ("a rather depressing atmosphere", 2026-09-04).
+		level.sky.visible = not night
+	env.glow_enabled = false
+	env.volumetric_fog_enabled = false
+	env.tonemap_mode = Environment.TONE_MAPPER_LINEAR
+	env.ssao_enabled = false
+	# The DOS renderer draws through a palette ramp and its own
+	# gamma; the port's straight linear output came out darker and
+	# flatter than the original ever looked. The Win32 port solves
+	# it with fGamma / fContrast uniforms — same idea here
+	# (2026-09-04: "the shading and the brightness in that port are
+	# how I would want our DOS look").
 	env.adjustment_enabled = true
-	env.adjustment_saturation = GRADE_SATURATION
-	env.adjustment_contrast = GRADE_CONTRAST
-	env.adjustment_brightness = GRADE_BRIGHTNESS
-	env.glow_enabled = true
-	env.glow_intensity = 0.35
-	env.glow_bloom = 0.08
-	env.glow_hdr_threshold = 1.4
-	# SSAO in game units (1 u ≈ 2 cm — the default 1 u radius did
-	# nothing); on everywhere, it is most of the "depth" of the look.
-	env.ssao_enabled = true
-	env.ssao_radius = 70.0
-	env.ssao_intensity = 2.2
-	env.ssao_power = 1.6
-	env.ssao_detail = 0.6
-	if not level.is_outdoor:
-		env.volumetric_fog_enabled = false
-		return
-	# Sun (or moon) — low over the horizon for the dusk, dim and blue at
-	# night. Shadows on: the ENHANCED materials are lit per pixel.
+	env.adjustment_brightness = DOS_BRIGHTNESS * Settings.brightness()
+	env.adjustment_contrast = DOS_CONTRAST
+	env.adjustment_saturation = DOS_SATURATION
+	_watch_brightness()
 	if sun != null:
-		sun.visible = true
-		sun.shadow_enabled = true
-		sun.directional_shadow_max_distance = 12000.0
-		sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
-		if night:
-			# Moonlight from the moon's bearing.
-			sun.rotation_degrees = NIGHT_SUN_ROT
-			sun.look_at_from_position(Vector3.ZERO, -_moon_dir(), Vector3.UP)
-			sun.light_color = Color(0.7, 0.76, 0.95)
-			sun.light_energy = 0.85
-		else:
-			sun.rotation_degrees = DUSK_SUN_ROT
-			sun.light_color = Color(1.0, 0.68, 0.42)
-			sun.light_energy = 1.2
-		sun.shadow_opacity = 0.85
-		sun.shadow_blur = 1.5
-	var sky := Sky.new()
-	sky.radiance_size = Sky.RADIANCE_SIZE_128
-	# A real equirectangular sky from the pack, if one is there. The
-	# builder fetches Poly Haven's CC0 night and dusk HDRIs (2k .hdr,
-	# about 5 MB each) — a photographed sky with the real Milky Way beats
-	# the procedural star field, and REFLECTION_SOURCE_SKY then lights
-	# every metal surface in the level from it.
-	var over: String = ""
-	for nm in ["sky", "night" if night else "sunset"]:
-		for ext in ["hdr", "exr", "png", "jpg"]:
-			over = Render.override_path("sky/%s.%s" % [nm, ext])
-			if not over.is_empty():
-				break
-		if not over.is_empty():
-			break
-	if not over.is_empty():
-		# A hand-made equirectangular panorama replaces the whole sky.
-		var pm := PanoramaSkyMaterial.new()
-		var img := Image.load_from_file(over)
-		if img != null:
-			img.generate_mipmaps()
-			pm.panorama = ImageTexture.create_from_image(img)
-		# A photographed sky carries the real world's luminance. Left at
-		# 1.0 the Milky Way lit the ground like noon (2026-09-04); these
-		# bring it back to a night and a dusk, and REFLECTION_SOURCE_SKY
-		# then picks up a believable amount off it.
-		pm.energy_multiplier = SKY_ENERGY_NIGHT if night else SKY_ENERGY_DUSK
-		sky.sky_material = pm
-	else:
-		var sm := ShaderMaterial.new()
-		sm.shader = DUSK_SKY_SHADER
-		if _star_sky_tex == null:
-			_star_sky_tex = _make_star_sky()
-		sm.set_shader_parameter("stars", _star_sky_tex)
-		if night:
-			sm.set_shader_parameter("horizon_color", Color(0.05, 0.06, 0.12))
-			sm.set_shader_parameter("zenith_color", Color(0.01, 0.01, 0.03))
-			sm.set_shader_parameter("glow_color", Color(0.3, 0.36, 0.55))
-			sm.set_shader_parameter("sun_energy", 0.0)       # the moon sprite is the disc
-			sm.set_shader_parameter("glow_strength", 0.45)   # its halo
-		sky.sky_material = sm
-	env.background_mode = Environment.BG_SKY
-	env.sky = sky
-	# Ambient: a fixed dusk tint rather than the (mostly black) sky —
-	# the shadow side of every hill and building stays readable.
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	# Ambient low, key light high: the shadow side must read darker than
-	# the lit side or everything looks flat.
-	env.ambient_light_color = Color(0.2, 0.22, 0.34) if night else Color(0.5, 0.4, 0.42)
-	env.ambient_light_energy = 0.55 if night else 0.8
-	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
-	# Haze that takes the sky colour, plus volumetric light for the rays.
-	env.fog_light_color = fill.lerp(Color(0.05, 0.05, 0.1), 0.6) if night else fill.lerp(Color(1.0, 0.6, 0.35), 0.5)
-	env.fog_depth_begin = FOG_BEGIN * 1.5 * Settings.fog_scale()
-	env.fog_depth_end = FOG_END * 1.4 * Settings.fog_scale()
-	env.fog_sky_affect = 0.0
-	# Airborne dust, lit by whatever is up there. It used to be dusk only;
-	# a nuclear night is the dustiest of the lot, it is just dimmer.
-	#
-	# Kept FAINT on purpose. Volumetric fog absorbs as much as it
-	# scatters, so at night a global density that reads as "atmosphere"
-	# in daylight turns the whole map into a dark grey soup
-	# ("strasne husta a tmava", 2026-09-04). The mood comes from the
-	# drifting banks (scripts/dust_bank.gd) and from the depth haze
-	# above; this layer only ties them together and catches the muzzle
-	# flashes and the fires.
-	env.volumetric_fog_enabled = Settings.detail > Settings.LOW
-	env.volumetric_fog_density = 0.00007 if night else 0.00006
-	env.volumetric_fog_albedo = Color(0.72, 0.70, 0.66) if night else Color(1.0, 0.85, 0.7)
-	env.volumetric_fog_emission_energy = 0.0
-	env.volumetric_fog_length = 9000.0
-	env.volumetric_fog_anisotropy = 0.35
-	env.volumetric_fog_sky_affect = 0.0
-	env.volumetric_fog_ambient_inject = 0.18
-
-## The star layer of the ENHANCED sky (added by shaders/dusk_sky.gdshader
-## above the horizon glow): a few thousand stars of varying size and
-## warmth, a faint milky band, and a full moon (the DOS dome painted one
-## too). Black where there is nothing.
-func _make_star_sky() -> Texture2D:
-	var w: int = 2048
-	var h: int = 1024
-	var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0.0, 0.0, 0.0))
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 1996
-	# Milky band: a soft diagonal glow.
-	for y in h:
-		var v: float = float(y) / float(h)
-		for x in range(0, w, 2):
-			var u: float = float(x) / float(w)
-			var band: float = exp(-pow((v - 0.42 - 0.18 * sin(u * TAU)) * 9.0, 2.0))
-			if band > 0.05:
-				var c := Color(0.05, 0.06, 0.1) * band * 0.6
-				img.set_pixel(x, y, img.get_pixel(x, y) + c)
-				img.set_pixel(x + 1, y, img.get_pixel(x + 1, y) + c)
-	for _i in 6000:
-		var x: int = rng.randi() % w
-		var y: int = int(pow(rng.randf(), 0.6) * float(h) * 0.55)   # denser above the horizon
-		var mag: float = rng.randf()
-		var warm: float = rng.randf()
-		var c := Color(0.75 + 0.25 * warm, 0.8, 0.85 + 0.15 * (1.0 - warm)) * (0.35 + 0.65 * mag * mag)
-		img.set_pixel(x, y, c)
-		if mag > 0.85:
-			for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
-				var px: int = (x + d.x + w) % w
-				var py: int = clampi(y + d.y, 0, h - 1)
-				img.set_pixel(px, py, c * 0.45)
-	# (The moon is a separate sprite — see _make_moon.)
-	img.generate_mipmaps()
-	return ImageTexture.create_from_image(img)
+		sun.light_energy = 1.35
+		sun.light_color = Color(1.0, 0.97, 0.92)
+	if level.is_outdoor:
+		# Haze that reaches the horizon instead of swallowing the
+		# next hill: the sky colour, not a third of it, and pushed
+		# out with the far clip.
+		env.fog_light_color = fill.lerp(Color(0.16, 0.14, 0.16), 0.35)
+		env.fog_depth_begin = FOG_BEGIN * 1.9 * Settings.fog_scale()
+		env.fog_depth_end = FOG_END * 1.8 * Settings.fog_scale()
 
 ## Pin the sky mesh to the camera position each frame (DOS FUN_00133bbb
 ## re-centres SKY_SKY.3D on the camera). Orientation stays fixed so the
@@ -2260,12 +1591,8 @@ func _process(delta: float) -> void:
 			# offset — a quadratic drop.
 			_moon_fall_v += 0.28 * delta
 			_moon_fall += _moon_fall_v * delta
-			if sun != null and Render.enhanced():
-				sun.look_at_from_position(Vector3.ZERO, -_moon_dir(), Vector3.UP)
 			if _moon_fall > deg_to_rad(MOON_ELEVATION_DEG + 12.0):
 				_moon.visible = false
-				if sun != null and Render.enhanced():
-					sun.light_energy = 0.15
 				print("[skynet] the moon is gone")
 		_update_moon()
 	# AUTOMAP fog of war: a few times a second, mark the entity meshes in
@@ -2305,16 +1632,10 @@ func _process(delta: float) -> void:
 		if _health_fill != null:
 			_health_fill.anchor_right = frac
 			# The DOS panel's fill is a flat rect that goes red when the
-			# soldier is nearly done; the ENHANCED gauge is a gradient
-			# texture, so it is tinted instead of recoloured.
-			if _health_fill is ColorRect:
-				(_health_fill as ColorRect).color = Color(0.9, 0.3, 0.22) if low else Color(0.3, 0.85, 0.4)
-			else:
-				_health_fill.modulate = Color(1.3, 0.75, 0.7) if low else Color(1, 1, 1)
+			# soldier is nearly done.
+			_health_fill.color = Color(0.9, 0.3, 0.22) if low else Color(0.3, 0.85, 0.4)
 		if _armor_fill != null:
 			_armor_fill.anchor_right = clampf(player.armor, 0.0, 1.0)
-		if _armor_label != null:
-			_armor_label.text = "%d" % int(round(clampf(player.armor, 0.0, 1.0) * 100.0))
 		# Radiation: dose from the marker-4 sources, charged per second.
 		if not _rad_sources.is_empty() and _game_over == null:
 			_rad_dose = _radiation_dose(player.global_position + Vector3(0.0, 37.5, 0.0))
@@ -2325,12 +1646,6 @@ func _process(delta: float) -> void:
 		_update_radiation_feedback(delta)
 		if _rad_fill != null:
 			_rad_fill.anchor_right = clampf(_rad_dose / RAD_MAX_DOSE, 0.0, 1.0)
-		if _rad_row != null:
-			# On a map that HAS radiation the gauge stays up even at zero.
-			# A bar that appears only once you are already being cooked is
-			# no warning at all — DOS keeps the PANEL0 gauge on screen the
-			# whole time ("radiácia sa mi v enhanced verzii nezobrazovala").
-			_rad_row.visible = not _rad_sources.is_empty()
 		_fade_hurt(delta)
 		if _water != null:
 			_update_water_tint()
@@ -2339,14 +1654,8 @@ func _process(delta: float) -> void:
 		_weapon_label.text = str(player.weapon_name)
 		if _second_label != null:
 			var sc: int = int(player.secondary_ammo)
-			if _second_icon != null:
-				_second_label.text = "%d" % sc
-			else:
-				_second_label.text = "%s  x%d" % [str(player.secondary_name), sc]
+			_second_label.text = "%s  x%d" % [str(player.secondary_name), sc]
 			_second_label.modulate = Color(1, 1, 1) if sc > 0 else Color(0.55, 0.5, 0.5)
-		_update_hud_icons()
-		if _compass != null:
-			_compass.queue_redraw()
 		if _hud_mode != player.vehicle:
 			_set_hud_mode(player.vehicle)
 		if _hud_mode != 0:
@@ -2430,18 +1739,6 @@ const RAD_TINT_MAX: float = 0.3
 var _rad_click_left: float = 0.0
 var _rad_tint: ColorRect = null
 var _rad_dose: float = 0.0              # current dose, HP per second
-## Marker type 7: how many degrees the map's north is turned.
-var _compass_north: float = 0.0
-
-## The u16 at sub+2 of the first marker of `type`, or 0.
-static func _marker_value(level: LevelLoader.Level, type: int) -> float:
-	if level == null or level.map == null:
-		return 0.0
-	for e in level.map.entities:
-		if (e.flags & 3) == 3 and e.marker_type == type:
-			return float(e.exit_map)
-	return 0.0
-
 func _collect_radiation(level: LevelLoader.Level) -> void:
 	_rad_sources = []
 	_rad_dose = 0.0
@@ -2501,51 +1798,23 @@ func _radiation_dose(at: Vector3) -> float:
 		dose += minf(r * 50.0, 12800.0) / 256.0
 	return dose
 
-## --- The level's own scenery (ENHANCED only) -------------------------
-## The scatter itself now happens once, at conversion time, and lives in
-## the baked level scene (scripts/level_scene.gd) — a thousand props are
-## not something to re-derive on every level start, and having them in a
-## scene means they can be looked at and moved in the Godot editor.
-## What is left here is deciding how much of it to draw.
-##
-##   Detail/Props   one MultiMesh per model per patch of ground; the
-##                  first half of each is the MED set, so dropping to
-##                  MED is a visible_instance_count away
-##   Detail/Dust    volumetric dust banks — HIGH only
-##
-## `mods/maps/<MAP>.detail.tscn` is a scene of your own, instantiated on
-## top and never touched by the conversion (level.overlay).
-var _detail: Node3D = null
+## --- The level's own scenery ---------------------------------------
+## What the baked level scene (scripts/level_scene.gd) carries beside the
+## map itself: the occluders that stop the engine submitting the valley
+## behind a ridge. `mods/maps/<MAP>.detail.tscn` is a scene of your own,
+## instantiated on top and never touched by the conversion
+## (level.overlay).
 var _overlay: Node3D = null
 var _occluders: Node3D = null
 
-func _setup_detail(level: LevelLoader.Level) -> void:
-	for old in [_detail, _overlay, _occluders]:
+func _setup_scenery(level: LevelLoader.Level) -> void:
+	for old in [_overlay, _occluders]:
 		if old != null and is_instance_valid(old):
 			old.queue_free()
-	_detail = null
 	_overlay = null
 	_occluders = null
 	if level == null:
 		return
-	if level.detail != null and is_instance_valid(level.detail):
-		# Deathmatch arenas stay as the DOS authors laid them out.
-		if _dm != null or Net.active or Settings.detail <= Settings.LOW:
-			level.detail.queue_free()
-		else:
-			_detail = level.detail
-			if Settings.detail < Settings.HIGH:
-				var dust: Node = _detail.get_node_or_null("Dust")
-				if dust != null:
-					dust.queue_free()
-				var props: Node = _detail.get_node_or_null("Props")
-				if props != null:
-					for mmi in props.get_children():
-						if mmi is MultiMeshInstance3D and mmi.has_meta("med"):
-							(mmi as MultiMeshInstance3D).multimesh \
-								.visible_instance_count = int(mmi.get_meta("med"))
-			add_child(_detail)
-		level.detail = null
 	if level.occluders != null and is_instance_valid(level.occluders):
 		_occluders = level.occluders
 		add_child(_occluders)
@@ -2556,21 +1825,6 @@ func _setup_detail(level: LevelLoader.Level) -> void:
 		level.overlay = null
 	# Occlusion culling costs a CPU pass of its own; LOW turns it off.
 	get_viewport().use_occlusion_culling = Settings.detail > Settings.LOW
-
-## How many scenery props are actually being drawn (the `where` dump).
-func _detail_count() -> int:
-	if _detail == null or not is_instance_valid(_detail):
-		return 0
-	var n: int = 0
-	for group in _detail.get_children():
-		for c in group.get_children():
-			if c is MultiMeshInstance3D:
-				var mm: MultiMesh = (c as MultiMeshInstance3D).multimesh
-				n += mm.instance_count if mm.visible_instance_count < 0 \
-					else mm.visible_instance_count
-			else:
-				n += 1
-	return n
 
 ## --- Water (DOS 0x120bf9 / 0x120c83 / 0x12e56b) ----------------------
 ## Marker type 103 (or 104) carries the map's WATER LEVEL: the engine
@@ -2626,13 +1880,7 @@ func _setup_water(level: LevelLoader.Level) -> void:
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	m.cull_mode = BaseMaterial3D.CULL_DISABLED
 	m.albedo_color = Color(0.06, 0.22, 0.28, 0.82)
-	if Render.enhanced():
-		m.metallic = 0.35
-		m.roughness = 0.06
-		m.rim_enabled = true
-		m.rim = 0.6
-	else:
-		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mi.material_override = m
 	add_child(mi)
 	_water = mi
@@ -3713,10 +2961,9 @@ func _clear_level() -> void:
 	if _water != null and is_instance_valid(_water):
 		_water.queue_free()
 	_water = null
-	for scenery in [_detail, _overlay, _occluders]:
+	for scenery in [_overlay, _occluders]:
 		if scenery != null and is_instance_valid(scenery):
 			scenery.queue_free()
-	_detail = null
 	_overlay = null
 	_occluders = null
 	if is_instance_valid(player):
@@ -3833,9 +3080,9 @@ const COMMAND_NAMES: Array = [
 	"gamma", "give", "god", "heal", "health", "help", "hp", "illbeback", "load",
 	"map", "maps", "menu", "moon", "music", "nextlevel", "nitrous", "noclip",
 	"objectives", "occlusion", "options", "pause", "players", "pos", "quit",
-	"rebake", "render", "save", "secondary", "sf2", "shoot", "showspawns",
+	"rebake", "save", "secondary", "sf2", "shoot", "showspawns",
 	"slugs", "speed", "superuzi", "surgery", "throw", "tp", "use", "version",
-	"weapon", "weaponview", "where", "who", "whoami", "win", "look", "bodyat", "collfaces", "aim",
+	"weapon", "where", "who", "whoami", "win", "look", "bodyat", "collfaces", "aim",
 ]
 
 const HELP_TEXT := """[b]commands[/b]
@@ -4100,10 +3347,6 @@ func run_command(line: String) -> String:
 			if made == null:
 				return "drop %d produced nothing" % dt
 			return "dropped %s at %s" % [made.name, made.position]
-		"weaponview", "vm3d":
-			# DETAIL -> WEAPON VIEW, from a script.
-			Settings.set_weapon_3d(_bool_arg(args, not Settings.weapon_3d))
-			return "weapon view: %s" % ("3D MODEL" if Settings.weapon_3d else "DOS ART")
 		"wavetable", "sf2":
 			Settings.set_wavetable(_bool_arg(args, not Settings.wavetable))
 			var sf: String = MidiSynth.soundfont_path()
@@ -4144,11 +3387,9 @@ func run_command(line: String) -> String:
 				Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
 				Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),
 				Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0])
-			lines.append("render %s  detail %s  baked %s  scenery %d  enemies %d" % [
-				"ENHANCED" if Render.enhanced() else "DOS",
+			lines.append("detail %s  baked %s  enemies %d" % [
 				Settings.LEVEL_NAMES[Settings.detail],
 				"yes" if _current_level != null and _current_level.baked else "no",
-				_detail_count(),
 				get_tree().get_nodes_in_group("enemy").size()])
 			lines.append("occlusion culling %s  objects %d  shadow draws %d" % [
 				"on" if get_viewport().use_occlusion_culling else "off",
@@ -4181,9 +3422,8 @@ func run_command(line: String) -> String:
 				if not Assets.level_scene(String(mn)).is_empty():
 					made += 1
 				await get_tree().process_frame
-			var msg: String = "baked %d/%d level scenes in %.1f s (%s)" % [made,
-				which.size(), (Time.get_ticks_msec() - t0) / 1000.0,
-				"ENHANCED" if Render.enhanced() else "DOS"]
+			var msg: String = "baked %d/%d level scenes in %.1f s" % [made,
+				which.size(), (Time.get_ticks_msec() - t0) / 1000.0]
 			print("[bake] %s" % msg)
 			if which.size() == 1:
 				_load_current()
@@ -4430,22 +3670,10 @@ func run_command(line: String) -> String:
 			_return_to_menu()
 			return ""
 		"brightness", "gamma":
-			# Per look: the DOS gamma or the ENHANCED exposure, 0.5..1.8.
+			# The DOS gamma, 0.5..1.8.
 			if not args.is_empty() and args[0].is_valid_float():
 				Settings.set_brightness(float(args[0]))
-			return "brightness %.2f (%s)" % [Settings.brightness(), Render.NAMES[Render.mode]]
-		"render":
-			if args.is_empty():
-				return "render: %s (dos | enhanced)" % Render.NAMES[Render.mode]
-			var want: int = Render.ENHANCED if args[0].to_lower().begins_with("e") else Render.DOS
-			if want == Render.mode:
-				return "already %s" % Render.NAMES[want]
-			Render.set_mode(want)
-			var cur: String = _level_name()
-			if not cur.is_empty():
-				_close_overlays()
-				_transition(cur)
-			return "render %s — reloading" % Render.NAMES[want]
+			return "brightness %.2f" % Settings.brightness()
 		"bots":
 			if not Net.is_server():
 				return "only the host can change bots"
@@ -4539,9 +3767,6 @@ func _build_status_ui() -> void:
 	var crosshair: Control = preload("res://scripts/crosshair.gd").new()
 	canvas.add_child(crosshair)
 
-	if Render.enhanced():
-		_build_hud_minimal(canvas)
-		return
 	# --- bottom HUD bar: authentic DOS PANEL0.IMG (320×40 foot HUD) ---
 	# The art spans the full window width; its height is kept at the
 	# original 8:1 aspect (320:40), reproducing the DOS 20%-of-screen bar.
@@ -4609,264 +3834,7 @@ func _build_status_ui() -> void:
 	# (There used to be an on-screen MENU button pinned top-right. Esc
 	# opens the same menu and the button sat over the view.)
 
-## ENHANCED HUD. Not the 320x40 DOS bar (that stays in DOS mode) and not
-## a row of flat rectangles either — the third attempt, after "it looks
-## like a child drew it with felt-tips" (2026-09-04). It is built like a
-## game's status bar: one plate in the bottom-left holding gradient
-## gauges and, under them, the weapon and the thrown item side by side
-## with their own PICKUP SPRITES as icons; a compass strip along the
-## bottom centre. The reference is the Future Shock HUD, which does
-## exactly this and which Marek likes.
-## Tighter and nearer the corner since 2026-09-05 ("status bar trochu
-## menší, viac doľava ku kraju").
-const MIN_HUD_MARGIN: float = 14.0
-const MIN_HUD_TINT := Color(0.62, 0.94, 0.70)
-const MIN_HUD_WIDTH: float = 300.0
-const COMPASS_SPAN: float = 110.0        # degrees across the strip
-const COMPASS_SIZE := Vector2(430.0, 24.0)
-var _min_hud: Control = null
-var _armor_label: Label = null
-var _rad_row: Control = null
-var _compass: Control = null
-var _weapon_icon: TextureRect = null
-var _second_icon: TextureRect = null
-## Weapon slot -> the pickup sprite that grants it (built from the DOS
-## item table, so the icon is always the thing you picked up).
-var _weapon_sprites: Dictionary = {}
-## Ammo pool -> the sprite of the thrown item that uses it.
-const THROW_SPRITES: Dictionary = {
-	5: 25728, 6: 25605, 2: 25607, 8: 25603, 9: 25604,
-}
-
-func _build_hud_minimal(canvas: CanvasLayer) -> void:
-	for si in PickupData.ITEMS:
-		var w: int = int(PickupData.ITEMS[si][4])
-		if w >= 0 and not _weapon_sprites.has(w):
-			_weapon_sprites[w] = si
-	_min_hud = Control.new()
-	_min_hud.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_min_hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	canvas.add_child(_min_hud)
-	# --- bottom left ---
-	# No box around it. The frame was sized by its anchors and not by
-	# what was inside, so the gauges ran straight out through the border
-	# — and it was not earning its place anyway; the drop shadow on the
-	# type keeps everything legible over any scene (2026-09-04).
-	var plate := _min_panel()
-	plate.anchor_top = 1.0
-	plate.anchor_bottom = 1.0
-	plate.offset_left = MIN_HUD_MARGIN
-	plate.offset_right = MIN_HUD_MARGIN + MIN_HUD_WIDTH
-	plate.offset_top = -132.0
-	plate.offset_bottom = -MIN_HUD_MARGIN
-	_min_hud.add_child(plate)
-	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 4)
-	col.alignment = BoxContainer.ALIGNMENT_END
-	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	plate.add_child(col)
-	var hp: Array = _min_row(col, "HEALTH", Color(0.85, 0.16, 0.13), Color(1.0, 0.55, 0.30), 96.0, 8.0)
-	_health_label = hp[0]
-	_health_fill = hp[1]
-	var ar: Array = _min_row(col, "ARMOUR", Color(0.16, 0.38, 0.85), Color(0.55, 0.85, 1.0), 96.0, 6.0)
-	_armor_label = ar[0]
-	_armor_fill = ar[1]
-	var rad: Array = _min_row(col, "RAD", Color(0.72, 0.55, 0.05), Color(1.0, 0.95, 0.35), 96.0, 6.0)
-	_rad_fill = rad[1]
-	_rad_row = rad[2]
-	_rad_row.visible = false
-	# --- the weapon line: icon, rounds, name; then the thrown item and
-	# its count — one row on one baseline, so the number sits by the gun
-	# and the gauges sit right above it ("zarovnať počet nábojov pri
-	# zbrani … posunie sa nižšie aj health a armour", 2026-09-05).
-	var guns := HBoxContainer.new()
-	guns.add_theme_constant_override("separation", 8)
-	guns.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	col.add_child(guns)
-	_weapon_icon = _min_icon(guns, 48.0)
-	_ammo_label = _min_label(guns, HORIZONTAL_ALIGNMENT_RIGHT, 18, 1.0)
-	_ammo_label.custom_minimum_size = Vector2(50.0, 0.0)
-	_ammo_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_weapon_label = _min_label(guns, HORIZONTAL_ALIGNMENT_LEFT, 10, 0.55)
-	_weapon_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	var gap := Control.new()
-	gap.custom_minimum_size = Vector2(10.0, 0.0)
-	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	guns.add_child(gap)
-	_second_icon = _min_icon(guns, 34.0)
-	_second_label = _min_label(guns, HORIZONTAL_ALIGNMENT_LEFT, 14, 1.0)
-	_second_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	# --- compass, bottom centre ---
-	_compass = Control.new()
-	_compass.custom_minimum_size = COMPASS_SIZE
-	_compass.size = COMPASS_SIZE
-	_compass.anchor_left = 0.5
-	_compass.anchor_right = 0.5
-	_compass.anchor_top = 1.0
-	_compass.anchor_bottom = 1.0
-	_compass.offset_left = -COMPASS_SIZE.x * 0.5
-	_compass.offset_right = COMPASS_SIZE.x * 0.5
-	_compass.offset_top = -COMPASS_SIZE.y - MIN_HUD_MARGIN
-	_compass.offset_bottom = -MIN_HUD_MARGIN
-	_compass.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_compass.draw.connect(_draw_compass)
-	_min_hud.add_child(_compass)
-
-## A small item picture (the DOS sprite of the gun or the grenade),
-## `w` wide and half as tall, centred.
-func _min_icon(parent: Control, w: float) -> TextureRect:
-	var ico := TextureRect.new()
-	ico.custom_minimum_size = Vector2(w, w * 0.5)
-	ico.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	ico.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	ico.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
-	ico.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	ico.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	parent.add_child(ico)
-	return ico
-
-## A dim, softly framed plate to keep the read-out legible over anything.
-func _min_panel() -> PanelContainer:
-	var pc := PanelContainer.new()
-	pc.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var sb := StyleBoxEmpty.new()
-	sb.content_margin_left = 2.0
-	sb.content_margin_right = 2.0
-	sb.content_margin_top = 4.0
-	sb.content_margin_bottom = 4.0
-	pc.add_theme_stylebox_override("panel", sb)
-	return pc
-
-## One gauge row: caption, value, and a bar that is a real gradient in a
-## sunken frame rather than a flat block of colour.
-func _min_row(parent: Control, caption: String, c0: Color, c1: Color,
-		width: float, height: float) -> Array:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 9)
-	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	parent.add_child(row)
-	var cap := _min_label(row, HORIZONTAL_ALIGNMENT_LEFT, 10, 0.55)
-	cap.text = caption
-	cap.custom_minimum_size = Vector2(52.0, 0.0)
-	cap.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	var val := _min_label(row, HORIZONTAL_ALIGNMENT_RIGHT, 15, 1.0)
-	val.custom_minimum_size = Vector2(34.0, 0.0)
-	val.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	# A plain Control, NOT a PanelContainer: a container resizes its
-	# child to its own rect every layout pass, which quietly overrode the
-	# fill's anchor_right — every gauge read full whatever the value was
-	# (ARMOUR 8 drew a bar at 85%). It also grew to the width of the
-	# plate, which is why the bars were "zbytocne velke" (2026-09-04).
-	var trough := Control.new()
-	trough.custom_minimum_size = Vector2(width, height)
-	trough.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-	trough.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	trough.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	row.add_child(trough)
-	var back := Panel.new()
-	back.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	back.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var tb := StyleBoxFlat.new()
-	tb.bg_color = Color(0.0, 0.0, 0.0, 0.62)
-	tb.set_border_width_all(1)
-	tb.border_color = Color(MIN_HUD_TINT.r, MIN_HUD_TINT.g, MIN_HUD_TINT.b, 0.22)
-	back.add_theme_stylebox_override("panel", tb)
-	trough.add_child(back)
-	# The fill: a left-to-right gradient with a lighter top edge, so it
-	# has some shape to it instead of reading as a coloured rectangle.
-	var fill := TextureRect.new()
-	fill.texture = _gauge_gradient(c0, c1)
-	fill.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	fill.stretch_mode = TextureRect.STRETCH_SCALE
-	fill.anchor_bottom = 1.0
-	fill.anchor_right = 1.0
-	fill.offset_left = 1.0
-	fill.offset_top = 1.0
-	fill.offset_right = -1.0
-	fill.offset_bottom = -1.0
-	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	trough.add_child(fill)
-	return [val, fill, row]
-
-## Left-to-right colour ramp with a highlight along the top.
-static func _gauge_gradient(c0: Color, c1: Color) -> GradientTexture2D:
-	var g := Gradient.new()
-	g.set_color(0, c0)
-	g.add_point(0.55, c0.lerp(c1, 0.55))
-	g.set_color(g.get_point_count() - 1, c1)
-	var t := GradientTexture2D.new()
-	t.gradient = g
-	t.width = 128
-	t.height = 8
-	t.fill_from = Vector2(0.0, 0.0)
-	t.fill_to = Vector2(1.0, 0.0)
-	return t
-
-func _min_label(parent: Control, align: int, size: int, dim: float) -> Label:
-	var l := Label.new()
-	l.horizontal_alignment = align
-	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	l.add_theme_color_override("font_color",
-		Color(MIN_HUD_TINT.r, MIN_HUD_TINT.g, MIN_HUD_TINT.b) * dim)
-	l.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.85))
-	l.add_theme_constant_override("shadow_offset_x", 1)
-	l.add_theme_constant_override("shadow_offset_y", 2)
-	l.add_theme_font_size_override("font_size", size)
-	parent.add_child(l)
-	return l
-
-## The compass strip: ticks every 15 degrees, the cardinals lettered,
-## the heading fixed under a marker in the middle. North comes from the
-## map's marker type 7 (the DOS compass offset), so it points where the
-## briefing means.
-func _draw_compass() -> void:
-	if _compass == null or not is_instance_valid(player):
-		return
-	var w: float = _compass.size.x
-	var h: float = _compass.size.y
-	var tint := Color(MIN_HUD_TINT.r, MIN_HUD_TINT.g, MIN_HUD_TINT.b)
-	_compass.draw_rect(Rect2(Vector2.ZERO, Vector2(w, h)), Color(0.02, 0.03, 0.04, 0.42))
-	_compass.draw_rect(Rect2(Vector2.ZERO, Vector2(w, h)), Color(tint.r, tint.g, tint.b, 0.18), false, 1.0)
-	var heading: float = rad_to_deg(-player.rotation.y) + _compass_north
-	var font: Font = _compass.get_theme_default_font()
-	var deg: int = int(floor((heading - COMPASS_SPAN * 0.5) / 15.0)) * 15
-	while float(deg) < heading + COMPASS_SPAN * 0.5:
-		var d: float = wrapf(float(deg) - heading, -180.0, 180.0)
-		var x: float = w * 0.5 + d / COMPASS_SPAN * w
-		deg += 15
-		if x < 2.0 or x > w - 2.0:
-			continue
-		var cardinal: bool = posmod(deg - 15, 90) == 0
-		var tick: float = h * (0.42 if cardinal else 0.24)
-		_compass.draw_line(Vector2(x, h - 2.0), Vector2(x, h - 2.0 - tick),
-			Color(tint.r, tint.g, tint.b, 0.85 if cardinal else 0.45), 1.0)
-		if cardinal and font != null:
-			var letter: String = ["N", "E", "S", "W"][int(posmod(deg - 15, 360) / 90)]
-			_compass.draw_string(font, Vector2(x - 5.0, h * 0.52), letter,
-				HORIZONTAL_ALIGNMENT_LEFT, -1, 13, tint)
-	# The lubber line: where you are actually facing.
-	_compass.draw_line(Vector2(w * 0.5, 1.0), Vector2(w * 0.5, h - 1.0),
-		Color(1.0, 0.55, 0.35, 0.9), 1.0)
-
-## Keep the weapon / thrown-item icons in step with what is in hand.
-var _icon_weapon: int = -1
-var _icon_pool: int = -1
-
-func _update_hud_icons() -> void:
-	if _weapon_icon == null or not is_instance_valid(player):
-		return
-	var wi: int = int(player.get("_weapon_idx"))
-	if wi != _icon_weapon:
-		_icon_weapon = wi
-		var si: int = int(_weapon_sprites.get(wi, -1))
-		_weapon_icon.texture = Assets.texture(si >> 7, si & 0x7F, true) if si > 0 else null
-	var pool: int = int(player.get("secondary_pool"))
-	if pool != _icon_pool:
-		_icon_pool = pool
-		var ti: int = int(THROW_SPRITES.get(pool, -1))
-		_second_icon.texture = Assets.texture(ti >> 7, ti & 0x7F, true) if ti > 0 else null
-
-## How much of the window bottom the HUD covers — 0 with the minimal one.
+## How much of the window bottom the HUD covers — 0 while it is hidden.
 func hud_height() -> float:
 	if _hud_panel == null or not _hud_panel.visible:
 		return 0.0

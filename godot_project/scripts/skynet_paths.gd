@@ -56,20 +56,16 @@ func _ready() -> void:
 	_mount_packs()
 
 # --- resource packs (release layout) ---------------------------------
-## A release ships the free ENHANCED asset pack as `enhanced.pck` and may
-## keep the converted-asset cache in `converted.pck`; both are ordinary
-## Godot resource packs (PCKPacker, built with map_dump --makepack) that
-## `load_resource_pack` maps into res://. Verified on 4.7.2: ConfigFile,
-## `Image.load_from_file` on a raw WebP, DirAccess listings and
-## GLTFDocument (model + its .bin + textures) all read out of a mounted
-## pack, and PCKPacker itself runs in an exported build.
+## A release may keep the converted-asset cache in `converted.pck`, an
+## ordinary Godot resource pack (PCKPacker, built with map_dump
+## --makepack) that `load_resource_pack` maps into res://. Verified on
+## 4.7.2: DirAccess listings and resources read out of a mounted pack,
+## and PCKPacker itself runs in an exported build.
 ##
-## Mounted here — before Assets and Render read their directories — so
-## `Render.override_dir()` can return res://enhanced and Assets can take
-## res://converted as a ready-made (read-only) cache. Directories on
-## disk always win when no pack is there, which is the dev setup.
+## Mounted here — before Assets reads its directory — so Assets can take
+## res://converted as a ready-made (read-only) cache. A directory on disk
+## always wins when no pack is there, which is the dev setup.
 const PACKS: Dictionary = {
-	"enhanced": ["res://enhanced", "res://enhanced/replace.cfg"],
 	"converted": ["res://converted", "res://converted/VERSION"],
 }
 ## Names from PACKS that are mounted in this run.
@@ -129,9 +125,9 @@ func _mount_packs() -> void:
 
 ## Pack `src_dir` into the resource pack `out_path`, its contents mapped
 ## under `prefix` (a res:// path). The counterpart of _mount_packs: this
-## is how enhanced.pck is built for a release, and how converted.pck can
-## be built from a finished cache — PCKPacker works in an exported build
-## too, so the game itself can do it after the first-start import.
+## is how converted.pck is built from a finished cache — PCKPacker works
+## in an exported build too, so the game itself can do it after the
+## first-start import.
 ## `skip` drops directories by name anywhere in the tree.
 ## Returns {ok, error, files, bytes_in, bytes_out, msec}.
 static func build_pack(src_dir: String, prefix: String, out_path: String,

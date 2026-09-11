@@ -78,8 +78,7 @@ func _enter_tree() -> void:
 	row.add_child(refresh)
 	_dock.add_child(row)
 	_dock.add_child(_button("Open map DATA — every MAP record, editable", _open))
-	_dock.add_child(_button("Open baked LEVEL (DOS) — geometry + behaviour", _open_level.bind(false)))
-	_dock.add_child(_button("Open baked LEVEL (ENHANCED) — geometry + behaviour", _open_level.bind(true)))
+	_dock.add_child(_button("Open baked LEVEL — geometry + behaviour", _open_level))
 	_dock.add_child(_button("Export edited scene → mods/maps/", _export))
 	_dock.add_child(_button("Rebuild scene from MAP", _rebuild))
 	_dock.add_child(_button("Play map", _play))
@@ -179,8 +178,8 @@ func _open() -> void:
 	_say("opened %s" % scn)
 
 ## The baked LEVEL scene — the world itself in Godot format (terrain,
-## static geometry with its collision, occluders and, in ENHANCED, the
-## scattered scenery). Built by the conversion; this bakes it on demand
+## static geometry with its collision and the occluders). Built by the
+## conversion; this bakes it on demand
 ## the same way _build_scene does for the data view.
 ##
 ## The data view (Open map) is what you EDIT — move an entity there and
@@ -188,20 +187,18 @@ func _open() -> void:
 ## rebuilt whenever the MAP it came from changes. To add scenery by hand
 ## and keep it, put it in mods/maps/<MAP>.detail.tscn, which the game
 ## instantiates on top of every level.
-func _open_level(enhanced: bool) -> void:
+func _open_level() -> void:
 	var m := _selected()
 	if m.is_empty():
 		return
 	if not _ensure_link():
 		return
-	var rel: String = ("enhanced/maps" if enhanced else "maps")
-	var scn: String = "%s/%s/%s.level.scn" % [LINK, rel, m]
+	var scn: String = "%s/maps/%s.level.scn" % [LINK, m]
 	if not FileAccess.file_exists(ProjectSettings.globalize_path(scn)):
 		var out: Array = []
-		_say("baking %s level scene (%s) …" % [m, "ENHANCED" if enhanced else "DOS"])
+		_say("baking %s level scene …" % m)
 		var code: int = OS.execute(OS.get_executable_path(), _godot_args([
-			"--headless", "--", "--render=%s" % ("enhanced" if enhanced else "dos"),
-			"--level-scene=%s" % m]), out, true)
+			"--headless", "--", "--level-scene=%s" % m]), out, true)
 		if code != 0 or not FileAccess.file_exists(ProjectSettings.globalize_path(scn)):
 			_say("bake failed (%d): %s" % [code, "".join(out).right(600)])
 			return

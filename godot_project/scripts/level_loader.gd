@@ -13,7 +13,6 @@
 
 extends RefCounted
 
-const Replacements := preload("res://scripts/replacements.gd")
 const BSAReader    := preload("res://scripts/loaders/bsa_reader.gd")
 const Mesh3D       := preload("res://scripts/loaders/mesh_3d.gd")
 const MapFile      := preload("res://scripts/loaders/map_file.gd")
@@ -42,9 +41,6 @@ const SPRITE_HEALTH_BANKS := [214]        # TEXTURE.214 "equipment"
 ## FUN_0014f4xx: `tex_w * puVar1[0x11]`); the texture dimensions already
 ## carry each prop's relative size, so a single world-scale suffices.
 const SPRITE_PIXEL_SIZE: float = 2.0
-## How far a replacement scenery MODEL is drawn. The DOS billboard it
-## stands in for cost nothing at any distance; a photo-scan does not.
-const SCENERY_DRAW_RANGE: float = 9000.0
 ## Collectibles are drawn at the DOS renderer's own 1:1 scale.
 ##
 ## FUN_0014f208 hands the blitter `record.width * scale`, where `scale`
@@ -275,7 +271,6 @@ class Level:
 	## skip everything that has no behaviour.
 	var baked: bool = false
 	var occluders: Node3D = null          # OccluderInstance3D for the map
-	var detail: Node3D = null             # ENHANCED clutter / dust
 	var overlay: Node3D = null            # mods/maps/<MAP>.detail.tscn
 	## The map's behaviour as nodes (scripts/level_behaviour.gd), out of
 	## the baked scene or built here; scripts/level/behaviour.gd on its
@@ -385,8 +380,6 @@ func load_level(map_name: String) -> Level:
 					SkynetPaths.gamedata_path("WLD.%s" % borrowed))
 		if not wld_bytes.is_empty():
 			level.wld = WldTerrain.parse(wld_bytes)
-			if level.wld != null:
-				level.wld.fine_rect = play_box(level.map).grow(WldTerrain.FINE_MARGIN)
 			if level.wld_suffix == level.map_suffix:
 				print("[level] WLD.%s loaded" % level.map_suffix)
 			else:
@@ -397,8 +390,8 @@ func load_level(map_name: String) -> Level:
 				% level.map_suffix)
 
 	_phase("wld")
-	# The baked level scene: terrain, static geometry and their collision,
-	# the occluders and the ENHANCED dressing, all in Godot's own format
+	# The baked level scene: terrain, static geometry and their collision
+	# and the occluders, all in Godot's own format
 	# (scripts/level_scene.gd). It carries a hash of this MAP, so an
 	# edited map falls straight back to building from the data.
 	var baked: Dictionary = {}
@@ -409,7 +402,6 @@ func load_level(map_name: String) -> Level:
 		level.baked = true
 		level.terrain = baked.get("terrain")
 		level.occluders = baked.get("occluders")
-		level.detail = baked.get("detail")
 		baked_static = baked.get("static")
 		level.behaviour = baked.get("behaviour")
 	level.overlay = LevelScene.overlay(map_name)
@@ -438,11 +430,7 @@ func load_level(map_name: String) -> Level:
 	# Terrain mesh — built once and served from the asset cache
 	# (converted/terrain/WLD.NNN.res); the tiles come from TEXTURE.302.
 	if level.wld and level.terrain == null:
-		# ENHANCED ground is a different surface (the fine mesh inside the
-		# play box), so it has its own mesh key and its own shape.
-		var fine: bool = Render.enhanced() and level.wld.fine_rect.has_area()
-		var tkey: String = level.wld_suffix + (".fine" if fine else "")
-		var terrain_mesh := Assets.terrain(tkey, level.wld)
+		var terrain_mesh := Assets.terrain(level.wld_suffix, level.wld)
 		if terrain_mesh:
 			level.terrain = MeshInstance3D.new()
 			level.terrain.name = "Terrain"
@@ -450,7 +438,7 @@ func load_level(map_name: String) -> Level:
 			# The ground's collision shape is cached like everything else
 			# (converted/shape/WLD_NNN.res): 130 000 triangles is a slow
 			# thing to re-derive on every level start.
-			LevelScene.add_collision(level.terrain, "WLD_" + tkey)
+			LevelScene.add_collision(level.terrain, "WLD_" + level.wld_suffix)
 
 	# Entities (variant 1 only) ------------------------------------
 	level.entities = Node3D.new()
@@ -705,10 +693,6 @@ func load_level(map_name: String) -> Level:
 	# --- Billboard sprites + pickups (variant-3 non-marker) ---------
 	_phase("enemies")
 	_build_sprites(level, palette)
-	# Meshes that arrived through the baked scene skip Assets.mesh(),
-	# so the cache-era emission correction runs over the tree here.
-	if Render.enhanced():
-		Assets.fix_emission_tree(level.entities)
 
 	# --- Player spawn (variant-3 markers: type 0 = start, 1 = direction) ---
 	# DOS FUN_00121f72 (PlrSetPosMarker): the player spawns at the marker
@@ -830,12 +814,11 @@ func load_level(map_name: String) -> Level:
 				   roll * 360.0 / 2048.0])
 
 	# Nothing was baked for this map (or the MAP has changed): build the
-	# occluders and the ENHANCED dressing now, and write the whole static
-	# half out as a Godot scene so the next start just instantiates it.
+	# occluders now, and write the whole static half out as a Godot scene
+	# so the next start just instantiates it.
 	if not level.baked and use_baked:
 		var t0 := Time.get_ticks_msec()
 		level.occluders = LevelScene.build_occluders(level)
-		level.detail = LevelScene.build_detail(level)
 		LevelScene.save_from(level, map_name)
 		print("[level] %s: bake took %d ms" % [map_name, Time.get_ticks_msec() - t0])
 
@@ -1073,7 +1056,6 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 	var bank_hist: Dictionary = {}
 	var placed: int = 0
 	var pickups: int = 0
-	var models: int = 0
 	for e in level.map.entities:
 		if (e.flags & 3) != 3: continue
 		if e.marker_type != -1: continue          # markers handled elsewhere
@@ -1114,32 +1096,8 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 			_style_sprite(p, tex, px)
 			p.position = Vector3(float(e.x), base_y + world_h * 0.5, -float(e.z))
 			p.set_meta("bottom_off", -world_h * 0.5)
-			Replacements.dress_pickup(p, e.sprite_index, float(tex.get_width()) * px, world_h)
 			spr = p
 			pickups += 1
-		elif Replacements.is_fire(e.sprite_index):
-			# ENHANCED: a shader flame with its own light.
-			spr = Replacements.fire_node(e.sprite_index, float(tex.get_width()) * px, world_h, e.file_off)
-			spr.position = Vector3(float(e.x), base_y, -float(e.z))
-			spr.set_meta("bottom_off", 0.0)
-			models += 1
-		elif Replacements.has_sprite(bank, rec_id):
-			# ENHANCED pack: a 3D model stands in for the scenery billboard.
-			var world_w: float = float(tex.get_width()) * px
-			spr = Replacements.sprite_node(bank, rec_id, world_w, world_h, e.file_off)
-			if spr == null:
-				spr = Sprite3D.new()
-				_style_sprite(spr, tex, px)
-				spr.position = Vector3(float(e.x), base_y + world_h * 0.5, -float(e.z))
-				spr.set_meta("bottom_off", -world_h * 0.5)
-			else:
-				spr.position = Vector3(float(e.x), base_y, -float(e.z))
-				spr.set_meta("bottom_off", 0.0)
-				# Scenery, not landmarks: stop drawing it in the distance
-				# the way the scattered clutter already does. 262 of these
-				# on MAP.220, each a full photo-scan.
-				LevelScene.range_limit(spr, SCENERY_DRAW_RANGE)
-				models += 1
 		else:
 			spr = Sprite3D.new()
 			_style_sprite(spr, tex, px)
@@ -1153,8 +1111,7 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 		# Behaviour branch and plays from there (F2).
 		if e.link_act_type == 0 and PickupData.AMBIENT.has(e.sprite_index):
 			Audio.attach_loop_3d(int(PickupData.AMBIENT[e.sprite_index]), spr, -10.0)
-	print("[level] placed %d billboard sprites (%d pickups, %d as models)"
-		% [placed, pickups, models])
+	print("[level] placed %d billboard sprites (%d pickups)" % [placed, pickups])
 	var keys := bank_hist.keys()
 	keys.sort()
 	for b in keys:
@@ -1167,8 +1124,7 @@ static func _style_sprite(spr: Sprite3D, tex: Texture2D, pixel_size: float = SPR
 	spr.shaded = false
 	spr.double_sided = true
 	spr.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
-	# ENHANCED: filtered billboards (the upscaled sprite has mipmaps).
-	spr.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS if Render.enhanced() else BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	spr.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
 
 ## Spawn a destruction drop (FUN_00124119): one of the drop type's
 ## sprites at random (0 = nothing), placed on the ground under `pos`
@@ -1187,8 +1143,7 @@ static func spawn_drop(level: Level, pos: Vector3, drop_type: int) -> Sprite3D:
 	return spawn_item(level, pos, si)
 
 ## One pickup sprite `si` placed on the ground at `pos` — the tail of
-## spawn_drop, also reachable from the console (`drop <sprite index>`)
-## so the ENHANCED models can be looked at without hunting for a crate.
+## spawn_drop, also reachable from the console (`drop <sprite index>`).
 static func spawn_item(level: Level, pos: Vector3, si: int) -> Sprite3D:
 	if level == null or level.sprites == null:
 		return null
@@ -1210,25 +1165,7 @@ static func spawn_item(level: Level, pos: Vector3, si: int) -> Sprite3D:
 		ground = WldTerrain.height_at_world(level.wld, pos.x, -pos.z)
 	var world_h: float = float(tex.get_height()) * px
 	spr.position = Vector3(pos.x, ground + world_h * 0.5, pos.z)
-	if spr is Pickup:
-		Replacements.dress_pickup(spr, si, float(tex.get_width()) * px, world_h)
 	level.sprites.add_child(spr)
 	if PickupData.AMBIENT.has(si):
 		Audio.attach_loop_3d(int(PickupData.AMBIENT[si]), spr, -10.0)
 	return spr
-
-## The box the map is played in: every entity of every variant (meshes,
-## lights, sprites and markers — the enemy spawns and exits lie past the
-## last building), in DOS world X/Z. The ENHANCED terrain is fine inside
-## it (WldTerrain.fine_rect); outside, a 65536 u square of nothing keeps
-## the DOS planes.
-static func play_box(m: MapFile.MapFile) -> Rect2:
-	var lo := Vector2(INF, INF)
-	var hi := Vector2(-INF, -INF)
-	for e in m.entities:
-		var p := Vector2(float(e.x), float(e.z))
-		lo = lo.min(p)
-		hi = hi.max(p)
-	if lo.x > hi.x:
-		return Rect2()
-	return Rect2(lo, hi - lo)

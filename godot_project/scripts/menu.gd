@@ -1461,10 +1461,8 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 	grid.add_theme_constant_override("v_separation", 12)
 	vb.add_child(grid)
 	var c_res := _cell(grid, "Render resolution")
-	var c_weapon := _cell(grid, "Weapon view")
-	var c_render := _cell(grid, "Rendering")
 	var c_music := _cell(grid, "Music")
-	var c_bright := _cell(grid, "Brightness  (%s)" % Render.NAMES[Render.mode])
+	var c_bright := _cell(grid, "Brightness")
 	var c_window := _cell(grid, "Window")
 
 	var native := _option_button("NATIVE (FULL WINDOW)", func() -> void:
@@ -1474,21 +1472,6 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 	_res_buttons.clear()
 	_res_buttons.append(native)
 	c_res.add_child(native)
-
-	var wv := HBoxContainer.new()
-	wv.alignment = BoxContainer.ALIGNMENT_CENTER
-	wv.add_theme_constant_override("separation", 14)
-	_weapon_view_buttons.clear()
-	for m in [["DOS ART", false], ["3D MODEL", true]]:
-		var on: bool = m[1]
-		var wb := _option_button(String(m[0]), func() -> void:
-			Settings.set_weapon_3d(on)
-			_refresh_display_marks())
-		wb.custom_minimum_size = Vector2(210, 48)
-		wb.set_meta("weapon3d", on)
-		_weapon_view_buttons.append(wb)
-		wv.add_child(wb)
-	c_weapon.add_child(wv)
 
 	# The window, from the Settings autoload (it applies it at start-up).
 	# The title screen kept a second copy in display.cfg and put it back
@@ -1516,26 +1499,8 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 	c_window.add_child(modes)
 	c_window.add_child(size_btn)
 
-	# DOS (faithful software look) / ENHANCED (filtered upscaled textures,
-	# real lighting and sky) — Render autoload, docs §P.
-	var renders := HBoxContainer.new()
-	renders.alignment = BoxContainer.ALIGNMENT_CENTER
-	renders.add_theme_constant_override("separation", 14)
-	_render_buttons.clear()
-	for m in [["DOS / RETRO", Render.DOS], ["ENHANCED", Render.ENHANCED]]:
-		var rm: int = m[1]
-		var rb := _option_button(m[0], func() -> void:
-			Render.set_mode(rm)
-			_refresh_display_marks()
-			_show_toast("Rendering: %s — takes effect when a map loads." % Render.NAMES[rm]))
-		rb.custom_minimum_size = Vector2(210, 48)
-		rb.set_meta("render", rm)
-		_render_buttons.append(rb)
-		renders.add_child(rb)
-	c_render.add_child(renders)
-
-	# Brightness of the look in force: the DOS gamma or the ENHANCED
-	# exposure (Settings.brightness), applied at once, kept per look.
+	# Brightness: a multiplier on the DOS gamma (Settings.brightness),
+	# applied at once.
 	var bright := HBoxContainer.new()
 	bright.alignment = BoxContainer.ALIGNMENT_CENTER
 	bright.add_theme_constant_override("separation", 14)
@@ -1579,13 +1544,11 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 	_refresh_option_marks()
 	return pair[0]
 
-var _render_buttons: Array[Button] = []
 var _brightness_label: Label = null
 
 func _refresh_brightness_label() -> void:
 	if _brightness_label != null and is_instance_valid(_brightness_label):
 		_brightness_label.text = "%d %%" % int(round(Settings.brightness() * 100.0))
-var _weapon_view_buttons: Array[Button] = []
 var _music_buttons: Array[Button] = []
 
 ## One labelled cell of the DETAIL screen's settings grid.
@@ -1609,9 +1572,6 @@ func _refresh_display_marks() -> void:
 	for rb in _res_buttons:
 		var mode: int = int(rb.get_meta("res_mode", -1))
 		rb.text = ("> " if mode == Settings.resolution else "") + "NATIVE (FULL WINDOW)"
-	for wb in _weapon_view_buttons:
-		var on2: bool = bool(wb.get_meta("weapon3d"))
-		wb.text = ("> " if on2 == Settings.weapon_3d else "") + ("3D MODEL" if on2 else "DOS ART")
 	for i in _res_marks.size():
 		var m: ColorRect = _res_marks[i]
 		if is_instance_valid(m):
@@ -1626,9 +1586,6 @@ func _refresh_display_marks() -> void:
 	for mub in _music_buttons:
 		var on3: bool = bool(mub.get_meta("wavetable"))
 		mub.text = ("> " if on3 == Settings.wavetable else "") + ("WAVETABLE" if on3 else "SYNTH")
-	for rb in _render_buttons:
-		var rm: int = rb.get_meta("render")
-		rb.text = ("> " if rm == Render.mode else "") + ("DOS / RETRO" if rm == Render.DOS else "ENHANCED")
 
 ## DEBUG TOOLS — launches the asset viewers.
 func _build_debug_screen() -> Control:

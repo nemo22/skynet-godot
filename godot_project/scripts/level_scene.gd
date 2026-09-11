@@ -9,14 +9,12 @@
 ##
 ## The conversion now also writes the WORLD ITSELF as a Godot scene:
 ##
-##   converted/maps/MAP.210.level.scn            DOS look
-##   converted/enhanced/maps/MAP.210.level.scn   ENHANCED look
+##   converted/maps/MAP.210.level.scn
 ##
 ##   Level (level_scene_root.gd — map name, hash of the MAP it came from)
 ##   +- Terrain     MeshInstance3D + StaticBody3D (shared trimesh shape)
 ##   +- Static      every placed mesh with no behaviour, collision baked
 ##   +- Occluders   OccluderInstance3D — the hills and the big buildings
-##   +- Detail      ENHANCED only: the scattered clutter and the dust
 ##   +- Behaviour   the map's doors, gates, lifts, destructibles,
 ##                  triggers, exits, sounds, messages and objectives as
 ##                  nodes, chains as NodePaths (scripts/level_behaviour.gd)
@@ -29,7 +27,7 @@
 ## their turn comes. Enemies, pickups, lights and markers are still
 ## built from the records by the loader.
 ##
-## Three things this buys, all of them asked for (2026-09-04, "kludne
+## Two things this buys, both of them asked for (2026-09-04, "kludne
 ## nech konverzia spracuje tie data do formatu ktory vyhovuje godotu"):
 ##
 ##   * the editor opens a level directly — geometry, collision and all,
@@ -37,11 +35,7 @@
 ##   * loading is an engine-side scene instantiation instead of a few
 ##     hundred GDScript nodes, and the collision shapes are shared
 ##     between every copy of a mesh AND between maps (converted/shape/)
-##     instead of being rebuilt per instance;
-##   * there is somewhere to PUT the enhanced dressing. The DOS maps are
-##     bare because a 1996 engine could not afford scenery; the ENHANCED
-##     bake fills the empty ground with debris, burnt stumps and drifting
-##     dust, deterministically, once, at conversion time.
+##     instead of being rebuilt per instance.
 ##
 ## The scene is a build artefact: it carries the hash of the MAP file it
 ## was built from, so editing a map (the dock's export to mods/maps/)
@@ -54,8 +48,6 @@ extends RefCounted
 
 const LevelRoot    := preload("res://scripts/level_scene_root.gd")
 const WldTerrain   := preload("res://scripts/loaders/wld_terrain.gd")
-const Replacements := preload("res://scripts/replacements.gd")
-const FxParticles  := preload("res://scripts/fx_particles.gd")
 const LevelLoaderRef := preload("res://scripts/level_loader.gd")
 const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
 
@@ -67,12 +59,11 @@ const BAKE_VERSION: int = 11
 # ---------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------
-## Where this map's level scene lives, for the render mode in force.
+## Where this map's level scene lives.
 static func scene_path(map_name: String) -> String:
 	if Assets.root.is_empty():
 		return ""
-	var sub: String = "enhanced/maps" if Render.enhanced() else "maps"
-	return "%s/%s/%s.level.scn" % [Assets.root, sub, map_name.to_upper()]
+	return "%s/maps/%s.level.scn" % [Assets.root, map_name.to_upper()]
 
 ## A hand-made overlay for this map, instantiated on top of the baked
 ## level and never touched by the conversion.
@@ -84,7 +75,7 @@ static func overlay_path(map_name: String) -> String:
 # ---------------------------------------------------------------------
 ## The baked parts of `map_name`, or an empty dictionary when there is no
 ## scene for it (or it was built from a different MAP, or by an older
-## bake). Keys: terrain / static / occluders / detail — all detached
+## bake). Keys: terrain / static / occluders / behaviour — all detached
 ## Node3Ds ready to be added to the level.
 static func take(map_name: String, map_bytes: PackedByteArray) -> Dictionary:
 	var p := scene_path(map_name)
@@ -106,15 +97,14 @@ static func take(map_name: String, map_bytes: PackedByteArray) -> Dictionary:
 	if root == null:
 		return {}
 	if int(root.get("bake_version")) != BAKE_VERSION \
-			or int(root.get("source_hash")) != hash(map_bytes) \
-			or int(root.get("render_mode")) != Render.mode:
+			or int(root.get("source_hash")) != hash(map_bytes):
 		print("[level] %s: the baked scene is stale — rebuilding" % map_name)
 		root.free()
 		if not Assets.read_only:
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
 		return {}
 	var out: Dictionary = {}
-	for key in ["Terrain", "Static", "Occluders", "Detail", "Behaviour"]:
+	for key in ["Terrain", "Static", "Occluders", "Behaviour"]:
 		var n: Node = root.get_node_or_null(NodePath(key))
 		if n == null:
 			continue
@@ -167,7 +157,6 @@ static func _save_now(level, map_name: String) -> String:
 	var root: Node3D = LevelRoot.new()
 	root.name = "Level_" + map_name.replace(".", "_")
 	root.map_name = map_name
-	root.render_mode = Render.mode
 	root.bake_version = BAKE_VERSION
 	root.source_hash = hash(level.map_bytes)
 	root.is_outdoor = level.is_outdoor
@@ -183,20 +172,17 @@ static func _save_now(level, map_name: String) -> String:
 			statics.add_child(c)
 			moved.append(c)
 	root.static_count = moved.size()
-	root.detail_count = _count(level.detail)
 
-	# An environment and a key light, for the EDITOR only. A baked level
-	# has FogVolumes in it and Godot will not draw them without
-	# volumetric fog enabled in the scene's Environment — open the scene
-	# on its own and all you get is a warning ("ako toto zapnem v
-	# editore?", 2026-09-04). The runtime never sees this: take() lifts
-	# out the four groups below and frees everything else with the root.
+	# An environment and a key light, for the EDITOR only: open the scene
+	# on its own and the map has a sky and a light. The runtime never sees
+	# this: take() lifts out the groups below and frees everything else
+	# with the root.
 	root.add_child(_preview_branch(level))
 
 	# What goes in, and where it came from, so it can all go back.
 	var lent: Array = []                     # [node, old_parent, index]
 	for g in [["Terrain", level.terrain], ["Static", statics],
-			["Occluders", level.occluders], ["Detail", level.detail]]:
+			["Occluders", level.occluders]]:
 		var n: Node = g[1]
 		if n == null or not is_instance_valid(n):
 			continue
@@ -237,8 +223,8 @@ static func _save_now(level, map_name: String) -> String:
 		err = ResourceSaver.save(ps, p, ResourceSaver.FLAG_COMPRESS)
 		if err == OK:
 			out = p
-			print("[level] %s: baked %d static meshes, %d detail props and %d behaviour nodes into %s"
-				% [map_name, root.static_count, root.detail_count, root.behaviour_count, p.get_file()])
+			print("[level] %s: baked %d static meshes and %d behaviour nodes into %s"
+				% [map_name, root.static_count, root.behaviour_count, p.get_file()])
 			print("[level] %s: behaviour %s; %d relays, %d cue meshes, %d movers without a mesh, %d links to markers, %d dangling"
 				% [map_name, str(report.get("kinds", {})),
 				   int(report.get("kinds", {}).get("raw", 0)), int(report.get("cues_with_mesh", 0)),
@@ -281,7 +267,7 @@ static func static_children(entities: Node) -> Array:
 
 ## Everything the runtime builds from the MAP records, shown in the
 ## editor: the enemies where they stand, the placement markers, the map's
-## own lights, and a night sky with the fog turned on.
+## own lights, and a night sky.
 ##
 ## Other engines put the dynamic objects straight in the level file,
 ## because there the level file IS the source. Here the source is the DOS
@@ -289,7 +275,7 @@ static func static_children(entities: Node) -> Array:
 ## scene is a build product and its behaviour has to come from the
 ## records. This branch closes the gap for the EYE: open a baked level
 ## and the whole map is there, robots included, with the markers drawn as
-## labelled gizmos. The runtime lifts out Terrain/Static/Occluders/Detail
+## labelled gizmos. The runtime lifts out Terrain/Static/Occluders/Behaviour
 ## and frees this with the root, so none of it reaches the game.
 static func _preview_branch(level) -> Node3D:
 	var root := Node3D.new()
@@ -308,11 +294,6 @@ static func _preview_branch(level) -> Node3D:
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	env.ambient_light_energy = 0.6
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-	env.volumetric_fog_enabled = true
-	env.volumetric_fog_density = 0.0001
-	env.volumetric_fog_length = 9000.0
-	env.volumetric_fog_albedo = Color(0.72, 0.70, 0.66)
-	env.volumetric_fog_ambient_inject = 0.2
 	var we := WorldEnvironment.new()
 	we.name = "PreviewEnvironment"
 	we.environment = env
@@ -427,14 +408,6 @@ static func _mark_editable(n: Node, root: Node) -> void:
 		if not c.scene_file_path.is_empty():
 			root.set_editable_instance(c, true)
 		_mark_editable(c, root)
-
-static func _count(n: Node) -> int:
-	if n == null or not is_instance_valid(n):
-		return 0
-	var total: int = 0
-	for c in n.get_children():
-		total += c.get_child_count()
-	return total
 
 # ---------------------------------------------------------------------
 # Collision — one shape per MESH, shared by every copy and every map
@@ -565,345 +538,6 @@ static func _mesh_occluders(level, verts: PackedVector3Array, idx: PackedInt32Ar
 		for t in tris:
 			var a: int = base + t * 3
 			idx.append_array(PackedInt32Array([a, a + 1, a + 2, a, a + 2, a + 1]))
-
-# ---------------------------------------------------------------------
-# ENHANCED detail
-# ---------------------------------------------------------------------
-## The DOS maps are bare: a 1996 engine could not afford scenery, so the
-## ground between the buildings is empty terrain. It reads as a level,
-## not as a country that lost a nuclear war. This scatters the CC0 props
-## the pack carries — dead branches, bark debris, boulders, stumps,
-## tyres, the odd dead tree — over the open ground, on a jittered grid
-## seeded from the map number, so the same map always looks the same.
-##
-## Rules: nothing on a slope you could not walk, nothing within
-## CLUTTER_CLEAR of a placed entity or of the player's own start.
-## Everything is scattered at the HIGH density and split in two: `Props`
-## is the half a MED machine draws, `PropsHigh` the rest.
-const CLUTTER_SPACING: float = 900.0      # the HIGH grid; MED takes half
-const CLUTTER_SKIP: float = 0.45          # fraction of cells left empty
-const CLUTTER_CLEAR: float = 620.0        # keep away from real entities
-const CLUTTER_MAX_SLOPE: float = 260.0    # height change across a cell
-const CLUTTER_MARGIN: float = 2500.0      # how far past the buildings
-const CLUTTER_MAX_SIZE: float = 240.0     # longest side of any one prop
-const CLUTTER_SINK: float = 12.0          # bed it into the ground
-const CLUTTER_MAX: int = 5000             # hard ceiling per map
-## How far a scattered prop is drawn. Without a limit every one of them
-## is submitted every frame from anywhere on the map, which is what made
-## looking across the valley from the jeep stutter (2026-09-04).
-const CLUTTER_DRAW_RANGE: float = 7000.0
-## [bank, record, weight] — every one of these has a model in the pack.
-const CLUTTER_PROPS: Array = [
-	[215, 6, 5.0],    # dry branches
-	[242, 2, 4.0],    # dry branches, spread
-	[242, 3, 4.0],    # bark debris
-	[211, 3, 4.0],    # rock
-	[211, 5, 3.0],    # small sand rocks
-	[210, 9, 3.0],    # stones
-	[210, 2, 2.0],    # moon rock
-	[211, 1, 1.5],    # boulder
-	[213, 12, 1.5],   # burnt stump
-	[213, 9, 1.0],    # old tyre
-	[208, 0, 0.8],    # dead tree
-]
-## Volumetric dust over the open ground: ellipsoid FogVolumes in the same
-## froxel grid as the global haze, so the moon and every muzzle flash
-## light them.
-##
-## A few small banks drifting past, NOT a blanket: six 5200-unit blobs at
-## density 0.02-0.05 on top of a global haze read as "terribly dense and
-## dark… it did not have to be everywhere" (2026-09-04). Each one now
-## drifts and breathes (scripts/dust_bank.gd).
-const DUST_VOLUMES: int = 4
-const DUST_SIZE := Vector3(2600.0, 560.0, 2600.0)
-const DUST_DENSITY: Vector2 = Vector2(0.004, 0.010)
-## Keep them off the spawn: dust you start standing inside is just a
-## grey filter over the whole screen.
-const DUST_CLEAR: float = 4500.0
-
-## How big a patch of ground one MultiMesh covers. Small enough that the
-## engine can cull and fade whole patches by distance, big enough that a
-## map is a few dozen draw calls of scenery and not a few thousand.
-const CHUNK: float = 6000.0
-
-## Build the "Detail" node for an ENHANCED outdoor level, or null.
-##
-## Every prop of one kind inside one patch of ground becomes a single
-## MultiMeshInstance3D over a SHARED, cached mesh (converted/prop/), so
-## the saved level scene holds transforms and nothing else. The first
-## pass put a node per prop in it, each carrying its own copy of a
-## photo-scanned model: 87 MB per map, and 1600 draw calls.
-static func build_detail(level) -> Node3D:
-	if not Render.enhanced() or level == null or not level.is_outdoor:
-		return null
-	if level.wld == null or level.map == null:
-		return null
-	# The area worth dressing: around everything the map actually placed.
-	var lo := Vector2(1e9, 1e9)
-	var hi := Vector2(-1e9, -1e9)
-	var solid: Array[Vector2] = []
-	for e in level.map.entities:
-		if (e.flags & 3) == 2:
-			continue
-		var q := Vector2(float(e.x), -float(e.z))
-		lo = lo.min(q)
-		hi = hi.max(q)
-		if (e.flags & 3) == 1:
-			solid.append(q)
-	if solid.is_empty():
-		return null
-	lo -= Vector2(CLUTTER_MARGIN, CLUTTER_MARGIN)
-	hi += Vector2(CLUTTER_MARGIN, CLUTTER_MARGIN)
-	var total: float = 0.0
-	for c in CLUTTER_PROPS:
-		total += float(c[2])
-
-	var refs: Dictionary = {}                # "P215_006" -> {mesh, s_ref, longest}
-	var batches: Dictionary = {}             # model|chunk -> {ref, med, high, at}
-	var rng := RandomNumberGenerator.new()
-	var map_salt: int = int(level.map_suffix) if level.map_suffix.is_valid_int() else 0
-	var start := Vector2(level.player_start.x, level.player_start.z)
-	var made: int = 0
-	var x: float = lo.x
-	while x < hi.x and made < CLUTTER_MAX:
-		var z: float = lo.y
-		while z < hi.y and made < CLUTTER_MAX:
-			# Seeded per cell: the same map always dresses the same way.
-			rng.seed = hash(Vector2i(int(x / CLUTTER_SPACING),
-				int(z / CLUTTER_SPACING))) ^ map_salt
-			z += CLUTTER_SPACING
-			if rng.randf() < CLUTTER_SKIP:
-				continue
-			var at := Vector2(x + rng.randf_range(-0.4, 0.4) * CLUTTER_SPACING,
-				z + rng.randf_range(-0.4, 0.4) * CLUTTER_SPACING)
-			if at.distance_to(start) < 900.0:
-				continue
-			var near: bool = false
-			for q in solid:
-				if absf(q.x - at.x) < CLUTTER_CLEAR and absf(q.y - at.y) < CLUTTER_CLEAR:
-					near = true
-					break
-			if near:
-				continue
-			# Flat enough to stand on? Sample the cell corners.
-			var h0: float = WldTerrain.height_at_world(level.wld, at.x, -at.y)
-			var h1: float = WldTerrain.height_at_world(level.wld, at.x + 256.0, -at.y)
-			var h2: float = WldTerrain.height_at_world(level.wld, at.x, -at.y - 256.0)
-			if maxf(absf(h1 - h0), absf(h2 - h0)) > CLUTTER_MAX_SLOPE:
-				continue
-			var pick: Dictionary = _clutter_prop(rng, total)
-			if pick.is_empty():
-				continue
-			var ref: Dictionary = _prop_ref(int(pick["bank"]), int(pick["rec"]), refs)
-			if ref.is_empty():
-				continue
-			# The sprite world size is the wrong yardstick for a model:
-			# fitting a felled LOG to a tall sprite height stretched it
-			# into a twenty-metre tree floating over the hill
-			# (2026-09-04). Cap the longest side and sit it in the dirt.
-			var scale: float = float(pick["scale"]) / float(ref["s_ref"])
-			var longest: float = float(ref["longest"]) * scale
-			if longest > CLUTTER_MAX_SIZE:
-				scale *= CLUTTER_MAX_SIZE / longest
-			var ground: float = (h0 + h1 + h2) / 3.0
-			var pos := Vector3(at.x, ground - CLUTTER_SINK, -at.y)
-			var chunk := Vector2i(int(floor(pos.x / CHUNK)), int(floor(pos.z / CHUNK)))
-			var bkey: String = "%s|%d|%d" % [ref["key"], chunk.x, chunk.y]
-			if not batches.has(bkey):
-				batches[bkey] = {"ref": ref, "med": [], "high": [],
-					"at": Vector3((float(chunk.x) + 0.5) * CHUNK, 0.0,
-						(float(chunk.y) + 0.5) * CHUNK)}
-			var batch: Dictionary = batches[bkey]
-			var xf := Transform3D(
-				Basis(Vector3.UP, float(pick["yaw"])).scaled(Vector3.ONE * scale),
-				pos - (batch["at"] as Vector3))
-			# Half of them are the MED set, and it comes FIRST in the
-			# instance list, so a lower detail setting is one
-			# visible_instance_count away — no second node, no second
-			# draw call.
-			(batch["med"] if rng.randf() < 0.5 else batch["high"]).append(xf)
-			made += 1
-		x += CLUTTER_SPACING
-
-	var root := Node3D.new()
-	root.name = "Detail"
-	var props := Node3D.new()
-	props.name = "Props"
-	root.add_child(props)
-	for bkey in batches:
-		var batch: Dictionary = batches[bkey]
-		var med: Array = batch["med"]
-		var xforms: Array = med + (batch["high"] as Array)
-		var ref: Dictionary = batch["ref"]
-		var mm := MultiMesh.new()
-		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.mesh = ref["mesh"]
-		mm.instance_count = xforms.size()
-		for i in xforms.size():
-			mm.set_instance_transform(i, xforms[i])
-		var mmi := MultiMeshInstance3D.new()
-		mmi.name = "%s_%s" % [ref["key"], bkey.replace("|", "_")]
-		mmi.multimesh = mm
-		mmi.position = batch["at"]
-		# Debris does not need to be in the shadow pass: it doubles the
-		# draw calls for a few pixels of shade under a stump.
-		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		mmi.set_meta("med", med.size())
-		range_limit(mmi, CLUTTER_DRAW_RANGE)
-		props.add_child(mmi)
-
-	var dust := Node3D.new()
-	dust.name = "Dust"
-	root.add_child(dust)
-	rng.seed = hash(level.map_suffix)
-	var centre: Vector3 = level.player_start
-	# One prevailing wind for the map, give or take.
-	var wind: float = rng.randf() * TAU
-	for i in DUST_VOLUMES:
-		var a: float = rng.randf() * TAU
-		var r: float = DUST_CLEAR + rng.randf() * 9000.0
-		var at3 := Vector3(centre.x + cos(a) * r, 0.0, centre.z + sin(a) * r)
-		at3.y = WldTerrain.height_at_world(level.wld, at3.x, -at3.z) \
-			+ rng.randf_range(120.0, 420.0)
-		FxParticles.dust_volume(dust, at3,
-			DUST_SIZE * rng.randf_range(0.7, 1.3),
-			rng.randf_range(DUST_DENSITY.x, DUST_DENSITY.y),
-			wind + rng.randf_range(-0.5, 0.5))
-	print("[level] detail: %d props in %d batches, %d dust banks over %.0fx%.0f u"
-		% [made, batches.size(), dust.get_child_count(), hi.x - lo.x, hi.y - lo.y])
-	return root
-
-## One weighted pick from CLUTTER_PROPS: which model, how big, which way
-## round. The scale and the yaw come from the replacement pack own
-## fitting rules — the node is built, measured and dropped, so a prop
-## ends up exactly where the per-node version put it.
-static func _clutter_prop(rng: RandomNumberGenerator, total: float) -> Dictionary:
-	var r: float = rng.randf() * total
-	for c in CLUTTER_PROPS:
-		r -= float(c[2])
-		if r > 0.0:
-			continue
-		var bank: int = int(c[0])
-		var rec: int = int(c[1])
-		if not Replacements.has_sprite(bank, rec):
-			return {}
-		var rs: Vector2i = Assets.record_size(bank, rec)
-		var px: float = 2.0 * rng.randf_range(0.8, 1.35)
-		var fit: Dictionary = Replacements.sprite_fit(bank, rec,
-			float(rs.x) * px, float(rs.y) * px, rng.randi())
-		if fit.is_empty():
-			return {}
-		return {"bank": bank, "rec": rec, "yaw": fit["yaw"], "scale": fit["scale"],
-			"upright": bool(fit.get("upright", false))}
-	return {}
-
-## The shared mesh for one clutter model, built once and cached
-## (converted/prop/P<bank>_<rec>.res). `s_ref` is the scale the
-## replacement pack gave the reference instance, so a prop own scale
-## divided by it is the factor that goes in the MultiMesh transform.
-static func _prop_ref(bank: int, rec: int, cache: Dictionary) -> Dictionary:
-	var key: String = "P%03d_%03d" % [bank, rec]
-	if cache.has(key):
-		return cache[key]
-	var out: Dictionary = {}
-	# Built at the same aspect the props are picked at, so the reference
-	# stands up (or does not) exactly like every instance of it.
-	var rs: Vector2i = Assets.record_size(bank, rec)
-	var ref_w: float = 1000.0
-	var ref_h: float = 1000.0 * float(maxi(rs.y, 1)) / float(maxi(rs.x, 1))
-	var tpl: Node3D = Replacements.sprite_node(bank, rec, ref_w, ref_h, 0)
-	var fit: Dictionary = Replacements.sprite_fit(bank, rec, ref_w, ref_h, 0)
-	if tpl != null and not fit.is_empty():
-		tpl.rotation = Vector3.ZERO
-		var s_ref: float = float(fit["scale"])
-		var mesh := Assets.fetch("prop", key, func() -> Resource:
-			var m: ArrayMesh = Replacements.with_lods(
-				Replacements.cap_detail(_flatten(tpl)))
-			_weather(m)
-			return m) as ArrayMesh
-		tpl.free()
-		if mesh != null and s_ref > 0.0:
-			var b: AABB = mesh.get_aabb()
-			out = {"key": key, "mesh": mesh, "s_ref": s_ref,
-				"longest": maxf(b.size.x, maxf(b.size.y, b.size.z))}
-	cache[key] = out
-	return out
-
-## Every mesh under `root`, welded into one ArrayMesh in root space (one
-## surface per source surface, materials kept).
-static func _flatten(root: Node3D) -> ArrayMesh:
-	var out := ArrayMesh.new()
-	var stack: Array = [[root, Transform3D()]]
-	while not stack.is_empty():
-		var item: Array = stack.pop_back()
-		var n: Node = item[0]
-		var xf: Transform3D = item[1]
-		if n is Node3D and n != root:
-			xf = xf * (n as Node3D).transform
-		if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
-			var mi := n as MeshInstance3D
-			for si in mi.mesh.get_surface_count():
-				if mi.mesh.surface_get_primitive_type(si) != Mesh.PRIMITIVE_TRIANGLES:
-					continue
-				var arrays: Array = mi.mesh.surface_get_arrays(si)
-				_place_arrays(arrays, xf)
-				out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-				out.surface_set_material(out.get_surface_count() - 1,
-					mi.get_active_material(si))
-		for c in n.get_children():
-			stack.append([c, xf])
-	return out
-
-## Move a surface vertices (and the directions that go with them) into
-## another space.
-static func _place_arrays(arrays: Array, xf: Transform3D) -> void:
-	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-	for i in verts.size():
-		verts[i] = xf * verts[i]
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	var nb: Basis = xf.basis.orthonormalized()
-	if arrays[Mesh.ARRAY_NORMAL] != null:
-		var nrm: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
-		for i in nrm.size():
-			nrm[i] = nb * nrm[i]
-		arrays[Mesh.ARRAY_NORMAL] = nrm
-	if arrays[Mesh.ARRAY_TANGENT] != null:
-		var tan: PackedFloat32Array = arrays[Mesh.ARRAY_TANGENT]
-		var i: int = 0
-		while i + 3 < tan.size():
-			var t: Vector3 = nb * Vector3(tan[i], tan[i + 1], tan[i + 2])
-			tan[i] = t.x
-			tan[i + 1] = t.y
-			tan[i + 2] = t.z
-			i += 4
-		arrays[Mesh.ARRAY_TANGENT] = tan
-
-## Photo-scanned props come with a specular response tuned for daylight;
-## under a night sky reflection they glint like wet plastic, and they are
-## brighter and more saturated than the 256-colour world around them.
-## Done once, on the shared mesh.
-static func _weather(mesh: ArrayMesh) -> void:
-	for si in mesh.get_surface_count():
-		var m: Material = mesh.surface_get_material(si)
-		if not (m is BaseMaterial3D):
-			continue
-		var d: BaseMaterial3D = (m as BaseMaterial3D).duplicate()
-		d.albedo_color = d.albedo_color * Replacements.DEFAULT_TINT
-		d.roughness = clampf(d.roughness + 0.35, 0.0, 1.0)
-		d.metallic = 0.0
-		d.metallic_specular = 0.15
-		mesh.surface_set_material(si, d)
-
-## Stop drawing a prop past `far`, fading it out over the last fifth so
-## it never pops.
-static func range_limit(n: Node, far: float) -> void:
-	if n is GeometryInstance3D:
-		var g := n as GeometryInstance3D
-		g.visibility_range_end = far
-		g.visibility_range_end_margin = far * 0.2
-		g.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
-	for c in n.get_children():
-		range_limit(c, far)
 
 ## Rename every node whose name is auto-generated ("@Class@id") or clashes
 ## with a sibling: <base>_<n>, the base being the mesh it carries or its

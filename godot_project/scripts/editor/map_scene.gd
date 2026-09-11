@@ -119,12 +119,7 @@ static func build(map_name: String) -> Node3D:
 					var tex := Assets.texture(bank, rec_id, true)
 					if tex == null:
 						continue
-					# EXACTLY the runtime's sizing. This used to be a flat
-					# 2.0 units per texel of the CACHED texture, which in
-					# ENHANCED is upscaled 4x — so every billboard came
-					# out four times too big and eight times for the
-					# pickups, and the rest of the map looked shrunk next
-					# to them (2026-09-04).
+					# EXACTLY the runtime's sizing.
 					var px: float = Assets.sprite_pixel_size(bank, rec_id, tex,
 						LevelLoader.pixel_scale_for(e.sprite_index))
 					var h: float = float(tex.get_height()) * px
@@ -134,8 +129,7 @@ static func build(map_name: String) -> Node3D:
 					sp.shaded = false
 					sp.double_sided = true
 					sp.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
-					sp.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS \
-						if Render.enhanced() else BaseMaterial3D.TEXTURE_FILTER_NEAREST
+					sp.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
 					# Indoors the record sits 16 u above the floor, like
 					# the enemy markers; outdoors it rests on the terrain.
 					var base_y: float = -float(e.y) - LevelLoader.INDOOR_SPRITE_LIFT
@@ -145,7 +139,7 @@ static func build(map_name: String) -> Node3D:
 					sprites.add_child(sp)
 	# The runtime nodes built by the loader are not needed here.
 	for n in [level.terrain, level.entities, level.enemies, level.sprites,
-			level.sky, level.occluders, level.detail, level.overlay]:
+			level.sky, level.occluders, level.overlay]:
 		if n != null and is_instance_valid(n):
 			n.free()
 	_own(root, root)

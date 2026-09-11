@@ -87,45 +87,7 @@ func _ready() -> void:
 	# buffer right after decoding it — and then saves as an EMPTY texture.
 	PortableCompressedTexture2D.set_keep_all_compressed_buffers(true)
 	_check_version()
-	_check_category_versions()
 	print("[assets] cache at %s%s" % [root, " (read-only pack)" if read_only else ""])
-	if Render.enhanced() and not read_only:
-		_refresh_overrides()
-
-## Cached meshes reference their texture .res files by path, so a
-## replacement PNG/WebP dropped into <converted>/enhanced_pack/textures only shows
-## up if the cached texture (and normal map) is rebuilt IN PLACE before
-## any mesh loads. Runs once at start: every pack file newer than its
-## cache entry rewrites it.
-func _refresh_overrides() -> void:
-	var dir: String = Render.override_dir() + "/textures"
-	var d := DirAccess.open(dir)
-	if d == null:
-		return
-	var n := 0
-	for f in d.get_files():
-		var base: String = f.get_basename()
-		if base.ends_with("_n"):
-			base = base.substr(0, base.length() - 2)
-		if not base.begins_with("T") or base.length() != 8 or base[4] != "_":
-			continue
-		var bank: int = int(base.substr(1, 3))
-		var rec: int = int(base.substr(5, 3))
-		var src_time: int = FileAccess.get_modified_time(dir + "/" + f)
-		var stale := false
-		for k in [["tex", "T%03d_%03d" % [bank, rec]], ["tex", "T%03d_%03d_A" % [bank, rec]], ["nrm", "N%03d_%03d" % [bank, rec]]]:
-			var p := _path(k[0], k[1])
-			if FileAccess.file_exists(p) and FileAccess.get_modified_time(p) < src_time:
-				DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
-				_mem.erase(p)
-				stale = true
-		if stale:
-			texture(bank, rec, false)
-			texture(bank, rec, true)
-			normal_map(bank, rec)
-			n += 1
-	if n > 0:
-		print("[assets] %d replacement textures rebuilt into the cache" % n)
 
 ## The data directory changed (first-start prompt): move to its cache.
 func relocate() -> void:
@@ -144,49 +106,6 @@ func _exit_tree() -> void:
 	# Drop the session references before the servers shut down.
 	_mem.clear()
 	_tex_files.clear()
-
-## Some changes only affect ONE kind of asset. Wiping the whole 840 MB
-## cache for them costs the player a full reconversion, so those carry
-## their own stamp and only their own directory is dropped.
-##
-## nrm 2 / prop 2 (2026-09-09): normal maps are capped at 256 (512 for
-## the pack's hand-made ones) and replacement props are decimated to
-## 8 000 triangles. Uncapped, MAP.210 pulled 141 MB of resources per
-## load; capped, 87.5 MB — and one Poly Haven rock alone was 16.3 MB and
-## 739 469 triangles.
-## prop 3 (2026-09-11): procedural props built their tilted parts with
-## Basis.scaled(), which scales along WORLD axes in Godot 4 (the hair on
-## a lolling head, the flat side of a charred branch came out wrong).
-const CATEGORY_VERSIONS: Dictionary = {"enhanced/nrm": 2, "enhanced/prop": 3}
-
-func _check_category_versions() -> void:
-	if read_only or root.is_empty():
-		return
-	for kind in CATEGORY_VERSIONS:
-		var dir: String = "%s/%s" % [root, kind]
-		if not DirAccess.dir_exists_absolute(dir):
-			continue
-		var stamp: String = dir + "/.version"
-		var have: int = -1
-		var f := FileAccess.open(stamp, FileAccess.READ)
-		if f != null:
-			have = int(f.get_as_text().strip_edges())
-			f.close()
-		var want: int = int(CATEGORY_VERSIONS[kind])
-		if have == want:
-			continue
-		var d := DirAccess.open(dir)
-		var n: int = 0
-		if d != null:
-			for file in d.get_files():
-				if d.remove(file) == OK:
-					n += 1
-		var w := FileAccess.open(stamp, FileAccess.WRITE)
-		if w != null:
-			w.store_string(str(want))
-			w.close()
-		print("[assets] %s rebuilt from version %d to %d (%d files dropped)"
-			% [kind, have, want, n])
 
 ## Wipe the cache when its format version changed.
 func _check_version() -> void:
@@ -212,25 +131,15 @@ func _check_version() -> void:
 		w.store_line(str(CACHE_VERSION))
 		w.close()
 
-## Directories under the cache root that are INPUTS, not outputs, and
-## must survive a rebuild: enhanced_pack is the downloaded CC0 art
-## (models, textures, replace.cfg). It sits inside converted/ only
-## because that is where a portable install keeps everything; wiping it
-## would throw away assets the conversion cannot regenerate.
-const WIPE_KEEP: Array = ["enhanced_pack"]
-
-func _wipe(dir: String, top: bool = true) -> void:
+func _wipe(dir: String) -> void:
 	var d := DirAccess.open(dir)
 	if d == null:
 		return
 	d.list_dir_begin()
 	var n := d.get_next()
 	while n != "":
-		if top and WIPE_KEEP.has(n):
-			n = d.get_next()
-			continue
 		if d.current_is_dir():
-			_wipe(dir + "/" + n, false)
+			_wipe(dir + "/" + n)
 			DirAccess.remove_absolute(dir + "/" + n)
 		else:
 			DirAccess.remove_absolute(dir + "/" + n)
@@ -254,12 +163,8 @@ func palette() -> PackedColorArray:
 # ---------------------------------------------------------------------
 # Generic load-or-build
 # ---------------------------------------------------------------------
-## ENHANCED assets live in their own tree (converted/enhanced/<kind>) —
-## a mesh .res references its textures by path, so the two looks must
-## never share a file.
 func _path(kind: String, key: String) -> String:
-	var sub: String = ("enhanced/" + kind) if Render.enhanced() and kind in ["tex", "nrm", "mesh", "frames", "terrain", "prop"] else kind
-	return "%s/%s/%s.res" % [root, sub, key.to_upper().replace("/", "_")]
+	return "%s/%s/%s.res" % [root, kind, key.to_upper().replace("/", "_")]
 
 ## Return the cached resource for `kind/key`, building it with
 ## `builder` (→ Resource or null) and saving it on a miss.
@@ -305,7 +210,6 @@ func _tex_file(bank: int) -> TextureNNN.TexFile:
 ## transparent when `transparent0` (billboard sprites).
 func texture(bank: int, rec: int, transparent0: bool = false) -> Texture2D:
 	var key := "T%03d_%03d%s" % [bank, rec, "_A" if transparent0 else ""]
-	_drop_stale(bank, rec, "tex", key, "textures/T%03d_%03d.png" % [bank, rec])
 	var r: Resource = fetch("tex", key, func() -> Resource:
 		var img: Image = _texture_image(bank, rec, transparent0)
 		if img == null:
@@ -313,90 +217,28 @@ func texture(bank: int, rec: int, transparent0: bool = false) -> Texture2D:
 		return _portable(img))
 	return r as Texture2D
 
-## The DOS record as an Image — in ENHANCED mode the hand-made
-## replacement <converted>/enhanced_pack/textures/T<bank>_<rec>.png when there is
-## one, else the pixel-art upscale (Render.enhance_image), mipmapped.
+## The DOS record as an Image.
 func _texture_image(bank: int, rec: int, transparent0: bool) -> Image:
-	if Render.enhanced():
-		var p: String = Render.override_path("textures/T%03d_%03d.png" % [bank, rec])
-		if not p.is_empty():
-			var over := Image.load_from_file(p)
-			if over != null:
-				over.convert(Image.FORMAT_RGBA8)
-				over.generate_mipmaps()
-				return over
 	var t := _tex_file(bank)
 	if t == null or t.records.is_empty():
 		return null
 	var ri: int = clampi(rec, 0, t.records.size() - 1)
-	var img: Image = TextureNNN.to_image(t.records[ri], palette(), transparent0)
-	if img == null:
-		return null
-	if Render.enhanced() and img.get_width() > 1 and img.get_height() > 1:
-		# Billboards (transparent0) keep hard pixel edges: two EPX passes
-		# and no resample, so a 4× tree does not turn into a blob.
-		return Render.enhance_image(img, transparent0)
-	return img
+	return TextureNNN.to_image(t.records[ri], palette(), transparent0)
 
 ## World size per texel for a billboard of this record: the DOS sprite
-## is SPRITE_PIXEL_SIZE units per DOS pixel whatever the texture's
-## (upscaled / replaced) resolution.
+## is SPRITE_PIXEL_SIZE units per DOS pixel whatever resolution the
+## texture has.
 func sprite_pixel_size(bank: int, rec: int, tex: Texture2D, dos_pixel: float) -> float:
 	if tex == null or tex.get_height() <= 0:
 		return dos_pixel
 	return dos_pixel * float(record_size(bank, rec).y) / float(tex.get_height())
-
-## ENHANCED: a replacement file in <converted>/enhanced_pack newer than the cached
-## resource built from it (or from the DOS record) drops the cache entry,
-## so dropping a PNG into the pack takes effect on the next load.
-func _drop_stale(bank: int, rec: int, kind: String, key: String, rel: String) -> void:
-	if not Render.enhanced() or not enabled or read_only:
-		return
-	var over: String = Render.override_path(rel)
-	if over.is_empty():
-		return
-	var p := _path(kind, key)
-	if not FileAccess.file_exists(p):
-		return
-	if FileAccess.get_modified_time(over) > FileAccess.get_modified_time(p):
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
-		_mem.erase(p)
-
-## ENHANCED: a normal map derived from the texture (bump from luminance).
-func normal_map(bank: int, rec: int) -> Texture2D:
-	if not Render.enhanced():
-		return null
-	var key := "N%03d_%03d" % [bank, rec]
-	_drop_stale(bank, rec, "nrm", key, "textures/T%03d_%03d.png" % [bank, rec])
-	_drop_stale(bank, rec, "nrm", key, "textures/T%03d_%03d_n.png" % [bank, rec])
-	var r: Resource = fetch("nrm", key, func() -> Resource:
-		# A hand-made normal map next to a replacement texture
-		# (<converted>/enhanced_pack/textures/T<bank>_<rec>_n.png, OpenGL +Y).
-		var np: String = Render.override_path("textures/T%03d_%03d_n.png" % [bank, rec])
-		if not np.is_empty():
-			var nimg := Image.load_from_file(np)
-			if nimg != null:
-				nimg.convert(Image.FORMAT_RGBA8)
-				# Capped like the derived ones, only higher: these are
-				# authored from photographs, so they keep more, but a
-				# 1024² lossless normal map is 3 MB of CPU decode at
-				# every level load (measured 2026-09-09: ~21 ms per MB).
-				Render.cap_size(nimg, Render.NORMAL_MAX_PACK)
-				nimg.generate_mipmaps()
-				return _portable(nimg)
-		var img: Image = _texture_image(bank, rec, false)
-		if img == null or img.get_width() <= 1:
-			return null
-		return _portable(Render.normal_from(img)))
-	return r as Texture2D
 
 ## Number of records in TEXTURE.<bank> (0 when the file is missing).
 func record_count(bank: int) -> int:
 	var t := _tex_file(bank)
 	return t.records.size() if t != null else 0
 
-## Native DOS pixel size of a record (the UV divisor — upscaled or
-## replaced images must not change the mapping).
+## Native DOS pixel size of a record (the UV divisor).
 func record_size(bank: int, rec: int) -> Vector2i:
 	var t := _tex_file(bank)
 	if t == null or t.records.is_empty():
@@ -420,101 +262,7 @@ func provide(bank: int, rec: int) -> Dictionary:
 	var tex := texture(bank, rec, false)
 	if tex == null:
 		return {}
-	var out := {"texture": tex, "size": record_size(bank, rec)}
-	if Render.enhanced():
-		var n := normal_map(bank, rec)
-		if n != null:
-			out["normal"] = n
-		var e := emission(bank, rec)
-		if e != null:
-			out["emission"] = e
-	return out
-
-## Which parts of a DOS texture are LIGHT: strip lights, lit panels, the
-## glowing screens on a console, the sodium heads of a street lamp.
-##
-## The DOS artists painted those bright — there is no separate light map
-## and no light entity for most of them, the pixels ARE the lamp. In
-## ENHANCED that means the geometry can emit: a corridor lit by its own
-## ceiling strips instead of a flat ambient ("nech jednotlive panely
-## emituju svetlo a to co je hore zase mozu byt svetla ktore budu tie
-## chodby osvetlovat", 2026-09-04).
-##
-## The mask keeps only texels above EMISSION_CUT and blacks out the rest.
-## A record whose bright area is under EMISSION_MIN is not a lamp (a
-## stray highlight), and one over EMISSION_MAX is not either — it is a
-## pale wall, and making a whole wall glow would wash the room out.
-const EMISSION_CUT: float = 0.84
-const EMISSION_MIN: float = 0.004
-const EMISSION_MAX: float = 0.22
-## Longest side the mask is scanned at.
-const EMISSION_SCAN: int = 96
-@onready var _emission_cut8: int = int(EMISSION_CUT * 255.0)
-
-func emission(bank: int, rec: int) -> Texture2D:
-	if not Render.enhanced():
-		return null
-	var key := "E%03d_%03d" % [bank, rec]
-	var r: Resource = fetch("emi", key, func() -> Resource:
-		var img: Image = _texture_image(bank, rec, false)
-		if img == null:
-			return null
-		if img.is_compressed():
-			img.decompress()
-		img.convert(Image.FORMAT_RGBA8)
-		# get_data() of a MIPMAPPED image returns the whole chain, and
-		# create_from_data(w, h, false, …) then rejects it — the mask came
-		# out 0x0 and saved as an empty PortableCompressedTexture2D, which
-		# the renderer draws as its magenta checkerboard (Marek: "tá
-		# ružová musí byť chýbajúca textúra", 2026-09-05). Only the
-		# records small enough to skip the resize below were hit; resize
-		# drops the mipmaps by itself.
-		if img.has_mipmaps():
-			img.clear_mipmaps()
-		# A mask, not a texture: half resolution is plenty, and the scan
-		# below is GDScript over every byte — at the ENHANCED 4x upscale
-		# that would be a million iterations per record.
-		if maxi(img.get_width(), img.get_height()) > EMISSION_SCAN:
-			var s: float = float(EMISSION_SCAN) / float(maxi(img.get_width(), img.get_height()))
-			img.resize(maxi(int(img.get_width() * s), 1),
-				maxi(int(img.get_height() * s), 1), Image.INTERPOLATE_BILINEAR)
-		var w: int = img.get_width()
-		var h: int = img.get_height()
-		var src: PackedByteArray = img.get_data()
-		var dst := PackedByteArray()
-		dst.resize(src.size())
-		var lit: int = 0
-		var i: int = 0
-		var n: int = w * h
-		while i < n:
-			var o: int = i * 4
-			var cr: int = src[o]
-			var cg: int = src[o + 1]
-			var cb: int = src[o + 2]
-			# Luminance, but a saturated colour counts for more: a red
-			# warning strip is a lamp at a lower brightness than a white
-			# one. Kept in 0..255 integers — this runs per texel.
-			var l: int = (cr * 77 + cg * 151 + cb * 28) >> 8
-			var top: int = maxi(cr, maxi(cg, cb)) * 85 / 100
-			if top > l:
-				l = top
-			if l >= _emission_cut8:
-				dst[o] = cr
-				dst[o + 1] = cg
-				dst[o + 2] = cb
-				lit += 1
-			dst[o + 3] = 255
-			i += 1
-		var frac: float = float(lit) / float(maxi(n, 1))
-		if frac < EMISSION_MIN or frac > EMISSION_MAX:
-			return null
-		var out := Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, dst)
-		if out == null or out.is_empty():
-			push_warning("[assets] emission mask %d/%d came out empty" % [bank, rec])
-			return null
-		out.generate_mipmaps()
-		return _portable(out))
-	return r as Texture2D
+	return {"texture": tex, "size": record_size(bank, rec)}
 
 # ---------------------------------------------------------------------
 # Meshes
@@ -534,7 +282,7 @@ func read_3d(name: String) -> PackedByteArray:
 ## supplied by a caller that already has the archive open.
 func mesh(name: String, bytes: PackedByteArray = PackedByteArray()) -> ArrayMesh:
 	var key := name.get_basename()
-	var am := fetch("mesh", key, func() -> Resource:
+	return fetch("mesh", key, func() -> Resource:
 		var data := bytes if not bytes.is_empty() else read_3d(name)
 		if data.is_empty():
 			return null
@@ -542,47 +290,6 @@ func mesh(name: String, bytes: PackedByteArray = PackedByteArray()) -> ArrayMesh
 		if parsed == null:
 			return null
 		return Mesh3D.build_textured_array_mesh(parsed, Callable(self, "provide"))) as ArrayMesh
-	_fix_emission(am)
-	return am
-
-## Materials written into the cache before 2026-09-05 add their white
-## emission colour to the mask (EMISSION_OP_ADD), which lights the whole
-## surface a flat 0.4 — the white wall signs and the raptor's chest.
-## Render.style now writes MULTIPLY; a cached mesh is corrected as it is
-## loaded, so nobody has to rebuild ~4 000 meshes for it.
-## The same correction for every mesh under `root` — the baked level
-## scene hands its Static meshes over without going through mesh().
-static func fix_emission_tree(root: Node) -> int:
-	var seen: Dictionary = {}
-	var stack: Array = [root]
-	while not stack.is_empty():
-		var n: Node = stack.pop_back()
-		for c in n.get_children():
-			stack.append(c)
-		if n is MeshInstance3D and (n as MeshInstance3D).mesh != null \
-				and not seen.has((n as MeshInstance3D).mesh):
-			seen[(n as MeshInstance3D).mesh] = true
-			_fix_emission((n as MeshInstance3D).mesh)
-	return seen.size()
-
-static func _fix_emission(m: Mesh) -> void:
-	if m == null:
-		return
-	for si in m.get_surface_count():
-		var mat: Material = m.surface_get_material(si)
-		if mat is BaseMaterial3D and (mat as BaseMaterial3D).emission_enabled \
-				and (mat as BaseMaterial3D).emission_texture != null \
-				and (mat as BaseMaterial3D).emission_operator != BaseMaterial3D.EMISSION_OP_MULTIPLY:
-			(mat as BaseMaterial3D).emission_operator = BaseMaterial3D.EMISSION_OP_MULTIPLY
-			(mat as BaseMaterial3D).emission_energy_multiplier = Render.EMISSION_ENERGY
-		# The same for the surface: cached DOS models still carry the old
-		# glossy style (roughness 0.65, specular 0.4 — the "glowing walls",
-		# Render.MODEL_ROUGHNESS). Only that exact pair is touched, so the
-		# weathered photo props and the weapons keep their own.
-		if mat is BaseMaterial3D and is_equal_approx((mat as BaseMaterial3D).roughness, 0.65) \
-				and is_equal_approx((mat as BaseMaterial3D).metallic_specular, 0.4):
-			(mat as BaseMaterial3D).roughness = Render.MODEL_ROUGHNESS
-			(mat as BaseMaterial3D).metallic_specular = Render.MODEL_SPECULAR
 
 ## Every animation frame of `name` as an Array of ArrayMesh.
 func mesh_frames(name: String, bytes: PackedByteArray = PackedByteArray()) -> Array:
@@ -601,8 +308,6 @@ func mesh_frames(name: String, bytes: PackedByteArray = PackedByteArray()) -> Ar
 		fp.frames = frames
 		return fp)
 	if pack is FramePack:
-		for f in (pack as FramePack).frames:
-			_fix_emission(f)
 		return (pack as FramePack).frames
 	return []
 
@@ -617,21 +322,18 @@ func terrain(suffix: String, wld: WldTerrain.WLD) -> ArrayMesh:
 			return null
 		var tiles: Array = []
 		var t302 := _tex_file(302)
-		var normals: Array = []
 		if t302 != null:
 			for i in t302.records.size():
 				var rec: TextureNNN.Record = t302.records[i]
 				var ok: bool = rec != null and not rec.pixels.is_empty()
 				tiles.append(texture(302, i, false) if ok else null)
-				normals.append(normal_map(302, i) if ok else null)
-		return WldTerrain.build_terrain_mesh(wld, tiles, normals)) as ArrayMesh
+		return WldTerrain.build_terrain_mesh(wld, tiles)) as ArrayMesh
 
 ## The collision shape of a mesh, shared by every copy of it in every
 ## map (converted/shape/<key>.res). The level used to call
 ## MeshInstance3D.create_trimesh_collision() per entity, which walks the
 ## faces and builds a private ConcavePolygonShape3D — MAP.240 did that
-## 410 times, for maybe 120 distinct meshes. Geometry is the same in
-## both looks, so this tree is NOT per render mode.
+## 410 times, for maybe 120 distinct meshes.
 ##
 ## backface_collision is on for all of them: DOS meshes are drawn
 ## double-sided and their winding is arbitrary (the 210TOWER deck floor
@@ -744,10 +446,9 @@ func map_scene(map_name: String) -> String:
 	misses += 1
 	return MapScene.save(map_name)
 
-## Bake the level scene for `map_name` in the look that is in force
-## (scripts/level_scene.gd) — terrain, static geometry with its
-## collision, the occluders and, in ENHANCED, the scenery. Loading the
-## map writes it as a side effect, so this just makes the loader run.
+## Bake the level scene for `map_name` (scripts/level_scene.gd) —
+## terrain, static geometry with its collision and the occluders. Loading
+## the map writes it as a side effect, so this just makes the loader run.
 func level_scene(map_name: String) -> String:
 	var p := LevelScene.scene_path(map_name)
 	if p.is_empty():
@@ -761,7 +462,7 @@ func level_scene(map_name: String) -> String:
 	if lvl == null:
 		return ""
 	for n in [lvl.terrain, lvl.entities, lvl.enemies, lvl.sprites, lvl.sky,
-			lvl.occluders, lvl.detail, lvl.overlay, lvl.behaviour]:
+			lvl.occluders, lvl.overlay, lvl.behaviour]:
 		if n != null and is_instance_valid(n):
 			n.free()
 	return p if ResourceLoader.exists(p) else ""

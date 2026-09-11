@@ -857,7 +857,7 @@ func _shoot(muzzle: Vector3, dir: Vector3, ammo: int, dos_speed: float) -> void:
 		"speed": maxf(dos_speed, 200.0) * BOLT_SPEED_SCALE,
 		"life": maxf(life, 0.8),
 		"splash": blast if dmg < 0 else 0.0,
-		"light": true, "impact_bank": bank, "hits": "player",
+		"impact_bank": bank, "hits": "player",
 		"trail": model.begins_with("ROCKET"),
 	}
 	if isnd >= 0:
