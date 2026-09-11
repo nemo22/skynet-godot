@@ -1,35 +1,69 @@
-## Aiming crosshair drawn at the screen centre.
+## Aiming crosshair at the screen centre (in the jeep the camera is the
+## turret, so the aim is always there).
+##
+## On foot: a small green cross — the DOS one is a few pixels, and the
+## port's first was three times that ("zameriavaci kriz je prilis velky",
+## 2026-09-04). In a vehicle: the DOS reticle CROSHAIR.IMG, the dashed
+## circle in Marek's DOS jeep screenshots (2026-09-11). Skynet.exe's aim
+## table (0x443ca) names mdmaim.img on foot and croshair.img for the jeep
+## and the HK. Its pixels are palette colours; it is drawn as a mask in the
+## DOS green, scaled from the 200-line screen to this one.
 
 extends Control
 
-var _centre: Vector2 = Vector2.ZERO
+const VEH_RETICLE: String = "CROSHAIR.IMG"
+const GREEN := Color(0.40, 0.95, 0.45, 0.9)
+
 var _player: Node = null
+var _veh: int = -1
+var _reticle: Texture2D = null
+var _reticle_tried: bool = false
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	resized.connect(queue_redraw)
-	_centre = size * 0.5
 
-## In the jeep the crosshair is the turret's aim, moved by the mouse
-## independently of the car (DOS); on foot / in the HK it is centred.
 func _process(_delta: float) -> void:
 	if _player == null or not is_instance_valid(_player):
 		_player = get_tree().get_first_node_in_group("player")
-	var c: Vector2 = size * 0.5
-	if _player != null and _player.has_method("aim_screen_pos"):
-		c = _player.call("aim_screen_pos")
-	if c.distance_to(_centre) > 0.5:
-		_centre = c
+	var v: int = int(_player.get("vehicle")) if _player != null else 0
+	if v != _veh:
+		_veh = v
 		queue_redraw()
 
+## CROSHAIR.IMG as a white mask, loaded once.
+func _vehicle_reticle() -> Texture2D:
+	if _reticle_tried:
+		return _reticle
+	_reticle_tried = true
+	var main = get_tree().current_scene
+	if main == null or not main.has_method("_load_panel_texture"):
+		return null
+	var tex: Texture2D = main.call("_load_panel_texture", VEH_RETICLE, true)
+	if tex == null:
+		return null
+	var img: Image = tex.get_image()
+	if img == null:
+		return null
+	img.convert(Image.FORMAT_RGBA8)
+	for y in img.get_height():
+		for x in img.get_width():
+			img.set_pixel(x, y, Color(1, 1, 1, img.get_pixel(x, y).a))
+	_reticle = ImageTexture.create_from_image(img)
+	return _reticle
+
 func _draw() -> void:
-	var c := _centre if _centre != Vector2.ZERO else size * 0.5
+	var c: Vector2 = size * 0.5
+	if _veh > 0:
+		var tex := _vehicle_reticle()
+		if tex != null:
+			var sz: Vector2 = tex.get_size() * (size.y / 200.0)
+			draw_texture_rect(tex, Rect2(c - sz * 0.5, sz), false, GREEN)
+			return
 	var col := Color(0.55, 1.0, 0.65, 0.85)
 	var shadow := Color(0.0, 0.0, 0.0, 0.6)
-	# Small: the DOS crosshair is a few pixels of green, and the port
-	# drew it three times that ("zameriavaci kriz je prilis velky",
-	# 2026-09-04).
 	var gap := 4.0
 	var ln := 8.0
 	var dirs: Array[Vector2] = [

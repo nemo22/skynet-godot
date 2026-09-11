@@ -3835,7 +3835,7 @@ const COMMAND_NAMES: Array = [
 	"objectives", "occlusion", "options", "pause", "players", "pos", "quit",
 	"rebake", "render", "save", "secondary", "sf2", "shoot", "showspawns",
 	"slugs", "speed", "superuzi", "surgery", "throw", "tp", "use", "version",
-	"weapon", "weaponview", "where", "who", "whoami", "win", "look", "bodyat", "collfaces",
+	"weapon", "weaponview", "where", "who", "whoami", "win", "look", "bodyat", "collfaces", "aim",
 ]
 
 const HELP_TEXT := """[b]commands[/b]
@@ -3896,6 +3896,15 @@ func run_command(line: String) -> String:
 				return "usage: tp x y z"
 			p.set_spawn(Vector3(float(args[0]), float(args[1]), float(args[2])), p.rotation.y, false)
 			return "teleported"
+		"aim":
+			# Agent aid: turn the jeep's turret (degrees, relative to the car)
+			# - the view swings across the car's own frame.
+			if p == null or args.is_empty() or not args[0].is_valid_float():
+				return "usage: aim yaw [pitch]"
+			p.set("_aim_yaw", deg_to_rad(float(args[0])))
+			if args.size() > 1 and args[1].is_valid_float():
+				p.set("_aim_pitch", deg_to_rad(float(args[1])))
+			return "turret yaw %s" % args[0]
 		"collfaces":
 			# Agent aid: the COLLISION triangles of every mesh named NAME whose
 			# centre lies in the box x0,z0,x1,z1 — world vertices and the normal
@@ -4928,10 +4937,14 @@ func _load_panel_texture(name: String = "PANEL0.IMG", transparent0: bool = false
 		return null
 	return ImgFile.parse(panel_bytes, palette, transparent0)
 
-## --- Vehicle cockpit HUD (DOS mode 4 = PANEL1 jeep, 8 = PANEL2 HK) -----
-## The cockpit art fills the screen (320×200 stretched); the green
-## read-outs sit in its right-hand block. Rects in image pixels.
-const VEH_PANELS: Array = ["", "PANEL1.IMG", "PANEL2.IMG"]
+## --- Vehicle HUD -------------------------------------------------------
+## In a vehicle DOS keeps the foot bar (PANEL0) and draws the vehicle's
+## own model round the eye (FlyCamera._attach_cockpit). PANEL1/PANEL2.IMG
+## are in the archive, but the executable never loads them - panel0.img
+## is its only panel name - and the full-screen dashboards the port showed
+## since 2026-09-03 were a guess Marek's DOS screenshots disproved. The
+## overlay machinery stays for a panel name, should one ever turn up.
+const VEH_PANELS: Array = ["", "", ""]
 const VEH_READOUTS: Dictionary = {
 	1: {"energy": Rect2(207, 151, 38, 9), "armor": Rect2(207, 160, 38, 9), "damage": Rect2(207, 169, 38, 9)},
 	2: {"missiles": Rect2(207, 141, 38, 9), "energy": Rect2(207, 151, 38, 9), "armor": Rect2(207, 160, 38, 9), "damage": Rect2(207, 169, 38, 9)},
@@ -4945,7 +4958,7 @@ var _hud_mode: int = 0
 func _set_hud_mode(v: int) -> void:
 	_hud_mode = v
 	if _hud_panel != null:
-		_hud_panel.visible = v == 0
+		_hud_panel.visible = v == 0 or String(VEH_PANELS[clampi(v, 0, VEH_PANELS.size() - 1)]).is_empty()
 	if _veh_layer == null:
 		_veh_layer = CanvasLayer.new()
 		_veh_layer.layer = 49
@@ -4960,7 +4973,7 @@ func _set_hud_mode(v: int) -> void:
 	for l in _veh_labels.values():
 		(l as Node).queue_free()
 	_veh_labels.clear()
-	if v <= 0 or v >= VEH_PANELS.size():
+	if v <= 0 or v >= VEH_PANELS.size() or String(VEH_PANELS[v]).is_empty():
 		_veh_layer.visible = false
 		return
 	_veh_panel.texture = _load_panel_texture(String(VEH_PANELS[v]), true)

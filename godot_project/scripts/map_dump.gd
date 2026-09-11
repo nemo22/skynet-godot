@@ -428,8 +428,28 @@ static func dump_faces(names: String) -> void:
 			print("%s: parse failed" % key)
 			continue
 		print("%s: %d verts, %d faces, aabb %s" % [key, m.vertices.size(), m.faces.size(), m.aabb])
+		# The header's normal list (0x34, Daggerfall's NormalListOffset):
+		# one s32 x,y,z per face. Printed next to the winding normal the
+		# port culls by, converted like the vertices (x,-y,-z).
+		var nrm_off: int = Mesh3D._u32(bytes, 0x34)
+		# The face records' two unnamed fields (byte 1, dword 4), walked
+		# like the parser does.
+		var rec_unk: Array = []
+		var ro: int = Mesh3D._u32(bytes, 0x3c)
+		for fi in Mesh3D._u32(bytes, 8):
+			if ro + 8 > bytes.size():
+				break
+			rec_unk.append("unk1 %02x unk4 %08x" % [bytes[ro + 1], Mesh3D._u32(bytes, ro + 4)])
+			ro += 8 + bytes[ro] * 8
 		for i in m.faces.size():
 			var f = m.faces[i]
+			var o: int = nrm_off + i * 12
+			if nrm_off >= 64 and o + 12 <= bytes.size() and f.idx.size() >= 3:
+				var sn := Vector3(Mesh3D._s32(bytes, o), -Mesh3D._s32(bytes, o + 4), -Mesh3D._s32(bytes, o + 8))
+				var a: Vector3 = m.vertices[f.idx[0]]
+				var wn: Vector3 = (m.vertices[f.idx[1]] - a).cross(m.vertices[f.idx[2]] - a).normalized()
+				print("  face %2d stored normal %s  winding %s  dot %.2f  %s"
+					% [i, sn, wn, sn.normalized().dot(wn), rec_unk[i] if i < rec_unk.size() else "?"])
 			var lo := Vector3(1e9, 1e9, 1e9)
 			var hi := Vector3(-1e9, -1e9, -1e9)
 			for vi in f.idx:

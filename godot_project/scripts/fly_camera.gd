@@ -388,6 +388,7 @@ func set_vehicle(v: int) -> void:
 	velocity = Vector3.ZERO
 	if _cam != null:
 		_cam.rotation.z = 0.0
+		_cam.rotation.y = 0.0            # the turret faces the bonnet again
 	if v == VEH_FOOT:
 		_owned = _foot_owned.duplicate() if not _foot_owned.is_empty() else _owned
 		_weapon_idx = _foot_weapon
@@ -418,8 +419,63 @@ func set_vehicle(v: int) -> void:
 	if v != VEH_FOOT:
 		Audio.play_id(int(_weapons[_weapon_idx].get("sel", -1)), -8.0)
 	_start_engine(v)
+	_attach_cockpit(v)
 	_sync_hud()
 	print("[player] vehicle: %s" % (VEH_NAMES[v] if v > 0 else "on foot"))
+
+## The vehicle as the DOS player sees it from inside: its own model drawn
+## round the eye. Skynet.exe's HUD table (0x44700) names hummer.3d for
+## the jeep and hkcockpt.3d for the HK. Back faces are culled, so from
+## inside only the windscreen frame, the roll bar and the bonnet show - the
+## view in Marek's DOS screenshots (2026-09-11). The port had drawn
+## PANEL1/PANEL2.IMG instead, full-screen dashboards the executable never
+## loads (panel0.img is its only panel name).
+## The jeep's model rides the CAR (a pivot at the eye that tilts with the
+## cab), so the turret camera swings across it; the HK's rides the
+## camera, which points where the craft does.
+const VEH_COCKPIT: Array = ["", "HUMMER.3D", "HKCOCKPT.3D"]
+## Where the model sits relative to the eye. A HUD-table entry is
+## {handle, x, y, z, name}: FUN_00126415 loads the model once and
+## FUN_00133d26 adds (x, y, z) << 8 to every vertex (the y rides in EBX,
+## which Ghidra shows as unaff_EBX); FUN_0012645c then draws it at the
+## camera position. DOS y is down and z ahead, so the jeep's 26,22,8 is
+## (26, -22, -8) here: the eye sits in the LEFT seat, 22 over the model's
+## origin, and the windscreen's centre post stands 30 to the right - the
+## post at the lower right of Marek's DOS shot, not a post in mid-view
+## (read as 0,26,22 it was; no placement round the car's middle matched).
+## The HK's 0,4,16 is (0, -4, -16).
+const VEH_COCKPIT_OFFSET: Array = [Vector3.ZERO, Vector3(26.0, -22.0, -8.0), Vector3(0.0, -4.0, -16.0)]
+var _cockpit_pivot: Node3D = null
+
+func _attach_cockpit(v: int) -> void:
+	if _cockpit_pivot != null and is_instance_valid(_cockpit_pivot):
+		_cockpit_pivot.queue_free()
+	_cockpit_pivot = null
+	if v == VEH_FOOT or _cam == null:
+		return
+	var am: ArrayMesh = Assets.mesh(String(VEH_COCKPIT[v]))
+	if am == null:
+		return
+	_cockpit_pivot = Node3D.new()
+	_cockpit_pivot.name = "Cockpit"
+	var mi := MeshInstance3D.new()
+	mi.mesh = am
+	# Flat, as DOS draws it: seen from inside, every face looks back at the
+	# driver and no light reaches it — ENHANCED drew the whole frame black.
+	for si in am.get_surface_count():
+		var sm: Material = am.surface_get_material(si)
+		if sm is BaseMaterial3D:
+			var flat := (sm as BaseMaterial3D).duplicate() as BaseMaterial3D
+			flat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			mi.set_surface_override_material(si, flat)
+	mi.position = VEH_COCKPIT_OFFSET[v]
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_cockpit_pivot.add_child(mi)
+	if v == VEH_HK:
+		_cam.add_child(_cockpit_pivot)
+	else:
+		_cockpit_pivot.position = Vector3(0.0, float(VEH_EYE[v]), 0.0)
+		add_child(_cockpit_pivot)
 
 ## Engine loops from the DOS sound table: careng1 (id 69) for the jeep,
 ## hk2 (id 48, the same loop the enemy HKs run) for the HK; the jeep
@@ -675,8 +731,8 @@ var _skid_cd: float = 0.0
 const JEEP_WHEEL_RETURN: float = 2.5   # wheel self-centre rate (per s)
 const JEEP_TILT_RATE: float = 6.0
 
-## Jeep turret aim (DOS: the keys drive, the mouse moves an independent
-## crosshair the guns follow). Relative to the car's heading.
+## Jeep turret aim (DOS: the keys drive, the mouse turns the view - the
+## camera is the turret). Relative to the car's heading.
 var _aim_yaw: float = 0.0
 var _aim_pitch: float = 0.0
 const JEEP_AIM_YAW: float = 1.1
@@ -690,21 +746,17 @@ const RAM_SELF_PER_SPEED: float = 0.012
 var _ram_cd: Dictionary = {}       # enemy instance id -> cooldown
 var _dust: GPUParticles3D = null   # ENHANCED wheel dust
 
-## Direction the guns fire: the turret aim in the jeep, the view else.
+## Direction the guns fire: where the camera looks. In the jeep the
+## camera IS the turret - the mouse turns it, the keys drive the car -
+## so the car's frame swings across the view as you aim and the
+## crosshair stays in the middle (Marek's DOS screenshots, 2026-09-11;
+## the port had moved a crosshair over a view fixed to the car).
 func aim_dir() -> Vector3:
-	if vehicle == VEH_JEEP:
-		return -(Basis(Vector3.UP, _yaw + _aim_yaw) * Basis(Vector3.RIGHT, _aim_pitch)).z
 	return -_cam.global_transform.basis.z
 
-## Where the crosshair belongs on screen (the turret aim in the jeep).
+## Where the crosshair belongs on screen: always the middle now.
 func aim_screen_pos() -> Vector2:
-	var vp: Vector2 = get_viewport().get_visible_rect().size
-	if vehicle != VEH_JEEP or _cam == null:
-		return vp * 0.5
-	var pt: Vector3 = _cam.global_position + aim_dir() * 4000.0
-	if _cam.is_position_behind(pt):
-		return vp * 0.5
-	return _cam.unproject_position(pt)
+	return get_viewport().get_visible_rect().size * 0.5
 
 ## Drive into a robot: it takes the hit, the car bounces, the driver
 ## feels it too (FUN_00125caf-era DOS behaviour recalled by the player).
@@ -809,9 +861,17 @@ func _drive(delta: float, fwd_in: float, str_in: float) -> void:
 	var sk: float = clampf(absf(_veh_speed) / JEEP_MAX_SPEED, 0.0, 1.0)
 	_bump_t += delta * (6.0 + 14.0 * sk)
 	if _cam != null:
-		_cam.rotation.x = _pitch + _tilt_pitch + sin(_bump_t) * 0.004 * sk
+		# The camera is the turret: the aim turns it, the cab tilts and
+		# shakes it.
+		_cam.rotation.y = _aim_yaw
+		_cam.rotation.x = _aim_pitch + _tilt_pitch + sin(_bump_t) * 0.004 * sk
 		_cam.rotation.z = _tilt_roll + cos(_bump_t * 0.7) * 0.006 * sk
 		_cam.position.y = float(VEH_EYE[VEH_JEEP]) + sin(_bump_t * 1.3) * 3.0 * sk
+	if _cockpit_pivot != null and is_instance_valid(_cockpit_pivot):
+		# The car's own frame tilts with the cab, not with the aim.
+		_cockpit_pivot.rotation = Vector3(_tilt_pitch, 0.0, _tilt_roll)
+		if _cam != null:
+			_cockpit_pivot.position.y = _cam.position.y
 	_update_engine()
 
 ## HK (DOS mode 8): a hovering gunship — thrust along the view with W/S,
