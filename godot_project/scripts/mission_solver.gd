@@ -280,10 +280,14 @@ func _flood(seeds: Array) -> void:
 				elif _passable(p, landed) and _inside(landed, p):
 					queue.append(_add(landed))
 					moved = true
-			if not moved and not swim:
-				# Step OVER something narrower than the body: no cell next to
-				# MAP.252's 12 u cable duct fits a 40 u body, but the
-				# controller walks over it in one stride (rise, cross, drop).
+			if not moved:
+				# Step OVER — or swim past — something narrower than the
+				# body: no cell next to MAP.252's 12 u cable duct fits a
+				# 40 u body, but the controller crosses it in one stride
+				# (rise, cross, drop). A SWIMMER crosses the same gaps;
+				# the rule used to skip them while swimming, so once the
+				# water sat at its real height (32 u higher) mission 5's
+				# cabin counted as swimming and the flood never left it.
 				for k in [2, 3, 4]:
 					var fx: float = float(ix + d.x * k) * _cell
 					var fz: float = float(iz + d.y * k) * _cell
@@ -389,8 +393,14 @@ func _lands(tx: float, tz: float, from_y: float, swim: bool) -> Array:
 		if absf((hit["normal"] as Vector3).y) >= FLOOR_MIN_NY:
 			var fy: float = hp.y
 			if _water != INF and fy < _water - 1.0:
-				# Under water: a swimmer keeps its depth over deeper ground, a
-				# body dropping in floats up to the surface.
+				# Under water a body can do BOTH: WADE along the bottom —
+				# the controller walks the flooded submarine at y -185
+				# under a -120 surface, straight past the wardrobe that
+				# blocks every swimming height — or float at its own
+				# depth. Offer the floor as well; the flood used to swim
+				# only at the depth it entered at and got stuck in
+				# mission 5's cabin.
+				out.append(Vector3(tx, fy, tz))
 				fy = maxf(fy, minf(from_y, _water - FLOAT_FEET))
 			out.append(Vector3(tx, fy, tz))
 		y = hp.y - 2.0
