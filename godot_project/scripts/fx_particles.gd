@@ -170,6 +170,112 @@ static func trail(node: Node3D, size: float = 40.0,
 	node.add_child(p)
 	return p
 
+## A rocket's exhaust smoke. trail() is sized for a falling chunk — 25
+## puffs a second, shot upward — and behind a rocket doing 3000 u/s that
+## was one puff every 120 u rising off the flight line: a dotted column,
+## not a trail ("ten dym vyzerá divne", 2026-09-11). Here the rate
+## follows the speed so the puffs overlap; each is born small and hot
+## where the motor is, then swells, cools and hangs in the air.
+## `dir` is the flight direction; `delay` holds the smoke back until the
+## rocket itself is drawn (puffs laid at the muzzle hang in the lens).
+static func rocket_trail(node: Node3D, speed: float, dir: Vector3,
+		delay: float = 0.0) -> GPUParticles3D:
+	if not on() or node == null:
+		return null
+	var spacing: float = 20.0                  # world units between puffs
+	var life: float = 1.1
+	var p := GPUParticles3D.new()
+	p.amount = clampi(int(speed / spacing * life), 16, 240)
+	p.lifetime = life
+	p.local_coords = false
+	p.randomness = 0.3
+	# Emit every drawn frame. GPUParticles3D defaults to fixed_fps = 30:
+	# puffs came out in batches every 1/30 s — every 100 u at 3000 u/s —
+	# whatever box they were spread over, so the smoke stayed lumpy.
+	p.fixed_fps = 0
+	# A particle is born where the emitter is in the frame it is emitted,
+	# and a rocket moves 50 u per physics frame: every frame's puffs landed
+	# on one spot, a string of beads 50 u apart. So they are born along a
+	# box reaching back over the stretch just flown (sized for 45 fps; at
+	# 60 the stretches overlap, which is harmless).
+	var step: float = speed / 45.0
+	var fwd: Vector3 = dir.normalized() if dir.length_squared() > 0.0 else Vector3.FORWARD
+	p.basis = Basis.looking_at(fwd, Vector3.RIGHT if absf(fwd.y) > 0.99 else Vector3.UP)
+	p.position = -fwd * step * 0.5
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(3.0, 3.0, step * 0.5)
+	pm.direction = Vector3.UP
+	pm.spread = 180.0
+	pm.initial_velocity_min = 8.0
+	pm.initial_velocity_max = 30.0
+	pm.gravity = Vector3(0.0, 14.0, 0.0)
+	pm.damping_min = 10.0
+	pm.damping_max = 20.0
+	pm.angle_min = -180.0
+	pm.angle_max = 180.0
+	pm.scale_min = 0.85
+	pm.scale_max = 1.1
+	var grow := Curve.new()
+	grow.add_point(Vector2(0.0, 0.45))
+	grow.add_point(Vector2(0.3, 0.8))
+	grow.add_point(Vector2(1.0, 1.0))
+	var ct := CurveTexture.new()
+	ct.curve = grow
+	pm.scale_curve = ct
+	var g := Gradient.new()
+	# Warm only for the first ~130 u behind the motor, then grey smoke.
+	# A long hot phase drew the first puffs as bright separate discs.
+	g.offsets = PackedFloat32Array([0.0, 0.04, 0.2, 1.0])
+	g.colors = PackedColorArray([Color(1.0, 0.74, 0.4, 0.6),   # lit by the motor
+		Color(0.55, 0.52, 0.48, 0.5), Color(0.42, 0.41, 0.39, 0.42),
+		Color(0.22, 0.21, 0.2, 0.0)])
+	var gt := GradientTexture1D.new()
+	gt.gradient = g
+	pm.color_ramp = gt
+	p.process_material = pm
+	p.draw_pass_1 = _quad(80.0, _mat(Color(1, 1, 1), false))
+	p.set_meta("rocket_trail", true)
+	node.add_child(p)
+	if delay > 0.0:
+		p.emitting = false
+		node.get_tree().create_timer(delay).timeout.connect(func() -> void:
+			if is_instance_valid(p):
+				p.emitting = true)
+	return p
+
+## Keep a rocket_trail() box spanning exactly the stretch the rocket
+## flew since the last drawn frame (the carrier calls this every frame
+## with its position). Particles are emitted per DRAWN frame, and the
+## fixed box sized for 45 fps left the smoke in clumps ~130 u apart in
+## the agent runs — the rocket outran the box. A frame where it has not
+## moved (drawing faster than physics) keeps the last box, or that
+## frame's puffs pile up on one spot again.
+static func stretch_trail(p: GPUParticles3D, dir: Vector3, at: Vector3) -> void:
+	if p == null or not is_instance_valid(p) or not p.has_meta("rocket_trail"):
+		return
+	var last: Vector3 = p.get_meta("last", at)
+	p.set_meta("last", at)
+	var moved: float = last.distance_to(at)
+	if moved < 0.5:
+		return
+	(p.process_material as ParticleProcessMaterial).emission_box_extents = \
+		Vector3(3.0, 3.0, moved * 0.5)
+	p.position = -dir.normalized() * moved * 0.5
+
+## Leave an emitter's particles hanging in the air once the thing that
+## carried it is gone: a rocket freed at its impact took its whole smoke
+## trail with it, the trail vanishing the instant the rocket exploded.
+static func detach(p: GPUParticles3D) -> void:
+	if p == null or not is_instance_valid(p) or not p.is_inside_tree():
+		return
+	var scene: Node = p.get_tree().current_scene
+	if scene == null:
+		return
+	p.reparent(scene, true)
+	p.emitting = false
+	_free_after(p, p.lifetime + 0.2)
+
 ## Spent cases flicking out of the ejection port, tumbling, bouncing off
 ## nothing and gone in a second and a half. `right` is the gun's right
 ## hand side; they leave with a bit of up and back, like a real ejection.

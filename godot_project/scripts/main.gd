@@ -3744,7 +3744,7 @@ const COMMAND_NAMES: Array = [
 	"objectives", "occlusion", "options", "pause", "players", "pos", "quit",
 	"rebake", "render", "save", "secondary", "sf2", "shoot", "showspawns",
 	"slugs", "speed", "superuzi", "surgery", "throw", "tp", "use", "version",
-	"weapon", "weaponview", "where", "who", "whoami", "win",
+	"weapon", "weaponview", "where", "who", "whoami", "win", "look",
 ]
 
 const HELP_TEXT := """[b]commands[/b]
@@ -3805,6 +3805,19 @@ func run_command(line: String) -> String:
 				return "usage: tp x y z"
 			p.set_spawn(Vector3(float(args[0]), float(args[1]), float(args[2])), p.rotation.y, false)
 			return "teleported"
+		"look":
+			# Agent aid: turn the view, in degrees. After `throw now`, a `tp`
+			# and a `look` put the camera beside the rocket already in flight
+			# — from behind, its smoke is seen end-on and says nothing.
+			if p == null or args.is_empty() or not args[0].is_valid_float():
+				return "usage: look yaw [pitch]"
+			# fly_camera re-applies `_yaw` every frame; rotation.y alone
+			# lasted exactly one frame.
+			p.set("_yaw", deg_to_rad(float(args[0])))
+			p.rotation.y = deg_to_rad(float(args[0]))
+			if args.size() > 1 and args[1].is_valid_float():
+				p.set("_pitch", deg_to_rad(float(args[1])))
+			return "looking yaw %.1f pitch %.1f" % [rad_to_deg(p.rotation.y), rad_to_deg(float(p.get("_pitch")))]
 		"god", "willnotstop", "csej":
 			if p == null:
 				return "no player"
@@ -3893,6 +3906,9 @@ func run_command(line: String) -> String:
 			if not args.is_empty() and args[0].to_lower() == "next":
 				p.cycle_throwable(1)
 			elif not args.is_empty() and args[0].to_lower() == "now":
+				# Like `shoot`: a leftover cooldown (entering the jeep sets
+				# one) must not swallow the agent's shot silently.
+				p.set("_fire_cd", 0.0)
 				p.call("_throw_secondary")
 			return "secondary: %s x%d" % [p.secondary_name, p.secondary_ammo]
 		"drop":

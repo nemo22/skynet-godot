@@ -18,7 +18,7 @@
 ##   life          seconds before it fizzles (DOS ammo +0x18 ticks)
 ##   splash        blast radius (0 = direct hit only)
 ##   hits          "enemy" (player shot) or "player" (enemy shot)
-##   trail         smoke puffs along the flight (rockets)
+##   trail         exhaust smoke along the flight (rockets, ENHANCED)
 ##   light         OmniLight3D while flying
 ##   impact_bank   TEXTURE.NNN effect bank for the impact (0 = none)
 ##   impact_sound  .RAW played at the impact ("" = none)
@@ -31,7 +31,6 @@ const BSAReader    := preload("res://scripts/loaders/bsa_reader.gd")
 const Mesh3D       := preload("res://scripts/loaders/mesh_3d.gd")
 const Palette      := preload("res://scripts/loaders/palette.gd")
 const TextureCache := preload("res://scripts/loaders/texture_cache.gd")
-const SmokePuff    := preload("res://scripts/smoke_puff.gd")
 const Explosion    := preload("res://scripts/explosion.gd")
 
 ## .3D name → ArrayMesh, or false when the load failed (never retried).
@@ -45,6 +44,8 @@ const GLOW_SCALE: float = 0.24
 ## like (2026-09-04). Nothing is drawn until it is this far from the
 ## camera; by then it is small enough to read as a bolt.
 const NEAR_CLIP: float = 320.0
+## The rocket motor's glow, world units across.
+const EXHAUST_SIZE: float = 90.0
 
 var _dir: Vector3 = Vector3.FORWARD
 ## True when the model's body sits on +Z (the laser bolts) rather
@@ -56,8 +57,8 @@ var _life: float = 5.0
 var _damage: float = 0.0
 var _splash: float = 0.0
 var _hits: String = "enemy"
-var _trail: bool = false
-var _trail_t: float = 0.0
+## ENHANCED exhaust smoke, left hanging in the air at the impact.
+var _trail_fx: GPUParticles3D = null
 var _impact_bank: int = 0
 var _impact_sound: String = ""
 var _color: Color = Color(1.0, 0.75, 0.4)
@@ -117,11 +118,17 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 	_life = float(cfg.get("life", 5.0))
 	_splash = float(cfg.get("splash", 0.0))
 	_hits = String(cfg.get("hits", "enemy"))
-	_trail = bool(cfg.get("trail", false))
-	if _trail and FxParticles.on():
-		# ENHANCED: one particle emitter instead of a puff every 30 ms.
-		FxParticles.trail(self, 44.0)
-		_trail = false
+	# Smoke behind a rocket is ENHANCED only. The DOS shot tick
+	# (skynet_gh.c:25860-25970) spawns nothing while a rocket flies; its
+	# one effect is at the impact (ammo +0x2a pieces of type +0x2e). The
+	# TEXTURE.237 "fire smoke" the port used to drop every 30 ms stacked
+	# into a column of yellow flame over the target (2026-09-11).
+	if bool(cfg.get("trail", false)) and FxParticles.on():
+		# The smoke starts where the rocket is first drawn (NEAR_CLIP).
+		var cam := get_viewport().get_camera_3d()
+		var hidden: float = maxf(NEAR_CLIP - cam.global_position.distance_to(from), 0.0) \
+			if cam != null else 0.0
+		_trail_fx = FxParticles.rocket_trail(self, _speed, _dir, hidden / maxf(_speed, 1.0))
 	_impact_bank = int(cfg.get("impact_bank", 0))
 	_impact_sound = String(cfg.get("impact_sound", ""))
 	_color = cfg.get("color", _color)
@@ -149,6 +156,8 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 		# why incoming fire read as "nothing visible at all" (2026-09-04).
 		# Fatten the bolt and give it a halo instead of speeding it up.
 		_add_glow(am.get_aabb().size.z)
+		if not _is_bolt and bool(cfg.get("trail", false)):
+			_add_exhaust(am.get_aabb())
 	else:
 		var sm := SphereMesh.new()
 		var r: float = float(cfg.get("radius", 18.0))
@@ -197,6 +206,33 @@ func _add_glow(length: float) -> void:
 	g.visible = false
 	add_child(g)
 
+## The motor flame at a rocket's tail. ROCKET.3D is a dark 31 x 27 u
+## body seen from behind at night, inside its own smoke: 25-45 px of
+## black on black, so "nevidím samotnú raketu letieť" (2026-09-11) —
+## the model was there, measured, just unreadable. A real rocket is
+## seen by its motor; this is that, a hot additive dot at the tail.
+func _add_exhaust(aabb: AABB) -> void:
+	var qm := QuadMesh.new()
+	qm.size = Vector2(EXHAUST_SIZE, EXHAUST_SIZE)
+	var g := MeshInstance3D.new()
+	g.mesh = qm
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	m.albedo_texture = FxParticles.dot()
+	m.albedo_color = Color(1.0, 0.72, 0.36, 1.0)
+	m.disable_receive_shadows = true
+	g.material_override = m
+	g.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# The tail is the model's end away from the nose (+Z for a rocket,
+	# whose body is on -Z); the projectile node itself never rotates.
+	var tail: float = -aabb.position.z if _body_forward else aabb.end.z
+	g.position = -_dir * tail
+	g.visible = false
+	add_child(g)
+
 ## Where the bolt points, and which way its flat face is turned. A DOS
 ## bolt is a blade 3.4 u wide and 6.7 u tall: edge-on it is a hairline,
 ## so it is rolled about the flight axis to keep the wide face toward the
@@ -239,13 +275,6 @@ func _physics_process(delta: float) -> void:
 	if _life <= 0.0:
 		_finish(global_position, false)
 		return
-	if _trail:
-		_trail_t -= delta
-		if _trail_t <= 0.0:
-			_trail_t = 0.03
-			var sm := SmokePuff.new()
-			get_tree().current_scene.add_child(sm)
-			sm.setup(global_position, 70.0)
 	if _mi != null and not _mi.visible:
 		var cam := get_viewport().get_camera_3d()
 		if cam == null or cam.global_position.distance_to(global_position) > NEAR_CLIP:
@@ -290,6 +319,12 @@ func _physics_process(delta: float) -> void:
 		_finish(hit["position"], true)
 		return
 	_finish(hit["position"], true)               # solid geometry
+
+func _process(_delta: float) -> void:
+	# The smoke box spans what the rocket flew since the last drawn
+	# frame (FxParticles.stretch_trail) — particles are emitted per frame.
+	if _trail_fx != null and not _done:
+		FxParticles.stretch_trail(_trail_fx, _dir, global_position)
 
 ## Enemy shots hurt the player, player shots hurt enemies; in a
 ## deathmatch every other actor is fair game. "none" = a replicated
@@ -356,4 +391,8 @@ func _finish(at: Vector3, impact: bool) -> void:
 				var ex := Explosion.new()
 				scene.add_child(ex)
 				ex.setup(at, maxf(_splash * 0.6, 45.0), _impact_bank)
+	# The smoke stays where it was laid; only the emitter stops. Freed
+	# with the rocket, the whole trail vanished the instant it hit.
+	FxParticles.detach(_trail_fx)
+	_trail_fx = null
 	queue_free()
