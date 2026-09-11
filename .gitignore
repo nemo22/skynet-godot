@@ -1,9 +1,8 @@
-# Track only the Godot port and project docs. Everything else in this
-# tree is original game data, DOS/Win32 binaries, decompile output, or
-# tooling — reproducible or copyrighted, not source.
+# Track only the Godot port. Everything else in this tree is original
+# game data, DOS/Win32 binaries, decompile output, notes or tooling —
+# reproducible or copyrighted, not source.
 /*
 !/godot_project/
-!/docs/
 !/.gitignore
 
 # Godot editor cache / imports
