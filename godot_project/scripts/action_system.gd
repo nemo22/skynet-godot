@@ -806,11 +806,13 @@ func tick(delta: float, player_pos: Vector3) -> void:
 		if _armed.has(e.file_off):
 			e.state_byte |= 1
 		_touch_latched[e.file_off] = touching
-		# In a vehicle only an exit a CHAIN switched on fires as you pass
-		# (MAP.270's tunnel: 0xF1 button -> 0xF0) — DOS 0x137881 goes the
-		# moment it is enabled. Touching a doorway does not: nobody gets
-		# out of the jeep, and a truck door needs the use key at 60 u.
-		if drive_through and _armed.has(e.file_off):
+		# An exit a CHAIN switched on fires the moment it is enabled (DOS
+		# 0x138081), on foot as well as in a vehicle: MAP.270's tunnel
+		# mouth (0xF1 button → 0xF0) and mission 5's TORPEDO TUBE, where
+		# the hatch's own chain shoots the player out into the harbour
+		# without another key press. TOUCHING a doorway is different — it
+		# only arms the exit, and the use key takes it (the truck doors).
+		if _armed.has(e.file_off):
 			_fire_teleport(e)
 	if not _armed.is_empty():
 		_armed.clear()
@@ -1028,10 +1030,13 @@ func _spawn_in(off: int) -> void:
 		print("[action] spawn @%05x: %s appears" % [off, n.name])
 		n.spawn_in()
 
+## DOS measures the TRUE 3D distance (FUN_0014d775) in the 0xEF, 0xF1
+## and 0xF2 handlers. The port measured it horizontally with a ±512
+## vertical window, so the ring of gates round the jeep on MAP.250 fired
+## mission 5's [M1] from 143 units under the quay — the mission ended in
+## the water and the flooded sewers (MAP.254) could be skipped entirely.
 static func _within(epos: Vector3, player_pos: Vector3, radius: float) -> bool:
-	if absf(player_pos.y - epos.y) > PROX_VERTICAL_WINDOW:
-		return false
-	return Vector2(player_pos.x - epos.x, player_pos.z - epos.z).length() <= radius
+	return epos.distance_to(player_pos) <= radius
 
 ## --- Per-map state overlay ------------------------------------------
 ## DOS "Mst": MstSave (FUN_0012e0f4) on leaving a map, MstLoad
