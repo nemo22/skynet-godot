@@ -232,6 +232,30 @@ func _run_map210_checks(level: LevelLoader.Level) -> void:
 			and _teleport_seen[0][0] in [211, 212, 213, 214, 218],
 			"use key fires the armed exit once → map %s" % str(_teleport_seen))
 
+	# --- 5b. Standing ON THE FLOOR in a doorway ---------------------
+	# A doorway sprite hangs above the floor the player walks on, so the
+	# touch test has to allow that height difference. Measuring it in 3D
+	# put MAP.210's truck out of reach entirely ("neviem sa dostať do
+	# toho nákladiaku", Marek 2026-09-12) — and the check above missed it
+	# because it fires the exit from the sprite's own position.
+	var truck: LevelLoader.MapFile.Entity = null
+	for t in action._teleports:
+		if t.exit_map == 212:
+			truck = t
+			break
+	_check(truck != null, "MAP.210 has the truck's exit to MAP.212")
+	if truck != null:
+		_teleport_seen.clear()
+		action._teleport_fired = false
+		var tpos := Vector3(float(truck.x), -float(truck.y), -float(truck.z))
+		var feet: Vector3 = tpos - Vector3(0.0, 60.0, 0.0)
+		action.tick(0.016, feet)
+		action.tick(0.016, feet)
+		_check(action.activate_teleport(feet)
+			and _teleport_seen.size() == 1 and _teleport_seen[0][0] == 212,
+			"the use key enters the truck from the floor below its doorway (%s)"
+			% str(_teleport_seen))
+
 func _on_teleport(target_map: int, marker_set: int) -> void:
 	_teleport_seen.append([target_map, marker_set])
 

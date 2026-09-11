@@ -800,7 +800,7 @@ func tick(delta: float, player_pos: Vector3) -> void:
 	# rear doors, nothing happens just by standing there.
 	for e in _teleports:
 		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
-		var touching: bool = _within(epos, player_pos, TELEPORT_TOUCH_RADIUS)
+		var touching: bool = _within_touch(epos, player_pos, TELEPORT_TOUCH_RADIUS)
 		if touching and not _touch_latched.get(e.file_off, false):
 			e.state_byte |= 1
 		if _armed.has(e.file_off):
@@ -826,7 +826,7 @@ func activate_teleport(player_pos: Vector3) -> bool:
 		if (e.state_byte & 1) == 0:
 			continue
 		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
-		if not _within(epos, player_pos, TELEPORT_TOUCH_RADIUS + PROX_GATE_RADIUS):
+		if not _within_touch(epos, player_pos, TELEPORT_TOUCH_RADIUS + PROX_GATE_RADIUS):
 			continue
 		if not _reachable(player_pos, epos):
 			continue                         # a closed door leaf is in the way
@@ -907,7 +907,7 @@ func arm_proximity(player_pos: Vector3) -> void:
 			_prox_latched[e.file_off] = true
 	for e in _teleports:
 		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
-		if _within(epos, player_pos, TELEPORT_TOUCH_RADIUS):
+		if _within_touch(epos, player_pos, TELEPORT_TOUCH_RADIUS):
 			_touch_latched[e.file_off] = true
 
 func _prox_radius(e: MapFile.Entity) -> float:
@@ -1037,6 +1037,16 @@ func _spawn_in(off: int) -> void:
 ## the water and the flooded sewers (MAP.254) could be skipped entirely.
 static func _within(epos: Vector3, player_pos: Vector3, radius: float) -> bool:
 	return epos.distance_to(player_pos) <= radius
+
+## The port's own test for STANDING IN a doorway (the 0xF0 exits): the
+## 3D rule above belongs to the DOS proximity handlers, whose radii come
+## from the game data. A doorway sprite hangs above the floor the player
+## walks on, so measuring it in 3D put the truck on MAP.210 out of reach
+## — horizontal distance with a vertical window, as before.
+static func _within_touch(epos: Vector3, player_pos: Vector3, radius: float) -> bool:
+	if absf(player_pos.y - epos.y) > PROX_VERTICAL_WINDOW:
+		return false
+	return Vector2(player_pos.x - epos.x, player_pos.z - epos.z).length() <= radius
 
 ## --- Per-map state overlay ------------------------------------------
 ## DOS "Mst": MstSave (FUN_0012e0f4) on leaving a map, MstLoad
