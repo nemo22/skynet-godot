@@ -121,19 +121,6 @@ const NM_PANEL_SCALE: float = 3.2
 const NM_START_RECT: Rect2 = Rect2(214, 144, 63, 16)
 const NM_EXIT_RECT: Rect2 = Rect2(280, 145, 39, 15)
 
-# DISPLAY dialog (opened from OPTIONS → DETAIL): resolution + window mode.
-const DISPLAY_CFG: String = "user://display.cfg"
-# Common resolutions across aspect ratios; _detect_resolutions() keeps
-# only those matching the monitor's aspect and fitting on it.
-const RES_CANDIDATES: Array = [
-	Vector2i(1024, 768), Vector2i(1280, 720), Vector2i(1280, 800),
-	Vector2i(1280, 960), Vector2i(1366, 768), Vector2i(1440, 900),
-	Vector2i(1600, 900), Vector2i(1600, 1200), Vector2i(1680, 1050),
-	Vector2i(1920, 1080), Vector2i(1920, 1200), Vector2i(2560, 1080),
-	Vector2i(2560, 1440), Vector2i(2560, 1600), Vector2i(3440, 1440),
-	Vector2i(3840, 2160),
-]
-
 var _maps: Array[String] = []
 var _screen_main: Control = null
 var _screen_newgame: Control = null
@@ -150,6 +137,23 @@ var _screen_maps: Control = null
 var _god_btn: Button = null            # DEBUG TOOLS god-mode toggle
 var _toast: Label = null
 var _load_slot_buttons: Array[Button] = []   # LOAD.IMG slot hotspots
+var _save_slot_buttons: Array[Button] = []   # SAVE.IMG slot hotspots (in game)
+var _screen_save: Control = null
+var _saved_art: Array = [null, null]         # SAVED.IMG / SAVED2.IMG
+var _bar_art: bool = false                   # the bar strip has its art
+
+## In-game mode: pause_menu.gd hosts these screens over the running
+## level, the way DOS does on Esc (Marek's DOSBox shot, 2026-09-11) -
+## MAIN2.IMG's RETURN / LOAD / SAVE / OPTIONS / QUIT bar over the darkened
+## game instead of the title screen, SAVE.IMG's ten slots, and QUIT asks
+## QUITMAIN.IMG's "QUIT TO MAIN MENU?". Set before the node enters the tree.
+var in_game: bool = false
+var game: Node = null                  # main.gd, in game
+signal return_requested                # RETURN, or Esc on the bar
+signal load_requested(slot: int)
+signal quit_to_main_requested
+signal cheats_requested
+signal console_requested
 
 ## Player script — accessed for its static `god_mode` flag so the debug
 ## screen can arm invincibility before a map loads.
@@ -159,9 +163,7 @@ var _back_target: Dictionary = {}
 # Key-rebinding state for the CONTROLS dialog.
 var _rebinding_action: String = ""
 var _rebind_labels: Dictionary = {}    # action -> Label showing the key
-# DISPLAY dialog state.
-var _disp_res: Vector2i = Vector2i(1280, 720)
-var _disp_fullscreen: bool = false
+# DETAIL screen state.
 var _res_buttons: Array[Button] = []
 var _mode_buttons: Array[Button] = []
 # Cached generated teal-metal panel style (built on first use).
@@ -169,6 +171,9 @@ var _panel_sb: StyleBoxTexture = null
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	if in_game:
+		_build()                          # no music, maps or import in game
+		return
 	var ss := get_node_or_null("/root/SceneSwitcher")
 	if ss != null and ss.has_method("set_hud_visible"):
 		ss.set_hud_visible(false)
@@ -177,7 +182,7 @@ func _ready() -> void:
 	_scan_maps()
 	if SkynetPaths.selected_map == "" and not _maps.is_empty():
 		SkynetPaths.selected_map = _first_campaign_map()
-	_apply_display_settings()
+	# The window is the Settings autoload's, applied at start-up.
 	_build()
 	_maybe_import()
 
@@ -377,7 +382,14 @@ func _load_images() -> Dictionary:
 	var menu_pal := Palette.parse(SkynetPaths.first_col_bytes(["MENU.COL", "START.COL", "SHOCK.COL"]))
 	# Future Shock's START.IMG has the menu bar baked in (checked 2026-09-06:
 	# OPTIONS/LOAD render right with START.COL, wrong with LOGOMENU.COL).
-	if SkynetPaths.game != "shock":
+	if in_game:
+		# The in-game bar has RETURN where MAIN1.IMG has NEW GAME; SAVE.IMG
+		# is LOAD.IMG's twin, SAVED/SAVED2.IMG say how the save went.
+		out["BAR"] = ImgFile.parse(imgs.read("MAIN2.IMG"), menu_pal)
+		out["SAVE"] = ImgFile.parse(imgs.read("SAVE.IMG"), menu_pal)
+		out["SAVED"] = ImgFile.parse(imgs.read("SAVED.IMG"), menu_pal)
+		out["SAVED2"] = ImgFile.parse(imgs.read("SAVED2.IMG"), menu_pal)
+	elif SkynetPaths.game != "shock":
 		out["BAR"] = ImgFile.parse(imgs.read("MAIN1.IMG"), menu_pal)
 	out["OPTIONS"] = ImgFile.parse(imgs.read("OPTIONS.IMG"), menu_pal)
 	out["LOAD"] = ImgFile.parse(imgs.read("LOAD.IMG"), menu_pal)
@@ -399,14 +411,24 @@ func _build() -> void:
 	if not fnt_bytes.is_empty():
 		_net_font = FntFont.build(fnt_bytes, 2)
 
-	# Title-screen backdrop, kept behind every screen.
+	# Title-screen backdrop, kept behind every screen. In game DOS darkens
+	# the frozen view under its menu instead and leaves the panel at the
+	# bottom showing (Marek's DOSBox shot, 2026-09-11).
+	if in_game:
+		var shade := ColorRect.new()
+		shade.color = Color(0.0, 0.0, 0.0, 0.45)
+		shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		shade.mouse_filter = Control.MOUSE_FILTER_STOP
+		add_child(shade)
 	var bg := TextureRect.new()
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	bg.stretch_mode = TextureRect.STRETCH_SCALE
 	bg.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	if art.get("TITLE") != null:
+	if in_game:
+		pass
+	elif art.get("TITLE") != null:
 		bg.texture = art["TITLE"]
 	else:
 		var fill := ColorRect.new()
@@ -416,7 +438,8 @@ func _build() -> void:
 		add_child(fill)
 	add_child(bg)
 
-	# Menu-bar strip (MAIN1.IMG) across the top.
+	# Menu-bar strip (MAIN1.IMG, in game MAIN2.IMG) across the top.
+	_bar_art = art.get("BAR") != null
 	if art.get("BAR") != null:
 		var bar := TextureRect.new()
 		bar.texture = art["BAR"]
@@ -429,19 +452,25 @@ func _build() -> void:
 		add_child(bar)
 
 	_screen_main = _build_main_screen()
-	_screen_newgame = _build_newgame_screen(art.get("NEWGAME"))
-	_screen_netjoin = _build_netjoin_screen(art.get("NETJOIN"))
-	_screen_netmenu = _build_netmenu_screen(art.get("NETMENU"))
-	_screen_join = _build_join_screen()
-	_screen_load = _build_load_screen(art.get("LOAD"))
+	if not in_game:
+		_screen_newgame = _build_newgame_screen(art.get("NEWGAME"))
+		_screen_netjoin = _build_netjoin_screen(art.get("NETJOIN"))
+		_screen_netmenu = _build_netmenu_screen(art.get("NETMENU"))
+		_screen_join = _build_join_screen()
+	_screen_load = _build_slot_screen(art.get("LOAD"), false)
+	if in_game:
+		_screen_save = _build_slot_screen(art.get("SAVE"), true)
+		_saved_art = [art.get("SAVED"), art.get("SAVED2")]
 	_screen_options = _build_options_screen(art.get("OPTIONS"))
 	_screen_controls = _build_controls_screen(art.get("CONTROLS"))
 	_screen_display = _build_display_screen(art.get("DETAIL"))
-	_quit_art = art.get("QUIT")
-	_screen_debug = _build_debug_screen()
-	_screen_maps = _build_maps_screen()
+	_quit_art = art.get("QUITMAIN" if in_game else "QUIT")
+	if not in_game:
+		_screen_debug = _build_debug_screen()
+		_screen_maps = _build_maps_screen()
 	for s in _all_screens():
-		add_child(s)
+		if s != null:
+			add_child(s)
 
 	# ESC navigation: each sub-screen steps back one level.
 	_back_target = {
@@ -455,12 +484,16 @@ func _build() -> void:
 		_screen_display:  _screen_options,
 		_screen_debug:    _screen_options,
 		_screen_maps:     _screen_debug,
+		_screen_save:     _screen_main,
 	}
+	_back_target.erase(null)              # the screens this mode lacks
 
 	_build_toast()
 	resized.connect(_layout_bar)
 	_layout_bar()
 	_show_screen(_screen_main)
+	if in_game:
+		return
 	# Back from a network game that ended on us (server gone, kicked).
 	Net.leave()
 	if not Net.pending_message.is_empty():
@@ -470,7 +503,7 @@ func _build() -> void:
 func _all_screens() -> Array:
 	return [_screen_main, _screen_newgame, _screen_netjoin, _screen_netmenu,
 		_screen_join, _screen_load, _screen_options, _screen_controls,
-		_screen_display, _screen_debug, _screen_maps]
+		_screen_display, _screen_debug, _screen_maps, _screen_save]
 
 ## Main screen — transparent hotspots over the START.IMG menu bar.
 func _build_main_screen() -> Control:
@@ -483,10 +516,25 @@ func _build_main_screen() -> Control:
 		b.flat = true
 		b.focus_mode = Control.FOCUS_NONE
 		_style_hotspot(b)
-		var label: String = it[0]
+		# MAIN2.IMG (in game) has RETURN where MAIN1.IMG has NEW GAME; the
+		# other four sit in the same places.
+		var label: String = "RETURN" if in_game and _bar_buttons.is_empty() else String(it[0])
 		b.pressed.connect(func() -> void: _on_bar_item(label))
+		if in_game and not _bar_art:
+			b.text = label                # no bar art: its captions
+			_dos_font(b, 16)
 		root.add_child(b)
 		_bar_buttons.append(b)
+	if in_game:
+		if not _bar_art:
+			var strip := ColorRect.new()
+			strip.color = Color8(42, 56, 56)
+			strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			strip.anchor_right = 1.0
+			strip.anchor_bottom = BAR_H / IMG_H
+			root.add_child(strip)
+			root.move_child(strip, 0)
+		return root
 	var hint := Label.new()
 	hint.text = "Future Shock / SkyNET  —  Godot Port"
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -514,7 +562,7 @@ func _build_newgame_screen(newgame_tex: Variant) -> Control:
 	var root := Control.new()
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var dim := ColorRect.new()
-	dim.color = Color(0.02, 0.03, 0.05, 0.82)
+	dim.color = _dim_color()
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	root.add_child(dim)
@@ -604,7 +652,7 @@ func _img_panel(tex: Variant, iw: float, ih: float, scale: float) -> Array:
 	var root := Control.new()
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var dim := ColorRect.new()
-	dim.color = Color(0.02, 0.03, 0.05, 0.82)
+	dim.color = _dim_color()
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	root.add_child(dim)
@@ -1067,11 +1115,13 @@ func _first_campaign_map() -> String:
 ## (user://saves/slot_NN.save, see save_game.gd; slot 1 is the F6
 ## quicksave). A full slot shows its map and time and loads on click;
 ## an empty one just says so. The baked-in EXIT button returns.
-func _build_load_screen(load_tex: Variant) -> Control:
+## With `saving` (in game) it is SAVE.IMG, the same panel: a click saves
+## into the slot.
+func _build_slot_screen(tex: Variant, saving: bool) -> Control:
 	var root := Control.new()
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var dim := ColorRect.new()
-	dim.color = Color(0.02, 0.03, 0.05, 0.82)
+	dim.color = _dim_color()
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	root.add_child(dim)
@@ -1086,19 +1136,20 @@ func _build_load_screen(load_tex: Variant) -> Control:
 	panel.custom_minimum_size = Vector2(232.0 * s, 164.0 * s)
 	center.add_child(panel)
 
-	if load_tex != null:
+	if tex != null:
 		var pic := TextureRect.new()
-		pic.texture = load_tex
+		pic.texture = tex
 		pic.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 		pic.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		pic.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		panel.add_child(pic)
 	else:
-		panel.add_child(_heading("LOAD GAME"))
+		panel.add_child(_heading("SAVE GAME" if saving else "LOAD GAME"))
 
 	# 10 save slots — transparent hotspots over the LOAD.IMG bars, their
 	# text refreshed from the slot files each time the screen opens.
-	_load_slot_buttons.clear()
+	var list: Array[Button] = _save_slot_buttons if saving else _load_slot_buttons
+	list.clear()
 	for i in LOAD_SLOTS:
 		var slot := Button.new()
 		slot.flat = true
@@ -1114,9 +1165,13 @@ func _build_load_screen(load_tex: Variant) -> Control:
 			(LOAD_SLOT_Y0 + i * LOAD_SLOT_PITCH) * s)
 		slot.size = Vector2(LOAD_SLOT_W * s, LOAD_SLOT_H * s)
 		var idx: int = i
-		slot.pressed.connect(func() -> void: _on_load_slot(idx))
+		slot.pressed.connect(func() -> void:
+			if saving:
+				_on_save_slot(idx)
+			else:
+				_on_load_slot(idx))
 		panel.add_child(slot)
-		_load_slot_buttons.append(slot)
+		list.append(slot)
 	_refresh_load_slots()
 
 	# Baked-in EXIT button.
@@ -1132,8 +1187,12 @@ func _build_load_screen(load_tex: Variant) -> Control:
 
 ## Slot captions: "  1  MAP.210 · 2026-08-30 21:14" or "  1  - empty -".
 func _refresh_load_slots() -> void:
-	for i in _load_slot_buttons.size():
-		var b: Button = _load_slot_buttons[i]
+	for list in [_load_slot_buttons, _save_slot_buttons]:
+		_refresh_slot_list(list)
+
+func _refresh_slot_list(list: Array) -> void:
+	for i in list.size():
+		var b: Button = list[i]
 		if not is_instance_valid(b):
 			continue
 		var info: String = SaveGame.info(i)
@@ -1142,11 +1201,38 @@ func _refresh_load_slots() -> void:
 
 func _on_load_slot(idx: int) -> void:
 	if not SaveGame.exists(idx):
-		_show_toast("Slot %d is empty. Save in-game with F6." % (idx + 1))
+		_show_toast("Slot %d is empty." % (idx + 1) if in_game
+			else "Slot %d is empty. Save in-game with F6." % (idx + 1))
 		return
 	Audio.play_sfx("BUTTON1.RAW")
+	if in_game:
+		load_requested.emit(idx)          # pause_menu.gd closes, main loads
+		return
 	SkynetPaths.pending_load_slot = idx
 	_launch(GAME_SCENE)
+
+## SAVE, in game: into the slot, then SAVED.IMG ("GAME SAVED!") or, when
+## the write failed, SAVED2.IMG's disk-error box for a moment.
+func _on_save_slot(idx: int) -> void:
+	var ok: bool = game != null and bool(game.call("save_to_slot", idx))
+	_refresh_load_slots()
+	var tex: Variant = _saved_art[0 if ok else 1]
+	if tex == null:
+		_show_toast("Game saved." if ok
+			else "A problem occurred while writing to disk. Game not saved.")
+		return
+	var center := CenterContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var pic := TextureRect.new()
+	pic.texture = tex
+	pic.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	pic.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	pic.custom_minimum_size = (tex as Texture2D).get_size() * LOAD_PANEL_SCALE
+	pic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center.add_child(pic)
+	add_child(center)
+	get_tree().create_timer(1.4).timeout.connect(center.queue_free)
 
 ## OPTIONS — the original OPTIONS.IMG panel. Its baked CONTROLS / DETAIL
 ## / EXIT bottom-bar buttons are live hotspots: CONTROLS opens the
@@ -1204,8 +1290,20 @@ func _build_options_screen(options_tex: Variant) -> Control:
 	_refresh_option_marks()
 
 	vb.add_child(_spacer(8))
-	vb.add_child(_menu_button("DEBUG TOOLS",
-		func() -> void: _show_screen(_screen_debug)))
+	if in_game:
+		# The port's extras, where the title screen has DEBUG TOOLS.
+		var row := HBoxContainer.new()
+		row.alignment = BoxContainer.ALIGNMENT_CENTER
+		row.add_theme_constant_override("separation", 14)
+		for it in [["CHEATS", cheats_requested], ["CONSOLE", console_requested]]:
+			var sig: Signal = it[1]
+			var eb := _menu_button(String(it[0]), func() -> void: sig.emit())
+			eb.custom_minimum_size = Vector2(220, 58)
+			row.add_child(eb)
+		vb.add_child(row)
+	else:
+		vb.add_child(_menu_button("DEBUG TOOLS",
+			func() -> void: _show_screen(_screen_debug)))
 	return pair[0]
 
 ## A selection highlight drawn inside one of the baked buttons: the DOS
@@ -1244,7 +1342,7 @@ func _build_controls_screen(controls_tex: Variant) -> Control:
 	var root := Control.new()
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var dim := ColorRect.new()
-	dim.color = Color(0.02, 0.03, 0.05, 0.82)
+	dim.color = _dim_color()
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	root.add_child(dim)
@@ -1322,6 +1420,7 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 
 	var panel := Control.new()
 	panel.custom_minimum_size = Vector2(198.0 * s, 102.0 * s)
+	panel.size_flags_horizontal = Control.SIZE_SHRINK_CENTER   # the art's own width
 	vb.add_child(panel)
 	if detail_tex != null:
 		var pic := TextureRect.new()
@@ -1354,16 +1453,28 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 	panel.add_child(_img_hotspot(DET_EXIT_RECT, s,
 		func() -> void: _show_screen(_screen_options)))
 
-	vb.add_child(_section_label("Render resolution"))
+	# The port's own settings under the DOS panel, in two columns: in one
+	# they ran off the bottom of the screen once MUSIC joined them.
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 40)
+	grid.add_theme_constant_override("v_separation", 12)
+	vb.add_child(grid)
+	var c_res := _cell(grid, "Render resolution")
+	var c_weapon := _cell(grid, "Weapon view")
+	var c_render := _cell(grid, "Rendering")
+	var c_music := _cell(grid, "Music")
+	var c_bright := _cell(grid, "Brightness  (%s)" % Render.NAMES[Render.mode])
+	var c_window := _cell(grid, "Window")
+
 	var native := _option_button("NATIVE (FULL WINDOW)", func() -> void:
 		Settings.set_resolution(Settings.RES_NATIVE)
 		_refresh_display_marks())
 	native.set_meta("res_mode", Settings.RES_NATIVE)
 	_res_buttons.clear()
 	_res_buttons.append(native)
-	vb.add_child(native)
+	c_res.add_child(native)
 
-	vb.add_child(_section_label("Weapon view"))
 	var wv := HBoxContainer.new()
 	wv.alignment = BoxContainer.ALIGNMENT_CENTER
 	wv.add_theme_constant_override("separation", 14)
@@ -1377,25 +1488,36 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 		wb.set_meta("weapon3d", on)
 		_weapon_view_buttons.append(wb)
 		wv.add_child(wb)
-	vb.add_child(wv)
+	c_weapon.add_child(wv)
 
-	vb.add_child(_section_label("Window"))
+	# The window, from the Settings autoload (it applies it at start-up).
+	# The title screen kept a second copy in display.cfg and put it back
+	# every time it opened, over whatever the in-game menu had chosen.
 	var modes := HBoxContainer.new()
 	modes.alignment = BoxContainer.ALIGNMENT_CENTER
-	modes.add_theme_constant_override("separation", 14)
+	modes.add_theme_constant_override("separation", 10)
 	_mode_buttons.clear()
-	for m in [["FULLSCREEN", true], ["WINDOWED", false]]:
-		var fs: bool = m[1]
-		var mb := _option_button(m[0], func() -> void: _set_fullscreen(fs))
-		mb.custom_minimum_size = Vector2(210, 48)
-		mb.set_meta("fs", fs)
+	for m in [Settings.WIN_WINDOWED, Settings.WIN_BORDERLESS, Settings.WIN_FULLSCREEN]:
+		var wm: int = m
+		var mb := _option_button(String(Settings.WINDOW_MODE_NAMES[wm]), func() -> void:
+			Settings.set_window_mode(wm)
+			_refresh_display_marks())
+		mb.custom_minimum_size = Vector2(200, 48)
+		mb.set_meta("win", wm)
 		_mode_buttons.append(mb)
 		modes.add_child(mb)
-	vb.add_child(modes)
+	var size_btn := _option_button("", func() -> void:
+		Settings.set_window_size(posmod(Settings.window_size + 1, Settings.available_sizes().size()))
+		_refresh_display_marks())
+	size_btn.custom_minimum_size = Vector2(270, 48)
+	size_btn.set_meta("win_size", true)
+	size_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_mode_buttons.append(size_btn)
+	c_window.add_child(modes)
+	c_window.add_child(size_btn)
 
 	# DOS (faithful software look) / ENHANCED (filtered upscaled textures,
 	# real lighting and sky) — Render autoload, docs §P.
-	vb.add_child(_section_label("Rendering"))
 	var renders := HBoxContainer.new()
 	renders.alignment = BoxContainer.ALIGNMENT_CENTER
 	renders.add_theme_constant_override("separation", 14)
@@ -1410,11 +1532,10 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 		rb.set_meta("render", rm)
 		_render_buttons.append(rb)
 		renders.add_child(rb)
-	vb.add_child(renders)
+	c_render.add_child(renders)
 
 	# Brightness of the look in force: the DOS gamma or the ENHANCED
 	# exposure (Settings.brightness), applied at once, kept per look.
-	vb.add_child(_section_label("Brightness"))
 	var bright := HBoxContainer.new()
 	bright.alignment = BoxContainer.ALIGNMENT_CENTER
 	bright.add_theme_constant_override("separation", 14)
@@ -1432,8 +1553,25 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 		_refresh_brightness_label())
 	brighter.custom_minimum_size = Vector2(160, 48)
 	bright.add_child(brighter)
-	vb.add_child(bright)
+	c_bright.add_child(bright)
 	_refresh_brightness_label()
+
+	# Music: the port's synthesised tones or a General MIDI SoundFont next
+	# to the game data (the in-game menu's MUSIC SOURCE until 2026-09-11).
+	var mus := HBoxContainer.new()
+	mus.alignment = BoxContainer.ALIGNMENT_CENTER
+	mus.add_theme_constant_override("separation", 14)
+	_music_buttons.clear()
+	for m in [["SYNTH", false], ["WAVETABLE", true]]:
+		var on3: bool = m[1]
+		var mub := _option_button(String(m[0]), func() -> void:
+			Settings.set_wavetable(on3)
+			_refresh_display_marks())
+		mub.custom_minimum_size = Vector2(210, 48)
+		mub.set_meta("wavetable", on3)
+		_music_buttons.append(mub)
+		mus.add_child(mub)
+	c_music.add_child(mus)
 
 	vb.add_child(_spacer(4))
 	vb.add_child(_menu_button("BACK", func() -> void: _show_screen(_screen_options)))
@@ -1446,28 +1584,17 @@ var _brightness_label: Label = null
 
 func _refresh_brightness_label() -> void:
 	if _brightness_label != null and is_instance_valid(_brightness_label):
-		_brightness_label.text = "%d %%  (%s)" % [int(round(Settings.brightness() * 100.0)),
-			Render.NAMES[Render.mode]]
+		_brightness_label.text = "%d %%" % int(round(Settings.brightness() * 100.0))
 var _weapon_view_buttons: Array[Button] = []
+var _music_buttons: Array[Button] = []
 
-## Resolutions for the DISPLAY dialog: common sizes matching the
-## monitor's aspect ratio and fitting within its native resolution,
-## plus the native resolution itself.
-func _detect_resolutions() -> Array:
-	var screen: Vector2i = DisplayServer.screen_get_size(
-		DisplayServer.window_get_current_screen())
-	if screen.x <= 0 or screen.y <= 0:
-		screen = Vector2i(1920, 1080)
-	var aspect := float(screen.x) / float(screen.y)
-	var out: Array = []
-	for r in RES_CANDIDATES:
-		var ra := float(r.x) / float(r.y)
-		if absf(ra - aspect) < 0.06 and r.x <= screen.x and r.y <= screen.y:
-			out.append(r)
-	if not out.has(screen):
-		out.append(screen)          # always offer the native resolution
-	out.sort_custom(func(a, b): return (a as Vector2i).x < (b as Vector2i).x)
-	return out
+## One labelled cell of the DETAIL screen's settings grid.
+func _cell(grid: GridContainer, title: String) -> VBoxContainer:
+	var c := VBoxContainer.new()
+	c.add_theme_constant_override("separation", 6)
+	c.add_child(_section_label(title))
+	grid.add_child(c)
+	return c
 
 func _section_label(text: String) -> Label:
 	var l := Label.new()
@@ -1490,58 +1617,18 @@ func _refresh_display_marks() -> void:
 		if is_instance_valid(m):
 			m.visible = (i == Settings.resolution)
 	for mb in _mode_buttons:
-		var fs: bool = mb.get_meta("fs")
-		var nm: String = "FULLSCREEN" if fs else "WINDOWED"
-		mb.text = ("> " if fs == _disp_fullscreen else "") + nm
+		if mb.has_meta("win_size"):
+			mb.text = "SIZE " + Settings.size_name(Settings.window_size)
+			mb.disabled = Settings.window_mode != Settings.WIN_WINDOWED
+			continue
+		var wm: int = mb.get_meta("win")
+		mb.text = ("> " if wm == Settings.window_mode else "") + String(Settings.WINDOW_MODE_NAMES[wm])
+	for mub in _music_buttons:
+		var on3: bool = bool(mub.get_meta("wavetable"))
+		mub.text = ("> " if on3 == Settings.wavetable else "") + ("WAVETABLE" if on3 else "SYNTH")
 	for rb in _render_buttons:
 		var rm: int = rb.get_meta("render")
 		rb.text = ("> " if rm == Render.mode else "") + ("DOS / RETRO" if rm == Render.DOS else "ENHANCED")
-
-func _set_resolution(r: Vector2i) -> void:
-	_disp_res = r
-	_disp_fullscreen = false
-	_apply_window(false, r)
-	_save_display()
-	_refresh_display_marks()
-	_show_toast("Resolution: %d x %d" % [r.x, r.y])
-
-func _set_fullscreen(fs: bool) -> void:
-	_disp_fullscreen = fs
-	_apply_window(fs, _disp_res)
-	_save_display()
-	_refresh_display_marks()
-	_show_toast("Fullscreen" if fs else "Windowed mode")
-
-## Apply window mode/size. No-op on mobile (always fullscreen there).
-func _apply_window(fs: bool, res: Vector2i) -> void:
-	if OS.has_feature("mobile"):
-		return
-	var win := get_window()
-	if win == null:
-		return
-	if fs:
-		win.mode = Window.MODE_FULLSCREEN
-	else:
-		win.mode = Window.MODE_WINDOWED
-		win.size = res
-		win.move_to_center()
-
-func _apply_display_settings() -> void:
-	var cfg := ConfigFile.new()
-	if cfg.load(DISPLAY_CFG) != OK:
-		return
-	_disp_res = Vector2i(
-		int(cfg.get_value("display", "width", 1280)),
-		int(cfg.get_value("display", "height", 720)))
-	_disp_fullscreen = bool(cfg.get_value("display", "fullscreen", false))
-	_apply_window(_disp_fullscreen, _disp_res)
-
-func _save_display() -> void:
-	var cfg := ConfigFile.new()
-	cfg.set_value("display", "width", _disp_res.x)
-	cfg.set_value("display", "height", _disp_res.y)
-	cfg.set_value("display", "fullscreen", _disp_fullscreen)
-	cfg.save(DISPLAY_CFG)
 
 ## DEBUG TOOLS — launches the asset viewers.
 func _build_debug_screen() -> Control:
@@ -1625,13 +1712,18 @@ func _build_maps_screen() -> Control:
 
 # --- helpers ----------------------------------------------------------
 
+## The shade behind a DOS panel: the title screen sinks under it; in game
+## the view is darkened once already (_build), and the panel sits on that.
+func _dim_color() -> Color:
+	return Color(0.02, 0.03, 0.05, 0.0 if in_game else 0.82)
+
 ## A dimmed full-screen screen with a properly CENTERED VBox.
 ## Returns [root_control, vbox].
 func _panel_screen() -> Array:
 	var root := Control.new()
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var dim := ColorRect.new()
-	dim.color = Color(0.02, 0.03, 0.05, 0.82)
+	dim.color = _dim_color()
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	root.add_child(dim)
@@ -1643,6 +1735,16 @@ func _panel_screen() -> Array:
 	vb.add_theme_constant_override("separation", 16)
 	vb.alignment = BoxContainer.ALIGNMENT_CENTER
 	center.add_child(vb)
+	var fit := func() -> void:
+		var need: Vector2 = vb.size
+		var room: Vector2 = root.size - Vector2(32.0, 32.0)
+		if need.x <= 0.0 or need.y <= 0.0 or room.x <= 0.0 or room.y <= 0.0:
+			return
+		var k: float = minf(1.0, minf(room.x / need.x, room.y / need.y))
+		vb.pivot_offset = need * 0.5
+		vb.scale = Vector2(k, k)
+	root.resized.connect(fit)
+	vb.resized.connect(fit)
 	return [root, vb]
 
 ## A dimmed screen with a centred, bordered dialog panel — the framed
@@ -1651,7 +1753,7 @@ func _framed_panel() -> Array:
 	var root := Control.new()
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var dim := ColorRect.new()
-	dim.color = Color(0.02, 0.03, 0.05, 0.82)
+	dim.color = _dim_color()
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	root.add_child(dim)
@@ -1871,7 +1973,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		if _quit_overlay != null and is_instance_valid(_quit_overlay):
 			_close_quit()                     # DOS: ESC in the box = NO
 		elif _screen_main != null and _screen_main.visible:
-			_confirm_quit()                   # DOS: ESC on the title = QUIT?
+			if in_game:
+				return_requested.emit()       # Esc on the in-game bar = RETURN
+			else:
+				_confirm_quit()               # DOS: ESC on the title = QUIT?
 		else:
 			for scr in _all_screens():
 				if scr != null and scr.visible and _back_target.has(scr):
@@ -1882,7 +1987,8 @@ func _unhandled_input(event: InputEvent) -> void:
 ## QUIT confirmation — the original QUIT.IMG box (96x37, drawn at
 ## 115,70 of the 320x200 screen) with its baked YES / NO captions.
 ## DOS: FUN_00140684; ESC inside the box means NO, and ESC on the title
-## menu OPENS this box rather than doing nothing.
+## menu OPENS this box rather than doing nothing. In game the box is
+## QUITMAIN.IMG, "QUIT TO MAIN MENU?", and YES drops the level.
 const QUIT_PANEL_SCALE: float = 4.0
 const QUIT_YES_RECT: Rect2 = Rect2(0, 20, 52, 17)
 const QUIT_NO_RECT: Rect2 = Rect2(52, 20, 44, 17)
@@ -1914,9 +2020,12 @@ func _confirm_quit() -> void:
 		pic.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		panel.add_child(pic)
 	else:
-		panel.add_child(_heading("QUIT TO DOS?"))
+		panel.add_child(_heading("QUIT TO MAIN MENU?" if in_game else "QUIT TO DOS?"))
 	panel.add_child(_quit_hotspot(QUIT_YES_RECT, s, func() -> void:
-		get_tree().quit()))
+		if in_game:
+			quit_to_main_requested.emit()
+		else:
+			get_tree().quit()))
 	panel.add_child(_quit_hotspot(QUIT_NO_RECT, s, _close_quit))
 	add_child(root)
 	_quit_overlay = root
@@ -1942,13 +2051,19 @@ func _close_quit() -> void:
 
 func _on_bar_item(label: String) -> void:
 	match label:
+		"RETURN":
+			return_requested.emit()
 		"NEW GAME":
 			_show_screen(_screen_newgame)
 		"LOAD":
 			_refresh_load_slots()
 			_show_screen(_screen_load)
 		"SAVE":
-			_show_toast("Save in-game: F6 = quicksave (slot 1), F7 = quickload.")
+			if in_game:
+				_refresh_load_slots()
+				_show_screen(_screen_save)
+			else:
+				_show_toast("Save in-game: F6 = quicksave (slot 1), F7 = quickload.")
 		"OPTIONS":
 			_show_screen(_screen_options)
 		"QUIT":
@@ -1957,6 +2072,17 @@ func _on_bar_item(label: String) -> void:
 func _on_map_chosen(m: String) -> void:
 	SkynetPaths.selected_map = m
 	_launch(GAME_SCENE)
+
+## In game: open one screen by name (pause_menu.gd, the `options`
+## console command).
+func show_page(page: String) -> void:
+	_close_quit()
+	var target: Control = {"load": _screen_load, "save": _screen_save,
+		"options": _screen_options, "controls": _screen_controls,
+		"detail": _screen_display}.get(page, _screen_main)
+	if target == _screen_load or target == _screen_save:
+		_refresh_load_slots()
+	_show_screen(target)
 
 func _launch(scene_path: String) -> void:
 	var ss := get_node_or_null("/root/SceneSwitcher")
