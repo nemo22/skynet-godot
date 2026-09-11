@@ -85,6 +85,8 @@ class Entity:
 	var marker_type: int = -1
 	## Variant 3 enemy marker only: enemy-type ID byte at sub+10.
 	var enemy_type: int = -1
+	## Type byte bit 7 — a convoy actor (DOS actor+0xc |= 0x4000).
+	var convoy: bool = false
 	## Variant 2 only: light intensity passed to AddLightSafe
 	## (FUN_0011b733). Variant 2 is a dynamic LIGHT source, not a spawner.
 	var light_intensity: int = -1
@@ -333,7 +335,14 @@ static func parse(bytes: PackedByteArray) -> MapFile:
 							| (bytes[sub_ptr + 1] << 8)
 						if (e.sprite_index >> 7) == 299:
 							e.marker_type = e.sprite_index & 0x7F
-							e.enemy_type = bytes[sub_ptr + 10]
+							# Bit 7 of the type byte marks a CONVOY actor:
+							# EnemiesStartMarked (FUN_0012a439) strips it and
+							# sets actor+0xc |= 0x4000. MAP.260's nine convoy
+							# vehicles are 174/175/177/178 = 46/47/49/50 | 0x80,
+							# and reading the byte unmasked put them past every
+							# table, so the whole convoy silently vanished.
+							e.enemy_type = bytes[sub_ptr + 10] & 0x7F
+							e.convoy = (bytes[sub_ptr + 10] & 0x80) != 0
 						# Teleport target data (0xF0 handler layout).
 						e.exit_map = bytes[sub_ptr + 2] \
 							| (bytes[sub_ptr + 3] << 8)

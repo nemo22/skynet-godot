@@ -981,6 +981,11 @@ func _begin_level(name: String) -> void:
 	# the HK, for the whole mission including its sub-maps.
 	if _dm == null and is_instance_valid(player):
 		player.set_vehicle(_vehicle_for_map(name))
+	# The map's border boxes and the hint at their edge (MAP.260).
+	if is_instance_valid(player):
+		player.border_boxes = level.border_boxes
+		if not player.border_hint.is_connected(_on_border_hint):
+			player.border_hint.connect(_on_border_hint)
 	_apply_pending_player()
 	_collect_radiation(level)
 	_setup_water(level)
@@ -2012,6 +2017,12 @@ func _on_objective_complete(idx: int) -> void:
 		if _game_over == null:
 			_show_mission_complete()
 
+## The engine's own hint when the player reaches a border box's edge:
+## hint slot 8 = [G9], which on MAP.260 reads "The highway is the other
+## way." (DOS FUN_00122789 prints it from the same table as act 0x24).
+func _on_border_hint() -> void:
+	_on_hint_message(8)
+
 ## [G1]..[G9] — flavour radio lines, no bearing on the mission.
 func _on_hint_message(idx: int) -> void:
 	if idx >= 0 and idx < _mission_hints.size():
@@ -3019,6 +3030,7 @@ func _clear_level() -> void:
 	_occluders = null
 	if is_instance_valid(player):
 		player.water_level = INF
+		player.border_boxes = []
 	_current_level = null
 
 func _input(event: InputEvent) -> void:

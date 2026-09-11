@@ -261,6 +261,10 @@ class Level:
 	## exits spawn the player at marker N facing marker N+1
 	## (PlrSetPosMarker FUN_00121f72, skynet_gh.c:25074-25087).
 	var markers: Dictionary = {}
+	## Where the player is allowed to be: Rect2 in world x/z built from
+	## PAIRS of markers of types 30-39 (DOS FUN_00122711, table 0x390e3).
+	## Empty on a map that carries none — then nothing is fenced off.
+	var border_boxes: Array = []
 	## MAP file offsets of the enemy markers / pickups that were spawned —
 	## the per-map state overlay records which of them are gone.
 	var enemy_marker_offs: Array = []
@@ -691,6 +695,16 @@ func load_level(map_name: String) -> Level:
 			# player comes close (EnemiesStartMarked FUN_00129f39 →
 			# FUN_00142800, death state 0x14285e). Enemy markers carry
 			# no spawn yaw — DOS actors start facing +Z.
+			# Vehicles that drive a marker path (AI state 11): the truck
+			# into MAP.210's base, MAP.260's convoy, MAP.234's pick-up HK.
+			# The action system moves them (handler 0x127400); the path is
+			# the marker's own link.
+			if not spawn and et >= 0 and et < AIData.TYPES.size() \
+					and int(AIData.TYPES[et].get("st", -1)) == 11 and e.link_next > 0:
+				emi.make_path_vehicle()
+				emi.indestructible = int(AIData.TYPES[et].get("hp", 0)) == 0
+				if level.action != null:
+					level.action.register_path_vehicle(e.file_off, emi, e.link_next)
 			var trig: int = 0 if spawn else e.exit_map & 0xFFFF
 			if trig > 0:
 				emi.make_dormant(float(trig))
@@ -740,6 +754,22 @@ func load_level(map_name: String) -> Level:
 		elif e.marker_type == 1:
 			dir_candidates.append(Vector3(
 				float(e.x), -float(e.y + 0x10), -float(e.z)))
+	# DOS border boxes (FUN_00122711): PAIRS of markers of the same type
+	# 30-39 build up to 10 boxes, and every commit of the player's move
+	# (FUN_00122789) has to land inside one of them or the move is undone
+	# and the speed zeroed. That is MAP.260's "invisible barrier", which
+	# holds the jeep inside the town and on the inner highway lane.
+	for mt in range(30, 40):
+		var pts: Array = level.markers.get(mt, [])
+		for i in range(0, pts.size() - 1, 2):
+			var a: Vector3 = pts[i]
+			var b: Vector3 = pts[i + 1]
+			level.border_boxes.append(Rect2(
+				Vector2(minf(a.x, b.x), minf(a.z, b.z)),
+				Vector2(absf(a.x - b.x), absf(a.z - b.z))))
+	if not level.border_boxes.is_empty():
+		print("[level] %d border box(es) from marker pairs (types 30-39)"
+			% level.border_boxes.size())
 	level.has_player_start = ps_found
 	if ps_found:
 		# Facing = the marker_type 1 marker nearest the start. A map may

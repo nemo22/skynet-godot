@@ -726,6 +726,7 @@ func _physics_process(delta: float) -> void:
 	fwd_in += ui_move.y
 	str_in += ui_move.x
 
+	var was: Vector3 = global_position
 	if noclip:
 		_fly(delta, fwd_in, str_in)
 	elif vehicle == VEH_JEEP:
@@ -734,6 +735,44 @@ func _physics_process(delta: float) -> void:
 		_hover(delta, fwd_in, str_in)
 	else:
 		_walk(delta, fwd_in, str_in)
+	_border_clamp(was)
+
+## The map's own fence (DOS FUN_00122789, boxes from FUN_00122711 — see
+## LevelLoader.border_boxes): every commit of the player's move has to
+## land inside one of the boxes, or the move is UNDONE and the speed
+## zeroed. That is the invisible wall on MAP.260, which keeps the jeep in
+## the town and on the inner highway lane. Within 64 units of an edge the
+## engine prints hint slot 8 = [G9] ("The highway is the other way.")
+## once, re-armed when the player leaves the band.
+const BORDER_HINT_MARGIN: float = 64.0
+var border_boxes: Array = []          # Rect2 in world x/z; empty = no fence
+var _border_hinted: bool = false
+signal border_hint()
+
+func _border_clamp(prev: Vector3) -> void:
+	if border_boxes.is_empty() or noclip:
+		return
+	var p := Vector2(global_position.x, global_position.z)
+	var box: Rect2 = Rect2()
+	var found: bool = false
+	for b in border_boxes:
+		if (b as Rect2).has_point(p):
+			box = b
+			found = true
+			break
+	if not found:
+		global_position = prev
+		velocity = Vector3.ZERO
+		_veh_speed = 0.0
+		return
+	var edge: float = minf(
+		minf(p.x - box.position.x, box.end.x - p.x),
+		minf(p.y - box.position.y, box.end.y - p.y))
+	if edge > BORDER_HINT_MARGIN:
+		_border_hinted = false
+	elif not _border_hinted:
+		_border_hinted = true
+		border_hint.emit()
 
 ## Jeep (DOS mode 4): a car, not a hovercraft — the mouse and A/D turn
 ## a steering WHEEL, the heading only changes while the wheels roll
@@ -794,7 +833,8 @@ func _ram_check(fwd: Vector3) -> void:
 	q.exclude = [get_rid()]
 	for hit in space.intersect_shape(q, 8):
 		var n: Node = hit.get("collider") as Node
-		while n != null and not (n.is_in_group("enemy") and n.has_method("take_damage")):
+		while n != null and not (n.has_method("take_damage")
+				and (n.is_in_group("enemy") or n.is_in_group("hittable"))):
 			n = n.get_parent()
 		if n == null:
 			continue
@@ -802,8 +842,18 @@ func _ram_check(fwd: Vector3) -> void:
 		if _ram_cd.has(id):
 			continue
 		_ram_cd[id] = RAM_TICK
-		var hp = n.get("_health")
-		if hp == null or float(hp) <= 0.0:
+		# DOS passes whatever the ram meets to ObjHit: a return of zero
+		# means the thing has no hit points — a building — and the caller
+		# negates the speed. A robot or a breakable map entity takes the
+		# hit and the car rolls on. The car-wash door on MAP.260 (CWDOOR,
+		# 60 HP) is how the jeep leaves the town.
+		var solid: bool = false
+		if n.is_in_group("enemy"):
+			var hp = n.get("_health")
+			solid = hp == null or float(hp) <= 0.0
+		else:
+			solid = not (n.has_method("is_damageable") and bool(n.call("is_damageable")))
+		if solid:
 			_veh_speed = -_veh_speed           # nothing left to hit: bounce
 			return
 		n.call("take_damage", absf(_veh_speed) * 0.5)

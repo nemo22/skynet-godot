@@ -330,6 +330,18 @@ func make_dormant(dist: float) -> void:
 	if _engine != null:
 		_engine.stop()
 
+## A vehicle that drives a marker path (DOS AI state 11, handler
+## 0x127400): the action system moves it, so no AI, no ground snap and
+## no fighting — that handler has no firing code at all.
+var _on_path: bool = false
+## hk_ftr as a path vehicle has 0 hit points, and DOS ObjHit does nothing
+## to an actor below 1 HP: the pick-up HK cannot be shot down.
+var indestructible: bool = false
+
+func make_path_vehicle() -> void:
+	_on_path = true
+	_init_done = true
+
 ## An 0xF3 spawn point's robot (SpawnEnemiesInit 0x129500 in v1.01):
 ## built at level start, then hidden — obj+0xc |= 0x2000 keeps it out
 ## of the active-enemy list (skynet_gh.c:29810) and the draw loop
@@ -392,6 +404,8 @@ func _physics_process(delta: float) -> void:
 		_engine.volume_db = ENGINE_DB + Audio.occlusion_db(global_position + Vector3(0.0, 40.0, 0.0))
 	if _ticks < 2:
 		return                                 # colliders settle into the space first
+	if _on_path:
+		return                                 # the action system drives it
 	if not _init_done:
 		if _flying:
 			_init_done = true
@@ -1093,6 +1107,8 @@ func _has_los() -> bool:
 ## `by_player` marks a hit that came from the player's own weapon — the
 ## STATISTICS tab counts those against the shots fired.
 func take_damage(amount: float, by_player: bool = true) -> void:
+	if indestructible:
+		return
 	if _state == State.DEAD:
 		return
 	if by_player and not Net.active:

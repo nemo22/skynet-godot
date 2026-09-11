@@ -118,35 +118,51 @@ static func act_of(n: Node) -> int:
 func flip(start_id: int) -> Array:
 	_ensure_index()
 	var out: Array = []
-	var start: Node = _by_id.get(start_id)
-	if start == null:
-		return out
 	var visited: Dictionary = {}
-	var stack: Array = [start]
+	var stack: Array = [start_id]
 	while not stack.is_empty():
-		var cur: Node = stack.pop_back()
-		if visited.has(cur):
+		var id: int = int(stack.pop_back())
+		if visited.has(id):
 			continue
-		visited[cur] = true
-		var id: int = id_of(cur)
+		visited[id] = true
+		var node: Node = _by_id.get(id)
+		var rec = _map.entities_by_off.get(id) if _map != null else null
+		if node == null and rec == null:
+			continue
 		# The record is the truth while action_system.gd still clears bits
 		# there (a mover at the end of its run, a spent trigger): the node's
 		# copy would flip a bit that is already down.
-		var rec = _map.entities_by_off.get(id) if _map != null else null
-		var s: int = (int(rec.state_byte) if rec != null else state_of(cur)) ^ 1
-		if act_of(cur) == ActionSystem.ACT_PROX_GATE:
+		var act: int = int(rec.link_act_type) if rec != null else act_of(node)
+		var s: int = (int(rec.state_byte) if rec != null else state_of(node)) ^ 1
+		if act == ActionSystem.ACT_PROX_GATE:
 			s |= 1                                   # a gate stays live (skynet_gh.c:39837)
-		set_state(cur, s)
+		if node != null:
+			set_state(node, s)
 		_mirror(id, s)
 		out.append([id, s])
-		if (s & 1) != 0 and cur.has_method("fire"):
-			_fire(cur)
+		if (s & 1) != 0 and node != null and node.has_method("fire"):
+			_fire(node)
 		if _is_actor(id):
 			break                                    # the walk stops AT an actor
-		# The chain continues down `targets` (a fan-out walks every branch).
-		var next: Array = _targets_of(cur)
+		var next: Array = _next_ids(id, node, rec)
 		for i in range(next.size() - 1, -1, -1):
 			stack.append(next[i])
+	return out
+
+## Where the chain goes next: down the node's `targets` where there is a
+## node (that branch can fan out), down the record's own link otherwise.
+## Markers get no node in the bake, and the DOS chain runs straight
+## through them — MAP.210's lever switches the truck's PATH MARKERS on,
+## which is what sets the truck driving.
+func _next_ids(id: int, node: Node, rec) -> Array:
+	var out: Array = []
+	if node != null:
+		for t in _targets_of(node):
+			out.append(id_of(t))
+		if not out.is_empty():
+			return out
+	if rec != null and int(rec.link_next) > 0:
+		out.append(int(rec.link_next))
 	return out
 
 func _targets_of(n: Node) -> Array:

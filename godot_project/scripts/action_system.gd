@@ -248,6 +248,18 @@ var objectives_left: int = 0
 var _relays: Array = []
 var _spawns: Dictionary = {}      # 0xF3 sprite file_off → its hidden Enemy
 var _spawned: Dictionary = {}     # 0xF3 sprite file_off → true once revealed
+## Path-following vehicles — DOS AI state 11, v1.01 handler 0x127400:
+## the cargo truck that drives into MAP.210's base, MAP.260's convoy,
+## MAP.280's boss chase and the HK that lifts the player off MAP.234's
+## roof. Types 46-52 share the parameters (enemy table 0x44E00).
+const PATH_SPEED_K: float = 80.0 / 256.0        # segment speed = k · its length
+const PATH_ACCEL: float = 160.0                 # units/s², from a standstill
+const PATH_TURN: float = 128.0 / 2048.0 * TAU   # 22.5°/s, yaw only and visual
+const PATH_REACH: float = 80.0                  # 3D distance that counts as arrived
+## DOS only ticks actors in the 5×5 cells around the player.
+const PATH_TICK_RANGE: float = 1024.0
+const MARKER_PATH_LOOP: int = 105               # marker type that loops to the start
+var _path_vehicles: Dictionary = {}   # marker file_off → runtime state
 
 func press_use() -> void:
 	_use_edge = true
@@ -747,6 +759,9 @@ func tick(delta: float, player_pos: Vector3) -> void:
 			continue
 		_clear_enable(e)
 		_spawn_in(off)
+	# Vehicles on a marker path (AI state 11) ----------------------
+	for off in _path_vehicles:
+		_step_path_vehicle(_path_vehicles[off], delta, player_pos)
 	# Teleports ---------------------------------------------------
 	# A chain (0xEF gate → sound node → 0xF0) or touching the doorway
 	# sprite ARMS the exit (state bit 0); the map change itself needs
@@ -891,6 +906,89 @@ func _clear_enable(e: MapFile.Entity) -> void:
 ## (SpawnEnemiesInit — at most 50 a map).
 func register_spawn(off: int, node: Node) -> void:
 	_spawns[off] = node
+
+## A vehicle actor that drives its marker path: `path_head` is the first
+## marker (the actor marker's own link).
+func register_path_vehicle(off: int, node: Node3D, path_head: int) -> void:
+	_path_vehicles[off] = {
+		"node": node, "head": path_head, "tgt": 0, "tspd": 0.0, "spd": 0.0,
+	}
+
+static func _dos_pos(e: MapFile.Entity) -> Vector3:
+	return Vector3(float(e.x), -float(e.y), -float(e.z))
+
+## Handler 0x127400, one frame: pick up the path, run at the segment's
+## own speed, and at the end of it flip whatever the last marker points
+## at (the HK's CHUNK3 carries mission 3's [M2]). The vehicle walks a
+## straight 3D line from marker to marker — no terrain, no collision.
+func _step_path_vehicle(v: Dictionary, delta: float, player_pos: Vector3) -> void:
+	var node: Node3D = v["node"]
+	if node == null or not is_instance_valid(node):
+		return
+	if node.has_method("is_dead") and node.is_dead():
+		return
+	# The actors hang under the level's Enemies node, which has no
+	# transform of its own, so the local position IS the world one — and
+	# it still reads correctly outside the tree (the smoke tests).
+	if node.position.distance_to(player_pos) > PATH_TICK_RANGE:
+		return                                   # outside the DOS 5×5 window
+	var cur: MapFile.Entity = _map.entities_by_off.get(int(v["tgt"]))
+	if cur == null:
+		cur = _map.entities_by_off.get(int(v["head"]))
+		if cur == null:
+			return
+		v["tgt"] = cur.file_off
+		v["spd"] = 0.0
+		v["tspd"] = PATH_SPEED_K * node.position.distance_to(_dos_pos(cur))
+	elif (cur.state_byte & 1) == 0:
+		# The path is off (nobody has thrown the lever): brake, and clear
+		# the bit down the whole chain, as the DOS stop case does.
+		v["tspd"] = 0.0
+		_path_disable(int(v["head"]))
+	elif node.position.distance_to(_dos_pos(cur)) <= PATH_REACH:
+		var nxt: MapFile.Entity = _map.entities_by_off.get(cur.link_next) \
+			if cur.link_next > 0 else null
+		if nxt == null:
+			v["tspd"] = 0.0
+			_path_disable(int(v["head"]))
+		elif (nxt.flags & 3) == 3 and nxt.marker_type >= 0 and (nxt.state_byte & 1) != 0:
+			if nxt.marker_type == MARKER_PATH_LOOP:
+				nxt = _map.entities_by_off.get(int(v["head"]))
+			if nxt != null:
+				v["tspd"] = PATH_SPEED_K * _dos_pos(cur).distance_to(_dos_pos(nxt))
+				v["tgt"] = nxt.file_off
+				cur = nxt
+		else:
+			# The path ends on something that is not a marker: fire it
+			# once, cut the link and coast to a stop.
+			print("[action] path vehicle at @%05x fires the end of its path @%05x"
+				% [cur.file_off, nxt.file_off])
+			_flip_link(nxt)
+			cur.link_next = 0
+			v["tspd"] = 0.0
+			return
+	var to: Vector3 = _dos_pos(cur) - node.position
+	if to.length() > 0.001:
+		if float(v["tspd"]) > 0.0:
+			var want: float = atan2(-to.x, -to.z)
+			var turn: float = wrapf(want - node.rotation.y, -PI, PI)
+			node.rotation.y += clampf(turn, -PATH_TURN * delta, PATH_TURN * delta)
+		node.position += to.normalized() * (float(v["spd"]) * delta)
+	var dv: float = float(v["tspd"]) - float(v["spd"])
+	v["spd"] = float(v["spd"]) + clampf(signf(dv) * PATH_ACCEL * delta, -absf(dv), absf(dv))
+
+## The stop case calls ObjFlipLink with "and 0xFE": the whole path goes
+## off, so a lever has to switch it on again before the vehicle moves.
+func _path_disable(head: int) -> void:
+	var cur: MapFile.Entity = _map.entities_by_off.get(head)
+	var hops: int = 0
+	while cur != null and hops < 64:
+		if (cur.state_byte & 1) != 0:
+			_clear_enable(cur)
+		if (cur.flags & 0x40) != 0 or cur.link_next < 1:
+			return
+		cur = _map.entities_by_off.get(cur.link_next)
+		hops += 1
 
 func _spawn_in(off: int) -> void:
 	_spawned[off] = true

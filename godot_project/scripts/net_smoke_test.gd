@@ -124,10 +124,14 @@ func _run() -> void:
 		# The bot keeps walking: re-aim and fire a few times, stop on the first hit.
 		# Stand on a different side each try: the bot may hug a wall
 		# (a BLDG20J face sat between +200 X and a T-800 once).
+		# The last two stand close enough that no wall can come between
+		# (a run on 2026-09-12 missed six times over from 140-200 u while
+		# the bots were busy shooting each other).
 		var sides: Array = [Vector3(200.0, 0.0, 0.0), Vector3(-200.0, 0.0, 0.0),
 			Vector3(0.0, 0.0, 200.0), Vector3(0.0, 0.0, -200.0),
-			Vector3(140.0, 0.0, 140.0), Vector3(-140.0, 0.0, -140.0)]
-		for _shot in 6:
+			Vector3(140.0, 0.0, 140.0), Vector3(-140.0, 0.0, -140.0),
+			Vector3(70.0, 0.0, 0.0), Vector3(0.0, 0.0, 70.0)]
+		for _shot in 8:
 			if not is_instance_valid(target) or float(Net.players[tid]["hp"]) < hp0 or not Net.is_alive(tid):
 				break
 			player.set_spawn(target.global_position + sides[_shot % sides.size()], 0.0, false)

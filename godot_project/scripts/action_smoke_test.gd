@@ -361,6 +361,95 @@ func _run_behaviour_checks() -> void:
 			_check(out >= 7, "the relay's chain lets the robots out (%d)" % out)
 			_check(l232.action._spent.has(0x3512), "232DOOR6 gives way")
 
+	# MAP.210: the cargo truck (type 46, AI state 11) stands still until
+	# the lever @0c084 flips its path markers on; then it drives its path
+	# into the base (handler 0x127400: segment speed 0.3125 × length).
+	var l210b: LevelLoader.Level = LevelLoader.new().load_level("MAP.210")
+	if l210b != null:
+		var truck = l210b.map.entities_by_off.get(0x78d3)
+		var lever = l210b.map.entities_by_off.get(0xc084)
+		var v: Dictionary = l210b.action._path_vehicles.get(0x78d3, {})
+		_check(truck != null and truck.marker_type == 2 and truck.enemy_type == 46
+			and truck.link_next > 0 and not v.is_empty(),
+			"MAP.210's cargo truck is a path vehicle with a path")
+		if not v.is_empty() and lever != null:
+			var tnode: Node3D = v["node"]
+			var at: Vector3 = tnode.position         # DOS ticks it near the player
+			var before: Vector3 = at
+			for i in 30:
+				l210b.action.tick(0.05, at)
+			# DOS takes the segment speed on the vehicle's FIRST tick without
+			# looking at the bit, so it creeps under a unit before the next
+			# tick brakes it — anything more means the path is running.
+			_check(tnode.position.distance_to(before) < 5.0,
+				"the truck waits while its path is switched off (%.1f u)"
+				% tnode.position.distance_to(before))
+			l210b.action._flip_link(lever)
+			var head = l210b.map.entities_by_off.get(truck.link_next)
+			_check(head != null and (head.state_byte & 1) != 0,
+				"the lever switches the truck's path on")
+			for i in 60:
+				l210b.action.tick(0.05, tnode.position)
+			_check(tnode.position.distance_to(before) > 80.0,
+				"the truck drives its path (%.0f u in 3 s)"
+				% tnode.position.distance_to(before))
+
+	# MAP.234: the HK's path markers are already on, so it flies the
+	# moment the map loads, and the end of its path flips CHUNK3 — act
+	# 0x27, mission 3's [M2] — before it comes to a hover.
+	var l234: LevelLoader.Level = LevelLoader.new().load_level("MAP.234")
+	if l234 != null:
+		var hk_off: int = -1
+		for off in l234.action._path_vehicles:
+			hk_off = int(off)
+			break
+		_check(hk_off >= 0, "MAP.234 has the pick-up HK as a path vehicle")
+		if hk_off >= 0:
+			var hv: Dictionary = l234.action._path_vehicles[hk_off]
+			var hnode: Node3D = hv["node"]
+			var hstart: Vector3 = hnode.position
+			var m2: Array = []
+			if l234.behaviour != null:
+				l234.behaviour.objective_complete.connect(
+					func(i: int) -> void: m2.append(i))
+			for i in 400:                            # ~20 s of flight
+				l234.action.tick(0.05, hnode.position)
+			_check(hnode.position.distance_to(hstart) > 200.0,
+				"the HK flies without anything switching it on (%.0f u)"
+				% hnode.position.distance_to(hstart))
+			_check(m2 == [1], "the end of the HK's path fires [M2] (%s)" % str(m2))
+
+	# MAP.260: the town's invisible fence is a PAIR of type-30 markers,
+	# the convoy is nine path vehicles whose type byte carries bit 7 (the
+	# parser used to read it unmasked, so they never appeared at all), and
+	# the car-wash door is the 60-HP thing the jeep rams through.
+	var l260: LevelLoader.Level = LevelLoader.new().load_level("MAP.260")
+	if l260 != null:
+		_check(l260.border_boxes.size() == 1,
+			"MAP.260 has one border box (%d)" % l260.border_boxes.size())
+		if l260.border_boxes.size() == 1:
+			var b: Rect2 = l260.border_boxes[0]
+			_check(absf(b.position.x - 14208.0) < 1.0 and absf(b.end.x - 64378.0) < 1.0
+				and absf(b.position.y + 27880.0) < 1.0 and absf(b.end.y + 4898.0) < 1.0,
+				"the box covers the town and the inner lane (%s)" % str(b))
+		var conv: int = 0
+		for e in l260.map.entities:
+			if (e.flags & 3) == 3 and e.marker_type == 2 and e.convoy:
+				conv += 1
+		_check(conv == 9, "nine convoy markers carry the 0x80 type bit (%d)" % conv)
+		_check(l260.action._path_vehicles.size() == 9,
+			"the convoy is built as nine path vehicles (%d)"
+			% l260.action._path_vehicles.size())
+		var door = null
+		for e in l260.map.entities:
+			if (e.flags & 3) == 1 and e.hp > 0 \
+					and LevelLoader.MapFile.entity_name(l260.map, e) == "CWDOOR":
+				door = e
+				break
+		_check(door != null and door.hp == 60
+			and l260.action.is_damageable_off(door.file_off),
+			"the car-wash door has 60 HP and takes damage")
+
 ## Phase 2 — map transitions: marker sets on both ends of an exit, the
 ## per-map state overlay round trip, doorway touch arming and the
 ## spawn-inside-the-gate latch.
