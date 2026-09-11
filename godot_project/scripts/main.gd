@@ -1673,9 +1673,11 @@ func _process(delta: float) -> void:
 		if _hud_mode != 0:
 			_update_vehicle_hud()
 		var am: int = int(player.ammo)
-		_ammo_label.text = "%d" % am
+		# A device with nothing to fire (the MP motion detector) shows no
+		# count at all.
+		_ammo_label.text = "" if am < 0 else "%d" % am
 		_ammo_label.add_theme_color_override("font_color",
-			Color(1, 0.4, 0.32) if am <= 0 else Color(0.55, 0.95, 0.62))
+			Color(1, 0.4, 0.32) if am == 0 else Color(0.55, 0.95, 0.62))
 		if hp <= 0 and _game_over == null and _dm == null:
 			_show_game_over()
 	# No DOS mission ends by body count: they end when the objective

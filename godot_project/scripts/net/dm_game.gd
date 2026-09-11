@@ -22,6 +22,7 @@ const Grenade := preload("res://scripts/grenade.gd")
 const SmokePuff := preload("res://scripts/smoke_puff.gd")
 const Explosion := preload("res://scripts/explosion.gd")
 const TerminatorVision := preload("res://scripts/net/terminator_vision.gd")
+const MotionDetector := preload("res://scripts/net/motion_detector.gd")
 
 const SPRITE_PIXEL_SIZE: float = 2.0
 const FEED_LINES: int = 5
@@ -57,6 +58,7 @@ var _chat_open: bool = false
 var _over: CanvasLayer = null
 var _hit_flash: ColorRect = null
 var _vision: Control = null
+var _detector: Control = null
 
 func setup(m: Node, p: CharacterBody3D) -> void:
 	main = m
@@ -520,6 +522,14 @@ func _build_hud() -> void:
 	_vision.visible = false
 	_hud.add_child(_vision)
 	_hud.move_child(_vision, 1)                # over the hit flash, under the read-outs
+	# The HUMAN's counterpart: the hand-held motion detector's marks.
+	_detector = MotionDetector.new()
+	_detector.game = self
+	_detector.player = player
+	_detector.set_font(font)
+	_detector.visible = false
+	_hud.add_child(_detector)
+	_hud.move_child(_detector, 2)
 	_hud.add_child(_board)
 	_refresh_scores()
 
@@ -694,6 +704,18 @@ func _apply_local_class() -> void:
 	_last_hp = player.health
 	if _vision != null:
 		_vision.visible = cls == Net.CLASS_TERMINATOR
+	# A HUMAN carries the motion detector among the weapons; the
+	# TERMINATOR has the same reading built into its view instead.
+	if player.has_method("grant_weapon"):
+		var det: int = int(player.call("motion_detector_slot"))
+		# Through `extra_owned`, so every respawn hands it back.
+		player.set("extra_owned", [det] if cls == Net.CLASS_HUMAN else [])
+		if cls == Net.CLASS_HUMAN:
+			player.call("grant_weapon", det)
+		else:
+			player.call("drop_weapon", det)
+	if _detector != null:
+		_detector.player = player
 
 func _on_class_changed(id: int, cls: int) -> void:
 	if id == Net.local_id:

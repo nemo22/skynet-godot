@@ -154,7 +154,14 @@ var _weapons: Array = [
 	{"name": "JEEP ROCKETS",     "kind": "rocket",  "dmg": 400.0, "rate": 1,  "pool": 11, "cost": 1,   "snd": "", "snd_id": 26, "sel": 9,  "dry": 10, "cfa": "", "vx": 160, "splash": 512.0, "veh": 1},
 	{"name": "HK LASER",         "kind": "laser",   "dmg": 75.0,  "rate": 8,  "pool": 10, "cost": 100, "snd": "", "snd_id": 12, "sel": 17, "dry": 16, "cfa": "", "vx": 160, "splash": 64.0,  "veh": 2},
 	{"name": "HK ROCKETS",       "kind": "rocket",  "dmg": 400.0, "rate": 1,  "pool": 11, "cost": 1,   "snd": "", "snd_id": 26, "sel": 9,  "dry": 10, "cfa": "", "vx": 160, "splash": 512.0, "veh": 2},
+	# DOS record 13: no ammo type, no pool, no fire or dry sound, view X
+	# 168 — not a gun but the MP MOTION DETECTOR, the hand-held scanner a
+	# HUMAN player carries (Marek's DOS deathmatch, 2026-09-12). Its draw
+	# code (0x132b00) marks the other players; see net/motion_detector.gd.
+	{"name": "MOTION DETECTOR",  "kind": "detector", "dmg": 0.0,  "rate": 2,  "pool": -1, "cost": 0,   "snd": "", "sel": -1, "dry": -1, "cfa": "WEAPON13.CFA", "animspd": 8, "vx": 168},
 ]
+## Index of the detector in `_weapons` above.
+const MOTION_DETECTOR: int = 17
 ## Weapon slots per vehicle (indices into `_weapons`): the gun on the
 ## fire key, the rocket pod on the throw key (the DOS secondary).
 const VEHICLE_WEAPONS: Dictionary = {1: [13, 14], 2: [15, 16]}
@@ -262,6 +269,10 @@ const START_WEAPONS: Array = [0, 1, 2, 4, 7]
 const ALL_WEAPONS: Array = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 const SUPER_UZI: int = 12
 var _owned: Dictionary = {}          # weapon idx → true
+## Weapons the player keeps besides the campaign's starting arsenal —
+## the deathmatch class's own kit (a HUMAN's motion detector). Re-applied
+## by _reset_owned, so a respawn does not take it away.
+var extra_owned: Array = []
 # HUD mirrors of the active weapon (read by the level controller).
 var weapon_name: String = "UZI"
 var ammo: int = 500
@@ -373,6 +384,8 @@ func _reset_owned() -> void:
 			_weapon_idx = int(VEHICLE_WEAPONS[vehicle][0])
 		return
 	for w in START_WEAPONS:
+		_owned[int(w)] = true
+	for w in extra_owned:                # the deathmatch class's own kit
 		_owned[int(w)] = true
 	if not _owned.has(_weapon_idx):
 		_weapon_idx = int(START_WEAPONS[1]) if START_WEAPONS.size() > 1 else 0
@@ -570,8 +583,31 @@ func _next_owned(from: int, dir: int) -> int:
 			return i
 	return from
 
+## Put one more weapon in the player's hands (the deathmatch loadout:
+## a HUMAN carries the motion detector besides the guns).
+func grant_weapon(idx: int) -> void:
+	if idx >= 0 and idx < _weapons.size():
+		_owned[idx] = true
+
+func drop_weapon(idx: int) -> void:
+	if _owned.has(idx):
+		_owned.erase(idx)
+		if _weapon_idx == idx:
+			_select_weapon(_next_owned(idx, 1))
+
+## The detector's slot in `_weapons` — a method, so callers need not
+## reach for a script constant through an instance.
+func motion_detector_slot() -> int:
+	return MOTION_DETECTOR
+
+## Is the motion detector the weapon in hand right now?
+func detector_active() -> bool:
+	return _weapon_idx == MOTION_DETECTOR and vehicle == VEH_FOOT and health > 0.0
+
 ## Rounds left for weapon `idx` — its pool's count, or 99 for the pipe.
 func _ammo_for(idx: int) -> int:
+	if String(_weapons[idx].get("kind", "")) == "detector":
+		return -1                          # a scanner has no rounds to show
 	var pool: int = int(_weapons[idx].get("pool", -1))
 	if pool < 0:
 		return 99
@@ -1331,6 +1367,8 @@ func _shoot(idx: int = -1) -> void:
 		idx = _weapon_idx
 	var w: Dictionary = _weapons[idx]
 	var kind: String = String(w.get("kind", "bullet"))
+	if kind == "detector":
+		return                               # a scanner has no trigger
 	var pool: int = int(w.get("pool", -1))
 	var cost: int = int(w.get("cost", 0))
 	if pool == VEH_ENERGY_POOL:

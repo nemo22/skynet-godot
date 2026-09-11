@@ -111,6 +111,39 @@ func _run() -> void:
 	if _bot_fired == 0 and _deaths.is_empty():
 		await _wait(func() -> bool: return _bot_fired > 0 or _deaths.size() > 0, 45.0)
 	_check(_bot_fired > 0 or _deaths.size() > 0, "bots fired %d shots, %d deaths" % [_bot_fired, _deaths.size()])
+	# The HUMAN class carries the MOTION DETECTOR (DOS weapon record 13):
+	# it is in the loadout, it has no trigger, and its marks only draw
+	# while it is the weapon in hand.
+	# The class comes from the saved config, so pick it here instead of
+	# inheriting whatever the last game was played as.
+	var dm_node: Node = _main.get("_dm")
+	var det: int = int(player.call("motion_detector_slot"))
+	var was_class: int = Net.class_of(Net.local_id)   # put it back at the end
+	Net.set_class(Net.CLASS_HUMAN)
+	if dm_node != null:
+		dm_node.call("_apply_local_class")
+	_check((player.call("owned_list") as Array).has(det),
+		"the HUMAN player owns the motion detector (slot %d, owned %s)"
+		% [det, str(player.call("owned_list"))])
+	player.call("_select_weapon", det)
+	_check(bool(player.call("detector_active")) and int(player.ammo) < 0,
+		"the detector is in hand and shows no ammo (%d)" % int(player.ammo))
+	var before_fire: int = _fired
+	player.set("_fire_cd", 0.0)
+	player.call("_shoot")
+	await get_tree().physics_frame
+	_check(_fired == before_fire,
+		"the detector has no trigger (%d fire events)" % (_fired - before_fire))
+	# A TERMINATOR has the same reading built into its view instead, so it
+	# carries no scanner.
+	Net.set_class(Net.CLASS_TERMINATOR)
+	if dm_node != null:
+		dm_node.call("_apply_local_class")
+	_check(not (player.call("owned_list") as Array).has(det),
+		"the TERMINATOR carries no scanner (owned %s)" % str(player.call("owned_list")))
+	Net.set_class(was_class)                  # leave the player's own choice alone
+	if dm_node != null:
+		dm_node.call("_apply_local_class")
 	# Teleport beside a bot and shoot it: the hit must reach the server.
 	var target: Node3D = null
 	for a in avatars:
