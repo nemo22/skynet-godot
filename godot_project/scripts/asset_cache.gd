@@ -69,9 +69,10 @@ func _ready() -> void:
 		print("[assets] cache disabled (--no-cache)")
 		return
 	root = SkynetPaths.converted_dir()
-	# A development checkout links res://converted → the cache so the
-	# editor can open map scenes; address the cache through the link
-	# then, so every saved resource references res:// paths.
+	# A development checkout keeps the cache in the project (a directory,
+	# or a link to the one beside the data) so the editor can open map
+	# scenes; address it as res://converted then, so every saved resource
+	# references res:// paths.
 	# (Only for SkyNET: Future Shock's textures share record numbers with
 	# SkyNET's and must never land in the same cache.)
 	if SkynetPaths.game == "skynet" and not root.begins_with("res://") \

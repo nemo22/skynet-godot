@@ -124,10 +124,11 @@ func _run() -> void:
 	_check(hovers > 0 and low == 0, "%d hovers all keep >= 200 u above the ground (%d low)" % [hovers, low])
 
 	# --- 1c. Cache location, weapon ownership, cheats, pause menu, console ---
-	# Next to the game data — directly, or through the development
-	# checkout's res://converted link to that same directory.
-	var linked: bool = Assets.root == "res://converted" 		and ProjectSettings.globalize_path("res://converted/VERSION").replace("\\", "/") != "" 		and FileAccess.file_exists(SkynetPaths.converted_dir() + "/VERSION")
-	_check((Assets.root == SkynetPaths.converted_dir() or linked) and not Assets.root.begins_with("user://"),
+	# Next to the game data, or — in a development checkout — in the
+	# project's own res://converted (Marek's has no copy beside the data
+	# since the stale one there was deleted, 2026-09-11).
+	var dev: bool = Assets.root == "res://converted" 		and FileAccess.file_exists("res://converted/VERSION")
+	_check((Assets.root == SkynetPaths.converted_dir() or dev) and not Assets.root.begins_with("user://"),
 		"asset cache sits next to the game data (%s)" % Assets.root)
 	_check(player.call("owned_list") == [0, 1, 2, 4, 7],
 		"campaign start arsenal = PIPE, UZI, ASSAULT RIFLE, SHOTGUN, LASER RIFLE (%s)" % str(player.call("owned_list")))

@@ -3080,7 +3080,7 @@ const COMMAND_NAMES: Array = [
 	"gamma", "give", "god", "heal", "health", "help", "hp", "illbeback", "load",
 	"map", "maps", "menu", "moon", "music", "nextlevel", "nitrous", "noclip",
 	"objectives", "occlusion", "options", "pause", "players", "pos", "quit",
-	"rebake", "save", "secondary", "sf2", "shoot", "showspawns",
+	"rebake", "save", "secondary", "shoot", "showspawns",
 	"slugs", "speed", "superuzi", "surgery", "throw", "tp", "use", "version",
 	"weapon", "where", "who", "whoami", "win", "look", "bodyat", "collfaces", "aim",
 ]
@@ -3347,25 +3347,6 @@ func run_command(line: String) -> String:
 			if made == null:
 				return "drop %d produced nothing" % dt
 			return "dropped %s at %s" % [made.name, made.position]
-		"wavetable", "sf2":
-			Settings.set_wavetable(_bool_arg(args, not Settings.wavetable))
-			var sf: String = MidiSynth.soundfont_path()
-			var report: String = "music: %s%s" % [
-				"WAVETABLE" if Settings.wavetable else "SYNTH",
-				("  (" + sf.get_file() + ")") if not sf.is_empty() else "  (no .sf2 found)"]
-			if Settings.wavetable and not sf.is_empty():
-				# Prove the bank actually yields samples, not silence.
-				var SF2 := load("res://scripts/loaders/sf2_file.gd")
-				var bank = SF2.open_file(sf)
-				var got: Array = []
-				for pr in [0, 24, 33, 48, 56, 73]:
-					var it: Dictionary = SF2.instrument(bank, 0, pr, 60)
-					got.append("%d:%s" % [pr, "%d f" % (it["stream"].data.size() / 2) if not it.is_empty() else "-"])
-				var dr: Dictionary = SF2.instrument(bank, 128, 0, 36)
-				got.append("kick:%s" % ("%d f" % (dr["stream"].data.size() / 2) if not dr.is_empty() else "-"))
-				report += "
-" + ", ".join(got)
-			return report
 		"where", "dump":
 			# Everything needed to reproduce a report: where the player
 			# stands, what he is looking at, and what the level is made

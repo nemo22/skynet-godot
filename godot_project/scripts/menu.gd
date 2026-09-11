@@ -1461,7 +1461,6 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 	grid.add_theme_constant_override("v_separation", 12)
 	vb.add_child(grid)
 	var c_res := _cell(grid, "Render resolution")
-	var c_music := _cell(grid, "Music")
 	var c_bright := _cell(grid, "Brightness")
 	var c_window := _cell(grid, "Window")
 
@@ -1521,23 +1520,6 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 	c_bright.add_child(bright)
 	_refresh_brightness_label()
 
-	# Music: the port's synthesised tones or a General MIDI SoundFont next
-	# to the game data (the in-game menu's MUSIC SOURCE until 2026-09-11).
-	var mus := HBoxContainer.new()
-	mus.alignment = BoxContainer.ALIGNMENT_CENTER
-	mus.add_theme_constant_override("separation", 14)
-	_music_buttons.clear()
-	for m in [["SYNTH", false], ["WAVETABLE", true]]:
-		var on3: bool = m[1]
-		var mub := _option_button(String(m[0]), func() -> void:
-			Settings.set_wavetable(on3)
-			_refresh_display_marks())
-		mub.custom_minimum_size = Vector2(210, 48)
-		mub.set_meta("wavetable", on3)
-		_music_buttons.append(mub)
-		mus.add_child(mub)
-	c_music.add_child(mus)
-
 	vb.add_child(_spacer(4))
 	vb.add_child(_menu_button("BACK", func() -> void: _show_screen(_screen_options)))
 	_refresh_display_marks()
@@ -1549,7 +1531,6 @@ var _brightness_label: Label = null
 func _refresh_brightness_label() -> void:
 	if _brightness_label != null and is_instance_valid(_brightness_label):
 		_brightness_label.text = "%d %%" % int(round(Settings.brightness() * 100.0))
-var _music_buttons: Array[Button] = []
 
 ## One labelled cell of the DETAIL screen's settings grid.
 func _cell(grid: GridContainer, title: String) -> VBoxContainer:
@@ -1583,9 +1564,6 @@ func _refresh_display_marks() -> void:
 			continue
 		var wm: int = mb.get_meta("win")
 		mb.text = ("> " if wm == Settings.window_mode else "") + String(Settings.WINDOW_MODE_NAMES[wm])
-	for mub in _music_buttons:
-		var on3: bool = bool(mub.get_meta("wavetable"))
-		mub.text = ("> " if on3 == Settings.wavetable else "") + ("WAVETABLE" if on3 else "SYNTH")
 
 ## DEBUG TOOLS — launches the asset viewers.
 func _build_debug_screen() -> Control:

@@ -39,59 +39,6 @@ var _age: int = 0
 var _chan: Array = []                        # per channel {prog, vol, expr, bend}
 var _bank: Dictionary = {}                   # program → {stream, hz, rel}
 var _drums: Dictionary = {}                  # note → {stream, hz, rel}
-## --- wavetable ---------------------------------------------------------
-## With a General MIDI SoundFont next to the game data, every instrument
-## comes from a RECORDED sample instead of a stack of sines — what a
-## wavetable card gave you in 1996, and what the synthesised tones can
-## never quite be. Off by default: the tones ARE the retro sound.
-const SF2File := preload("res://scripts/loaders/sf2_file.gd")
-var _sf2 = null
-var _sf2_tried: bool = false
-
-func _soundfont():
-	if _sf2_tried:
-		return _sf2
-	_sf2_tried = true
-	if not Settings.wavetable:
-		return null
-	var path: String = soundfont_path()
-	if path.is_empty():
-		print("[music] wavetable on, but no .sf2 found next to the game data")
-		return null
-	_sf2 = SF2File.open_file(path)
-	if _sf2 == null or not _sf2.ok:
-		push_warning("[music] %s is not a readable SoundFont" % path)
-		_sf2 = null
-	else:
-		print("[music] wavetable: %s" % path.get_file())
-	return _sf2
-
-## The first .sf2 sitting with the game data, one level up from it (where
-## the DOS install and the port's own files live), or next to the exe.
-static func soundfont_path() -> String:
-	var dirs: Array = [SkynetPaths.gamedata_dir,
-		SkynetPaths.gamedata_dir.get_base_dir(),
-		SkynetPaths.game_root,
-		OS.get_executable_path().get_base_dir()]
-	for dir in dirs:
-		if dir.is_empty():
-			continue
-		var d := DirAccess.open(dir)
-		if d == null:
-			continue
-		for f in d.get_files():
-			if f.to_lower().ends_with(".sf2"):
-				return dir.path_join(f)
-	return ""
-
-## Drop every cached instrument — the next note rebuilds from whichever
-## source is selected now.
-func reset_bank() -> void:
-	_bank.clear()
-	_drums.clear()
-	_sf2 = null
-	_sf2_tried = false
-
 func _ready() -> void:
 	for i in VOICES:
 		var p := AudioStreamPlayer.new()
@@ -321,18 +268,6 @@ func _instrument(prog: int) -> Dictionary:
 	prog = clampi(prog, 0, 127)
 	if _bank.has(prog):
 		return _bank[prog]
-	var sf = _soundfont()
-	if sf != null:
-		var samp: Dictionary = SF2File.instrument(sf, 0, prog, 60)
-		if not samp.is_empty():
-			# The sample plays at its recorded pitch when pitch_scale is
-			# 1, so its "base hz" is the root key it was sampled at.
-			var base: float = _note_hz(int(samp["root"])) \
-				* pow(2.0, float(samp["cents"]) / 1200.0)
-			var winst := {"stream": samp["stream"], "hz": base,
-				"rel": 0.18 if bool(samp["looped"]) else 0.05, "gain": -3.0}
-			_bank[prog] = winst
-			return winst
 	var spec: Dictionary = _family(prog)
 	var stream: AudioStreamWAV = Assets.fetch("music", "GM_%03d" % prog,
 		func() -> Resource: return _build_tone(spec)) as AudioStreamWAV
@@ -415,16 +350,6 @@ static func _to_pcm16(buf: PackedFloat32Array) -> PackedByteArray:
 func _drum(note: int) -> Dictionary:
 	if _drums.has(note):
 		return _drums[note]
-	var sf = _soundfont()
-	if sf != null:
-		# Bank 128 is the percussion bank; the note picks the drum, and
-		# it plays at its own pitch.
-		var samp: Dictionary = SF2File.instrument(sf, 128, 0, note)
-		if not samp.is_empty():
-			var winst := {"stream": samp["stream"], "hz": 1.0, "fixed": true,
-				"rel": 0.05, "gain": -3.0}
-			_drums[note] = winst
-			return winst
 	var spec: Dictionary = _drum_spec(note)
 	var key: String = "DRUM_%03d" % int(spec["id"])
 	var stream: AudioStreamWAV = Assets.fetch("music", key,

@@ -67,9 +67,6 @@ var reverse_stereo: bool = false
 var resolution: int = RES_NATIVE
 var window_mode: int = WIN_WINDOWED
 var window_size: int = 0                # index into available_sizes()
-## Music: false = the port's synthesised tones (the retro sound), true =
-## samples out of a General MIDI SoundFont found next to the game data.
-var wavetable: bool = false
 ## Brightness, a multiplier on the DOS gamma (main.gd). Taste differs —
 ## the DOS look went from "darker and flatter than the original" to "až
 ## moc svetlá" in a day — so it is the player's knob, not a constant.
@@ -88,7 +85,6 @@ func _ready() -> void:
 		window_mode = clampi(int(cfg.get_value("video", "window_mode", WIN_WINDOWED)),
 			WIN_WINDOWED, WIN_FULLSCREEN)
 		window_size = int(cfg.get_value("video", "window_size", 0))
-		wavetable = bool(cfg.get_value("audio", "wavetable", false))
 		brightness_dos = clampf(float(cfg.get_value("video", "brightness_dos", 1.0)),
 			BRIGHTNESS_MIN, BRIGHTNESS_MAX)
 	get_tree().root.size_changed.connect(apply_resolution)
@@ -104,7 +100,6 @@ func save() -> void:
 	cfg.set_value("video", "resolution", resolution)
 	cfg.set_value("video", "window_mode", window_mode)
 	cfg.set_value("video", "window_size", window_size)
-	cfg.set_value("audio", "wavetable", wavetable)
 	cfg.set_value("video", "brightness_dos", brightness_dos)
 	cfg.save(CFG_PATH)
 
@@ -199,14 +194,6 @@ func apply_resolution() -> void:
 		vp.scaling_3d_scale = 1.0
 	else:
 		vp.scaling_3d_scale = clampf(want / float(vp.size.x), 0.1, 1.0)
-
-signal wavetable_changed(on: bool)
-
-func set_wavetable(on: bool) -> void:
-	wavetable = on
-	save()
-	wavetable_changed.emit(on)
-	print("[settings] music %s" % ("WAVETABLE" if on else "SYNTH"))
 
 func set_reverse_stereo(on: bool) -> void:
 	reverse_stereo = on
