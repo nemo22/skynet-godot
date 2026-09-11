@@ -7,7 +7,10 @@
 ## circle in Marek's DOS jeep screenshots (2026-09-11). Skynet.exe's aim
 ## table (0x443ca) names mdmaim.img on foot and croshair.img for the jeep
 ## and the HK. Its pixels are palette colours; it is drawn as a mask in the
-## DOS green, scaled from the 200-line screen to this one.
+## DOS green, scaled from the 200-line screen to this one — or, when
+## MDMDHRES.BSA has it, the 640x480 version (120x120 against 71x59: the
+## 320x200 one is squashed for that mode's tall pixels) scaled from 480
+## lines, which is sharp instead of a blocky blow-up (Marek, 2026-09-11).
 
 extends Control
 
@@ -18,6 +21,7 @@ var _player: Node = null
 var _veh: int = -1
 var _reticle: Texture2D = null
 var _reticle_tried: bool = false
+var _reticle_unit: float = 200.0       # screen lines the reticle's art is drawn for
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -41,9 +45,10 @@ func _vehicle_reticle() -> Texture2D:
 	var main = get_tree().current_scene
 	if main == null or not main.has_method("_load_panel_texture"):
 		return null
-	var tex: Texture2D = main.call("_load_panel_texture", VEH_RETICLE, true)
+	var tex: Texture2D = main.call("_load_panel_texture", VEH_RETICLE, true, true)
 	if tex == null:
 		return null
+	_reticle_unit = 480.0 if tex.get_width() >= 100 else 200.0
 	var img: Image = tex.get_image()
 	if img == null:
 		return null
@@ -59,7 +64,7 @@ func _draw() -> void:
 	if _veh > 0:
 		var tex := _vehicle_reticle()
 		if tex != null:
-			var sz: Vector2 = tex.get_size() * (size.y / 200.0)
+			var sz: Vector2 = tex.get_size() * (size.y / _reticle_unit)
 			draw_texture_rect(tex, Rect2(c - sz * 0.5, sz), false, GREEN)
 			return
 	var col := Color(0.55, 1.0, 0.65, 0.85)

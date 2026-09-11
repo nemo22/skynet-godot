@@ -84,6 +84,14 @@ const STUCK_RESET_TIME: float = 1.8
 ## by itself — MAP.231's corridor sill (72 u) and its stairs stopped the
 ## player dead. Classic step-up: rise, advance, drop back onto a floor.
 const STEP_HEIGHT: float = 80.0
+## The steepest ground a man on foot walks up. DOS (0x12b192) lets a rise
+## onto a face only when its normal's Y is at least 196/256 — cos 40° —
+## and treats anything steeper as a wall to slide along, so the hills
+## round the canyons cannot be walked over or round ("pôvodne hráč
+## nemohol chodiť po kopcoch", Marek, 2026-09-11). The jeep's wheels have
+## no such test and it climbs.
+const FOOT_MAX_SLOPE_DEG: float = 40.0
+const VEH_MAX_SLOPE_DEG: float = 75.0
 ## Keyboard turning / looking (TURN LEFT-RIGHT, LOOK UP-DOWN), rad/s.
 const KEY_TURN_RATE: float = 2.4
 const KEY_LOOK_RATE: float = 1.5
@@ -201,13 +209,26 @@ const VEH_EYE: Array = [75.0, 92.0, 110.0]
 ## Same as the Player capsule in main.tscn, so leaving a vehicle does not
 ## change the body.
 const VEH_CAPSULE: Array = [[16.0, 76.0], [55.0, 110.0], [110.0, 220.0]]
-## Jeep: DOS mission 2/6 driving — throttle with inertia, mouse steers.
-const JEEP_MAX_SPEED: float = 1800.0
-const JEEP_REVERSE_SPEED: float = 700.0
-const JEEP_ACCEL: float = 1400.0
-const JEEP_BRAKE: float = 2600.0
-const JEEP_DRAG: float = 900.0
-const JEEP_TURN_RATE: float = 1.6              # rad/s with A/D at full speed
+## Jeep: DOS mission 2/6 driving. The DOS handler (0x134eec, data from
+## ds:0x23700, disassembled 2026-09-11) in u/s and u/s²: the throttle
+## pulls 1148 divided by the gear, max(1, v / 21.45), up to 683.6 — the
+## port's 1800 was 2.6 times too fast ("jeep jazdí extrémne rýchlo");
+## the brake and reverse take 459, down to -140; rolling drag is 153;
+## the slope adds 1148·sin of itself.
+const JEEP_MAX_SPEED: float = 683.6
+const JEEP_REVERSE_SPEED: float = 140.0
+const JEEP_ACCEL: float = 1148.0
+const JEEP_GEAR: float = 21.45
+const JEEP_BRAKE: float = 459.0
+const JEEP_DRAG: float = 153.0
+## Turning (0x135271): none below JEEP_GEAR u/s, else wheel·721.6/v rad/s,
+## at most 1.074 (350 of 2048 a second), the other way round in reverse.
+const JEEP_TURN_K: float = 721.6
+const JEEP_TURN_MAX: float = 1.074
+## The wheel goes lock to lock in 0.305 s and back to centre as fast.
+const JEEP_WHEEL_RATE: float = 3.28
+## The brake squeals (sound 29) above this speed.
+const JEEP_SKID_SPEED: float = 171.0
 ## HK: DOS mission 7 flight — hover, thrust in every axis, no gravity.
 const HK_SPEED: float = 2600.0
 const HK_STRAFE: float = 1400.0
@@ -291,9 +312,8 @@ var _vm_firing: bool = false
 
 func _ready() -> void:
 	add_to_group("player")
-	# Forgiving floor handling so steep, rocky terrain stays walkable
-	# instead of catching the capsule like a wall.
-	floor_max_angle = deg_to_rad(62.0)
+	# DOS's 40° on foot (set_vehicle changes it for the vehicles).
+	floor_max_angle = deg_to_rad(FOOT_MAX_SLOPE_DEG)
 	floor_snap_length = 150.0
 	floor_block_on_wall = false
 	floor_constant_speed = true
@@ -381,6 +401,7 @@ func set_vehicle(v: int) -> void:
 	_tilt_pitch = 0.0
 	_tilt_roll = 0.0
 	velocity = Vector3.ZERO
+	floor_max_angle = deg_to_rad(FOOT_MAX_SLOPE_DEG if v == VEH_FOOT else VEH_MAX_SLOPE_DEG)
 	if _cam != null:
 		_cam.rotation.z = 0.0
 		_cam.rotation.y = 0.0            # the turret faces the bonnet again
@@ -717,13 +738,12 @@ func _physics_process(delta: float) -> void:
 ## Jeep (DOS mode 4): a car, not a hovercraft — the mouse and A/D turn
 ## a steering WHEEL, the heading only changes while the wheels roll
 ## (faster at speed, self-centring), the cab pitches and rolls with the
-## ground under it, bumps shake the view at speed, hard turns skid.
+## ground under it, bumps shake the view at speed, the brake squeals.
 var _wheel: float = 0.0               # -1..1 steering wheel
 var _tilt_pitch: float = 0.0
 var _tilt_roll: float = 0.0
 var _bump_t: float = 0.0
 var _skid_cd: float = 0.0
-const JEEP_WHEEL_RETURN: float = 2.5   # wheel self-centre rate (per s)
 const JEEP_TILT_RATE: float = 6.0
 
 ## Jeep turret aim (DOS: the keys drive, the mouse turns the view - the
@@ -733,12 +753,15 @@ var _aim_pitch: float = 0.0
 const JEEP_AIM_YAW: float = 1.1
 const JEEP_AIM_PITCH_DOWN: float = -0.45
 const JEEP_AIM_PITCH_UP: float = 0.6
-## Ramming (DOS: the jeep bounces off robots, both take damage).
-const RAM_MIN_SPEED: float = 250.0
+## Ramming (DOS 0x135a7e): a robot the car's path meets takes ObjHit of
+## speed >> 9 in DOS units — v/2 at v u/s — every frame they touch (the
+## port doses it at DOS's ~25 frames a second) and the car rolls on at
+## 7/8 of its speed; one with no hit points left throws it back. The
+## driver takes nothing: the port's guess of 2026-09-03 hurt him too.
+const RAM_MIN_SPEED: float = 2.0
 const RAM_RADIUS: float = 120.0
-const RAM_DAMAGE_PER_SPEED: float = 0.045
-const RAM_SELF_PER_SPEED: float = 0.012
-var _ram_cd: Dictionary = {}       # enemy instance id -> cooldown
+const RAM_TICK: float = 1.0 / 25.0
+var _ram_cd: Dictionary = {}       # enemy instance id -> seconds to the next dose
 
 ## Direction the guns fire: where the camera looks. In the jeep the
 ## camera IS the turret - the mouse turns it, the keys drive the car -
@@ -752,8 +775,7 @@ func aim_dir() -> Vector3:
 func aim_screen_pos() -> Vector2:
 	return get_viewport().get_visible_rect().size * 0.5
 
-## Drive into a robot: it takes the hit, the car bounces, the driver
-## feels it too (FUN_00125caf-era DOS behaviour recalled by the player).
+## Drive into a robot: it takes the hit and the car rolls on (see RAM_*).
 func _ram_check(fwd: Vector3) -> void:
 	for k in _ram_cd.keys():
 		_ram_cd[k] -= get_physics_process_delta_time()
@@ -779,49 +801,57 @@ func _ram_check(fwd: Vector3) -> void:
 		var id: int = n.get_instance_id()
 		if _ram_cd.has(id):
 			continue
-		_ram_cd[id] = 0.6
-		var sp: float = absf(_veh_speed)
-		n.call("take_damage", sp * RAM_DAMAGE_PER_SPEED)
-		take_damage(sp * RAM_SELF_PER_SPEED)
-		_veh_speed = -_veh_speed * 0.35
+		_ram_cd[id] = RAM_TICK
+		var hp = n.get("_health")
+		if hp == null or float(hp) <= 0.0:
+			_veh_speed = -_veh_speed           # nothing left to hit: bounce
+			return
+		n.call("take_damage", absf(_veh_speed) * 0.5)
+		_veh_speed *= 0.875
 		Audio.play_id(30, -3.0)
 		return
 
 func _drive(delta: float, fwd_in: float, str_in: float) -> void:
+	var grounded: bool = is_on_floor()
 	# Keys hold the wheel; without input it returns to centre (the mouse
-	# nudges it in _unhandled_input).
+	# nudges it in _unhandled_input). Lock to lock in 0.305 s, as DOS.
 	if absf(str_in) > 0.1:
-		_wheel = clampf(_wheel + str_in * 3.0 * delta, -1.0, 1.0)
+		_wheel = clampf(_wheel + str_in * JEEP_WHEEL_RATE * delta, -1.0, 1.0)
 	else:
-		_wheel = move_toward(_wheel, 0.0, JEEP_WHEEL_RETURN * delta)
-	# Heading follows the wheel only while rolling.
-	var roll_k: float = clampf(absf(_veh_speed) / 500.0, 0.0, 1.0)
-	var dir: float = 1.0 if _veh_speed >= 0.0 else -1.0
-	var yaw_rate: float = _wheel * JEEP_TURN_RATE * roll_k * dir
-	_yaw -= yaw_rate * delta
-	rotation.y = _yaw
-	# A hard turn at speed scrubs speed off and squeals.
-	if absf(yaw_rate) > 1.0 and absf(_veh_speed) > 900.0:
-		_veh_speed *= 1.0 - 0.6 * delta
-		_skid_cd -= delta
-		if _skid_cd <= 0.0:
-			_skid_cd = 0.9
-			Audio.play_id(29, -8.0)
-	else:
-		_skid_cd = 0.0
-	if fwd_in > 0.1:
+		_wheel = move_toward(_wheel, 0.0, JEEP_WHEEL_RATE * delta)
+	# Heading: DOS turns only with the wheels on the ground and above
+	# JEEP_GEAR u/s, at wheel·721.6/v rad/s up to 1.074 — about the same
+	# rate at any speed — and the other way round when backing up.
+	var spd: float = absf(_veh_speed)
+	if grounded and spd > JEEP_GEAR:
+		var yaw_rate: float = clampf(_wheel * JEEP_TURN_K / spd, -JEEP_TURN_MAX, JEEP_TURN_MAX)
 		if _veh_speed < 0.0:
-			_veh_speed = minf(_veh_speed + JEEP_BRAKE * delta, 0.0)
-		else:
-			_veh_speed = minf(_veh_speed + JEEP_ACCEL * delta, JEEP_MAX_SPEED * speed_boost)
-	elif fwd_in < -0.1:
-		if _veh_speed > 0.0:
-			_veh_speed = maxf(_veh_speed - JEEP_BRAKE * delta, 0.0)
-		else:
-			_veh_speed = maxf(_veh_speed - JEEP_ACCEL * 0.6 * delta, -JEEP_REVERSE_SPEED)
-	else:
-		_veh_speed = move_toward(_veh_speed, 0.0, JEEP_DRAG * delta)
+			yaw_rate = -yaw_rate
+		_yaw -= yaw_rate * delta
+	rotation.y = _yaw
 	var fwd := -Basis(Vector3.UP, _yaw).z
+	# Throttle and brake work through wheels on the ground only.
+	if grounded:
+		if fwd_in > 0.1:
+			if _veh_speed < 0.0:
+				_veh_speed = minf(_veh_speed + JEEP_BRAKE * delta, 0.0)
+			else:
+				var gear: float = maxf(1.0, floorf(_veh_speed / JEEP_GEAR))
+				_veh_speed = minf(_veh_speed + JEEP_ACCEL / gear * delta, JEEP_MAX_SPEED * speed_boost)
+			_skid_cd = 0.0
+		elif fwd_in < -0.1:
+			if _veh_speed > JEEP_SKID_SPEED:
+				_skid_cd -= delta
+				if _skid_cd <= 0.0:
+					_skid_cd = 0.9
+					Audio.play_id(29, -8.0)     # the tyres squeal under the brake
+			_veh_speed = maxf(_veh_speed - JEEP_BRAKE * delta, -JEEP_REVERSE_SPEED)
+		else:
+			_veh_speed = move_toward(_veh_speed, 0.0, JEEP_DRAG * delta)
+			_skid_cd = 0.0
+		# Downhill pulls and uphill holds back: 1148·sin of the slope
+		# along the heading.
+		_veh_speed += JEEP_ACCEL * get_floor_normal().dot(fwd) * delta
 	velocity.x = fwd.x * _veh_speed
 	velocity.z = fwd.z * _veh_speed
 	if is_on_floor():
@@ -831,11 +861,13 @@ func _drive(delta: float, fwd_in: float, str_in: float) -> void:
 	var before := global_position
 	move_and_slide()
 	_ram_check(fwd)
-	# A wall stops the jeep dead (and the momentum with it) — carcoll2.
-	if absf(_veh_speed) > 50.0 and global_position.distance_to(before) < absf(_veh_speed) * delta * 0.2:
-		if absf(_veh_speed) > 500.0:
-			Audio.play_id(30, -4.0)
-		_veh_speed *= 0.3
+	# A wall throws the car back at the speed it came in with and the
+	# wheel snaps straight — carcoll2 (DOS 0x135a7e negates the speed).
+	if absf(_veh_speed) > 50.0 and is_on_wall() \
+			and global_position.distance_to(before) < absf(_veh_speed) * delta * 0.2:
+		Audio.play_id(30, -4.0)
+		_veh_speed = -_veh_speed
+		_wheel = 0.0
 	# Cab tilt with the ground: pitch along the heading, roll across it.
 	var want_pitch: float = 0.0
 	var want_roll: float = 0.0
@@ -1502,8 +1534,12 @@ signal secondary_changed(name: String, count: int)
 ## A hit landed on the player (after armour) — the HUD flashes for it.
 signal hurt(amount: float)
 signal use_pressed(pos: Vector3)
+## Every press of the use key, whatever is under the crosshair — DOS
+## fires the 0xEF gates in reach on the key itself (ActionSystem.press_use).
+signal activate_key(pos: Vector3)
 
 func _try_activate() -> void:
+	activate_key.emit(global_position)
 	if _cam == null:
 		return
 	var from := _cam.global_position

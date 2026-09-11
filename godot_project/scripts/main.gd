@@ -89,6 +89,7 @@ var _mission_done: bool = false
 ## --shot-delay=sec, --quit-after-shot — the agent/automation interface.
 var _cli: Dictionary = {}
 var _campaign_maps: Array[String] = []   # ordered mission "main" maps
+var _mission_start_map: String = ""      # the campaign map the mission began on
 # --- Map transitions (DOS session loop FUN_001216df, skynet_gh.c:24720) --
 # `_prev_map_name` mirrors DAT_00038b18 (the map we came from — an exit
 # whose target is 0 returns there); `_pending_marker_set` mirrors
@@ -910,6 +911,8 @@ func _begin_level(name: String) -> void:
 			player.pickup_message.connect(_set_status)
 		if not player.use_pressed.is_connected(_on_use_pressed):
 			player.use_pressed.connect(_on_use_pressed)
+		if not player.activate_key.is_connected(_on_activate_key):
+			player.activate_key.connect(_on_activate_key)
 		if not player.secondary_changed.is_connected(_on_secondary_changed):
 			player.secondary_changed.connect(_on_secondary_changed)
 		if not player.hurt.is_connected(_on_hurt):
@@ -966,6 +969,8 @@ func _begin_level(name: String) -> void:
 	# the same mission. Missions end at the evacuation zone, never here.
 	_mission_done = false
 	_mission_hostiles = 0
+	if _campaign_maps.has(name):
+		_mission_start_map = name
 	if _is_campaign_main(name):
 		_mission_hostiles = get_tree().get_nodes_in_group("enemy").size()
 	if _dm == null and not Net.active:
@@ -1200,7 +1205,8 @@ func _light_level(level: LevelLoader.Level) -> void:
 	_shade_recursive(level.enemies, cache)
 	if level.sprites != null:
 		for s in level.sprites.get_children():
-			if s is SpriteBase3D:
+			# ... except the fires, which DOS draws at full light.
+			if s is SpriteBase3D and not s.has_meta("fullbright"):
 				(s as SpriteBase3D).shaded = true
 	print("[level] interior: %d map lights, %d shaded materials"
 		% [_place_map_lights(level), cache.size()])
@@ -1704,10 +1710,17 @@ func _fade_hurt(delta: float) -> void:
 func _on_secondary_changed(name: String, count: int) -> void:
 	_set_status("%s  x%d" % [name, count], 2.5)
 
+## Every press of the use key, whatever the crosshair is on: the 0xEF
+## gates within reach answer it (ActionSystem.press_use).
+func _on_activate_key(_pos: Vector3) -> void:
+	if _current_level != null and _current_level.action != null:
+		_current_level.action.press_use()
+
 ## Use key with nothing under the crosshair: fire an armed exit here.
 func _on_use_pressed(pos: Vector3) -> void:
 	if _current_level != null and _current_level.action != null:
 		var a = _current_level.action
+		a.press_use()                       # (also for scripted presses)
 		if not a.activate_teleport(pos):
 			a.use_nearby(pos)
 
@@ -2347,6 +2360,13 @@ func _show_mission_complete() -> void:
 ## Next campaign map after the current one, or "" at the end of the
 ## campaign. Works whether the current map is a mission map or a sub-map.
 func _next_campaign_map() -> String:
+	# From the map the mission began on: a mission often ends on a sub-map
+	# or an interior whose number lies past every mission map (MAP.230's
+	# ends aboard the submarine), and that used to end the campaign —
+	# "hodilo ma to do hlavného menu" (Marek, 2026-09-11).
+	var at: int = _campaign_maps.find(_mission_start_map)
+	if at >= 0:
+		return _campaign_maps[at + 1] if at + 1 < _campaign_maps.size() else ""
 	if _map_idx < 0 or _map_idx >= _maps.size():
 		return ""
 	var cur: int = _suffix(_maps[_map_idx])
@@ -2370,7 +2390,8 @@ func _show_end_screen(title: String, color: Color, respawnable: bool,
 	_game_over_respawnable = respawnable
 	print("[skynet] end screen: %s (next %s)" % [title, next_map if next_map != "" else "-"])
 	var dim := ColorRect.new()
-	dim.color = Color(0.02, 0.03, 0.05, 0.85)
+	# A won mission leaves the frozen view showing under the banner.
+	dim.color = Color(0.02, 0.03, 0.05, 0.85 if respawnable else 0.45)
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	cl.add_child(dim)
 	var center := CenterContainer.new()
@@ -2384,7 +2405,7 @@ func _show_end_screen(title: String, color: Color, respawnable: bool,
 	# FAILED.IMG "MISSION FAILED, SOLDIER!" (228x18), index 0 transparent —
 	# blown up to most of the screen width, the way the original announced
 	# it. Falls back to a plain caption when the archive is missing.
-	var banner: ImageTexture = _load_panel_texture(banner_img, true)
+	var banner: ImageTexture = _load_panel_texture(banner_img, true, true)
 	if banner != null:
 		var tr := TextureRect.new()
 		tr.texture = banner
@@ -2402,25 +2423,27 @@ func _show_end_screen(title: String, color: Color, respawnable: bool,
 		ttl.add_theme_font_size_override("font_size", 56)
 		ttl.add_theme_color_override("font_color", color)
 		vb.add_child(ttl)
+	get_tree().paused = true
 	if respawnable:
 		vb.add_child(_game_over_button("RESPAWN", _game_over_respawn))
-	if next_map != "":
-		vb.add_child(_game_over_button("NEXT MISSION",
-			_advance_to.bind(next_map)))
-	vb.add_child(_game_over_button("MAIN MENU", _game_over_menu))
-	get_tree().paused = true
-	# The mouse is captured while playing — free it or the buttons cannot
-	# be clicked (a 2026-09-03 report: "mission complete and it just hung").
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-	if is_instance_valid(player) and player.has_method("_capture"):
-		player.call("_capture", false)
-	# A won mission moves on by itself after a few seconds, like the DOS
-	# game's debrief → next briefing flow (the buttons still work sooner).
-	if next_map != "":
-		var my: CanvasLayer = cl
-		get_tree().create_timer(AUTO_ADVANCE_SEC, true, false, true).timeout.connect(func() -> void:
-			if _game_over == my and is_instance_valid(my):
-				_advance_to(next_map))
+		vb.add_child(_game_over_button("MAIN MENU", _game_over_menu))
+		# The mouse is captured while playing — free it or the buttons
+		# cannot be clicked (2026-09-03: "mission complete and it just hung").
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		if is_instance_valid(player) and player.has_method("_capture"):
+			player.call("_capture", false)
+		return
+	# A won mission is DOS's banner and nothing else — WELLDONE.IMG for a
+	# few seconds, then the next mission's briefing (Marek's DOSBox run,
+	# 2026-09-11; the port had NEXT MISSION / MAIN MENU buttons under it).
+	# Enter / Space skip the wait; after the last mission, the main menu.
+	var my: CanvasLayer = cl
+	get_tree().create_timer(AUTO_ADVANCE_SEC, true, false, true).timeout.connect(func() -> void:
+		if _game_over == my and is_instance_valid(my):
+			if next_map != "":
+				_advance_to(next_map)
+			else:
+				_game_over_menu())
 
 ## Clear the end screen and load `map_name` (the next campaign mission).
 func _advance_to(map_name: String) -> void:
@@ -2981,6 +3004,8 @@ func _input(event: InputEvent) -> void:
 				_game_over_respawn()
 			elif _game_over_next != "":
 				_advance_to(_game_over_next)
+			else:
+				_game_over_menu()
 		get_viewport().set_input_as_handled()
 		return
 	# (Esc/~ inside the pause menu or console are theirs — this node is
@@ -3873,14 +3898,21 @@ func _load_fnt(filename: String, scale: int) -> FontFile:
 ## Load PANEL0.IMG (the on-foot HUD bar) as an ImageTexture, or null.
 ## `name` picks another panel: PANEL1.IMG (jeep cockpit) / PANEL2.IMG
 ## (HK cockpit) are full 320×200 frames with the windscreen as index 0.
-func _load_panel_texture(name: String = "PANEL0.IMG", transparent0: bool = false) -> ImageTexture:
-	var bsa := BSAReader.new()
-	if not bsa.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"),
-			SkynetPaths.variant):
-		return null
+## `hires`: the 640x480 set of MDMDHRES.BSA — twice the 320x200 art's
+## resolution (CROSHAIR 120x120, WELLDONE 378x42, PANEL0 640x96 …) —
+## when that archive has the image; the 320x200 one otherwise.
+func _load_panel_texture(name: String = "PANEL0.IMG", transparent0: bool = false,
+		hires: bool = false) -> ImageTexture:
+	var panel_bytes := PackedByteArray()
+	for arc in (["MDMDHRES.BSA", "MDMDIMGS.BSA"] if hires else ["MDMDIMGS.BSA"]):
+		var bsa := BSAReader.new()
+		if not bsa.open(SkynetPaths.gamedata_path(arc), SkynetPaths.variant):
+			continue
+		panel_bytes = bsa.read(name)
+		bsa.close()
+		if not panel_bytes.is_empty():
+			break
 	var pal_bytes := SkynetPaths.palette_bytes()
-	var panel_bytes := bsa.read(name)
-	bsa.close()
 	var palette := Palette.parse(pal_bytes)
 	if palette.is_empty() or panel_bytes.is_empty():
 		return null

@@ -20,7 +20,8 @@
 ##                          via ObjSetPos. Not mesh-frame animation.
 ##   0x18/0x19            — destructible mesh-swap per TRANSFRM.PRS
 ##                          damage stages (handler 0x120433).
-##   0xEF                 — proximity gate, 60-unit radius (0x137e2e).
+##   0xEF                 — use-key gate, 60 units (0x137e2e: runs only
+##                          in the frame ACTIVATE goes down).
 ##   0xF1/0xF2            — proximity-gated chain trigger (0x1379c4).
 ##   0xF0                 — interior teleport (0x137881): target map at
 ##                          sub+2, spawn-marker set at sub+4; one-shot.
@@ -226,6 +227,16 @@ var _teleport_fired: bool = false   # one map change per level instance
 ## presses a key in a cockpit (Marek, 2026-09-05). On foot the use key
 ## stays (the truck doors).
 var drive_through: bool = false
+## The use key's first frame. DOS 0x137e2e opens with `cmp [0x2c7f], 1`
+## — ACTIVATE went down this very frame — and only then flips every live
+## 0xEF gate within 60 u; walking into one does nothing (disassembled
+## 2026-09-11). The port had them fire on approach, so the jeep drove
+## into MAP.220's truck by itself. Set by press_use(), spent by tick().
+var _use_edge: bool = false
+var _edge_done: Dictionary = {}          # gates the key already flipped this press
+
+func press_use() -> void:
+	_use_edge = true
 var _unhandled_logged: Dictionary = {}
 
 func setup(map: MapFile.MapFile) -> void:
@@ -494,6 +505,9 @@ func on_player_activate(file_off: int, player_pos: Vector3 = Vector3.INF) -> boo
 		var t: MapFile.Entity = _chain_teleport(e)
 		if t != null:
 			return _use_exit(e, t)
+		# The gate the key was aimed at: flipped here, so the key's sweep
+		# in tick() must leave it alone or it would flip straight back.
+		_edge_done[e.file_off] = true
 	if chain_trigger:
 		e.state_byte &= ~1
 	if (e.state_byte & 2) != 0:
@@ -619,11 +633,11 @@ func tick(delta: float, player_pos: Vector3) -> void:
 		_step_mover(off, e, delta)
 	# Proximity triggers ------------------------------------------
 	# DOS: the 0xEF handler (0x137e2e) never looks at bit 0 — every gate
-	# watches the player all the time (MAP.215's silo cover opens from a
-	# CORC3229 piece whose state is 0x10). The port keeps two kinds on
-	# the use key instead: 0xF1/0xF2 levers, and variant-1 meshes with
-	# state bit 3 (the wall buttons, state 0x09) — walking past a button
-	# must not press it.
+	# is live (MAP.215's silo cover opens from a CORC3229 piece whose
+	# state is 0x10) — but it runs only in the frame ACTIVATE goes down
+	# (see press_use). 0xF1/0xF2 watch the player's presence; variant-1
+	# meshes with state bit 3 (the wall buttons, state 0x09) stay on the
+	# use key — walking past a button must not press it.
 	for e in _prox:
 		# 0xEF gates and the 0xF1 / 0xF2 chain triggers all watch the
 		# player (handlers 0x137e2e and 0x1379c4); the radii differ.
@@ -648,6 +662,13 @@ func tick(delta: float, player_pos: Vector3) -> void:
 		# zavrie a nedá sa tam dostať"). 0xEF gates are different: they
 		# force their own bit back on (see gate_runs).
 		var chain_trigger: bool = e.link_act_type == ACT_PROX_CHAIN_A 			or e.link_act_type == ACT_PROX_CHAIN_B
+		# 0xEF: the key, not the approach. A gate whose chain ends in an
+		# exit is the use key's way through and goes by activate_teleport.
+		if e.link_act_type == ACT_PROX_GATE:
+			if _use_edge and inside and _chain_teleport(e) == null and not _edge_done.has(e.file_off):
+				print("[action] gate @%05x used at %s" % [e.file_off, epos])
+				_flip_link(e)
+			continue
 		if chain_trigger and (e.state_byte & 1) == 0:
 			continue
 		if inside and not latched:
@@ -658,6 +679,8 @@ func tick(delta: float, player_pos: Vector3) -> void:
 			_flip_link(e)
 		elif not inside and latched:
 			_prox_latched[e.file_off] = false
+	_use_edge = false
+	_edge_done.clear()
 	# (Sound one-shots, voice lines, hints and objectives fire from their
 	# Behaviour nodes as the chain is flipped — F2.)
 	# Destructibles a CHAIN switched on (0x18/0x19). Normally these only
@@ -693,7 +716,11 @@ func tick(delta: float, player_pos: Vector3) -> void:
 		if _armed.has(e.file_off):
 			e.state_byte |= 1
 		_touch_latched[e.file_off] = touching
-		if drive_through and (e.state_byte & 1) != 0 and (touching or _armed.has(e.file_off)):
+		# In a vehicle only an exit a CHAIN switched on fires as you pass
+		# (MAP.270's tunnel: 0xF1 button -> 0xF0) — DOS 0x137881 goes the
+		# moment it is enabled. Touching a doorway does not: nobody gets
+		# out of the jeep, and a truck door needs the use key at 60 u.
+		if drive_through and _armed.has(e.file_off):
 			_fire_teleport(e)
 	if not _armed.is_empty():
 		_armed.clear()

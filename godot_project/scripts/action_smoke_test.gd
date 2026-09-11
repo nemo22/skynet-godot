@@ -268,6 +268,7 @@ func _run_behaviour_checks() -> void:
 		_check(gates.size() >= 2, "%d proximity gates chain to the objective" % gates.size())
 		if target != null and gates.size() >= 2:
 			var g0 = gates[0]
+			l217.action.press_use()                  # DOS: a gate answers the use key
 			l217.action.tick(0.016, Vector3(float(g0.x), -float(g0.y), -float(g0.z)))
 			_check(seen == [2], "tripping a gate fires objective [M3] from its node (%s)" % str(seen))
 			_check(target.link_act_type == 0xFF and (target.state_byte & 1) == 0,
@@ -275,6 +276,7 @@ func _run_behaviour_checks() -> void:
 			var g1 = gates[1]
 			var p1 := Vector3(float(g1.x), -float(g1.y), -float(g1.z))
 			l217.action.tick(0.016, p1 + Vector3(9000.0, 0.0, 0.0))
+			l217.action.press_use()
 			l217.action.tick(0.016, p1)
 			_check(seen == [2], "a second gate cannot fire the spent objective (%s)" % str(seen))
 

@@ -131,6 +131,22 @@ func _ready() -> void:
 				if rec >= Assets.record_count(bank) - 1:
 					break
 			print("[bankdump] TEXTURE.%03d: %d records" % [bank, n])
+	if cli.has("texframes"):
+		# --texframes=216,218: how many animation frames each record of
+		# the banks stores (sprite layout; wall records count 1).
+		var TexNNN = load("res://scripts/loaders/texture_nnn.gd")
+		for b in String(cli["texframes"]).split(","):
+			var raw: PackedByteArray = SkynetPaths.read_bytes(SkynetPaths.gamedata_path("TEXTURE.%03d" % int(b)))
+			if raw.is_empty():
+				print("[texframes] TEXTURE.%03d: not found" % int(b))
+				continue
+			var parts: PackedStringArray = PackedStringArray()
+			for rec in 128:
+				var fr: Array = TexNNN.parse_record_frames(raw, rec)
+				if fr.is_empty():
+					break
+				parts.append("%d:%d" % [rec, fr.size()])
+			print("[texframes] TEXTURE.%03d  rec:frames  %s" % [int(b), " ".join(parts)])
 	if cli.has("bsa"):
 		dump_bsa(String(cli["bsa"]), String(cli.get("filter", "")))
 	if cli.has("strings"):
@@ -207,7 +223,8 @@ func _ready() -> void:
 		dump_frames(String(cli["frames"]))
 	if cli.has("img"):
 		var imgs := BSAReader.new()
-		imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"), SkynetPaths.variant)
+		# --arc=MDMDHRES.BSA: the 640x480 art instead of the 320x200 set.
+		imgs.open(SkynetPaths.gamedata_path(String(cli.get("arc", "MDMDIMGS.BSA"))), SkynetPaths.variant)
 		# --pal=NAME.COL: from the archive or loose in GAMEDATA (Future Shock).
 		var pal := Palette.parse(SkynetPaths.col_bytes(String(cli.get("pal", "MENU.COL"))))
 		for nm in String(cli["img"]).split(","):

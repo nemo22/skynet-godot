@@ -573,7 +573,7 @@ func _run() -> void:
 		await get_tree().physics_frame
 	_check(_main.get("_game_over") == null, "no end screen fires by itself after the round trip")
 
-	# --- 8. MAP.215 silo: walking up to the CORC3229 gate opens the four
+	# --- 8. MAP.215 silo: use at the CORC3229 gate opens the four
 	# silo cover doors (0xEF ignores bit 0); the missile button raises
 	# HADES and fires objective 0x27; evac at a marker-4 zone ends the
 	# mission on the use key ---
@@ -590,6 +590,9 @@ func _run() -> void:
 		player.set("noclip", true)
 		player.velocity = Vector3.ZERO
 		player.global_position = gpos
+		for f in 3:
+			await get_tree().physics_frame
+		lvl.action.press_use()               # DOS 0x137e2e: the use key, not the approach
 		for f in 240:
 			await get_tree().physics_frame
 		_check(cover_node.global_position.distance_to(cbase) > 100.0,
@@ -669,7 +672,9 @@ func _check_jeep_objective() -> void:
 		return
 	var objs: Array = []
 	lvl.behaviour.objective_complete.connect(func(i: int) -> void: objs.append(i))
-	# Stand on the jeep: every gate around it trips in the same tick.
+	# Stand on the jeep and press use: every gate around it trips in the
+	# same tick (DOS fires all the 0xEF gates within 60 u on the key).
+	lvl.action.press_use()
 	lvl.action.tick(0.016, Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z)))
 	lvl.action.tick(0.016, Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z)))
 	_check(objs.has(0x28 - 0x26),
@@ -692,6 +697,7 @@ func _check_ram_wall() -> void:
 	if wall == null or box == null:
 		return
 	var at := Vector3(float(box.x), -float(box.y), -float(box.z))
+	lvl.action.press_use()                 # the START BOX is pressed, not walked into
 	lvl.action.tick(0.016, at)
 	lvl.action.tick(0.016, at)
 	_check(lvl.action._spent.has(wall.file_off),

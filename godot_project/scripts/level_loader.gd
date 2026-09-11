@@ -1099,8 +1099,25 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 			spr = p
 			pickups += 1
 		else:
-			spr = Sprite3D.new()
-			_style_sprite(spr, tex, px)
+			# A record with several frames is a DOS animated billboard —
+			# the fires (216 flames, 218 campfires, 208/206 burning drums)
+			# store four. Only the ENHANCED shader fire ever moved in the
+			# port; the DOS look showed frame 0 (Marek, 2026-09-11: "prečo
+			# sa sprity už neanimujú?").
+			var anim: SpriteFrames = sprite_anim(e.sprite_index)
+			if anim != null:
+				var a := AnimatedSprite3D.new()
+				a.sprite_frames = anim
+				_style_sprite(a, tex, px)
+				a.frame = e.file_off % anim.get_frame_count("default")
+				a.play("default")
+				spr = a
+			else:
+				var s3 := Sprite3D.new()
+				_style_sprite(s3, tex, px)
+				spr = s3
+			if dos_fullbright(e.sprite_index):
+				spr.set_meta("fullbright", true)
 			spr.position = Vector3(float(e.x), base_y + world_h * 0.5, -float(e.z))
 			spr.set_meta("bottom_off", -world_h * 0.5)
 		level.sprites.add_child(spr)
@@ -1117,8 +1134,58 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 	for b in keys:
 		print("[sprite] bank %d x%d" % [b, bank_hist[b]])
 
-static func _style_sprite(spr: Sprite3D, tex: Texture2D, pixel_size: float = SPRITE_PIXEL_SIZE) -> void:
-	spr.texture = tex
+## Frames per second of the DOS animated billboards. An estimate: the
+## rate of the scenery animation is not traced yet (the effect pool's
+## explosions run near 24 fps, which makes a four-frame fire flicker).
+const SPRITE_ANIM_FPS: float = 12.0
+static var _anim_cache: Dictionary = {}      # sprite index → SpriteFrames or null
+static var _bank_bytes: Dictionary = {}      # bank → TEXTURE.NNN bytes
+
+## The frames of a multi-frame sprite record as SpriteFrames ("default",
+## looping), or null for a single-frame one. Cached for the session.
+static func sprite_anim(sprite_index: int) -> SpriteFrames:
+	if _anim_cache.has(sprite_index):
+		return _anim_cache[sprite_index]
+	var bank: int = sprite_index >> 7
+	if not _bank_bytes.has(bank):
+		_bank_bytes[bank] = SkynetPaths.read_bytes(
+			SkynetPaths.gamedata_path("TEXTURE.%03d" % bank))
+	var bytes: PackedByteArray = _bank_bytes[bank]
+	var sf: SpriteFrames = null
+	if not bytes.is_empty():
+		var recs: Array = TextureNNN.parse_record_frames(bytes, sprite_index & 0x7F)
+		if recs.size() > 1:
+			var pal: PackedColorArray = Palette.parse(SkynetPaths.palette_bytes())
+			sf = SpriteFrames.new()
+			sf.set_animation_speed("default", SPRITE_ANIM_FPS)
+			sf.set_animation_loop("default", true)
+			for r in recs:
+				var t: Texture2D = TextureNNN.to_image_texture(r, pal, true) \
+					if r != null and r.width > 0 else null
+				if t != null:
+					sf.add_frame("default", t)
+			if sf.get_frame_count("default") < 2:
+				sf = null
+	_anim_cache[sprite_index] = sf
+	return sf
+
+## The sprites DOS draws at full light whatever the room's shading
+## (FUN_00124216 returns light 0x3f for exactly these — the fires):
+## 192_000, 192_002, 206_001, 208_002-003, 216_005, 216_011-012, 218_000-003.
+static func dos_fullbright(sprite_index: int) -> bool:
+	if sprite_index == 0x6701 or sprite_index == 0x6002 or sprite_index == 0x6000:
+		return true
+	var bank: int = sprite_index >> 7
+	var rec: int = sprite_index & 0x7F
+	match bank:
+		0xd0: return rec >= 2 and rec <= 3
+		0xd8: return rec == 5 or rec == 0xb or rec == 0xc
+		0xda: return rec <= 3
+	return false
+
+static func _style_sprite(spr: SpriteBase3D, tex: Texture2D, pixel_size: float = SPRITE_PIXEL_SIZE) -> void:
+	if spr is Sprite3D:
+		(spr as Sprite3D).texture = tex
 	spr.pixel_size = pixel_size
 	spr.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
 	spr.shaded = false
