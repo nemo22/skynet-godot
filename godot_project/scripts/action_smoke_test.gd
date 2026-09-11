@@ -443,6 +443,45 @@ func _run_behaviour_checks() -> void:
 				% hnode.position.distance_to(hstart))
 			_check(m2 == [1], "the end of the HK's path fires [M2] (%s)" % str(m2))
 
+	# The same HK, but watched from where the PLAYER stands: DOS ticks the
+	# actors in the 5×5 grid cells around him, and a cell is 1024 units,
+	# so a machine 1200 units off still runs. The port's window was one
+	# cell wide, so the HK never started in the game — the check above
+	# missed it because it ticks with the player right beside the HK
+	# ("na strechu malo prísť HK a nepriletelo", Marek 2026-09-12).
+	var l234b: LevelLoader.Level = LevelLoader.new().load_level("MAP.234")
+	if l234b != null and not l234b.action._path_vehicles.is_empty():
+		var off2: int = int(l234b.action._path_vehicles.keys()[0])
+		var hv2: Dictionary = l234b.action._path_vehicles[off2]
+		var hn2: Node3D = hv2["node"]
+		var from2: Vector3 = hn2.position
+		var watcher: Vector3 = from2 + Vector3(1200.0, 0.0, 0.0)
+		for i in 60:
+			l234b.action.tick(0.05, watcher)
+		_check(hn2.position.distance_to(from2) > 100.0,
+			"the HK starts with the player 1200 u away (%.0f u in 3 s)"
+			% hn2.position.distance_to(from2))
+
+	# MAP.233: the Cyberdyne lift. 231EL carries act 0xa6, which belongs
+	# to the DOS SLIDE handler (p4=1, p6=688) — it RISES 688 units to the
+	# roof. The port had 0xa5/0xa6 among the rotators, so the lift turned
+	# on the spot instead of going up.
+	var l233: LevelLoader.Level = LevelLoader.new().load_level("MAP.233")
+	if l233 != null:
+		var lift = l233.map.entities_by_off.get(0x3ce9)
+		_check(lift != null and lift.link_act_type == 0xa6,
+			"MAP.233's 231EL is the 0xa6 lift")
+		var lnode: Node3D = l233.action._nodes.get(0x3ce9) if lift != null else null
+		if lift != null and lnode != null:
+			var before: Transform3D = lnode.transform
+			l233.action._flip_link(lift)
+			for i in 60:
+				l233.action.tick(0.05, Vector3(1e9, 0.0, 1e9))
+			var moved: Vector3 = lnode.transform.origin - before.origin
+			_check(moved.y > 20.0 and lnode.transform.basis.is_equal_approx(before.basis),
+				"the lift rises without turning (%.0f u up, %.0f aside)"
+				% [moved.y, Vector2(moved.x, moved.z).length()])
+
 	# MAP.260: the town's invisible fence is a PAIR of type-30 markers,
 	# the convoy is nine path vehicles whose type byte carries bit 7 (the
 	# parser used to read it unmasked, so they never appeared at all), and

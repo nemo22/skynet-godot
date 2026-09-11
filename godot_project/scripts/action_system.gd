@@ -101,8 +101,14 @@ const MOVER_TABLE: Dictionary = {
 	0x7c: ["slide", 2, 640], 0x7d: ["slide", 2, 384], 0x7e: ["slide", 2, 384],
 	0x8d: ["swing", 0, 256], 0x8e: ["swing", 0, 256], 0x8f: ["swing", 0, 512],
 	0x90: ["swing", 0, 512], 0x91: ["swing", 0, 1024],
-	0x92: ["swing", 0, 1024], 0xa5: ["swing", 1, 688],
-	0xa6: ["swing", 1, 688], 0xa7: ["swing", 1, 256], 0xa8: ["swing", 1, 256],
+	0x92: ["swing", 0, 1024],
+	# 0xa5/0xa6 belong to the SLIDE handler (0x138287 in v1.01, p4=1
+	# p6=688), not to the rotator: they are the LIFT — MAP.233's 231EL
+	# rises 688 units to the Cyberdyne roof. The port had them swinging,
+	# so the elevator only turned on the spot ("ten výťah sa iba otáča",
+	# Marek 2026-09-12).
+	0xa5: ["slide", 1, 688], 0xa6: ["slide", 1, 688],
+	0xa7: ["swing", 1, 256], 0xa8: ["swing", 1, 256],
 	0xa9: ["swing", 1, 512], 0xaa: ["swing", 1, 512],
 	0xab: ["swing", 1, 1024], 0xac: ["swing", 1, 1024],
 	0xbd: ["slide", 0, 0], 0xbe: ["slide", 0, 0],
@@ -270,8 +276,14 @@ const PATH_SPEED_K: float = 80.0 / 256.0        # segment speed = k · its lengt
 const PATH_ACCEL: float = 160.0                 # units/s², from a standstill
 const PATH_TURN: float = 128.0 / 2048.0 * TAU   # 22.5°/s, yaw only and visual
 const PATH_REACH: float = 80.0                  # 3D distance that counts as arrived
-## DOS only ticks actors in the 5×5 cells around the player.
-const PATH_TICK_RANGE: float = 1024.0
+## DOS ticks the actors in the 5×5 MAP-GRID cells around the player —
+## the cell index, not a radius (0x12980f: edx = 5). A grid cell is 1024
+## units (64×64 cells over the 65536-unit map), so the window reaches two
+## cells each way. The port used a 1024-unit radius, and the HK that
+## lifts the player off MAP.234's roof waits 2413 units from where he
+## arrives: it never started ("na strechu malo prísť HK a nepriletelo").
+const PATH_TICK_CELL: float = 1024.0
+const PATH_TICK_CELLS: int = 2
 const MARKER_PATH_LOOP: int = 105               # marker type that loops to the start
 var _path_vehicles: Dictionary = {}   # marker file_off → runtime state
 
@@ -963,7 +975,8 @@ func _step_path_vehicle(v: Dictionary, delta: float, player_pos: Vector3) -> voi
 	# The actors hang under the level's Enemies node, which has no
 	# transform of its own, so the local position IS the world one — and
 	# it still reads correctly outside the tree (the smoke tests).
-	if node.position.distance_to(player_pos) > PATH_TICK_RANGE:
+	if absi(floori(node.position.x / PATH_TICK_CELL) - floori(player_pos.x / PATH_TICK_CELL)) > PATH_TICK_CELLS \
+			or absi(floori(node.position.z / PATH_TICK_CELL) - floori(player_pos.z / PATH_TICK_CELL)) > PATH_TICK_CELLS:
 		return                                   # outside the DOS 5×5 window
 	var cur: MapFile.Entity = _map.entities_by_off.get(int(v["tgt"]))
 	if cur == null:
