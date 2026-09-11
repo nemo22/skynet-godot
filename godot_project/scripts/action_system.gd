@@ -45,6 +45,10 @@ const Explosion := preload("res://scripts/explosion.gd")
 signal teleport_requested(target_map: int, marker_set: int)
 ## A destroyed object drops an item (FUN_00124293 → FUN_00124119).
 signal drop_requested(pos: Vector3, drop_type: int)
+## Acts 0xd6-0xda (handler 0x121160): the map's water level glides to a
+## new target. `absolute` = go to this Y, otherwise add it to the target.
+## MAP.254's sewers flood and drain as the walls and valves are opened.
+signal water_level_requested(value: float, absolute: bool)
 
 const MapFile := preload("res://scripts/loaders/map_file.gd")
 const PickupData := preload("res://scripts/pickup_data.gd")
@@ -152,6 +156,16 @@ const RELAY_AT: int = 1
 ## Spawn point (v1.01 0x129642 → 0x12960b): reveal the robot
 ## SpawnEnemiesInit (0x129500) built hidden at this sprite.
 const ACT_SPAWN: int = 0xF3
+## Water movers (0xd6-0xda, handler 0x121160): [DOS delta in units, the
+## act this one turns into]. Delta 0 = the level goes to the entity's own
+## Y. DOS Y grows downward, so a NEGATIVE delta raises the surface — the
+## port flips the sign when it emits the target. 0xd9/0xda swap their own
+## act byte, so they raise and lower in turn (MAP.254's valve maze).
+const WATER_ACTS: Dictionary = {
+	0xd6: [0, 0], 0xd7: [-170, 0], 0xd8: [140, 0],
+	0xd9: [-112, 0xda], 0xda: [112, 0xd9],
+}
+var _water_nodes: Array = []      # entities with a water act
 
 ## One-shot play-sound-and-disable nodes (handler 0x137dbd) — chains
 ## route through these to give doors/gates their sounds. The table's
@@ -298,6 +312,8 @@ func setup(map: MapFile.MapFile) -> void:
 				_use_msgs.append(e)
 		elif act == ACT_RELAY:
 			_relays.append(e)
+		elif WATER_ACTS.has(act):
+			_water_nodes.append(e)
 		elif is_destructible(act):
 			_destruct_nodes.append(e)
 		elif act == ACT_DEMOLISH:
@@ -762,6 +778,21 @@ func tick(delta: float, player_pos: Vector3) -> void:
 	# Vehicles on a marker path (AI state 11) ----------------------
 	for off in _path_vehicles:
 		_step_path_vehicle(_path_vehicles[off], delta, player_pos)
+	# Water level (0xd6-0xda) -------------------------------------
+	for e in _water_nodes:
+		if not _fires(e):
+			continue
+		_clear_enable(e)
+		var cfg: Array = WATER_ACTS[e.link_act_type]
+		var delta_u: int = int(cfg[0])
+		var partner: int = int(cfg[1])
+		if partner != 0:
+			e.link_act_type = partner        # next time it goes the other way
+		if delta_u == 0:
+			water_level_requested.emit(-float(e.y), true)
+		else:
+			water_level_requested.emit(-float(delta_u), false)
+		print("[action] water act @%05x (DOS delta %d)" % [e.file_off, delta_u])
 	# Teleports ---------------------------------------------------
 	# A chain (0xEF gate → sound node → 0xF0) or touching the doorway
 	# sprite ARMS the exit (state bit 0); the map change itself needs

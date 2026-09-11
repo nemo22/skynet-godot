@@ -905,6 +905,7 @@ func _begin_level(name: String) -> void:
 	if level.action != null:
 		level.action.teleport_requested.connect(_on_teleport_requested)
 		level.action.drop_requested.connect(_on_drop_requested)
+		level.action.water_level_requested.connect(_on_water_level)
 		level.action.space = get_world_3d().direct_space_state
 		level.action.player_body = player
 		level.action.objectives_left = _objectives_left
@@ -1660,6 +1661,7 @@ func _process(delta: float) -> void:
 			_rad_fill.anchor_right = clampf(_rad_dose / RAD_MAX_DOSE, 0.0, 1.0)
 		_fade_hurt(delta)
 		if _water != null:
+			_step_water(delta)
 			_update_water_tint()
 			if player.head_under and player.air < 10.0:
 				_set_status("AIR %d" % maxi(int(ceil(player.air)), 0), 0.4)
@@ -1866,6 +1868,11 @@ const WATER_DROP: float = 16.0        # DOS: level = marker Y - 0x10
 const WATER_SPAN: float = 65536.0     # the whole map grid
 var _water: MeshInstance3D = null
 var _water_tint: ColorRect = null
+## Where the surface is gliding to, and how fast: DOS moves it at 0x1000
+## units a second for a marker-103 map, 0x800 for marker 104
+## (FUN_00120f85 / FUN_00121083).
+var _water_target: float = INF
+var _water_speed: float = 16.0
 
 ## The surface Y, or INF when the map is dry.
 static func _water_level(level: LevelLoader.Level) -> float:
@@ -1873,7 +1880,11 @@ static func _water_level(level: LevelLoader.Level) -> float:
 		return INF
 	for e in level.map.entities:
 		if (e.flags & 3) == 3 and WATER_MARKERS.has(e.marker_type):
-			return -float(e.y) - WATER_DROP
+			# DOS: level = marker.Y − 0x10, and DOS Y grows DOWNWARD, so in
+			# Godot the surface sits 16 units ABOVE the marker. The port had
+			# it 32 u too low on every map, which is why the submarine looked
+			# drier than the original (FUN_00120f85, checked 2026-09-12).
+			return -float(e.y) + WATER_DROP
 	return INF
 
 func _setup_water(level: LevelLoader.Level) -> void:
@@ -1883,6 +1894,13 @@ func _setup_water(level: LevelLoader.Level) -> void:
 		player.water_level = y
 	EnemyRef.water_y = y                  # ground actors stay out of it
 	EnemyRef.terrain_wld = level.wld      # …and out of the painted lakes
+	_water_target = y
+	_water_speed = 16.0
+	if level != null and level.map != null:
+		for e in level.map.entities:
+			if (e.flags & 3) == 3 and WATER_MARKERS.has(e.marker_type):
+				_water_speed = 16.0 if e.marker_type == 103 else 8.0
+				break
 	if _water_tint != null and is_instance_valid(_water_tint):
 		_water_tint.visible = false
 	if y == INF:
@@ -1906,6 +1924,28 @@ func _setup_water(level: LevelLoader.Level) -> void:
 	add_child(mi)
 	_water = mi
 	print("[level] water surface at y=%d" % int(y))
+
+## Acts 0xd6-0xda: a chain moved the water. The surface then glides to
+## its new height at the map's own rate, and everything that reads the
+## level — the player's swimming, the actors keeping out of it — follows
+## it on the way (DOS FUN_00121083).
+func _on_water_level(value: float, absolute: bool) -> void:
+	if _water_target == INF:
+		return                            # a dry map has no surface to move
+	_water_target = value if absolute else _water_target + value
+	print("[skynet] water level → %d" % int(_water_target))
+
+func _step_water(delta: float) -> void:
+	if _water == null or not is_instance_valid(_water) or _water_target == INF:
+		return
+	var y: float = _water.position.y
+	if is_equal_approx(y, _water_target):
+		return
+	y = move_toward(y, _water_target, _water_speed * delta)
+	_water.position.y = y
+	if is_instance_valid(player):
+		player.water_level = y
+	EnemyRef.water_y = y
 
 ## The SKYNTWTR.COL palette swap, as a tint over the 3D view.
 func _update_water_tint() -> void:
@@ -3030,6 +3070,7 @@ func _clear_level() -> void:
 			scenery.queue_free()
 	_overlay = null
 	_occluders = null
+	_water_target = INF
 	if is_instance_valid(player):
 		player.water_level = INF
 		player.border_boxes = []

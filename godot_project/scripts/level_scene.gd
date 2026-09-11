@@ -54,7 +54,10 @@ const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
 ## Bump when the bake changes shape (invalidates every saved scene).
 ## 8 = the Behaviour branch (2026-09-05); 9 = its root script and the
 ## 0x1B demolition targets as Damageables.
-const BAKE_VERSION: int = 11
+## 12: the submarine alarm and its kind of loop carry across a whole
+## level (level_behaviour.LOUD_LOOPS), which is a property of the baked
+## SoundLoop nodes — the maps already in the cache have to be built again.
+const BAKE_VERSION: int = 12
 
 # ---------------------------------------------------------------------
 # Paths

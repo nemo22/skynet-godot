@@ -450,6 +450,41 @@ func _run_behaviour_checks() -> void:
 			and l260.action.is_damageable_off(door.file_off),
 			"the car-wash door has 60 HP and takes damage")
 
+	# MAP.254 (the flooded sewers): acts 0xd6-0xda move the water level.
+	# 254HOLE1 drains it by 140, CATWLK16 floods it by 170 ("Oops.") and
+	# the valve maze's 0xd9/0xda pair swaps its own act each time, so it
+	# raises and lowers in turn. The bits are set by hand here — what is
+	# under test is the sweep, not the chains that reach it.
+	var l254: LevelLoader.Level = LevelLoader.new().load_level("MAP.254")
+	if l254 != null:
+		var far3 := Vector3(1e9, 0.0, 1e9)
+		var asked: Array = []
+		l254.action.water_level_requested.connect(
+			func(v: float, absolute: bool) -> void: asked.append([v, absolute]))
+		var hole = l254.map.entities_by_off.get(0x6eca)
+		var walk = l254.map.entities_by_off.get(0x92cd)
+		var valve = l254.map.entities_by_off.get(0x65af)
+		_check(hole != null and hole.link_act_type == 0xd8
+			and walk != null and walk.link_act_type == 0xd7,
+			"MAP.254 has the sewer's water movers (0xd8 drains, 0xd7 floods)")
+		if hole != null and walk != null:
+			hole.state_byte |= 1
+			l254.action.tick(0.016, far3)
+			walk.state_byte |= 1
+			l254.action.tick(0.016, far3)
+			_check(asked == [[-140.0, false], [170.0, false]],
+				"the movers ask for -140, then +170 (%s)" % str(asked))
+			_check((hole.state_byte & 1) == 0 and (walk.state_byte & 1) == 0,
+				"a water mover switches itself off after it fires")
+		if valve != null and (valve.link_act_type == 0xd9 or valve.link_act_type == 0xda):
+			var was_act: int = valve.link_act_type
+			valve.state_byte |= 1
+			l254.action.tick(0.016, far3)
+			_check(valve.link_act_type != was_act
+				and (valve.link_act_type == 0xd9 or valve.link_act_type == 0xda),
+				"the valve's 0x%02x becomes 0x%02x — next time it goes the other way"
+				% [was_act, valve.link_act_type])
+
 ## Phase 2 — map transitions: marker sets on both ends of an exit, the
 ## per-map state overlay round trip, doorway touch arming and the
 ## spawn-inside-the-gate latch.

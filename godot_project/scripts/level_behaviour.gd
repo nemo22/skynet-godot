@@ -616,6 +616,13 @@ static func _exit(e: MapFile.Entity, shapes: Dictionary) -> Node:
 	(n.get_node(^"Shape") as CollisionShape3D).shape = _cylinder(shapes, ActionSystem.TELEPORT_TOUCH_RADIUS)
 	return n
 
+## Loops that are meant to fill a whole level, not just their corner of
+## it: the submarine's alarm (id 120, SUBALARM.WAV) sounds through the
+## boat from the first second in DOS, while the scene's default 300-unit
+## unit size at -10 dB left it inaudible 1600 units from the spawn.
+## id → [unit_size, volume_db].
+const LOUD_LOOPS: Dictionary = {120: [1500.0, -2.0]}
+
 static func _sound_loop(e: MapFile.Entity, variant: int) -> Node:
 	var n = SOUND_LOOP.instantiate()
 	# The sound id sits at sub+2 (the u16 the parser reads into
@@ -626,6 +633,10 @@ static func _sound_loop(e: MapFile.Entity, variant: int) -> Node:
 	n.set_meta("sound_id", sid)
 	n.set_meta("state", e.state_byte)
 	n.stream = Audio.loop_stream_for(sid)
+	if LOUD_LOOPS.has(sid):
+		var lp: Array = LOUD_LOOPS[sid]
+		n.unit_size = float(lp[0])
+		n.volume_db = float(lp[1])
 	return n
 
 static func _sound_cue(e: MapFile.Entity) -> Node:

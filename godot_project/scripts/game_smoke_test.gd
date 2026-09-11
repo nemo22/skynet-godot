@@ -719,7 +719,10 @@ func _check_water() -> void:
 		return
 	var lvl = _main.get("_current_level")
 	var y: float = float(_main.call("_water_level", lvl))
-	_check(y == 784.0, "MAP.250 water surface is at y=784 (%s)" % str(y))
+	# 816 = -(marker Y) + 16: the DOS surface is 16 units ABOVE the marker
+	# (level = marker.Y - 0x10 with Y growing downward), which the port had
+	# the wrong way round until 2026-09-12.
+	_check(y == 816.0, "MAP.250 water surface is at y=816 (%s)" % str(y))
 	_check(_main.get("_water") != null, "the water surface node exists")
 	var pl = _main.get("player")
 	_check(float(pl.get("water_level")) == y, "the player knows the water level")
