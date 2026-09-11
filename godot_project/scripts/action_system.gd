@@ -144,6 +144,14 @@ const ACT_HINT_LAST: int = 0x25
 const ACT_OBJECTIVE_FIRST: int = 0x26   # [M1].. handler 0x1377d0, counter--
 const ACT_OBJECTIVE_LAST: int = 0x2A
 const ACT_FAIL: int = 0x2B          # handler 0x13782d: MISSION FAILED now
+## Countdown relay (v1.01 handler 0x138038, disassembled 2026-09-11):
+## while enabled, once the objective counter is above zero and equal to
+## the table word (1 for 0x2C), flip the chain from itself, then off.
+const ACT_RELAY: int = 0x2C
+const RELAY_AT: int = 1
+## Spawn point (v1.01 0x129642 → 0x12960b): reveal the robot
+## SpawnEnemiesInit (0x129500) built hidden at this sprite.
+const ACT_SPAWN: int = 0xF3
 
 ## One-shot play-sound-and-disable nodes (handler 0x137dbd) — chains
 ## route through these to give doors/gates their sounds. The table's
@@ -234,6 +242,12 @@ var drive_through: bool = false
 ## into MAP.220's truck by itself. Set by press_use(), spent by tick().
 var _use_edge: bool = false
 var _edge_done: Dictionary = {}          # gates the key already flipped this press
+## Objectives still to go — main.gd keeps the count (DOS [0x1e6c2]);
+## the 0x2C relays watch it.
+var objectives_left: int = 0
+var _relays: Array = []
+var _spawns: Dictionary = {}      # 0xF3 sprite file_off → its hidden Enemy
+var _spawned: Dictionary = {}     # 0xF3 sprite file_off → true once revealed
 
 func press_use() -> void:
 	_use_edge = true
@@ -270,6 +284,8 @@ func setup(map: MapFile.MapFile) -> void:
 			# it: "use 24PCTURE", PASS after one second).
 			if act < ACT_OBJECTIVE_FIRST and not _is_chain_target(map, e):
 				_use_msgs.append(e)
+		elif act == ACT_RELAY:
+			_relays.append(e)
 		elif is_destructible(act):
 			_destruct_nodes.append(e)
 		elif act == ACT_DEMOLISH:
@@ -336,7 +352,7 @@ func _light_step(e: MapFile.Entity, fx_tick: bool) -> void:
 	var act: int = e.link_act_type
 	if act == ACT_LIGHT_TOGGLE:
 		e.light_enable = -e.light_enable if e.light_enable != 0 else 1
-		e.state_byte &= ~1
+		_clear_enable(e)
 		_light_apply(e)
 	elif act == ACT_LIGHT_FLICKER or act == ACT_LIGHT_STROBE:
 		if not fx_tick:
@@ -355,7 +371,7 @@ func _light_step(e: MapFile.Entity, fx_tick: bool) -> void:
 		if l != null and is_instance_valid(l):
 			(l as OmniLight3D).light_energy = maxf((l as OmniLight3D).light_energy * (1.0 + f), 0.0)
 		e.light_intensity = maxi(int(float(e.light_intensity) * (1.0 + f)), 0)
-		e.state_byte &= ~1
+		_clear_enable(e)
 		_light_apply(e)
 
 static func gate_runs(e: MapFile.Entity) -> bool:
@@ -508,12 +524,12 @@ func on_player_activate(file_off: int, player_pos: Vector3 = Vector3.INF) -> boo
 		# The gate the key was aimed at: flipped here, so the key's sweep
 		# in tick() must leave it alone or it would flip straight back.
 		_edge_done[e.file_off] = true
-	if chain_trigger:
-		e.state_byte &= ~1
 	if (e.state_byte & 2) != 0:
 		_trigger(e)
 	else:
 		_flip_link(e)
+	if chain_trigger:
+		_clear_enable(e)                     # after the flip, as 0x1379c4 does
 	return true
 
 ## First 0xF0 node reachable down the chain from `start`, or null.
@@ -542,7 +558,7 @@ func _use_exit(gate: MapFile.Entity, t: MapFile.Entity) -> bool:
 func _fire_teleport(t: MapFile.Entity) -> bool:
 	if _teleport_fired or (t.state_byte & 1) == 0:
 		return false
-	t.state_byte &= ~1                       # one-shot (0x137881)
+	_clear_enable(t)                         # one-shot (0x137881)
 	_teleport_fired = true
 	print("[action] teleport → map %d, marker set %d" % [t.exit_map, t.exit_marker_id])
 	teleport_requested.emit(t.exit_map, t.exit_marker_id)
@@ -573,22 +589,29 @@ func _flip_link(start: MapFile.Entity) -> void:
 		_refresh_switch_visual(e)
 
 ## BUTTON01/02 are a single quad with the OFF texture (222/0, 222/2) on
-## the front face and the lit ON texture (222/1, 222/3) on the back —
-## showing the pressed state means showing the other side. Rotate the
-## panel 180 deg about its local Y while the state bit is on.
+## the front face and the lit ON texture (222/1, 222/3) on the back. DOS
+## shows the pressed state by the texture alone — the panel does not
+## turn ("obrazovky po kliknutí sa neotáčajú, len sa flipne textúra",
+## Marek, 2026-09-11); the port turned it 180°, which swung a panel whose
+## origin is off its face round to the far side. The two faces swap
+## materials instead, so the front shows the lit art where it stands.
 func _refresh_switch_visual(e: MapFile.Entity) -> void:
 	var node: Node3D = _nodes.get(e.file_off)
 	if node == null or not is_instance_valid(node):
 		return
 	if not String(node.get_meta("mesh_name", node.name)).begins_with("BUTTON"):
 		return
-	if not node.has_meta("switch_base"):
-		node.set_meta("switch_base", node.transform)
-	var base: Transform3D = node.get_meta("switch_base")
-	if (e.state_byte & 1) != 0:
-		node.transform = Transform3D(base.basis * Basis(Vector3.UP, PI), base.origin)
-	else:
-		node.transform = base
+	var mi: MeshInstance3D = node as MeshInstance3D
+	if mi == null:
+		var found: Array = node.find_children("*", "MeshInstance3D", true, false)
+		if not found.is_empty():
+			mi = found[0]
+	if mi == null or mi.mesh == null or mi.mesh.get_surface_count() != 2:
+		return
+	var lit: bool = (e.state_byte & 1) != 0
+	node.set_meta("switch_lit", lit)
+	mi.set_surface_override_material(0, mi.mesh.surface_get_material(1) if lit else null)
+	mi.set_surface_override_material(1, mi.mesh.surface_get_material(0) if lit else null)
 
 ## ObjDoAction: dispatch when enabled. Movers/proximity/teleports are
 ## per-tick handlers driven from tick(); the one-shot families run here.
@@ -600,6 +623,7 @@ func _do_action(e: MapFile.Entity) -> void:
 			or act == ACT_PROX_CHAIN_A or act == ACT_PROX_CHAIN_B \
 			or act == ACT_TELEPORT or is_destructible(act) or act == ACT_DEMOLISH \
 			or (act >= ACT_HINT_FIRST and act <= ACT_FAIL) or act == ACT_VOICE \
+			or act == ACT_RELAY or act == ACT_SPAWN \
 			or SOUND_ONESHOT.has(act) or ((e.flags & 3) == 2 and is_light_act(act)):
 		return                                  # tick() / the hit path / the cue nodes
 	if not _unhandled_logged.has(act):
@@ -674,9 +698,11 @@ func tick(delta: float, player_pos: Vector3) -> void:
 		if inside and not latched:
 			_prox_latched[e.file_off] = true
 			print("[action] gate @%05x (act %02x) tripped at %s" % [e.file_off, e.link_act_type, epos])
-			if chain_trigger:
-				e.state_byte &= ~1
+			# DOS order: ObjFlipLink from the trigger — which toggles the
+			# trigger itself as well — then `state &= 0xFE`.
 			_flip_link(e)
+			if chain_trigger:
+				_clear_enable(e)
 		elif not inside and latched:
 			_prox_latched[e.file_off] = false
 	_use_edge = false
@@ -692,7 +718,7 @@ func tick(delta: float, player_pos: Vector3) -> void:
 	for e in _destruct_nodes:
 		if not _fires(e):
 			continue
-		e.state_byte &= ~1
+		_clear_enable(e)
 		_break_down(e)
 	# Demolition (0x1B, handler 0x1378bf): a chain that enables one of
 	# these deals it HP + 1 through ObjHit. The crate stack on MAP.213
@@ -701,8 +727,26 @@ func tick(delta: float, player_pos: Vector3) -> void:
 	for e in _demolish_nodes:
 		if not _fires(e):
 			continue
-		e.state_byte &= ~1
+		_clear_enable(e)
 		_demolish(e)
+	# Countdown relays (0x2C): MAP.232's 232MAIN waits for the ninth
+	# console — the counter is then 1 — and sets off the robots, the
+	# stuck door and the voice line.
+	for e in _relays:
+		if (e.state_byte & 1) == 0:
+			continue
+		if objectives_left > 0 and objectives_left == RELAY_AT:
+			print("[action] relay @%05x fires (%d objective left)" % [e.file_off, objectives_left])
+			_flip_link(e)
+			_clear_enable(e)
+	# Spawn points (0xF3): the chain enables the sprite, its robot
+	# appears, the sprite's bit goes down.
+	for off in _spawns:
+		var e: MapFile.Entity = _map.entities_by_off.get(off)
+		if e == null or not _fires(e):
+			continue
+		_clear_enable(e)
+		_spawn_in(off)
 	# Teleports ---------------------------------------------------
 	# A chain (0xEF gate → sound node → 0xF0) or touching the doorway
 	# sprite ARMS the exit (state bit 0); the map change itself needs
@@ -831,6 +875,30 @@ func _prox_radius(e: MapFile.Entity) -> float:
 func _fires(e: MapFile.Entity) -> bool:
 	return (e.state_byte & 1) != 0 or _armed.has(e.file_off)
 
+## Switch an entity's enable bit off in the record AND on its Behaviour
+## node: the chain walk reads the record, the cue nodes their own copy.
+## (Clearing the record alone left the node at 1, so the next flip of a
+## door that had run its course took it 1 → 0 and it never moved again —
+## MAP.210's gate could open but never close.)
+func _clear_enable(e: MapFile.Entity) -> void:
+	e.state_byte &= ~1
+	if behaviour != null:
+		var n: Node = behaviour.node(e.file_off)
+		if n != null:
+			behaviour.set_state(n, e.state_byte)
+
+## An 0xF3 spawn point's robot, built hidden by the level loader
+## (SpawnEnemiesInit — at most 50 a map).
+func register_spawn(off: int, node: Node) -> void:
+	_spawns[off] = node
+
+func _spawn_in(off: int) -> void:
+	_spawned[off] = true
+	var n = _spawns.get(off)
+	if n != null and is_instance_valid(n) and n.has_method("spawn_in"):
+		print("[action] spawn @%05x: %s appears" % [off, n.name])
+		n.spawn_in()
+
 static func _within(epos: Vector3, player_pos: Vector3, radius: float) -> bool:
 	if absf(player_pos.y - epos.y) > PROX_VERTICAL_WINDOW:
 		return false
@@ -858,6 +926,7 @@ func save_state() -> Dictionary:
 	return {
 		"states": states, "movers": movers, "destr": destr,
 		"hp": _hp.duplicate(), "spent": _spent.duplicate(),
+		"spawned": _spawned.duplicate(),
 	}
 
 ## Re-apply a save_state() snapshot. Call after every node is registered
@@ -874,6 +943,10 @@ func restore_state(snap: Dictionary) -> void:
 		behaviour.sync_from_records()
 	_hp = (snap.get("hp", {}) as Dictionary).duplicate()
 	_spent = (snap.get("spent", {}) as Dictionary).duplicate()
+	# Robots an 0xF3 chain already let out come back out (the dead ones
+	# the map overlay removes on its own).
+	for off in (snap.get("spawned", {}) as Dictionary):
+		_spawn_in(int(off))
 	var movers: Dictionary = snap.get("movers", {})
 	for off in movers:
 		if not _movers.has(off):
@@ -943,7 +1016,7 @@ func _step_mover(off: int, e: MapFile.Entity, delta: float) -> void:
 	m["progress"] = p
 	_apply_mover_transform(node, m)
 	if p == target:
-		e.state_byte &= ~1                       # arrived: self-disable
+		_clear_enable(e)                       # arrived: self-disable
 		m["dir"] = -m["dir"]                     # next activation reverses
 
 ## DOS axis p4 (0=X, 1=Y-down, 2=Z) → Godot world direction.
@@ -1028,14 +1101,18 @@ func _demolish(e: MapFile.Entity) -> void:
 func _break_down(e: MapFile.Entity) -> void:
 	if not _destr.has(e.file_off):
 		return
-	print("[action] destructible @%05x broken by a chain" % e.file_off)
-	var guard: int = 0
-	while _advance_destructible(e, DESTRUCT_DAMAGE_PER_STAGE) and guard < 16:
-		guard += 1
+	# One stage per blow: MAP.248's girder has to ram 248WALL several
+	# times before it gives (Marek's DOS run, 2026-09-11) — each press of
+	# the START BOX swings the girder and enables the wall once. Until then
+	# the port ran every stage at the first enable and the wall fell at
+	# the first touch.
+	print("[action] destructible @%05x struck by a chain" % e.file_off)
+	var was_spent: bool = _spent.has(e.file_off)
+	_advance_destructible(e, DESTRUCT_DAMAGE_PER_STAGE)
+	if was_spent or not _spent.has(e.file_off):
+		return                                   # still standing, or long gone
 	_hp[e.file_off] = 0.0
-	if not _spent.has(e.file_off):
-		_spent[e.file_off] = true
-		_destroy(e)
+	_destroy(e)
 	var node: Node3D = _nodes.get(e.file_off)
 	if node != null and is_instance_valid(node):
 		_disable_collision(node)

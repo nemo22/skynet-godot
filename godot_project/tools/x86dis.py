@@ -1,21 +1,42 @@
-"""Disassemble a range of Skynet.exe at Ghidra addresses (the FUN_/DAT_
-numbers in skynet_gh.c; a code pointer stored in data is that + 0x30000).
-Usage (repo root): python godot_project/tools/x86dis.py 0x12a572 0x12a800
+"""Disassemble a range of GAME.EXE (SkyNET v1.01) at Ghidra addresses —
+the FUN_/DAT_ numbers of the retro-kit decompile in
+ghidra_out/game_exe/decomp (a code pointer stored in data is already a
+full address there).
+Usage (repo root): python godot_project/tools/x86dis.py 0x139e98 0x13a000
 Needs: pip install capstone
 
-The Ghidra -> file offset delta is measured, not assumed: the string
-"hummer.3d" sits at Ghidra 0x44720, so wherever it is in the file fixes
-the delta for whichever DOS extender stub the exe is bound to. With the
-original DOS/4GW stub it was 0x538A4; Marek rebound the exe to DOS/32A
-on 2026-09-11 (delta 0x22500).
-"""
-import sys, capstone
+skynet_gh.c is the OLDER v1.00 build: its addresses are 0x500..0x800
+lower in the code (SpawnEnemiesInit 0x129000 -> 0x129500, ObjDoAction
+0x139698 -> 0x139e98) and 0x300 lower in the data. Find the new address
+through a string the function uses (fixups.txt) before disassembling.
 
-exe = open('Skynet.exe','rb').read()
-ANCHOR = exe.find(b'hummer.3d\x00')
-assert ANCHOR > 0, 'hummer.3d not found - not a SkyNET exe?'
-DELTA = ANCHOR - 0x44720
-def fo(addr): return addr + DELTA
+SKYNET.EXE in the game dir is only the 2017 launcher (it runs
+GAME.EXE /g); the address -> file offset map comes from GAME.EXE's own
+LE object table, so it holds whichever extender stub the exe is bound to.
+"""
+import struct, sys, capstone
+
+exe = open('GAME.EXE', 'rb').read()
+LE = exe.find(b'LE\x00\x00')
+assert LE > 0, 'no LE header - not a DOS/4G exe?'
+# A bound exe is extender stub + an inner MZ whose e_lfanew points at the
+# LE; the LE's data-page offset counts from that inner MZ, not the file.
+BASE = next(p for p in range(LE - 2, -1, -1)
+            if exe[p:p + 2] == b'MZ' and struct.unpack_from('<I', exe, p + 0x3c)[0] == LE - p)
+OBJ_TAB, N_OBJ = struct.unpack_from('<II', exe, LE + 0x40)
+PAGE = struct.unpack_from('<I', exe, LE + 0x28)[0]
+PAGES = BASE + struct.unpack_from('<I', exe, LE + 0x80)[0]
+OBJECTS = []
+for i in range(N_OBJ):
+    vsize, base, flags, page, count, _ = struct.unpack_from('<6I', exe, LE + OBJ_TAB + i * 24)
+    OBJECTS.append((base, vsize, PAGES + (page - 1) * PAGE))
+
+def fo(addr):
+    for base, vsize, off in OBJECTS:
+        if base <= addr < base + vsize:
+            return addr - base + off
+    raise SystemExit('0x%x is in no LE object' % addr)
+
 md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
 md.skipdata = True
 start = int(sys.argv[1], 16); end = int(sys.argv[2], 16)

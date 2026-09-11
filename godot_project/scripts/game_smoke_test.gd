@@ -609,7 +609,7 @@ func _run() -> void:
 		# 0x1C..0x25 band is hints and moves no counter.
 		_check(objs.has(0x27 - 0x26), "missile chain fires mission objective 0x27 (%s)" % str(objs))
 		var btn_node: Node3D = lvl.action._nodes.get(0x2f8f)
-		_check(btn_node.has_meta("switch_base"), "pressed button flips to its lit face")
+		_check(bool(btn_node.get_meta("switch_lit", false)), "pressed button flips to its lit face")
 	# Mission end: back on MAP.210 to check the objective counter and
 	# that marker 4 is a RADIATION source, not an extraction zone (the
 	# port read it as one until 2026-09-03: mission 1 could not be
@@ -697,11 +697,16 @@ func _check_ram_wall() -> void:
 	if wall == null or box == null:
 		return
 	var at := Vector3(float(box.x), -float(box.y), -float(box.z))
-	lvl.action.press_use()                 # the START BOX is pressed, not walked into
-	lvl.action.tick(0.016, at)
-	lvl.action.tick(0.016, at)
-	_check(lvl.action._spent.has(wall.file_off),
-		"the START BOX chain breaks the wall open")
+	# The START BOX is pressed, not walked into, and the girder has to ram
+	# the wall several times before it gives (Marek's DOS run, 2026-09-11).
+	var presses: int = 0
+	while presses < 12 and not lvl.action._spent.has(wall.file_off):
+		lvl.action.press_use()
+		lvl.action.tick(0.016, at)
+		lvl.action.tick(0.016, at)
+		presses += 1
+	_check(lvl.action._spent.has(wall.file_off) and presses > 1,
+		"the START BOX chain breaks the wall open after several rams (%d)" % presses)
 
 ## Marker 103/104 is the map's water level (DOS 0x120bf9): the harbour
 ## on MAP.250 stands at 784, and the player swims in it instead of

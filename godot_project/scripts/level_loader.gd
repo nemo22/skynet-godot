@@ -604,16 +604,31 @@ func load_level(map_name: String) -> Level:
 	var en: int = 0
 	var enemy_hist: Dictionary = {}
 	if have_enms:
+		# Enemy start markers, then the 0xF3 spawn sprites: SpawnEnemiesInit
+		# (0x129500 in v1.01) builds a robot of type u16 sub+2 at every
+		# variant-3 entity with act 0xF3 — at most 50 — and hides it until
+		# the sprite's chain fires (MAP.232: seven robots once the last
+		# console is done).
+		var starts: Array = []
+		var n_spawn: int = 0
 		for e in level.map.entities:
 			if (e.flags & 3) != 3: continue
-			if e.marker_type != 2: continue        # 2 = enemy start marker
-			enemy_hist[e.enemy_type] = enemy_hist.get(e.enemy_type, 0) + 1
-			var eframes := _enemy_frames_for(e.enemy_type, enms, objs,
+			if e.marker_type == 2:                 # 2 = enemy start marker
+				starts.append([e, e.enemy_type, false])
+			elif e.marker_type < 0 and e.link_act_type == 0xF3 and n_spawn < 50:
+				starts.append([e, e.exit_map & 0xFFFF, true])
+				n_spawn += 1
+		for start in starts:
+			var e = start[0]
+			var et: int = start[1]
+			var spawn: bool = start[2]
+			enemy_hist[et] = enemy_hist.get(et, 0) + 1
+			var eframes := _enemy_frames_for(et, enms, objs,
 				enemy_frame_cache, provider)
 			if eframes.is_empty(): continue
 			var ebase: String = ""
-			if e.enemy_type >= 0 and e.enemy_type < ENEMY_MESH.size():
-				ebase = ENEMY_MESH[e.enemy_type]
+			if et >= 0 and et < ENEMY_MESH.size():
+				ebase = ENEMY_MESH[et]
 			# Enemy actor: animates the .3D frames and runs a simple AI.
 			var emi := Enemy.new()
 			emi.name = "enemy%d_%s" % [en, ebase]
@@ -623,8 +638,8 @@ func load_level(map_name: String) -> Level:
 			emi.max_health = st[0]
 			# DOS hit points win over the hand-tuned estimate when the
 			# type table carries them.
-			if e.enemy_type < ENEMY_HP.size() and ENEMY_HP[e.enemy_type] > 0:
-				emi.max_health = float(ENEMY_HP[e.enemy_type])
+			if et < ENEMY_HP.size() and ENEMY_HP[et] > 0:
+				emi.max_health = float(ENEMY_HP[et])
 			emi.set_meta("marker_off", e.file_off)
 			level.enemy_marker_offs.append(e.file_off)
 			emi.shot_damage = st[1]
@@ -632,9 +647,9 @@ func load_level(map_name: String) -> Level:
 			emi.move_speed = st[3]
 			# DOS type data (state id, speed, turn, fire params, script,
 			# frame-event sounds …) — overrides the hand-tuned numbers.
-			emi.configure(e.enemy_type)
+			emi.configure(et)
 			# Wreck parts flung on death (enemy table +0x10 death list).
-			emi.death_parts = _death_parts_for(e.enemy_type, enms, objs,
+			emi.death_parts = _death_parts_for(et, enms, objs,
 				enemy_frame_cache, provider)
 			emi.setup(eframes, eaabb,
 				STATIONARY_ENEMIES.has(ebase), FLYING_ENEMIES.has(ebase),
@@ -650,11 +665,13 @@ func load_level(map_name: String) -> Level:
 			# sample and no AABB-bottom lift: the level author set the
 			# marker Y, so turrets on the gate pillars stay on the pillars
 			# instead of being dragged down to the street.
+			# (A spawn sprite's robot goes to the sprite's own X/Y/Z, facing
+			# +Z: 0x12a4f0 takes no angle.)
 			emi.position = Vector3(
-				float(e.x), -float(e.y + 0x10), -float(e.z))
+				float(e.x), -float(e.y if spawn else e.y + 0x10), -float(e.z))
 			# Face the marker's yaw (sub+4, 11-bit angle) like variant-1.
 			# Godot yaw = +yaw (DOS Ry(-yaw) conjugated by diag(1,-1,-1)).
-			var eyaw: float = (e.off_y & 0x7FF) * TAU / 2048.0
+			var eyaw: float = 0.0 if spawn else (e.off_y & 0x7FF) * TAU / 2048.0
 			emi.rotation.y = eyaw
 			level.enemies.add_child(emi)
 			# Attach the actor's child segments (turret gun, barrels,
@@ -662,7 +679,7 @@ func load_level(map_name: String) -> Level:
 			# turrets the first top-level segment is the rotating head —
 			# wire it as the aim node so only it tracks the player and
 			# the base stays still.
-			var aim_seg := _attach_segments(emi, e.enemy_type, enms, objs,
+			var aim_seg := _attach_segments(emi, et, enms, objs,
 				enemy_frame_cache, provider)
 			if aim_seg != null and STATIONARY_ENEMIES.has(ebase):
 				emi.set_aim_node(aim_seg)
@@ -674,9 +691,13 @@ func load_level(map_name: String) -> Level:
 			# player comes close (EnemiesStartMarked FUN_00129f39 →
 			# FUN_00142800, death state 0x14285e). Enemy markers carry
 			# no spawn yaw — DOS actors start facing +Z.
-			var trig: int = e.exit_map & 0xFFFF
+			var trig: int = 0 if spawn else e.exit_map & 0xFFFF
 			if trig > 0:
 				emi.make_dormant(float(trig))
+			if spawn:
+				emi.hide_until_spawned()
+				if level.action != null:
+					level.action.register_spawn(e.file_off, emi)
 			en += 1
 	level.enemy_count = en
 	print("[level] placed %d enemies (variant-3 markers)" % en)

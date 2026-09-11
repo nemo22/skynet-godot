@@ -30,6 +30,7 @@ static func parse(bytes: PackedByteArray) -> Dictionary:
 		"objectives": _objectives(text),
 		"lines": _dialogue(text),
 		"missions": _numbered(text, "M", 5),
+		"mission_texts": _sections(text, "M", 5),
 		"hints": _numbered(text, "G", 9),
 		"tactical": _words(text, "[TA]"),
 	}
@@ -47,6 +48,17 @@ static func _numbered(text: String, prefix: String, count: int) -> Array:
 	for i in count:
 		var got: Array = _entries(text, "[%s%d]" % [prefix, i + 1])
 		out.append(String(got[0]) if not got.is_empty() else "")
+	return out
+
+## Every entry of [M1]..[M5]. The DOS engine counts them ALL into the
+## objective counter (FUN_0012ce73) and each act 0x26+n prints the NEXT
+## one of its section — v1.01 handler 0x137fd0 steps a text pointer past
+## the one it showed. MAP.232's nine consoles are nine entries of [M1];
+## counting sections ended mission 4 at the second display.
+static func _sections(text: String, prefix: String, count: int) -> Array:
+	var out: Array = []
+	for i in count:
+		out.append(_entries(text, "[%s%d]" % [prefix, i + 1]))
 	return out
 
 ## The [TA] section lists one asset name per line (tachkftr, tacscout …)

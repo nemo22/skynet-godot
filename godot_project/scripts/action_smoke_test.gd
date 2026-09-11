@@ -304,6 +304,63 @@ func _run_behaviour_checks() -> void:
 			_check(l213.action._spent.has(top.file_off) and not tnode.visible,
 				"0x1B: the stacked crate is demolished with the one shot")
 
+	# MAP.210: the 0xF1 lever at the canyon exit opens BIGDOOR, the 0xF2
+	# behind the gate runs the SAME chain and closes it (Marek's DOS run,
+	# 2026-09-11). The mover clears its bit on arrival; the chain walk
+	# used to read the node's stale copy, flip 1 → 0 and never move again.
+	var l210: LevelLoader.Level = LevelLoader.new().load_level("MAP.210")
+	if l210 != null:
+		var far := Vector3(1e9, 0.0, 1e9)
+		var lever_a = l210.map.entities_by_off.get(0x77f3)
+		var lever_b = l210.map.entities_by_off.get(0x7851)
+		var door = _chain_find_mover(l210.map, lever_a) if lever_a != null else null
+		_check(lever_a != null and lever_a.link_act_type == 0xF1
+			and lever_b != null and lever_b.link_act_type == 0xF2 and door != null,
+			"MAP.210 has the canyon lever (0xF1), the lever behind the gate (0xF2) and BIGDOOR")
+		if door != null and lever_b != null:
+			l210.action._flip_link(lever_a)
+			_check((door.state_byte & 1) != 0, "the canyon lever sets the gate moving")
+			for i in 900:
+				if (door.state_byte & 1) == 0:
+					break
+				l210.action.tick(0.016, far)
+			_check((door.state_byte & 1) == 0, "the gate stops when it is fully open")
+			l210.action._flip_link(lever_b)
+			var m: Dictionary = l210.action._movers.get(door.file_off, {})
+			_check((door.state_byte & 1) != 0 and float(m.get("dir", 1.0)) < 0.0,
+				"the lever behind the gate runs it back — it closes")
+
+	# MAP.232: the nine consoles bring the objective counter to 1; then
+	# the 0x2C relay 232MAIN fires its chain once — seven hidden robots
+	# (0xF3) appear and the stuck door 232DOOR6 (0x1B) gives.
+	var l232: LevelLoader.Level = LevelLoader.new().load_level("MAP.232")
+	if l232 != null:
+		var far2 := Vector3(1e9, 0.0, 1e9)
+		var relay = l232.map.entities_by_off.get(0x598d)
+		var spawns: Dictionary = l232.action._spawns
+		var hidden: int = 0
+		for off in spawns:
+			if spawns[off].is_hidden():
+				hidden += 1
+		_check(relay != null and relay.link_act_type == 0x2C and (relay.state_byte & 1) != 0,
+			"MAP.232 has the armed 0x2C relay 232MAIN")
+		_check(spawns.size() >= 7 and hidden == spawns.size(),
+			"the 0xF3 spawn robots are built hidden (%d of %d)" % [hidden, spawns.size()])
+		if relay != null:
+			l232.action.objectives_left = 2
+			l232.action.tick(0.016, far2)
+			_check((relay.state_byte & 1) != 0, "the relay waits while two objectives are left")
+			l232.action.objectives_left = 1
+			l232.action.tick(0.016, far2)
+			l232.action.tick(0.016, far2)
+			var out: int = 0
+			for off in spawns:
+				if not spawns[off].is_hidden():
+					out += 1
+			_check((relay.state_byte & 1) == 0, "at one objective left the relay fires and switches off")
+			_check(out >= 7, "the relay's chain lets the robots out (%d)" % out)
+			_check(l232.action._spent.has(0x3512), "232DOOR6 gives way")
+
 ## Phase 2 — map transitions: marker sets on both ends of an exit, the
 ## per-map state overlay round trip, doorway touch arming and the
 ## spawn-inside-the-gate latch.

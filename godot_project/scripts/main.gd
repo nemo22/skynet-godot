@@ -907,6 +907,7 @@ func _begin_level(name: String) -> void:
 		level.action.drop_requested.connect(_on_drop_requested)
 		level.action.space = get_world_3d().direct_space_state
 		level.action.player_body = player
+		level.action.objectives_left = _objectives_left
 		if not player.pickup_message.is_connected(_set_status):
 			player.pickup_message.connect(_set_status)
 		if not player.use_pressed.is_connected(_on_use_pressed):
@@ -1935,6 +1936,9 @@ var _mission_key: int = -1            # start-map number the script came from
 var _mission_objectives: Array = []   # [M1]..[M5] text, "" where absent
 var _mission_hints: Array = []        # [G1]..[G9] text
 var _objectives_left: int = 0
+var _mission_texts: Array = []        # [M1]..[M5] every entry — DOS counts them all
+var _objective_cursor: Array = []     # per section: entries shown so far
+var _pending_objectives: Dictionary = {}  # a loaded save's counter (_ensure_mission_script)
 
 ## Mission number a map belongs to (its start map): the sub-maps of
 ## mission 1 are 211..218, mission 5 starts on MAP.252 but scripts from
@@ -1956,6 +1960,8 @@ func _ensure_mission_script(map_name: String) -> void:
 	_mission_objectives = []
 	_mission_hints = []
 	_objectives_left = 0
+	_mission_texts = []
+	_objective_cursor = []
 	var bsa := BSAReader.new()
 	if not bsa.open(SkynetPaths.gamedata_path("MDMDBRIF.BSA"), SkynetPaths.variant):
 		return
@@ -1968,17 +1974,34 @@ func _ensure_mission_script(map_name: String) -> void:
 	_mission_hints = brief.get("hints", [])
 	_mission_tactical = brief.get("tactical", [])
 	Stats.begin_mission()
-	for t in _mission_objectives:
-		if not String(t).is_empty():
-			_objectives_left += 1
+	_mission_texts = brief.get("mission_texts", [])
+	for sec in _mission_texts:
+		_objective_cursor.append(0)
+		_objectives_left += (sec as Array).size()
+	if int(_pending_objectives.get("key", -1)) == key:
+		_objectives_left = int(_pending_objectives.get("left", _objectives_left))
+		var cur: Array = _pending_objectives.get("cursor", [])
+		for i in mini(cur.size(), _objective_cursor.size()):
+			_objective_cursor[i] = int(cur[i])
+	_pending_objectives = {}
 	print("[skynet] mission %d: %d objectives" % [key, _objectives_left])
 
+## Act 0x26+idx (v1.01 handler 0x137fd0): once the counter is spent it
+## does nothing at all; otherwise the counter drops and the NEXT entry of
+## section [M<idx+1>] is shown.
 func _on_objective_complete(idx: int) -> void:
+	if _objectives_left <= 0:
+		return
+	_objectives_left -= 1
 	var text: String = ""
-	if idx >= 0 and idx < _mission_objectives.size():
-		text = String(_mission_objectives[idx])
-	if _objectives_left > 0:
-		_objectives_left -= 1
+	if idx >= 0 and idx < _mission_texts.size():
+		var sec: Array = _mission_texts[idx]
+		var at: int = int(_objective_cursor[idx])
+		if at < sec.size():
+			text = String(sec[at])
+			_objective_cursor[idx] = at + 1
+	if _current_level != null and _current_level.action != null:
+		_current_level.action.objectives_left = _objectives_left
 	print("[skynet] objective %d done, %d left" % [idx + 1, _objectives_left])
 	_set_status(text if not text.is_empty() else "OBJECTIVE COMPLETE.", 6.0)
 	if _objectives_left <= 0 and not _mission_done and _game_over == null:
@@ -2124,6 +2147,8 @@ func save_to_slot(slot: int) -> bool:
 		"prev_map": _prev_map_name,
 		"map_state": _map_state,
 		"player": player.save_state(),
+		"objectives": {"key": _mission_key, "left": _objectives_left,
+			"cursor": _objective_cursor.duplicate()},
 	}
 	if not SaveGame.write(slot, data):
 		_set_status("SAVE FAILED.")
@@ -2163,6 +2188,9 @@ func load_from_slot(slot: int) -> bool:
 	_prev_map_name = String(data.get("prev_map", ""))
 	_pending_marker_set = -1
 	_pending_player = data.get("player", {})
+	# The mission script is read again and the saved counter laid over it.
+	_pending_objectives = data.get("objectives", {})
+	_mission_key = -1
 	_map_idx = idx
 	await _begin_level(map_name)
 	await _fade_to(0.0, 0.35)
@@ -3449,13 +3477,12 @@ func run_command(line: String) -> String:
 			return "use at %s" % p.global_position
 		"objectives", "obj":
 			var todo: Array = []
-			for i in _mission_objectives.size():
-				if not String(_mission_objectives[i]).is_empty():
-					todo.append("[M%d] %s" % [i + 1, _mission_objectives[i]])
-			return "mission %d, %d of %d left:
-%s" % [_mission_key,
-				_objectives_left, todo.size(), "
-".join(todo)]
+			for i in _mission_texts.size():
+				var sec: Array = _mission_texts[i]
+				for j in range(int(_objective_cursor[i]), sec.size()):
+					todo.append("[M%d] %s" % [i + 1, sec[j]])
+			return "mission %d, %d left:\n%s" % [_mission_key,
+				_objectives_left, "\n".join(todo)]
 		"wait":
 			# Agent aid: let the world run before the next console command
 			# (a gate needs a tick, a door a second to swing).

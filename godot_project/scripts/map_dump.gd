@@ -22,6 +22,8 @@ func _ready() -> void:
 		preload("res://tools/terrain_mats.gd").run(String(cli["mats"]))
 	if cli.has("terrain"):
 		preload("res://tools/terrain_census.gd").run(String(cli["terrain"]))
+	if cli.has("objectives"):
+		preload("res://tools/objective_census.gd").run(String(cli["objectives"]))
 	if cli.has("maps"):
 		var bsa := BSAReader.new()
 		bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant)

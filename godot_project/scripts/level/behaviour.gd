@@ -129,7 +129,11 @@ func flip(start_id: int) -> Array:
 			continue
 		visited[cur] = true
 		var id: int = id_of(cur)
-		var s: int = state_of(cur) ^ 1
+		# The record is the truth while action_system.gd still clears bits
+		# there (a mover at the end of its run, a spent trigger): the node's
+		# copy would flip a bit that is already down.
+		var rec = _map.entities_by_off.get(id) if _map != null else null
+		var s: int = (int(rec.state_byte) if rec != null else state_of(cur)) ^ 1
 		if act_of(cur) == ActionSystem.ACT_PROX_GATE:
 			s |= 1                                   # a gate stays live (skynet_gh.c:39837)
 		set_state(cur, s)

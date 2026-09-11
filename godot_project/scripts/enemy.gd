@@ -311,7 +311,7 @@ func setup(frame_meshes: Array, aabb: AABB, stationary: bool = false,
 
 func _ready() -> void:
 	# Audio players can only start once inside the tree.
-	if _engine != null and _dormant_dist <= 0.0:
+	if _engine != null and _dormant_dist <= 0.0 and not _hidden:
 		_engine.play()
 
 ## Fan-port AnimRecord table — only used by the fallback FSM.
@@ -329,6 +329,43 @@ func make_dormant(dist: float) -> void:
 	remove_from_group("enemy")
 	if _engine != null:
 		_engine.stop()
+
+## An 0xF3 spawn point's robot (SpawnEnemiesInit 0x129500 in v1.01):
+## built at level start, then hidden — obj+0xc |= 0x2000 keeps it out
+## of the active-enemy list (skynet_gh.c:29810) and the draw loop
+## (38213) — until its sprite's chain fires (0x12960b clears the flag).
+var _hidden: bool = false
+var _hidden_layers: Dictionary = {}          # collision object → its layer
+
+func hide_until_spawned() -> void:
+	_hidden = true
+	visible = false
+	remove_from_group("enemy")
+	process_mode = Node.PROCESS_MODE_DISABLED
+	for c in find_children("*", "CollisionObject3D", true, false):
+		_hidden_layers[c] = (c as CollisionObject3D).collision_layer
+		(c as CollisionObject3D).collision_layer = 0
+	if _engine != null:
+		_engine.stop()
+
+func spawn_in() -> void:
+	if not _hidden:
+		return
+	_hidden = false
+	visible = true
+	process_mode = Node.PROCESS_MODE_INHERIT
+	for c in _hidden_layers:
+		if is_instance_valid(c):
+			(c as CollisionObject3D).collision_layer = _hidden_layers[c]
+	_hidden_layers.clear()
+	if not _passive:
+		add_to_group("enemy")
+		Stats.add_enemies(1)
+	if _engine != null and is_inside_tree():
+		_engine.play()
+
+func is_hidden() -> bool:
+	return _hidden
 
 ## True once the actor is dying/dead.
 func is_dead() -> bool:
