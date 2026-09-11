@@ -1421,6 +1421,13 @@ const MAP_LIGHT_MAX_ENHANCED: float = 0.3
 const EMIT_RANGE_SCALE: float = 9.0      # x the fitting's own size
 const EMIT_RANGE_MIN: float = 750.0
 const EMIT_RANGE_MAX: float = 3200.0
+## A lit patch whose world normal points down more than this is a ceiling
+## fitting; anything else (a wall panel, a screen) lends its lamp to the
+## ceiling above it: EMIT_CEILING_GAP under the top of its mesh, at
+## EMIT_WALL_SCALE of the energy.
+const EMIT_CEILING_NY: float = 0.5
+const EMIT_CEILING_GAP: float = 30.0
+const EMIT_WALL_SCALE: float = 0.6
 
 ## Where the light IS: the lit texels of the emission masks, found on
 ## the geometry. Every triangle of an emissive surface is read against
@@ -1547,21 +1554,50 @@ func _place_emissive_lights(level: LevelLoader.Level) -> int:
 	# The brightest cells first, up to the budget; a few cast shadows.
 	cells.sort_custom(func(x, y) -> bool: return float(x[0]) > float(y[0]))
 	var made: int = 0
+	var lifted: int = 0
 	for cell in cells:
 		if made >= EMIT_LIGHT_MAX:
 			break
 		var mi: MeshInstance3D = cell[1]
+		var xf: Transform3D = mi.global_transform
+		var pos: Vector3 = (cell[2] as Vector3) + (cell[3] as Vector3) * EMIT_DROP
+		var energy: float = EMIT_LIGHT_ENERGY
+		# Which way the lit patch faces in the WORLD (the submarine's pieces
+		# are tilted, a panel can be mounted anyhow). A ceiling fitting
+		# faces down and keeps its lamp EMIT_DROP under it. A lit WALL panel
+		# hung its lamp EMIT_DROP in front of the wall, which made the wall
+		# the brightest thing in the corridor, specular and all — "ako keby
+		# žiarili steny, to svetlo má ísť zo stropu" (Marek, 2026-09-11).
+		# The panel still glows; its light now comes from under the top of
+		# its mesh (a corridor piece's ceiling), just as far out, dimmer.
+		var facing: Vector3 = (xf.basis * (cell[3] as Vector3)).normalized()
+		if facing.y > -EMIT_CEILING_NY:
+			var world: Vector3 = xf * pos
+			world.y = maxf(world.y, _mesh_top_y(mi) - EMIT_CEILING_GAP)
+			pos = xf.affine_inverse() * world
+			energy *= EMIT_WALL_SCALE
+			lifted += 1
 		var l := OmniLight3D.new()
-		l.position = (cell[2] as Vector3) + (cell[3] as Vector3) * EMIT_DROP
+		l.position = pos
 		l.light_color = EMIT_LIGHT_COLOR
-		l.light_energy = Render.energy(EMIT_LIGHT_ENERGY)
+		l.light_energy = Render.energy(energy)
 		l.omni_range = clampf(float(cell[4]) * 1.2 + 600.0, EMIT_RANGE_MIN, EMIT_RANGE_MAX)
 		l.omni_attenuation = Render.OMNI_DECAY
 		l.shadow_enabled = made < EMIT_LIGHT_SHADOWS
 		l.add_to_group("maplight")
 		mi.add_child(l)
 		made += 1
+	if lifted > 0:
+		print("[level] %d of %d fitting lamps came from lit walls — hung under the ceiling instead" % [lifted, made])
 	return made
+
+## The highest point of a mesh in the world (its AABB's corners).
+static func _mesh_top_y(mi: MeshInstance3D) -> float:
+	var ab: AABB = mi.mesh.get_aabb()
+	var top: float = -INF
+	for i in 8:
+		top = maxf(top, (mi.global_transform * ab.get_endpoint(i)).y)
+	return top
 
 ## The emission mask as an Image (decompressed), cached per texture.
 static func _mask_image(tex: Texture2D, cache: Dictionary) -> Image:

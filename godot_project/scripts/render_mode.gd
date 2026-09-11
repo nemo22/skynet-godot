@@ -159,6 +159,16 @@ static func energy(at_ref: float) -> float:
 ## the mask a mask.
 const EMISSION_ENERGY: float = 0.8
 
+## The DOS models' surface in ENHANCED: matte. At roughness 0.65 and
+## specular 0.4 every ceiling lamp laid a long bright highlight along the
+## corridor walls at a grazing angle, and the walls read as glowing — "ako
+## keby žiarili steny, svetlo má ísť zo stropu" (Marek, 2026-09-11).
+## Proven with --mat-debug: without emission or normal maps the band
+## stayed, without specular it was gone. The 256-colour art is painted
+## matte; the photo props get the same treatment (LevelScene._weather).
+const MODEL_ROUGHNESS: float = 0.9
+const MODEL_SPECULAR: float = 0.2
+
 func style(mat: BaseMaterial3D, kind: String, normal: Texture2D = null,
 		emission: Texture2D = null) -> void:
 	if mat == null:
@@ -172,9 +182,9 @@ func style(mat: BaseMaterial3D, kind: String, normal: Texture2D = null,
 	match kind:
 		"model", "terrain":
 			mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
-			mat.roughness = 0.85 if kind == "terrain" else 0.65
+			mat.roughness = 0.85 if kind == "terrain" else MODEL_ROUGHNESS
 			mat.metallic = 0.0
-			mat.metallic_specular = 0.4
+			mat.metallic_specular = MODEL_SPECULAR
 			if normal != null:
 				mat.normal_enabled = true
 				mat.normal_texture = normal

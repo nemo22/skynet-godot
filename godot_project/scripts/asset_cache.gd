@@ -575,6 +575,14 @@ static func _fix_emission(m: Mesh) -> void:
 				and (mat as BaseMaterial3D).emission_operator != BaseMaterial3D.EMISSION_OP_MULTIPLY:
 			(mat as BaseMaterial3D).emission_operator = BaseMaterial3D.EMISSION_OP_MULTIPLY
 			(mat as BaseMaterial3D).emission_energy_multiplier = Render.EMISSION_ENERGY
+		# The same for the surface: cached DOS models still carry the old
+		# glossy style (roughness 0.65, specular 0.4 — the "glowing walls",
+		# Render.MODEL_ROUGHNESS). Only that exact pair is touched, so the
+		# weathered photo props and the weapons keep their own.
+		if mat is BaseMaterial3D and is_equal_approx((mat as BaseMaterial3D).roughness, 0.65) \
+				and is_equal_approx((mat as BaseMaterial3D).metallic_specular, 0.4):
+			(mat as BaseMaterial3D).roughness = Render.MODEL_ROUGHNESS
+			(mat as BaseMaterial3D).metallic_specular = Render.MODEL_SPECULAR
 
 ## Every animation frame of `name` as an Array of ArrayMesh.
 func mesh_frames(name: String, bytes: PackedByteArray = PackedByteArray()) -> Array:
