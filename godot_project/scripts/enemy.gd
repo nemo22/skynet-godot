@@ -157,6 +157,21 @@ func refit_hitbox() -> void:
 		maxf(size.z, HIT_MIN))
 	_hit_shape.position = b.position + b.size * 0.5
 
+## How far a blast at `at` is from this machine — measured to its
+## HITBOX, not to its origin. A flying HK is 421 x 242 x 591: a grenade
+## bursting on its nose is ~300 units from the origin, beyond the
+## launcher's 256-unit splash, and took no damage at all ("granátometom
+## sa nedá zničiť lietajúce HK, aj keď ho zasiahne x granátov").
+## 0 when the point is inside the box.
+func blast_distance(at: Vector3) -> float:
+	if _hit_shape == null or not is_instance_valid(_hit_shape) 			or not (_hit_shape.shape is BoxShape3D):
+		return global_position.distance_to(at)
+	var half: Vector3 = (_hit_shape.shape as BoxShape3D).size * 0.5
+	var local: Vector3 = _hit_shape.global_transform.affine_inverse() * at
+	var out := Vector3(maxf(absf(local.x) - half.x, 0.0),
+		maxf(absf(local.y) - half.y, 0.0), maxf(absf(local.z) - half.z, 0.0))
+	return out.length()
+
 ## Union of every mesh under `n`, in this actor's space.
 static func _mesh_bounds(n: Node, xf: Transform3D) -> AABB:
 	var out := AABB()

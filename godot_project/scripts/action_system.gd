@@ -476,6 +476,13 @@ func on_player_activate(file_off: int, player_pos: Vector3 = Vector3.INF) -> boo
 		or e.link_act_type == ACT_PROX_CHAIN_B or _use_msgs.has(e)
 	if not usable:
 		return false
+	# 0xF1/0xF2 are one-shot in DOS (they clear their own bit 0 when they
+	# fire — see the proximity loop): once spent, the use key must not
+	# flip the chain back either, or pressing F at MAP.210's lever
+	# after it tripped would shut the gate again.
+	var chain_trigger: bool = e.link_act_type == ACT_PROX_CHAIN_A 		or e.link_act_type == ACT_PROX_CHAIN_B
+	if chain_trigger and (e.state_byte & 1) == 0:
+		return false
 	# A gate whose chain ends in an exit (the truck DOOR in MAP.211/212,
 	# the bunker doorway gates) is the use-key way through: arm the exit
 	# if the chain has not flipped yet and go, wherever its sprite sits.
@@ -483,6 +490,8 @@ func on_player_activate(file_off: int, player_pos: Vector3 = Vector3.INF) -> boo
 		var t: MapFile.Entity = _chain_teleport(e)
 		if t != null:
 			return _use_exit(e, t)
+	if chain_trigger:
+		e.state_byte &= ~1
 	if (e.state_byte & 2) != 0:
 		_trigger(e)
 	else:
@@ -626,9 +635,22 @@ func tick(delta: float, player_pos: Vector3) -> void:
 		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
 		var inside: bool = _within(epos, player_pos, _prox_radius(e))
 		var latched: bool = _prox_latched.get(e.file_off, false)
+		# 0xF1/0xF2 are ONE-SHOT. Their handler (0x1379c4) ends by calling
+		# 0x139644 with dl = 0xFE, bl = 0 — `state &= 0xFE`, i.e. the
+		# trigger clears its own enable bit and stays off until a chain
+		# turns it back on. The port used to re-arm it every time the
+		# player left the radius, so walking back to MAP.210's gate
+		# flipped BIGDOOR again and shut it in his face ("potom sa zasa
+		# zavrie a nedá sa tam dostať"). 0xEF gates are different: they
+		# force their own bit back on (see gate_runs).
+		var chain_trigger: bool = e.link_act_type == ACT_PROX_CHAIN_A 			or e.link_act_type == ACT_PROX_CHAIN_B
+		if chain_trigger and (e.state_byte & 1) == 0:
+			continue
 		if inside and not latched:
 			_prox_latched[e.file_off] = true
 			print("[action] gate @%05x (act %02x) tripped at %s" % [e.file_off, e.link_act_type, epos])
+			if chain_trigger:
+				e.state_byte &= ~1
 			_flip_link(e)
 		elif not inside and latched:
 			_prox_latched[e.file_off] = false

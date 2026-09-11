@@ -141,15 +141,13 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 		# cockpit — "výstrely sú renderované ako keby z boku". So ask the
 		# model where its body is instead of assuming.
 		_body_forward = am.get_aabb().get_center().z > 0.0
-		_mi.basis = _bolt_basis()
+		_is_bolt = _model_is_bolt(model_name)
+		_mi.basis = _bolt_basis(BOLT_FATTEN if _is_bolt else 1.0)
 		# LASER1/2/3.3D are 120 u long but only 3x7 u thick. On a 320x200
 		# DOS screen that was a bright hairline you could not miss; at a
 		# modern resolution the same bolt is a sub-pixel thread, which is
 		# why incoming fire read as "nothing visible at all" (2026-09-04).
 		# Fatten the bolt and give it a halo instead of speeding it up.
-		_is_bolt = _model_is_bolt(model_name)
-		if _is_bolt:
-			_mi.basis = _mi.basis.scaled(Vector3(BOLT_FATTEN, BOLT_FATTEN, 1.0))
 		_add_glow(am.get_aabb().size.z)
 	else:
 		var sm := SphereMesh.new()
@@ -203,7 +201,12 @@ func _add_glow(length: float) -> void:
 ## bolt is a blade 3.4 u wide and 6.7 u tall: edge-on it is a hairline,
 ## so it is rolled about the flight axis to keep the wide face toward the
 ## camera, the way any engine draws a beam.
-func _bolt_basis() -> Basis:
+## `fatten` thickens the two thin axes of the bolt itself. NOT via
+## Basis.scaled(): in Godot 4 that scales along the WORLD axes, so a
+## bolt flying along world X was stretched sideways into a flat slab
+## lying across the screen — the "výstrely sú ako keby z boku" Marek
+## sent a picture of, reported four times, and not fixed by aiming it.
+func _bolt_basis(fatten: float = 1.0) -> Basis:
 	var body: Vector3 = _dir if _body_forward else -_dir
 	var wide := Vector3.UP
 	var cam := get_viewport().get_camera_3d() if is_inside_tree() else null
@@ -216,7 +219,7 @@ func _bolt_basis() -> Basis:
 		wide = Vector3.RIGHT if absf(body.y) > 0.9 else Vector3.UP
 	var z: Vector3 = body.normalized()
 	var y: Vector3 = (wide - z * wide.dot(z)).normalized()
-	return Basis(y.cross(z), y, z)
+	return Basis(y.cross(z) * fatten, y * fatten, z)
 
 static func _model_is_bolt(name: String) -> bool:
 	return name.to_upper().begins_with("LASER")
@@ -225,7 +228,12 @@ func _physics_process(delta: float) -> void:
 	if _done:
 		return
 	# The shooter may die (and be freed) while its bolt is still flying.
-	if _owner != null and not is_instance_valid(_owner):
+	# NOT `_owner != null and …`: in Godot 4 a freed instance compares
+	# EQUAL to null, so that guard never fired, `_owner is …` below then
+	# raised "Left operand of 'is' is a previously freed instance" on
+	# every physics frame until the bolt landed — a stack trace per frame,
+	# which is what made ENHANCED stutter after every kill.
+	if not is_instance_valid(_owner):
 		_owner = null
 	_life -= delta
 	if _life <= 0.0:
@@ -249,7 +257,7 @@ func _physics_process(delta: float) -> void:
 	if _is_bolt and _mi != null:
 		# Re-roll every frame: the bolt has to keep its face to a camera
 		# that is itself moving.
-		_mi.basis = _bolt_basis().scaled(Vector3(BOLT_FATTEN, BOLT_FATTEN, 1.0))
+		_mi.basis = _bolt_basis(BOLT_FATTEN)
 	var to := global_position + _dir * _speed * delta
 	_travelled += _speed * delta
 	if _light != null:
@@ -319,7 +327,7 @@ func _finish(at: Vector3, impact: bool) -> void:
 		if _hits == "enemy":
 			for e in get_tree().get_nodes_in_group("enemy"):
 				if e is Node3D and e.has_method("take_damage") and e != _owner:
-					var d := (e as Node3D).global_position.distance_to(at)
+					var d: float = e.blast_distance(at) if e.has_method("blast_distance") 						else (e as Node3D).global_position.distance_to(at)
 					if d < _splash:
 						e.take_damage(_damage * (1.0 - d / _splash))
 		# Destructible map objects (cars, generators …) take blast damage

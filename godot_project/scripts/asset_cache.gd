@@ -154,7 +154,10 @@ func _exit_tree() -> void:
 ## 8 000 triangles. Uncapped, MAP.210 pulled 141 MB of resources per
 ## load; capped, 87.5 MB — and one Poly Haven rock alone was 16.3 MB and
 ## 739 469 triangles.
-const CATEGORY_VERSIONS: Dictionary = {"enhanced/nrm": 2, "enhanced/prop": 2}
+## prop 3 (2026-09-11): procedural props built their tilted parts with
+## Basis.scaled(), which scales along WORLD axes in Godot 4 (the hair on
+## a lolling head, the flat side of a charred branch came out wrong).
+const CATEGORY_VERSIONS: Dictionary = {"enhanced/nrm": 2, "enhanced/prop": 3}
 
 func _check_category_versions() -> void:
 	if read_only or root.is_empty():

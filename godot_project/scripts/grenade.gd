@@ -116,6 +116,11 @@ func setup(from: Vector3, dir: Vector3, damage: float, splash: float,
 func _physics_process(delta: float) -> void:
 	if _exploded:
 		return
+	# The thrower may die while the grenade is in the air. Godot 4 makes a
+	# freed instance compare equal to null, so only is_instance_valid()
+	# catches it — otherwise `_owner is …` raises every frame.
+	if not is_instance_valid(_owner):
+		_owner = null
 	_life -= delta
 	_vel.y -= GRAVITY * delta
 	var to: Vector3 = global_position + _vel * delta
@@ -185,7 +190,9 @@ func _detonate(at: Vector3) -> void:
 				h.take_damage(_damage * (1.0 - dh / _splash))
 	for e in get_tree().get_nodes_in_group("enemy"):
 		if e is Node3D and e.has_method("take_damage"):
-			var d := (e as Node3D).global_position.distance_to(at)
+			# To the hitbox, not the origin (Enemy.blast_distance): a
+			# grenade bursting on an HK's nose is 300 u from its centre.
+			var d: float = e.blast_distance(at) if e.has_method("blast_distance") 				else (e as Node3D).global_position.distance_to(at)
 			if d < _splash:
 				e.take_damage(_damage * (1.0 - d / _splash))
 	var pl := get_tree().get_first_node_in_group("player")

@@ -445,7 +445,15 @@ static func skull_pile(world_w: float, world_h: float, seed: int, rec: int = 46)
 # Small helpers
 # ---------------------------------------------------------------------
 static func _T(pos: Vector3, euler: Vector3 = Vector3.ZERO, scale: Vector3 = Vector3.ONE) -> Transform3D:
-	return Transform3D(Basis.from_euler(euler).scaled(scale), pos)
+	return Transform3D(_scaled_local(Basis.from_euler(euler), scale), pos)
+
+## Scale along the basis's OWN axes. Basis.scaled() in Godot 4 scales along
+## the WORLD axes — measured: looking_at(+X).scaled(4,4,1) comes back with
+## |z| = 4, the long axis stretched instead of kept. On a tilted part that
+## squashes it the wrong way (the hair on a lolling head, the flattened
+## side of a charred branch).
+static func _scaled_local(b: Basis, s: Vector3) -> Basis:
+	return Basis(b.x * s.x, b.y * s.y, b.z * s.z)
 
 ## A cylinder along its local Y, wrapped so it runs from `a` to `b`.
 static func _rod(mg: Merger, a: Vector3, b: Vector3, r: float, col: Color, style: String = "") -> void:
@@ -588,7 +596,7 @@ static func _head(mg: Merger, w: float, h: float, rng: RandomNumberGenerator, re
 	var skin: Color = SKIN if rec != 14 else Color(0.62, 0.55, 0.42)
 	mg.add(_sph(r), _T(Vector3(0.0, r * 0.9, 0.0), tilt, Vector3(1.0, 1.1, 0.95)), skin, "matte")
 	var b := Basis.from_euler(tilt)
-	mg.add(_sph(r * 1.02), Transform3D(b.scaled(Vector3(1.0, 0.5, 1.0)), Vector3(0.0, r * 0.9, 0.0) + b * Vector3(0.0, r * 0.55, -r * 0.1)), HAIR, "matte")
+	mg.add(_sph(r * 1.02), Transform3D(_scaled_local(b, Vector3(1.0, 0.5, 1.0)), Vector3(0.0, r * 0.9, 0.0) + b * Vector3(0.0, r * 0.55, -r * 0.1)), HAIR, "matte")
 	for side in [-1.0, 1.0]:
 		mg.add(_sph(r * 0.18), Transform3D(b, Vector3(0.0, r * 0.9, 0.0) + b * Vector3(side * r * 0.36, r * 0.15, r * 0.85)), BONE_DARK, "matte")
 	mg.add(_bx(Vector3(r * 0.5, r * 0.14, r * 0.2)), Transform3D(b, Vector3(0.0, r * 0.9, 0.0) + b * Vector3(0.0, -r * 0.35, r * 0.85)), GORE, "wet")
@@ -865,7 +873,7 @@ static func _trunk(mg: Merger, w: float, h: float, rng: RandomNumberGenerator) -
 		var a1 := Vector3(cos(a) * (r_bot * 0.5 + len), -r_bot * 0.12, sin(a) * (r_bot * 0.5 + len))
 		var d := (a1 - a0).normalized()
 		var x := Vector3.UP.cross(d).normalized()
-		mg.add(root, Transform3D(Basis(x, -d, x.cross(-d).normalized()).scaled(Vector3(1.0, 1.0, 0.6)), (a0 + a1) * 0.5), CHAR, "matte")
+		mg.add(root, Transform3D(_scaled_local(Basis(x, -d, x.cross(-d).normalized()), Vector3(1.0, 1.0, 0.6)), (a0 + a1) * 0.5), CHAR, "matte")
 	# Burnt-through cracks: thin pale strips let into the bark.
 	for i in 3:
 		var a: float = rng.randf() * TAU
