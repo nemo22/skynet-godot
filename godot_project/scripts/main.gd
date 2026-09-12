@@ -823,7 +823,7 @@ func _load_current() -> void:
 	# (it recorded 912 MB of it before I noticed), so --campath skips it
 	# like --screenshot does.
 	if (_cli.has("screenshot") and not _cli.has("tab")) or _cli.has("no-briefing") \
-			or _cli.has("campath") or Net.active:
+			or _cli.has("campath") or _cli.has("walk") or Net.active:
 		_begin_level(name)
 	elif not _maybe_show_briefing(name):
 		_begin_level(name)
@@ -3267,7 +3267,7 @@ const COMMAND_NAMES: Array = [
 	"map", "maps", "menu", "moon", "music", "nextlevel", "nitrous", "noclip",
 	"objectives", "occlusion", "options", "pause", "players", "pos", "quit",
 	"rebake", "save", "secondary", "shoot", "showspawns",
-	"slugs", "speed", "superuzi", "surgery", "throw", "tp", "use", "version",
+	"slugs", "speed", "superuzi", "surgery", "throw", "tp", "tpveh", "use", "version",
 	"weapon", "where", "who", "whoami", "win", "look", "bodyat", "collfaces", "aim",
 ]
 
@@ -3329,6 +3329,26 @@ func run_command(line: String) -> String:
 				return "usage: tp x y z"
 			p.set_spawn(Vector3(float(args[0]), float(args[1]), float(args[2])), p.rotation.y, false)
 			return "teleported"
+		"tpveh":
+			# Agent aid: stand off a parked deathmatch vehicle and look at
+			# it. Their spots are shuffled every round, so a screenshot run
+			# cannot be told the coordinates in advance.
+			# `tpveh [n] [distance]`.
+			if p == null:
+				return "no player"
+			var vl: Array = get_tree().get_nodes_in_group("dm_vehicle")
+			if vl.is_empty():
+				return "no parked vehicles (is this a deathmatch?)"
+			var vn: int = clampi(int(args[0]) if args.size() > 0 and args[0].is_valid_int() else 0,
+				0, vl.size() - 1)
+			var away: float = float(args[1]) if args.size() > 1 and args[1].is_valid_float() else 420.0
+			var vp3: Vector3 = (vl[vn] as Node3D).global_position
+			var stand := vp3 + Vector3(away * 0.7, 150.0, away * 0.7)
+			p.set_spawn(stand - Vector3(0.0, EYE_HEIGHT, 0.0), p.rotation.y, false)
+			p.noclip = true
+			var to: Vector3 = vp3 - stand
+			p.set_view(atan2(-to.x, -to.z), asin(clampf(to.normalized().y, -1.0, 1.0)))
+			return "vehicle %d of %d at %s" % [vn, vl.size(), vp3]
 		"aim":
 			# Agent aid: turn the jeep's turret (degrees, relative to the car)
 			# - the view swings across the car's own frame.

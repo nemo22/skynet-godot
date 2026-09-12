@@ -147,7 +147,9 @@ func _wear(c: int) -> void:
 var vehicle: int = 0
 var _veh_mesh: MeshInstance3D = null
 var _engine: AudioStreamPlayer3D = null
-const VEH_MODELS: Array = ["", "HUMMER.3D", "HK_FTR.3D"]
+## The MP models, not the campaign's: HUMMER.3D is the jeep's interior
+## shell (see dm_vehicle.gd), so a driver seen by others wore a dashboard.
+const VEH_MODELS: Array = ["", "NETHUMER.3D", "NET_HK.3D"]
 func set_vehicle(v: int) -> void:
 	v = clampi(v, 0, 2)
 	if v == vehicle:

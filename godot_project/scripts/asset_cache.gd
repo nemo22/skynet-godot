@@ -408,6 +408,25 @@ func cfa_is_hires(name: String) -> bool:
 	_read_hires_header(name)
 	return bool(_cfa_hires_memo.get(name, false))
 
+## The 320x200 art's frame size, which is where the hi-res art has to be
+## DRAWN: that placement (weapon record x, bottom on the HUD bar) is the
+## one the port has always had right, so the 640x480 frame is scaled into
+## the same rectangle rather than positioned from its own header. Reads
+## the 16-bit header only; memoised.
+static var _cfa_lo_memo: Dictionary = {}
+func cfa_lo_size(name: String) -> Vector2i:
+	if _cfa_lo_memo.has(name):
+		return _cfa_lo_memo[name]
+	var out := Vector2i.ZERO
+	var b := BSAReader.new()
+	if b.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"), SkynetPaths.variant):
+		var bytes: PackedByteArray = b.read(name)
+		b.close()
+		if bytes.size() >= 14 and not CFAFile.is_hires(bytes):
+			out = Vector2i(bytes.decode_u16(0), bytes.decode_u16(2))
+	_cfa_lo_memo[name] = out
+	return out
+
 ## The 640x480 art's own x/y placement, (0, 0) when it has none.
 func cfa_offset(name: String) -> Vector2i:
 	if not _cfa_offset_memo.has(name):

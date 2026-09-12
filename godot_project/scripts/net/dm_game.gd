@@ -125,6 +125,27 @@ func weapon_name(idx: int) -> String:
 ## The arena is loaded: read its spawn pairs and item spots, place the
 ## pickups (server) / mirror them (client), raise the avatars, then ask
 ## the server for a spawn.
+## Spots with no pickup standing on them. A parked jeep is 114x97x234,
+## so it needs more room than a crate does; this keeps it a vehicle's
+## length clear of anything the server has already put down.
+const VEHICLE_CLEARANCE: float = 260.0
+
+func _free_spots(spots: Array) -> Array:
+	var taken: Array = []
+	for key in Net.pickups:
+		taken.append(Net.pickups[key]["pos"])
+	var out: Array = []
+	for s in spots:
+		var clear := true
+		for t in taken:
+			if (s as Vector3).distance_to(t) < VEHICLE_CLEARANCE:
+				clear = false
+				break
+		if clear:
+			out.append(s)
+	# Never hand back nothing: a crowded arena still wants its vehicles.
+	return out if not out.is_empty() else spots
+
 func on_level_ready(lvl) -> void:
 	level = lvl
 	# DOS MP spawn sets: markers 10..29 as (position, facing) pairs, plus
@@ -151,7 +172,13 @@ func on_level_ready(lvl) -> void:
 			for pos in lvl.markers.get(set_id, []):
 				weapon_spots.append(_ground(pos))
 		Net.server_place_pickups(ammo_spots, weapon_spots)
-		Net.server_place_vehicles(weapon_spots if not weapon_spots.is_empty() else ammo_spots)
+		# The vehicles used to go on the WEAPON spots — the very spots the
+		# pickup crates stand on — so a jeep could end up parked inside a
+		# crate ("blbost - zle spawnute vozidlo", Marek 2026-09-13, with
+		# the picture of one half-swallowed by a box). They now take the
+		# spots no pickup is on, ammo spots included: MAP.605 has 56 of
+		# those against six vehicles, so there is room to be picky.
+		Net.server_place_vehicles(_free_spots(ammo_spots + weapon_spots))
 	for id in Net.players:
 		_ensure_avatar(id)
 	for key in Net.pickups:
@@ -749,6 +776,9 @@ func _spawn_vehicle_nodes() -> void:
 		node.setup(int(key), int(v["kind"]), v["pos"], float(v["yaw"]))
 		node.set_driver(int(v["driver"]))
 		_vehicle_nodes[key] = node
+		# Where it stands, so a screenshot run can be told to go there.
+		print("[dm] vehicle %d (%s) at %s" % [int(key),
+			"jeep" if int(v["kind"]) == 1 else "HK", v["pos"]])
 		var driver: int = int(v["driver"])
 		if driver != 0 and driver != Net.local_id:
 			var av = _ensure_avatar(driver)

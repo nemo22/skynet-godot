@@ -323,6 +323,9 @@ var _vm_cache: Dictionary = {}        # weapon idx → Array[ImageTexture]
 var _vm_hires: Dictionary = {}
 ## weapon idx → the hi-res art's own x/y, (0,0) when it carries none.
 var _vm_off: Dictionary = {}
+## weapon idx → the 320x200 frame size, the rectangle the hi-res art is
+## drawn into.
+var _vm_lo: Dictionary = {}
 var _vm_idx: int = 0
 var _vm_t: float = 0.0
 var _vm_firing: bool = false
@@ -1882,6 +1885,7 @@ func _load_viewmodels() -> void:
 		# WEAPON13 is 145x194, narrower than several 320x200 viewmodels.
 		_vm_hires[i] = hires and Assets.cfa_is_hires(cfa)
 		_vm_off[i] = Assets.cfa_offset(cfa) if bool(_vm_hires[i]) else Vector2i.ZERO
+		_vm_lo[i] = Assets.cfa_lo_size(cfa) if bool(_vm_hires[i]) else Vector2i.ZERO
 		print("[weapon] %s — %d viewmodel frames%s"
 			% [cfa, frames.size(), " (hi-res)" if _vm_hires.get(i, false) else ""])
 
@@ -1986,25 +1990,23 @@ func _layout_viewmodel() -> void:
 	var x_origin: float = (vp.x - 320.0 * s) * 0.5
 	var vx: float = float(_weapons[_weapon_idx].get("vx", 80))
 	_viewmodel.size = ts
-	# The 640x480 art is NOT a doubled copy of the 320x200 one. DOS's
+	# The 640x480 art is NOT a doubled copy of the 320x200 one: DOS's
 	# 320x200 mode has TALL pixels and the hi-res art is drawn square, so
-	# its content comes out twice as wide but 2.4x as tall — measured on
-	# WEAPON00, whose gun is 151x60 in one set and 302x144 in the other.
-	# Drawn at half scale it was a fifth too tall, and since the gun
-	# stands on the HUD bar the excess went upward: "tie zbrane su
-	# zobrazene ako keby mierili hore" (Marek 2026-09-12). So the hi-res
-	# art gets its own screen — 640x480 fitted to the window height, and
-	# the art's own x where it carries one (WEAPON00 reads 37 against a
-	# 603-wide frame: 37 + 603 = 640, flush with the right edge).
+	# the same gun is twice as wide but 2.4x as tall (measured on
+	# WEAPON00: 151x60 against 302x144). Two attempts at deriving the
+	# placement from the hi-res art itself both came out wrong — half
+	# scale left the gun a fifth too tall, and its header's own x/y is a
+	# screen position for WEAPON00 but not for WEAPON04 — so this stops
+	# deriving anything: the hi-res frame is scaled into EXACTLY the
+	# rectangle the 320x200 frame would occupy, which is the placement the
+	# port has always had right. Same picture, four times the pixels.
 	var hires: bool = bool(_vm_hires.get(_weapon_idx, false))
-	var ss: float = s
+	var lo: Vector2i = _vm_lo.get(_weapon_idx, Vector2i.ZERO)
+	var draw := Vector2(ts.x * s, ts.y * s)          # what the 320 art draws
+	if hires and lo.x > 0 and lo.y > 0:
+		draw = Vector2(float(lo.x) * s, float(lo.y) * s)
 	var x: float = x_origin + vx * s
-	if hires:
-		ss = vp.y / 480.0
-		var off: Vector2i = _vm_off.get(_weapon_idx, Vector2i.ZERO)
-		var hx: float = float(off.x) if off.x > 0 else vx * 2.0
-		x = (vp.x - 640.0 * ss) * 0.5 + hx * ss
-	_viewmodel.scale = Vector2(ss, ss)
+	_viewmodel.scale = Vector2(draw.x / maxf(ts.x, 1.0), draw.y / maxf(ts.y, 1.0))
 	# The gun stands ON the HUD bar, not behind it. DOS draws the world
 	# in a 320x160 viewport with the 40 px panel below; the port's panel
 	# is the same art scaled by WIDTH (main._layout_hud), so its top edge
@@ -2014,4 +2016,4 @@ func _layout_viewmodel() -> void:
 	# sets (measured), so standing the FRAME on the bar stands the gun on
 	# it either way.
 	var hud_h: float = _hud_height(vp)
-	_viewmodel.position = Vector2(x, vp.y - hud_h - ts.y * ss + HUD_OVERLAP * s)
+	_viewmodel.position = Vector2(x, vp.y - hud_h - draw.y + HUD_OVERLAP * s)
