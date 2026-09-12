@@ -179,6 +179,20 @@ func _ready() -> void:
 		ss.set_hud_visible(false)
 	Audio.stop_ambient()
 	Audio.play_music(Audio.TITLE_TRACK)
+	# First start with no data anywhere: ask for the SkyNET folder (and
+	# for Future Shock, if it is installed) before anything reads an
+	# archive. Both are remembered in user://gamedata.cfg.
+	# `--setup` opens it on purpose, to point the game at another install.
+	var want_setup: bool = SkynetPaths.needs_setup()
+	for a in OS.get_cmdline_args() + OS.get_cmdline_user_args():
+		if a == "--setup":
+			want_setup = true
+	if want_setup:
+		var setup: CanvasLayer = load("res://scripts/data_setup.gd").new()
+		add_child(setup)
+		var picked: Array = await setup.finished
+		if String(picked[0]).is_empty():
+			return                        # the player quit
 	_scan_maps()
 	if SkynetPaths.selected_map == "" and not _maps.is_empty():
 		SkynetPaths.selected_map = _first_campaign_map()

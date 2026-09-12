@@ -333,6 +333,44 @@ func relaunch_with_gamedata(dir: String) -> bool:
 	print("[paths] relaunch %s %s → pid %d" % [OS.get_executable_path().get_file(), " ".join(args), pid])
 	return pid > 0
 
+## True while the game still does not know where the originals are — the
+## first-run screen (scripts/data_setup.gd) then asks for them.
+func needs_setup() -> bool:
+	return not _has_data(gamedata_dir)
+
+## A folder the player picked may be the data directory itself or the
+## game's install root: take <dir>, <dir>/gamedata or, for Future Shock
+## installed under SkyNET, <dir>/shock/GAMEDATA. "" when none holds data.
+static func resolve_data_dir(picked: String) -> String:
+	var d: String = picked.strip_edges().trim_suffix("/").trim_suffix(BACKSLASH)
+	if d.is_empty():
+		return ""
+	for cand in [d, d + "/gamedata", d + "/GAMEDATA",
+			d + "/shock/GAMEDATA", d + "/shock/gamedata", d + "/SHOCK/GAMEDATA"]:
+		if _has_data(cand):
+			return cand
+	return ""
+
+## Which game a data directory holds: "skynet", "shock", or "" for neither.
+static func game_of(dir: String) -> String:
+	if FileAccess.file_exists("%s/%s" % [dir, PROBE_FILE]):
+		return "skynet"
+	if FileAccess.file_exists("%s/%s" % [dir, PROBE_FILE_SHOCK]):
+		return "shock"
+	return ""
+
+## Remember the OTHER game's data directory under its own key, so
+## other_game_dir() finds it and the menu can start it.
+func set_other_game_dir(dir: String) -> bool:
+	var g: String = game_of(dir)
+	if g.is_empty():
+		return false
+	var cfg := ConfigFile.new()
+	cfg.load(GAMEDATA_CFG)                 # keep whatever else is in there
+	cfg.set_value("paths", g, dir)
+	cfg.save(GAMEDATA_CFG)
+	return true
+
 ## Remember a data directory chosen in the menu.
 func set_gamedata_dir(dir: String) -> bool:
 	if not _has_data(dir):
@@ -340,7 +378,12 @@ func set_gamedata_dir(dir: String) -> bool:
 	gamedata_dir = dir
 	game_root = dir
 	var cfg := ConfigFile.new()
+	# Load first: a fresh ConfigFile would drop the other game's path.
+	cfg.load(GAMEDATA_CFG)
 	cfg.set_value("paths", "gamedata", dir)
+	var g: String = game_of(dir)
+	if not g.is_empty():
+		cfg.set_value("paths", g, dir)
 	cfg.save(GAMEDATA_CFG)
 	# The cache follows the data directory.
 	var assets := get_node_or_null("/root/Assets")
