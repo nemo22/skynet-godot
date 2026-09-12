@@ -8,6 +8,19 @@ the HMI music, all decoded at run time.
 
 Nothing from the original games is included here. You need the games.
 
+## Screenshots
+
+| | |
+| --- | --- |
+| ![The canyon on mission 1](screenshots/map210.png) | ![The ruined city](screenshots/map230.png) |
+| ![Inside Cyberdyne](screenshots/map232.png) | ![The jeep](screenshots/map260.png) |
+| ![The HK over the highway](screenshots/map270.png) | ![Deathmatch through machine vision](screenshots/deathmatch.png) |
+
+Left to right, top to bottom: mission 1's canyon under the moon; the
+ruined city; the Cyberdyne building; the jeep with its own HUD; the HK
+flying the highway with the convoy ahead; and a deathmatch seen through
+the TERMINATOR class's machine vision.
+
 ## What works
 
 - **The campaign** — all eight missions, the DOS mission scripts, the
@@ -97,6 +110,21 @@ mover families, the AI state handlers, the weapon table, the mission
 tables, the water and border-box code. Where the port and the original
 disagreed, the disassembly decided. The test suites above exist so those
 findings stay fixed.
+
+## Licence
+
+Copyright © 2026 Marek Draškaba.
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the **GNU General Public License, version 3** as
+published by the Free Software Foundation. It is distributed in the hope
+that it will be useful, but WITHOUT ANY WARRANTY — without even the
+implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+See [LICENSE](LICENSE) for the full text.
+
+The licence covers **this port's own code**. It says nothing about the
+original games' data, which belongs to its rights holders and is not
+distributed here.
 
 ## Legal
 
