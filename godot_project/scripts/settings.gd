@@ -57,9 +57,32 @@ const WINDOW_SIZES: Array = [
 	Vector2i(3840, 2160),
 ]
 
-enum { RES_320 = 0, RES_640 = 1, RES_NATIVE = 2 }
-const RES_NAMES: Array = ["320 X 200", "640 X 480", "NATIVE"]
-const RES_WIDTHS: Array = [320.0, 640.0, 0.0]
+## RES_SUPER2 is the port's own addition: the world drawn at TWICE the
+## window's width and scaled back down. The DOS art cannot get sharper,
+## but the geometry can — "vektory predsa mozu byt renderovane vo vyssom
+## ... rozliseni" (Marek 2026-09-12).
+enum { RES_320 = 0, RES_640 = 1, RES_NATIVE = 2, RES_SUPER2 = 3 }
+const RES_NAMES: Array = ["320 X 200", "640 X 480", "NATIVE", "NATIVE X2"]
+const RES_WIDTHS: Array = [320.0, 640.0, 0.0, 0.0]
+const RES_MAX: int = 3
+
+## Anti-aliasing. The DOS renderer had none, so OFF stays the original.
+## Godot's MSAA smooths POLYGON EDGES only, which is exactly the
+## complaint — stair-stepped terrain against the night sky — while the
+## textures stay as they were drawn.
+const MSAA_NAMES: Array = ["OFF", "2X", "4X", "8X"]
+const MSAA_MODES: Array = [Viewport.MSAA_DISABLED, Viewport.MSAA_2X,
+	Viewport.MSAA_4X, Viewport.MSAA_8X]
+var msaa: int = 0
+
+func set_msaa(i: int) -> void:
+	msaa = clampi(i, 0, MSAA_NAMES.size() - 1)
+	save()
+	apply_aa()
+	print("[settings] edge smoothing MSAA %s" % MSAA_NAMES[msaa])
+
+func apply_aa() -> void:
+	get_tree().root.msaa_3d = MSAA_MODES[clampi(msaa, 0, MSAA_MODES.size() - 1)]
 
 var difficulty: int = MED
 var detail: int = HIGH
@@ -107,7 +130,8 @@ func _ready() -> void:
 		difficulty = clampi(int(cfg.get_value("game", "difficulty", MED)), LOW, HIGH)
 		detail = clampi(int(cfg.get_value("video", "detail", HIGH)), LOW, HIGH)
 		reverse_stereo = bool(cfg.get_value("audio", "reverse_stereo", false))
-		resolution = clampi(int(cfg.get_value("video", "resolution", RES_NATIVE)), 0, 2)
+		resolution = clampi(int(cfg.get_value("video", "resolution", RES_NATIVE)), 0, RES_MAX)
+		msaa = clampi(int(cfg.get_value("video", "msaa", 0)), 0, MSAA_NAMES.size() - 1)
 		window_mode = clampi(int(cfg.get_value("video", "window_mode", WIN_WINDOWED)),
 			WIN_WINDOWED, WIN_FULLSCREEN)
 		window_size = int(cfg.get_value("video", "window_size", 0))
@@ -127,6 +151,7 @@ func save() -> void:
 	cfg.set_value("video", "detail", detail)
 	cfg.set_value("audio", "reverse_stereo", reverse_stereo)
 	cfg.set_value("video", "resolution", resolution)
+	cfg.set_value("video", "msaa", msaa)
 	cfg.set_value("video", "window_mode", window_mode)
 	cfg.set_value("video", "window_size", window_size)
 	cfg.set_value("video", "brightness_dos", brightness_dos)
@@ -159,7 +184,7 @@ func set_detail(level: int) -> void:
 	print("[settings] render detail %s" % LEVEL_NAMES[detail])
 
 func set_resolution(mode: int) -> void:
-	resolution = clampi(mode, 0, 2)
+	resolution = clampi(mode, 0, RES_MAX)
 	save()
 	apply_resolution()
 	print("[settings] render resolution %s" % RES_NAMES[resolution])
@@ -221,11 +246,17 @@ func apply_window() -> void:
 ## Drive Godot's 3D render scaling from the chosen mode.
 func apply_resolution() -> void:
 	var vp := get_tree().root
-	var want: float = float(RES_WIDTHS[resolution])
-	if want <= 0.0 or vp.size.x <= 0:
-		vp.scaling_3d_scale = 1.0
+	if resolution == RES_SUPER2:
+		# Above the window, then scaled back down: the one setting that
+		# makes the GEOMETRY sharper rather than blurrier.
+		vp.scaling_3d_scale = 2.0
 	else:
-		vp.scaling_3d_scale = clampf(want / float(vp.size.x), 0.1, 1.0)
+		var want: float = float(RES_WIDTHS[resolution])
+		if want <= 0.0 or vp.size.x <= 0:
+			vp.scaling_3d_scale = 1.0
+		else:
+			vp.scaling_3d_scale = clampf(want / float(vp.size.x), 0.1, 1.0)
+	apply_aa()
 
 func set_reverse_stereo(on: bool) -> void:
 	reverse_stereo = on

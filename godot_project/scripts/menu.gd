@@ -1638,7 +1638,16 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 		var mode: int = i
 		panel.add_child(_img_hotspot(r2, s, func() -> void:
 			Settings.set_resolution(mode)
-			_refresh_display_marks()))
+			_refresh_display_marks()
+			# DOS switched the VIDEO MODE here. The port always opens a
+			# modern window, so this is the 3D render scale instead: at
+			# 640 in a 1920-wide window the world is drawn a third of the
+			# size and stretched, which is what "preco ... je to take
+			# kostrbate" was (Marek 2026-09-12). Better said than found.
+			_show_toast(("Render resolution %s — the world is drawn that "
+				+ "small and stretched to the window. NATIVE draws at the "
+				+ "window's own size, NATIVE X2 above it.")
+				% Settings.RES_NAMES[mode])))
 	panel.add_child(_img_hotspot(DET_EXIT_RECT, s,
 		func() -> void: _show_screen(_screen_options)))
 
@@ -1656,6 +1665,7 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 	var c_smooth := _cell(grid, "Smooth textures")
 	var c_hires := _cell(grid, "Hi-res art (640x480)")
 	var c_dyn := _cell(grid, "Dynamic lights")
+	var c_aa := _cell(grid, "Edge smoothing")
 	var smooth_btn := _option_button("", func() -> void: pass)
 	smooth_btn.custom_minimum_size = Vector2(200, 48)
 	smooth_btn.text = "ON" if Settings.texture_filter else "OFF"
@@ -1681,14 +1691,36 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 		_show_toast("Gunfire and explosions light the world; the geometry "
 			+ "that takes that light reloads on the next map."))
 	c_dyn.add_child(dyn_btn)
+	# MSAA: polygon edges only, so the DOS textures are untouched.
+	var aa_btn := _option_button("", func() -> void: pass)
+	aa_btn.custom_minimum_size = Vector2(200, 48)
+	aa_btn.text = String(Settings.MSAA_NAMES[Settings.msaa])
+	aa_btn.pressed.connect(func() -> void:
+		Settings.set_msaa((Settings.msaa + 1) % Settings.MSAA_NAMES.size())
+		aa_btn.text = String(Settings.MSAA_NAMES[Settings.msaa])
+		_show_toast("Smooths polygon EDGES at once; the textures stay as "
+			+ "DOS drew them."))
+	c_aa.add_child(aa_btn)
 
-	var native := _option_button("NATIVE (FULL WINDOW)", func() -> void:
-		Settings.set_resolution(Settings.RES_NATIVE)
-		_refresh_display_marks())
-	native.set_meta("res_mode", Settings.RES_NATIVE)
+	# Two render scales of the port's own, beside the DOS 320/640 cells
+	# above: the window's size, and twice it scaled back down.
+	var res_row := HBoxContainer.new()
+	res_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	res_row.add_theme_constant_override("separation", 10)
 	_res_buttons.clear()
-	_res_buttons.append(native)
-	c_res.add_child(native)
+	for spec in [[Settings.RES_NATIVE, "NATIVE (FULL WINDOW)"],
+			[Settings.RES_SUPER2, "NATIVE X2 (SHARP)"]]:
+		var rmode: int = int(spec[0])
+		var label: String = String(spec[1])
+		var rb := _option_button(label, func() -> void:
+			Settings.set_resolution(rmode)
+			_refresh_display_marks())
+		rb.custom_minimum_size = Vector2(250, 48)
+		rb.set_meta("res_mode", rmode)
+		rb.set_meta("res_label", label)
+		_res_buttons.append(rb)
+		res_row.add_child(rb)
+	c_res.add_child(res_row)
 
 	# The window, from the Settings autoload (it applies it at start-up).
 	# The title screen kept a second copy in display.cfg and put it back
@@ -1770,7 +1802,8 @@ func _section_label(text: String) -> Label:
 func _refresh_display_marks() -> void:
 	for rb in _res_buttons:
 		var mode: int = int(rb.get_meta("res_mode", -1))
-		rb.text = ("> " if mode == Settings.resolution else "") + "NATIVE (FULL WINDOW)"
+		rb.text = ("> " if mode == Settings.resolution else "") \
+			+ String(rb.get_meta("res_label", "NATIVE (FULL WINDOW)"))
 	for i in _res_marks.size():
 		var m: ColorRect = _res_marks[i]
 		if is_instance_valid(m):
