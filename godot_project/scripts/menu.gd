@@ -1637,17 +1637,19 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 		_res_marks.append(_option_mark(panel, r2, s))
 		var mode: int = i
 		panel.add_child(_img_hotspot(r2, s, func() -> void:
-			Settings.set_resolution(mode)
-			_refresh_display_marks()
 			# DOS switched the VIDEO MODE here. The port always opens a
 			# modern window, so this is the 3D render scale instead: at
 			# 640 in a 1920-wide window the world is drawn a third of the
 			# size and stretched, which is what "preco ... je to take
-			# kostrbate" was (Marek 2026-09-12). Better said than found.
-			_show_toast(("Render resolution %s — the world is drawn that "
-				+ "small and stretched to the window. NATIVE draws at the "
-				+ "window's own size, NATIVE X2 above it.")
-				% Settings.RES_NAMES[mode])))
+			# kostrbate" was (Marek 2026-09-12).
+			#
+			# DOS has no third cell here, so clicking the cell that is
+			# already on turns it back OFF, to the window's own size —
+			# otherwise this panel can set 320/640 and never cancel it.
+			var want: int = Settings.RES_NATIVE if Settings.resolution == mode else mode
+			Settings.set_resolution(want)
+			_refresh_display_marks()
+			_show_toast(_res_hint(want))))
 	panel.add_child(_img_hotspot(DET_EXIT_RECT, s,
 		func() -> void: _show_screen(_screen_options)))
 
@@ -1708,14 +1710,20 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 	res_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	res_row.add_theme_constant_override("separation", 10)
 	_res_buttons.clear()
-	for spec in [[Settings.RES_NATIVE, "NATIVE (FULL WINDOW)"],
-			[Settings.RES_SUPER2, "NATIVE X2 (SHARP)"]]:
+	# ALL FOUR scales in one row, the DOS panel's two included. They are
+	# one setting, and splitting them over two rows with two headings read
+	# as two: pick 640 above and the row below still said NATIVE, so there
+	# was no way back — "uz sa potom neda to rozlisenie zrusit iba
+	# zmazanim z configu" (Marek 2026-09-12).
+	for spec in [[Settings.RES_320, "320 X 200"], [Settings.RES_640, "640 X 480"],
+			[Settings.RES_NATIVE, "NATIVE"], [Settings.RES_SUPER2, "NATIVE X2"]]:
 		var rmode: int = int(spec[0])
 		var label: String = String(spec[1])
 		var rb := _option_button(label, func() -> void:
 			Settings.set_resolution(rmode)
-			_refresh_display_marks())
-		rb.custom_minimum_size = Vector2(250, 48)
+			_refresh_display_marks()
+			_show_toast(_res_hint(rmode)))
+		rb.custom_minimum_size = Vector2(170, 48)
 		rb.set_meta("res_mode", rmode)
 		rb.set_meta("res_label", label)
 		_res_buttons.append(rb)
@@ -1797,6 +1805,20 @@ func _section_label(text: String) -> Label:
 	_dos_font(l, 16)
 	l.add_theme_color_override("font_color", Color(0.62, 0.65, 0.7))
 	return l
+
+## What a render scale actually does, in one line — the 320/640 cells
+## are the DOS VIDEO MODE, which here can only mean "draw the world that
+## small and stretch it", and that surprises everyone who picks one.
+func _res_hint(mode: int) -> String:
+	match mode:
+		Settings.RES_320, Settings.RES_640:
+			return ("Render resolution %s: the world is DRAWN that small and "
+				+ "stretched to the window — click the cell again for the "
+				+ "window's own size.") % Settings.RES_NAMES[mode]
+		Settings.RES_SUPER2:
+			return "Drawn at twice the window and scaled back down: the sharpest, and the slowest."
+		_:
+			return "Drawn at the window's own size."
 
 ## Mark the active resolution / mode button with a leading caret.
 func _refresh_display_marks() -> void:
