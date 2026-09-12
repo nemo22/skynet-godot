@@ -141,8 +141,7 @@ static func parse(bytes: PackedByteArray, mesh_name: String = "") -> Mesh3D:
 	var faces_off: int         = _u32(bytes, 0x3c)
 
 	if vert_count == 0 or face_count == 0: return null
-	if vertex_off0 < 48 or vertex_off0 >= size: return null
-	if faces_off <= vertex_off0 or faces_off > size: return null
+	if faces_off < 48 or faces_off > size: return null
 
 	var frame_stride: int = vert_count * 12
 
@@ -152,12 +151,23 @@ static func parse(bytes: PackedByteArray, mesh_name: String = "") -> Mesh3D:
 	# contiguous-block heuristic: frames packed from vertex_off0 to
 	# faces_off back to back.
 	var frame_offsets := PackedInt32Array()
-	if frame_count_field > 0 and frame_count_field <= 4096 \
+	var have_table: bool = frame_count_field > 0 and frame_count_field <= 4096 \
 			and frame_table_off >= 64 \
-			and frame_table_off + frame_count_field * 16 <= size:
+			and frame_table_off + frame_count_field * 16 <= size
+	if have_table:
+		# The word at +0x30 is NOT "the frame-0 vertex block": it is a
+		# runtime cursor the tools left pointing at whichever frame was
+		# current when the file was written. AVTRMHED.3D (the terminator
+		# avatar's head, v2.6) has it on frame 4 (0x14ae) while its faces
+		# sit at 0xf4, so the old `faces_off <= vertex_off0` guard threw the
+		# whole model away — measured 2026-09-12: 46 frames all in range,
+		# all 18 faces decode. When the frame table is there it is the only
+		# authority on where vertices live, so +0x30 is ignored outright.
 		for fi in frame_count_field:
 			frame_offsets.append(_u32(bytes, frame_table_off + fi * 16))
 	else:
+		if vertex_off0 < 48 or vertex_off0 >= size: return null
+		if faces_off <= vertex_off0: return null
 		var vbytes: int = faces_off - vertex_off0
 		if vbytes < frame_stride or vbytes % frame_stride != 0: return null
 		for fi in (vbytes / frame_stride):

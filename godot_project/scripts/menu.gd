@@ -859,6 +859,8 @@ func _build_netmenu_screen(tex: Variant) -> Control:
 		if n > 0:
 			_nm_select_arena((_nm_arena + 1) % n)))
 	_nm_select_arena(0)
+	# The left box: the body you play as, turning, clickable.
+	_class_model_box(panel, Rect2(8, 35, 121, 124), s)
 
 	# Message box: the fields the DOS screen never had.
 	var row := HBoxContainer.new()
@@ -900,6 +902,201 @@ func _build_netmenu_screen(tex: Variant) -> Control:
 		func() -> void: _show_screen(_screen_netjoin)))
 	return pair[0]
 
+## The left box of the DOS network screen holds a ROTATING 3D MODEL of
+## the body you will play as, and clicking it changes the character ("to
+## nebol portrét postavy ale normálne 3d model ktorý rotoval", Marek
+## 2026-09-12) — there is no portrait art in the archives, the original
+## drew the .3D itself.
+##
+## The bodies come from the DOS avatar table (skynet.EXE file offset
+## 0x84dd4: 13 records of 0x6d bytes, indexed `(actor+0x1f) - 1`, each
+## naming five models — body, head, dropped head, idle body, idle head).
+## Its twelve named characters share exactly THREE bodies: 3x soldier,
+## 4x terminator, 6x female — "ľudia sú tam rôzni - vojak, žena" (Marek
+## 2026-09-12). AVBUTCH.3D lies in the archive but no record names it, so
+## it is not offered here either; records 13/14 are not characters at all
+## but the net vehicles (NETHUMER, NET_HK).
+##
+## Every body is HEADLESS — the head is its own model, and its vertices
+## already sit in the body's coordinate space (measured 2026-09-12: a
+## body tops out at y ~ +16 and AVSOLHED spans +12.4 .. +24.6), so the
+## two meshes hang off ONE origin and the head lands on the neck with no
+## seating offset to guess at. Both carry 46 frames, head frame i
+## belonging with body frame i.
+const CLASS_AVATARS: Array = [
+	{"body": "AVSOLDER.3D", "head": "AVSOLHED.3D", "name": "SOLDIER", "cls": 0},
+	{"body": "AVFEMALE.3D", "head": "AVFEMHED.3D", "name": "WOMAN", "cls": 0},
+	{"body": "AVTRMNTR.3D", "head": "AVTRMHED.3D", "name": "TERMINATOR", "cls": 1},
+]
+
+## Frames 15-24 are the RUN cycle. The avatar meshes have no entry in
+## enemy_anim.gd, so the strip was measured off the vertex data itself
+## (2026-09-12 — identical in every body to two decimals: one authoring,
+## several skins): frame 0 is the reference pose (17.9 u deep, arms at the
+## sides), 1-6 stand still, 7-14 walk (the stride opens and closes, 72.9
+## -> 31.7 -> 72.8 u), 15-24 run (the longest stride at 79 u over the
+## lowest shoulders — a forward lean), 25-28 take a hit, 29-34 die. DOS
+## showed the figure running on the spot: "v dos hre bol ako keby v behu
+## a normálnej velkosti" (Marek 2026-09-12).
+const RUN_FIRST: int = 15
+const RUN_LAST: int = 24
+const RUN_FPS: float = 12.0
+const CLASS_SPIN: float = 0.6            # radians a second
+
+var _class_holder: SubViewportContainer = null
+var _class_cam: Camera3D = null
+var _class_pivot: Node3D = null
+var _class_body: MeshInstance3D = null
+var _class_head: MeshInstance3D = null
+var _class_body_frames: Array = []
+var _class_head_frames: Array = []
+var _class_frame: int = RUN_FIRST
+var _class_t: float = 0.0
+var _class_label: Label = null
+var _class_buttons: Array = []
+var _avatar: int = 0
+
+## A viewport showing the chosen body running on the spot, sized to
+## `rect` of the 320x200 art and clickable: one click, the next character.
+func _class_model_box(panel: Control, rect: Rect2, s: float) -> void:
+	var vp := SubViewport.new()
+	vp.size = Vector2i(int(rect.size.x * s), int(rect.size.y * s))
+	vp.transparent_bg = true
+	# The menu builds its screens once and then only toggles `visible`, so
+	# this box outlives the network screen — draw it only while that screen
+	# is the one on show.
+	vp.render_target_update_mode = SubViewport.UPDATE_WHEN_VISIBLE
+	_class_cam = Camera3D.new()
+	_class_cam.fov = 38.0
+	vp.add_child(_class_cam)
+	_class_pivot = Node3D.new()
+	_class_body = MeshInstance3D.new()
+	_class_head = MeshInstance3D.new()
+	_class_pivot.add_child(_class_body)
+	_class_pivot.add_child(_class_head)
+	vp.add_child(_class_pivot)
+	_class_holder = SubViewportContainer.new()
+	_class_holder.stretch = true
+	_class_holder.position = rect.position * s
+	_class_holder.size = rect.size * s
+	_class_holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_class_holder.add_child(vp)
+	panel.add_child(_class_holder)
+	# The character's name under it, and the whole box as the click target.
+	_class_label = _section_label("")
+	_class_label.position = Vector2(rect.position.x, rect.end.y - 10.0) * s
+	_class_label.size = Vector2(rect.size.x * s, 10.0 * s)
+	panel.add_child(_class_label)
+	panel.add_child(_img_hotspot(rect, s, func() -> void:
+		_pick_avatar(_avatar + 1)))
+	# Building the screen only SHOWS a body; it must not write a choice,
+	# so a saved class survives being looked at.
+	_avatar = _initial_avatar()
+	_show_class_model()
+
+## The body to open on: the saved one when it agrees with the saved class,
+## otherwise a body of that class — the CLASS is what the rules run on, so
+## a config written before this box existed lets the class pick the body.
+func _initial_avatar() -> int:
+	var i: int = Net.local_avatar
+	if i >= 0 and i < CLASS_AVATARS.size() \
+			and int(CLASS_AVATARS[i]["cls"]) == Net.local_class:
+		return i
+	return _first_avatar_of(Net.local_class)
+
+func _first_avatar_of(cls: int) -> int:
+	for k in CLASS_AVATARS.size():
+		if int(CLASS_AVATARS[k]["cls"]) == cls:
+			return k
+	return 0
+
+## Show character `i` (wrapping) and move the gameplay class with it: the
+## terminator body IS the TERMINATOR class, the human bodies are HUMAN.
+func _pick_avatar(i: int) -> void:
+	var n: int = CLASS_AVATARS.size()
+	_avatar = ((i % n) + n) % n
+	Net.set_avatar(_avatar)
+	var cls: int = int(CLASS_AVATARS[_avatar]["cls"])
+	if Net.local_class != cls:
+		Net.set_class(cls)
+	_show_class_model()
+	# The box and the PLAY AS buttons are two views of one choice.
+	for b in _class_buttons:
+		if b != null and is_instance_valid(b):
+			(b as Button).text = Net.CLASS_NAMES[Net.local_class]
+
+func _show_class_model() -> void:
+	var av: Dictionary = CLASS_AVATARS[clampi(_avatar, 0, CLASS_AVATARS.size() - 1)]
+	if _class_label != null and is_instance_valid(_class_label):
+		_class_label.text = String(av["name"])
+	if _class_body == null or not is_instance_valid(_class_body):
+		return
+	_class_body_frames = Assets.mesh_frames(String(av["body"]))
+	_class_head_frames = Assets.mesh_frames(String(av["head"]))
+	if _class_body_frames.is_empty():
+		return
+	_class_frame = RUN_FIRST
+	_class_t = 0.0
+	_apply_class_frame()
+	# Frame the whole run cycle, not the frame that happens to be up: the
+	# stride changes the silhouette by tens of units, and re-framing per
+	# frame would breathe the figure in and out of the box.
+	var box: AABB = _run_bounds(_class_body_frames)
+	if not _class_head_frames.is_empty():
+		box = box.merge(_run_bounds(_class_head_frames))
+	var centre: Vector3 = box.get_center()
+	# One offset for both meshes: that is what keeps the head on the neck.
+	_class_body.position = -centre
+	_class_head.position = -centre
+	# Stand in FRONT of the figure: the avatar bodies face +Z, settled by
+	# eye — a camera on -Z photographed the soldier's back and webbing.
+	# Far enough out that the run cycle fits with room to spare (filling
+	# the box to the edges read as too big: "možno trošku ich zmenšiť",
+	# Marek 2026-09-12), and that spare height is where the name sits.
+	var half: float = maxf(box.size.y, 1.0) * 0.5 * 1.3
+	var dist: float = half / tan(deg_to_rad(_class_cam.fov * 0.5))
+	_class_cam.position = Vector3(0.0, 0.0, dist)
+	_class_cam.rotation = Vector3.ZERO
+	_class_cam.near = 1.0
+	_class_cam.far = dist * 4.0
+
+## Bounds of the run cycle, all its frames merged.
+func _run_bounds(frames: Array) -> AABB:
+	var out := AABB()
+	var have := false
+	for f in range(RUN_FIRST, mini(RUN_LAST, frames.size() - 1) + 1):
+		var am: ArrayMesh = frames[f] as ArrayMesh
+		if am == null:
+			continue
+		out = am.get_aabb() if not have else out.merge(am.get_aabb())
+		have = true
+	if not have and not frames.is_empty() and frames[0] is ArrayMesh:
+		out = (frames[0] as ArrayMesh).get_aabb()
+	return out
+
+func _apply_class_frame() -> void:
+	var f: int = _class_frame
+	if f < _class_body_frames.size() and _class_body.mesh != _class_body_frames[f]:
+		_class_body.mesh = _class_body_frames[f]
+	if f < _class_head_frames.size() and _class_head.mesh != _class_head_frames[f]:
+		_class_head.mesh = _class_head_frames[f]
+
+func _spin_class_model(delta: float) -> void:
+	if _class_pivot == null or not is_instance_valid(_class_pivot):
+		return
+	if _class_holder == null or not _class_holder.is_visible_in_tree():
+		return
+	_class_pivot.rotate_y(CLASS_SPIN * delta)
+	var n: int = RUN_LAST - RUN_FIRST + 1
+	if _class_body_frames.size() <= RUN_FIRST or n <= 1:
+		return
+	_class_t += delta
+	var step: float = 1.0 / RUN_FPS
+	while _class_t >= step:
+		_class_t -= step
+		_class_frame = RUN_FIRST + (_class_frame - RUN_FIRST + 1) % n
+	_apply_class_frame()
+
 ## A toggle showing the local class (HUMAN = fast, fragile; TERMINATOR =
 ## slow, tough, machine vision). Shared by the host and join screens.
 func _class_button() -> Button:
@@ -909,9 +1106,12 @@ func _class_button() -> Button:
 	b.custom_minimum_size = Vector2(190, 36)
 	_dos_font(b)
 	_style_button(b)
+	_class_buttons.append(b)
 	b.pressed.connect(func() -> void:
 		Net.set_class((Net.local_class + 1) % 2)
-		b.text = Net.CLASS_NAMES[Net.local_class]
+		# Carry the model with it, so the box never shows a body of the
+		# class you just turned off.
+		_pick_avatar(_first_avatar_of(Net.local_class))
 		_show_toast("HUMAN: faster, 100 HP.  TERMINATOR: slower, 200 HP, machine vision."))
 	return b
 
@@ -1072,6 +1272,7 @@ func _on_net_failed(reason: String) -> void:
 		_join_status.text = reason
 
 func _process(delta: float) -> void:
+	_spin_class_model(delta)                 # the body in the network box turns
 	var on_join: bool = _screen_join != null and _screen_join.visible
 	if on_join and _discovery == null:
 		_discovery = NetDiscovery.new()

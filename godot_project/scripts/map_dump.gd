@@ -26,6 +26,9 @@ func _ready() -> void:
 		preload("res://tools/objective_census.gd").run(String(cli["objectives"]))
 	if cli.has("borders"):
 		preload("res://tools/border_census.gd").run(String(cli["borders"]))
+	if cli.has("modelshot"):
+		await preload("res://tools/model_shot.gd").run(String(cli["modelshot"]),
+			out_dir, int(cli.get("shotsize", 320)))
 	if cli.has("maps"):
 		var bsa := BSAReader.new()
 		bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant)

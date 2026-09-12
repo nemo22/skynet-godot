@@ -153,6 +153,7 @@ func _load_cfg() -> void:
 	if cfg.load(CFG_PATH) == OK:
 		local_name = String(cfg.get_value("net", "name", local_name))
 		local_class = clampi(int(cfg.get_value("net", "class", local_class)), 0, 1)
+		local_avatar = maxi(int(cfg.get_value("net", "avatar", local_avatar)), 0)
 
 func save_name(n: String) -> void:
 	local_name = n.strip_edges().substr(0, 16)
@@ -900,6 +901,21 @@ func _poll_discovery() -> void:
 # ---------------------------------------------------------------------
 # Player classes
 # ---------------------------------------------------------------------
+
+## Which body the player picked in the network screen's model box. The
+## two CLASSES above are what the rules care about; this is the LOOK, and
+## DOS keeps the two apart the same way — its avatar table (skynet.EXE
+## 0x84dd4) names twelve characters that share three bodies. Menu-side
+## (menu.gd CLASS_AVATARS) decides which body a given index is; here it
+## is only remembered between sessions.
+var local_avatar: int = 0
+
+func set_avatar(i: int) -> void:
+	local_avatar = maxi(i, 0)
+	var cfg := ConfigFile.new()
+	cfg.load(CFG_PATH)
+	cfg.set_value("net", "avatar", local_avatar)
+	cfg.save(CFG_PATH)
 
 func class_of(id: int) -> int:
 	if players.has(id):
