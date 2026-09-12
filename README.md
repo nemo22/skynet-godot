@@ -8,6 +8,10 @@ the HMI music, all decoded at run time.
 
 Nothing from the original games is included here. You need the games.
 
+![Out of the canyon, mission 1](screenshots/canyon_exit.gif)
+
+*Mission one: out of the canyon, and the complex comes into view.*
+
 ## Screenshots
 
 | | |
