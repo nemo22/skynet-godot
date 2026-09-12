@@ -15,11 +15,14 @@ Nothing from the original games is included here. You need the games.
 | ![The canyon on mission 1](screenshots/map210.png) | ![The ruined city](screenshots/map230.png) |
 | ![Inside Cyberdyne](screenshots/map232.png) | ![The jeep](screenshots/map260.png) |
 | ![The HK over the highway](screenshots/map270.png) | ![Deathmatch through machine vision](screenshots/deathmatch.png) |
+| ![The network setup screen](screenshots/netmenu.png) | ![The render settings](screenshots/settings.png) |
 
 Left to right, top to bottom: mission 1's canyon under the moon; the
 ruined city; the Cyberdyne building; the jeep with its own HUD; the HK
-flying the highway with the convoy ahead; and a deathmatch seen through
-the TERMINATOR class's machine vision.
+flying the highway with the convoy ahead; a deathmatch seen through the
+TERMINATOR class's machine vision; the network setup screen, whose left
+box turns the body you will play as; and the render settings, cut out of
+the original dialog art.
 
 ## What works
 
@@ -36,6 +39,13 @@ the TERMINATOR class's machine vision.
 - **Vehicles** — the jeep and the HK, with the DOS cockpits.
 - **Deathmatch** over LAN with bots, HUMAN and TERMINATOR classes,
   machine vision and the motion detector, the original arenas.
+- **Looks the original could not manage**, each off by default so the
+  port still starts as DOS drew it: dynamic lights from the gunfire, the
+  explosions and the rounds in flight (which also lights the street
+  lamps the DOS renderer only drew as bright pixels — 93 of them on the
+  highway map), edge smoothing, smooth texture filtering, the game's own
+  640x480 HUD and weapon art, a brightness dial, and a render scale that
+  can go *above* the window.
 - **Save and load**, the pause menu, the DOS options screens, the
   automap, statistics.
 - **Future Shock** data works too: point the game at that install and it
