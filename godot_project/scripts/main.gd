@@ -27,6 +27,7 @@ const DmGame      := preload("res://scripts/net/dm_game.gd")
 const WldTerrain  := preload("res://scripts/loaders/wld_terrain.gd")
 const LevelScene  := preload("res://scripts/level_scene.gd")
 const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
+const CamPath     := preload("res://tools/cam_path.gd")
 
 ## Map to load on startup (falls back to first map if missing).
 @export var initial_map: String = "MAP.210"
@@ -395,6 +396,27 @@ func _slice(spec: String) -> void:
 		print("%6d %s" % [y, row])
 		y -= step
 
+## Drive the scripted camera one frame. With --write-movie the delta is
+## exactly 1/fps, so the same path renders to the same frames every time.
+## The run quits when the path ends, which closes the movie file.
+func _campath_step(delta: float) -> void:
+	if _campath == null or _campath_t < 0.0 or not is_instance_valid(player):
+		return
+	var t0: float = _campath_t
+	_campath_t += delta
+	var p: Dictionary = _campath.call("pose", _campath_t)
+	if p.is_empty():
+		return
+	player.global_position = (p["pos"] as Vector3) - Vector3(0.0, EYE_HEIGHT, 0.0)
+	player.velocity = Vector3.ZERO
+	player.set_view(float(p["yaw"]), float(p["pitch"]))
+	for _i in (_campath.call("events", t0, _campath_t) as Array):
+		player.call("_shoot")
+	if _campath_t > float(_campath.call("duration")) + 0.25:
+		print("[campath] done at %.2f s" % _campath_t)
+		_campath = null
+		get_tree().quit()
+
 ## --pos (camera position, like the DOS markers) / --yaw / --pitch /
 ## --noclip: place the player for an automated run.
 func _cli_place() -> void:
@@ -429,6 +451,22 @@ func _cli_place() -> void:
 		var yaw := deg_to_rad(float(_cli.get("yaw", rad_to_deg(player.rotation.y))))
 		var pitch := deg_to_rad(float(_cli.get("pitch", 0.0)))
 		player.set_view(yaw, pitch)
+	# --campath=FILE|auto:...: fly the camera along a scripted path, for a
+	# RECORDED promo clip (see tools/cam_path.gd). Godot's own Movie Maker
+	# turns real-time sync off, so nobody can play along while it records
+	# — the camera has to be driven, and driving it also means the shot
+	# comes out the same after every change to the game.
+	if _cli.has("campath") and _campath == null:
+		var cp: RefCounted = CamPath.new()
+		if cp.call("load_spec", String(_cli["campath"])):
+			_campath = cp
+			_campath_t = 0.0
+			player.noclip = true
+			player.velocity = Vector3.ZERO
+			player.set("input_locked", true)
+			cp.call("resolve_auto", player.global_position + Vector3(0.0, EYE_HEIGHT, 0.0),
+				player.rotation.y, 0.0)
+			print("[campath] %.1f s, %d keys" % [cp.call("duration"), (cp.get("keys") as Array).size()])
 
 ## `--key=value` / `--flag` switches from both argument lists.
 static func _parse_cli() -> Dictionary:
@@ -780,7 +818,12 @@ func _load_current() -> void:
 	# Mission "main" maps open with the briefing screen; the level itself
 	# loads only when the player presses BEGIN. Other maps load directly.
 	# Automation runs (screenshots) skip the briefing.
-	if (_cli.has("screenshot") and not _cli.has("tab")) or _cli.has("no-briefing") or Net.active:
+	# A scripted camera run has nobody to press a key on the briefing, and
+	# with --write-movie it would record that screen until the disk filled
+	# (it recorded 912 MB of it before I noticed), so --campath skips it
+	# like --screenshot does.
+	if (_cli.has("screenshot") and not _cli.has("tab")) or _cli.has("no-briefing") \
+			or _cli.has("campath") or Net.active:
 		_begin_level(name)
 	elif not _maybe_show_briefing(name):
 		_begin_level(name)
@@ -1551,6 +1594,9 @@ func _apply_render_env(level: LevelLoader.Level, env: Environment, fill: Color) 
 ## Pin the sky mesh to the camera position each frame (DOS FUN_00133bbb
 ## re-centres SKY_SKY.3D on the camera). Orientation stays fixed so the
 ## moon/stars remain world-anchored as the player looks around.
+## --campath: the scripted camera, and how far along it we are.
+var _campath: RefCounted = null
+var _campath_t: float = -1.0
 var _walk_target := Vector2.ZERO
 var _walk_route: Array = []
 var _walk_stuck: float = 0.0
@@ -1626,6 +1672,7 @@ func _walk_step(delta: float) -> void:
 
 func _process(delta: float) -> void:
 	_walk_step(delta)
+	_campath_step(delta)
 	if _current_level != null and _current_level.sky != null \
 			and is_instance_valid(_current_level.sky):
 		_current_level.sky.position = camera.global_position
