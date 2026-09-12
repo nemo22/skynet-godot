@@ -4,6 +4,8 @@
 
 extends Control
 
+const ViewerExit := preload("res://scripts/viewer_exit.gd")
+
 const BSAReader := preload("res://scripts/loaders/bsa_reader.gd")
 
 const RAW_SAMPLE_RATE: int = 11025
@@ -18,6 +20,7 @@ var _names: Array[String] = []
 var _selected: int = -1
 
 func _ready() -> void:
+	ViewerExit.add_hint(self)
 	_bsa = BSAReader.new()
 	if not _bsa.open(SkynetPaths.gamedata_path("MDMDSFXS.BSA"), SkynetPaths.variant):
 		status.text = "ERROR opening MDMDSFXS.BSA"; return
@@ -49,6 +52,8 @@ func _on_activated(idx: int) -> void:
 	_play(idx)
 
 func _unhandled_input(event: InputEvent) -> void:
+	if ViewerExit.handled(self, event):
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_ENTER, KEY_SPACE:

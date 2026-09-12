@@ -321,6 +321,8 @@ var _vm_cache: Dictionary = {}        # weapon idx → Array[ImageTexture]
 ## draws at half the scale (Assets.cfa_is_hires decides which set).
 ## this, so the width tells the two sets apart.
 var _vm_hires: Dictionary = {}
+## weapon idx → the hi-res art's own x/y, (0,0) when it carries none.
+var _vm_off: Dictionary = {}
 var _vm_idx: int = 0
 var _vm_t: float = 0.0
 var _vm_firing: bool = false
@@ -1879,6 +1881,7 @@ func _load_viewmodels() -> void:
 		# file's own layout says that — not its width: the 640x480
 		# WEAPON13 is 145x194, narrower than several 320x200 viewmodels.
 		_vm_hires[i] = hires and Assets.cfa_is_hires(cfa)
+		_vm_off[i] = Assets.cfa_offset(cfa) if bool(_vm_hires[i]) else Vector2i.ZERO
 		print("[weapon] %s — %d viewmodel frames%s"
 			% [cfa, frames.size(), " (hi-res)" if _vm_hires.get(i, false) else ""])
 
@@ -1898,10 +1901,12 @@ func _act_on(event: InputEvent) -> bool:
 
 ## Advance the viewmodel animation and keep it pinned bottom-centre.
 func _process(delta: float) -> void:
+	_step_death_view(delta)
 	if _viewmodel == null:
 		return
 	var frames: Array = _vm_cache.get(_weapon_idx, []) if vehicle == VEH_FOOT else []
-	_viewmodel.visible = not frames.is_empty()
+	# A corpse holds no gun.
+	_viewmodel.visible = not frames.is_empty() and _death_t < 0.0
 	if frames.is_empty():
 		_vm_firing = false
 		return
@@ -1921,6 +1926,43 @@ func _process(delta: float) -> void:
 				break
 	_viewmodel.texture = frames[_vm_idx]
 	_layout_viewmodel()
+
+## --- the death view ---------------------------------------------------
+## In a deathmatch the message said YOU DIED and the body went on
+## standing: "asi by som ho zviezol k zemy a aj pohlad nech ide na chvilu
+## k zemi kym sa respawne" (Marek 2026-09-12). The DOS original is no
+## guide — it wipes the screen — so this is the plain reading of it: the
+## eye sinks from 75 to the floor and the head tips over, then holds
+## there until the server respawns you. dm_game drives it.
+const DEATH_EYE: float = 14.0
+const DEATH_FALL: float = 0.5             # seconds to go down
+const DEATH_ROLL: float = 0.35            # radians the head tips
+const DEATH_PITCH: float = -0.22          # and looks along the ground
+var _death_t: float = -1.0                # -1 = alive
+
+func begin_death_view() -> void:
+	if _death_t < 0.0:
+		_death_t = 0.0
+
+func end_death_view() -> void:
+	if _death_t < 0.0:
+		return
+	_death_t = -1.0
+	if _cam != null:
+		_cam.position.y = float(VEH_EYE[VEH_FOOT])
+		_cam.rotation = Vector3(_pitch, 0.0, 0.0)
+
+func is_death_view() -> bool:
+	return _death_t >= 0.0
+
+func _step_death_view(delta: float) -> void:
+	if _death_t < 0.0 or _cam == null:
+		return
+	_death_t = minf(_death_t + delta, DEATH_FALL)
+	var k: float = ease(_death_t / DEATH_FALL, 0.45)   # drops fast, settles
+	_cam.position.y = lerpf(float(VEH_EYE[VEH_FOOT]), DEATH_EYE, k)
+	_cam.rotation.x = lerpf(_pitch, DEATH_PITCH, k)
+	_cam.rotation.z = DEATH_ROLL * k
 
 ## How much of the window bottom the HUD bar takes — the scene knows the
 ## panel's scaled height.
@@ -1944,15 +1986,32 @@ func _layout_viewmodel() -> void:
 	var x_origin: float = (vp.x - 320.0 * s) * 0.5
 	var vx: float = float(_weapons[_weapon_idx].get("vx", 80))
 	_viewmodel.size = ts
-	# Hi-res art carries twice the DOS pixels, so it draws at half the
-	# scale — otherwise the gun would fill half the screen.
-	var ss: float = s * (0.5 if bool(_vm_hires.get(_weapon_idx, false)) else 1.0)
+	# The 640x480 art is NOT a doubled copy of the 320x200 one. DOS's
+	# 320x200 mode has TALL pixels and the hi-res art is drawn square, so
+	# its content comes out twice as wide but 2.4x as tall — measured on
+	# WEAPON00, whose gun is 151x60 in one set and 302x144 in the other.
+	# Drawn at half scale it was a fifth too tall, and since the gun
+	# stands on the HUD bar the excess went upward: "tie zbrane su
+	# zobrazene ako keby mierili hore" (Marek 2026-09-12). So the hi-res
+	# art gets its own screen — 640x480 fitted to the window height, and
+	# the art's own x where it carries one (WEAPON00 reads 37 against a
+	# 603-wide frame: 37 + 603 = 640, flush with the right edge).
+	var hires: bool = bool(_vm_hires.get(_weapon_idx, false))
+	var ss: float = s
+	var x: float = x_origin + vx * s
+	if hires:
+		ss = vp.y / 480.0
+		var off: Vector2i = _vm_off.get(_weapon_idx, Vector2i.ZERO)
+		var hx: float = float(off.x) if off.x > 0 else vx * 2.0
+		x = (vp.x - 640.0 * ss) * 0.5 + hx * ss
 	_viewmodel.scale = Vector2(ss, ss)
 	# The gun stands ON the HUD bar, not behind it. DOS draws the world
 	# in a 320x160 viewport with the 40 px panel below; the port's panel
 	# is the same art scaled by WIDTH (main._layout_hud), so its top edge
 	# is where the weapon's bottom belongs. Anchoring to the window
 	# bottom (as this did) hid all but the muzzle behind the panel.
+	# The gun's own content is flush with the bottom of its frame in both
+	# sets (measured), so standing the FRAME on the bar stands the gun on
+	# it either way.
 	var hud_h: float = _hud_height(vp)
-	_viewmodel.position = Vector2(
-		x_origin + vx * s, vp.y - hud_h - ts.y * ss + HUD_OVERLAP * s)
+	_viewmodel.position = Vector2(x, vp.y - hud_h - ts.y * ss + HUD_OVERLAP * s)

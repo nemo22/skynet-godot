@@ -4,6 +4,8 @@
 
 extends Node3D
 
+const ViewerExit := preload("res://scripts/viewer_exit.gd")
+
 const BSAReader    := preload("res://scripts/loaders/bsa_reader.gd")
 const Mesh3D       := preload("res://scripts/loaders/mesh_3d.gd")
 const Palette      := preload("res://scripts/loaders/palette.gd")
@@ -35,6 +37,7 @@ var _dist: float  = 5.0
 var _dragging: bool = false
 
 func _ready() -> void:
+	ViewerExit.add_hint(self)
 	var imgs := BSAReader.new()
 	if not imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"), SkynetPaths.variant):
 		status.text = "ERROR opening MDMDIMGS.BSA"; return
@@ -198,6 +201,8 @@ func _apply_camera() -> void:
 	camera.position = Vector3(0, 0, _dist)
 
 func _unhandled_input(event: InputEvent) -> void:
+	if ViewerExit.handled(self, event):
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_LEFT:     _show(_idx - 1)

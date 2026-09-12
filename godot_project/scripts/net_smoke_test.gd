@@ -156,6 +156,22 @@ func _run() -> void:
 	Net.set_class(was_class)                  # leave the player's own choice alone
 	if dm_node != null:
 		dm_node.call("_apply_local_class")
+
+	# Dying used to print YOU DIED and leave the player standing ("ostane
+	# stat", Marek 2026-09-12). Driving it straight rather than waiting for
+	# a bot to manage the kill: the eye must go down, and come back.
+	var cam: Camera3D = player.get_viewport().get_camera_3d()
+	var eye0: float = cam.global_position.y if cam != null else 0.0
+	player.call("begin_death_view")
+	for _f in 40:                             # past DEATH_FALL (0.5 s)
+		await get_tree().process_frame
+	var eye1: float = cam.global_position.y if cam != null else 0.0
+	_check(cam != null and eye1 < eye0 - 30.0,
+		"death drops the view to the ground (eye %.0f → %.0f)" % [eye0, eye1])
+	player.call("end_death_view")
+	await get_tree().process_frame
+	var eye2: float = cam.global_position.y if cam != null else 0.0
+	_check(absf(eye2 - eye0) < 2.0, "and the respawn stands it back up (%.0f)" % eye2)
 	# Teleport beside a bot and shoot it: the hit must reach the server.
 	var target: Node3D = null
 	for a in avatars:

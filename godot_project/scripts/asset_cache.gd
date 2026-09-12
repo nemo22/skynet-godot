@@ -401,17 +401,31 @@ func cfa_frames(name: String, hires: bool = false) -> Array:
 ## the frames, so a warm disk cache still gets a straight answer; memoised
 ## per session.
 static var _cfa_hires_memo: Dictionary = {}
+static var _cfa_offset_memo: Dictionary = {}
 func cfa_is_hires(name: String) -> bool:
 	if _cfa_hires_memo.has(name):
 		return bool(_cfa_hires_memo[name])
-	var out: bool = false
+	_read_hires_header(name)
+	return bool(_cfa_hires_memo.get(name, false))
+
+## The 640x480 art's own x/y placement, (0, 0) when it has none.
+func cfa_offset(name: String) -> Vector2i:
+	if not _cfa_offset_memo.has(name):
+		_read_hires_header(name)
+	return _cfa_offset_memo.get(name, Vector2i.ZERO)
+
+func _read_hires_header(name: String) -> void:
+	var hires: bool = false
+	var off := Vector2i.ZERO
 	var b := BSAReader.new()
 	if b.open(SkynetPaths.gamedata_path("MDMDHRES.BSA"), SkynetPaths.variant):
 		var bytes: PackedByteArray = b.read(name)
 		b.close()
-		out = CFAFile.is_hires(bytes)
-	_cfa_hires_memo[name] = out
-	return out
+		hires = CFAFile.is_hires(bytes)
+		if hires:
+			off = CFAFile.hires_offset(bytes)
+	_cfa_hires_memo[name] = hires
+	_cfa_offset_memo[name] = off
 
 ## Editor scene of a map (built on demand, saved under converted/maps/).
 ## The editor cannot use resources outside res://, so the project keeps

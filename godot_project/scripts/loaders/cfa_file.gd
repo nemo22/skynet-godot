@@ -54,6 +54,17 @@ static func hires_frame_count(bytes: PackedByteArray) -> int:
 static func is_hires(bytes: PackedByteArray) -> bool:
 	return hires_frame_count(bytes) > 0
 
+## The 640x480 layout's own x/y, which the 320x200 one does not carry.
+## WEAPON00 reads 37/142 against a 603x338 frame — 37+603 = 640 and
+## 142+338 = 480, so for that one it is plainly where the art sits on a
+## 640x480 screen. Others (WEAPON04 at 63/4) do not land on an edge, so
+## the field is trusted only when it is non-zero and the caller has a
+## fallback. Returns (0, 0) for the 16-bit layout.
+static func hires_offset(bytes: PackedByteArray) -> Vector2i:
+	if hires_frame_count(bytes) <= 0:
+		return Vector2i.ZERO
+	return Vector2i(bytes.decode_u32(0), bytes.decode_u32(4))
+
 
 ## Decode a .CFA buffer into an Array of ImageTexture, one per frame
 ## (or of Image when `as_images` — the asset cache stores those).

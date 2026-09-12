@@ -224,6 +224,8 @@ func _on_respawned(id: int, pos: Vector3, yaw: float) -> void:
 	if id == Net.local_id:
 		_spawned = true
 		_dead_local = false
+		if player.has_method("end_death_view"):
+			player.call("end_death_view")
 		player.set_vehicle(0)
 		player.set_spawn(pos, yaw, true)
 		_apply_local_class()
@@ -359,6 +361,8 @@ func _on_died(victim: int, killer: int, weapon: int) -> void:
 		player.health = 0.0
 		player.velocity = Vector3.ZERO
 		player.set("input_locked", true)
+		if player.has_method("begin_death_view"):
+			player.call("begin_death_view")
 		Audio.play_sfx("EXPLO2.RAW", -2.0)
 		var who: String = "YOU DIED" if killer == victim or killer <= 0 else "KILLED BY %s" % Net.name_of(killer)
 		_center_msg(who, Net.RESPAWN_DELAY + 1.0)

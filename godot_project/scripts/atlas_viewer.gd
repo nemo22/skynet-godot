@@ -5,6 +5,8 @@
 
 extends Control
 
+const ViewerExit := preload("res://scripts/viewer_exit.gd")
+
 const BSAReader  := preload("res://scripts/loaders/bsa_reader.gd")
 const Palette    := preload("res://scripts/loaders/palette.gd")
 const TextureNNN := preload("res://scripts/loaders/texture_nnn.gd")
@@ -22,6 +24,7 @@ var _records_total: int = 0
 var _records_failed: int = 0
 
 func _ready() -> void:
+	ViewerExit.add_hint(self)
 	# Load the shared palette from MDMDIMGS.BSA.
 	var imgs := BSAReader.new()
 	if not imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"), SkynetPaths.variant):
@@ -110,3 +113,7 @@ func _make_tile(arch: int, rec: int, name: String, w: int, h: int,
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(lbl)
 	return box
+
+func _unhandled_input(event: InputEvent) -> void:
+	if ViewerExit.handled(self, event):
+		return
