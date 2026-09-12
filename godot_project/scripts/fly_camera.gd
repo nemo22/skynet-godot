@@ -317,6 +317,11 @@ var _pools: Dictionary = {}          # pool id → rounds left
 var _vm_layer: CanvasLayer = null
 var _viewmodel: TextureRect = null
 var _vm_cache: Dictionary = {}        # weapon idx → Array[ImageTexture]
+## weapon idx → true when its frames came from the 640x480 set, which
+## draws at half the scale. The 320x200 viewmodels are all narrower than
+## this, so the width tells the two sets apart.
+var _vm_hires: Dictionary = {}
+const HIRES_VM_MIN_WIDTH: float = 200.0
 var _vm_idx: int = 0
 var _vm_t: float = 0.0
 var _vm_firing: bool = false
@@ -1858,14 +1863,23 @@ func _build_viewmodel() -> void:
 ## Load the .CFA viewmodel frames for every weapon that names one
 ## (WEAPON*.CFA in MDMDIMGS.BSA).
 func _load_viewmodels() -> void:
+	var hires: bool = bool(Settings.hires_weapons)
+	_vm_hires.clear()
 	for i in _weapons.size():
 		var cfa: String = String(_weapons[i].get("cfa", ""))
 		if cfa.is_empty():
 			continue
-		var frames: Array = Assets.cfa_frames(cfa)
-		if not frames.is_empty():
-			_vm_cache[i] = frames
-			print("[weapon] %s — %d viewmodel frames" % [cfa, frames.size()])
+		var frames: Array = Assets.cfa_frames(cfa, hires)
+		if frames.is_empty():
+			continue
+		_vm_cache[i] = frames
+		# The 640x480 art is twice the DOS pixels, so it draws at half
+		# the scale (see _layout_viewmodel) — otherwise the gun doubles
+		# in size. A weapon the hi-res set lacks falls back on its own.
+		var wide: bool = hires and frames[0] != null 			and (frames[0] as Texture2D).get_size().x > HIRES_VM_MIN_WIDTH
+		_vm_hires[i] = hires and wide
+		print("[weapon] %s — %d viewmodel frames%s"
+			% [cfa, frames.size(), " (hi-res)" if _vm_hires.get(i, false) else ""])
 
 ## The one-shot actions that can sit on a key OR a mouse button. True
 ## when the event was one of them.
@@ -1929,7 +1943,10 @@ func _layout_viewmodel() -> void:
 	var x_origin: float = (vp.x - 320.0 * s) * 0.5
 	var vx: float = float(_weapons[_weapon_idx].get("vx", 80))
 	_viewmodel.size = ts
-	_viewmodel.scale = Vector2(s, s)
+	# Hi-res art carries twice the DOS pixels, so it draws at half the
+	# scale — otherwise the gun would fill half the screen.
+	var ss: float = s * (0.5 if bool(_vm_hires.get(_weapon_idx, false)) else 1.0)
+	_viewmodel.scale = Vector2(ss, ss)
 	# The gun stands ON the HUD bar, not behind it. DOS draws the world
 	# in a 320x160 viewport with the 40 px panel below; the port's panel
 	# is the same art scaled by WIDTH (main._layout_hud), so its top edge
@@ -1937,4 +1954,4 @@ func _layout_viewmodel() -> void:
 	# bottom (as this did) hid all but the muzzle behind the panel.
 	var hud_h: float = _hud_height(vp)
 	_viewmodel.position = Vector2(
-		x_origin + vx * s, vp.y - hud_h - ts.y * s + HUD_OVERLAP * s)
+		x_origin + vx * s, vp.y - hud_h - ts.y * ss + HUD_OVERLAP * s)

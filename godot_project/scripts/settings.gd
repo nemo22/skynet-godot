@@ -75,6 +75,23 @@ const BRIGHTNESS_MIN: float = 0.5
 const BRIGHTNESS_MAX: float = 1.8
 var brightness_dos: float = 1.0
 
+## Two looks the original could not offer, both OFF by default so the
+## port still starts as DOS drew it:
+##   hires_weapons — the 640x480 WEAPON*.CFA of MDMDHRES.BSA for the gun
+##                   in your hands (Marek asked for them, 2026-09-11)
+##   texture_filter — smooth (linear) texture filtering instead of the
+##                   software renderer's nearest sampling
+var hires_weapons: bool = false
+var texture_filter: bool = false
+
+func set_hires_weapons(on: bool) -> void:
+	hires_weapons = on
+	save()
+
+func set_texture_filter(on: bool) -> void:
+	texture_filter = on
+	save()
+
 func _ready() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(CFG_PATH) == OK:
@@ -87,6 +104,8 @@ func _ready() -> void:
 		window_size = int(cfg.get_value("video", "window_size", 0))
 		brightness_dos = clampf(float(cfg.get_value("video", "brightness_dos", 1.0)),
 			BRIGHTNESS_MIN, BRIGHTNESS_MAX)
+		hires_weapons = bool(cfg.get_value("video", "hires_weapons", false))
+		texture_filter = bool(cfg.get_value("video", "texture_filter", false))
 	get_tree().root.size_changed.connect(apply_resolution)
 	get_window().content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
 	apply_window()
@@ -101,6 +120,8 @@ func save() -> void:
 	cfg.set_value("video", "window_mode", window_mode)
 	cfg.set_value("video", "window_size", window_size)
 	cfg.set_value("video", "brightness_dos", brightness_dos)
+	cfg.set_value("video", "hires_weapons", hires_weapons)
+	cfg.set_value("video", "texture_filter", texture_filter)
 	cfg.save(CFG_PATH)
 
 ## The multiplier on the DOS gamma.

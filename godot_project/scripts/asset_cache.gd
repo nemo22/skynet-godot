@@ -358,13 +358,22 @@ func sound(name: String, loop: bool, builder: Callable) -> AudioStreamWAV:
 	return fetch("sfx", name + ("_L" if loop else ""), builder) as AudioStreamWAV
 
 ## Viewmodel frames of a WEAPONnn.CFA as Array[Texture2D].
-func cfa_frames(name: String) -> Array:
-	var pack: Resource = fetch("cfa", name, func() -> Resource:
+## `hires`: take the frame from the 640x480 set in MDMDHRES.BSA when it
+## has one (the weapon viewmodels do), falling back to the 320x200 art.
+## The two sets are cached apart — same key, different kind — or the
+## first one built would answer for both.
+func cfa_frames(name: String, hires: bool = false) -> Array:
+	var pack: Resource = fetch("cfa_hi" if hires else "cfa", name, func() -> Resource:
 		var imgs := BSAReader.new()
-		if not imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"), SkynetPaths.variant):
-			return null
-		var bytes := imgs.read(name)
-		imgs.close()
+		var arcs: Array = ["MDMDHRES.BSA", "MDMDIMGS.BSA"] if hires else ["MDMDIMGS.BSA"]
+		var bytes := PackedByteArray()
+		for arc in arcs:
+			if not imgs.open(SkynetPaths.gamedata_path(arc), SkynetPaths.variant):
+				continue
+			bytes = imgs.read(name)
+			imgs.close()
+			if not bytes.is_empty():
+				break
 		if bytes.is_empty():
 			return null
 		var frames: Array = CFAFile.parse(bytes, palette(), true)

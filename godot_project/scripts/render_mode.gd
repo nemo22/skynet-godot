@@ -15,6 +15,13 @@ extends Node
 func style(mat: BaseMaterial3D, kind: String) -> void:
 	if mat == null:
 		return
-	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	# DOS sampled nearest; the SMOOTH TEXTURES setting asks for linear
+	# with mipmaps instead (the player's choice, not the original's).
+	var smooth: bool = false
+	var s: Node = get_node_or_null("/root/Settings")
+	if s != null:
+		smooth = bool(s.get("texture_filter"))
+	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS \
+		if smooth else BaseMaterial3D.TEXTURE_FILTER_NEAREST
 	if kind == "sky" or kind == "sprite":
 		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED

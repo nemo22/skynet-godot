@@ -1451,6 +1451,25 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 	var c_res := _cell(grid, "Render resolution")
 	var c_bright := _cell(grid, "Brightness")
 	var c_window := _cell(grid, "Window")
+	# Two things the original could not do, both off by default.
+	var c_smooth := _cell(grid, "Smooth textures")
+	var c_hires := _cell(grid, "Hi-res weapons")
+	var smooth_btn := _option_button("", func() -> void: pass)
+	smooth_btn.custom_minimum_size = Vector2(200, 48)
+	smooth_btn.text = "ON" if Settings.texture_filter else "OFF"
+	smooth_btn.pressed.connect(func() -> void:
+		Settings.set_texture_filter(not Settings.texture_filter)
+		smooth_btn.text = "ON" if Settings.texture_filter else "OFF"
+		_show_toast("Textures reload on the next map."))
+	c_smooth.add_child(smooth_btn)
+	var hires_btn := _option_button("", func() -> void: pass)
+	hires_btn.custom_minimum_size = Vector2(200, 48)
+	hires_btn.text = "ON" if Settings.hires_weapons else "OFF"
+	hires_btn.pressed.connect(func() -> void:
+		Settings.set_hires_weapons(not Settings.hires_weapons)
+		hires_btn.text = "ON" if Settings.hires_weapons else "OFF"
+		_show_toast("The 640x480 weapon art loads on the next start."))
+	c_hires.add_child(hires_btn)
 
 	var native := _option_button("NATIVE (FULL WINDOW)", func() -> void:
 		Settings.set_resolution(Settings.RES_NATIVE)
