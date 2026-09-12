@@ -166,6 +166,8 @@ var _rebind_labels: Dictionary = {}    # action -> Label showing the key
 # DETAIL screen state.
 var _res_buttons: Array[Button] = []
 var _mode_buttons: Array[Button] = []
+## Every value box's repaint closure, so one call refreshes the screen.
+var _field_paints: Array[Callable] = []
 # Cached generated teal-metal panel style (built on first use).
 var _panel_sb: StyleBoxTexture = null
 
@@ -465,6 +467,9 @@ func _build() -> void:
 		bar.anchor_bottom = BAR_H / IMG_H
 		add_child(bar)
 
+	# Cut the dialog styles out of the original art BEFORE any screen is
+	# built — every panel and button below asks for them.
+	_prepare_art_styles(art.get("DETAIL"))
 	_screen_main = _build_main_screen()
 	if not in_game:
 		_screen_newgame = _build_newgame_screen(art.get("NEWGAME"))
@@ -1602,64 +1607,37 @@ func _img_hotspot(rect: Rect2, s: float, cb: Callable) -> Button:
 ## haze in (Settings.fog_scale) and RESOLUTION picks the 3D render
 ## resolution, 320 or 640 pixels wide stretched up — the chunky software
 ## look. NATIVE and the window settings below are the port's additions.
-func _build_display_screen(detail_tex: Variant) -> Control:
+func _build_display_screen(_detail_tex: Variant) -> Control:
 	var pair := _panel_screen()
 	var vb: VBoxContainer = pair[1]
-	var s := DET_PANEL_SCALE
-
-	var panel := Control.new()
-	panel.custom_minimum_size = Vector2(198.0 * s, 102.0 * s)
-	panel.size_flags_horizontal = Control.SIZE_SHRINK_CENTER   # the art's own width
-	vb.add_child(panel)
-	if detail_tex != null:
-		var pic := TextureRect.new()
-		pic.texture = detail_tex
-		pic.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-		pic.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		pic.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		panel.add_child(pic)
-	else:
-		panel.add_child(_heading("RENDER DETAIL"))
-
+	vb.add_child(_heading("RENDER DETAIL"))
+	# DETAIL.IMG itself is no longer ON this screen. Its two rows of
+	# hotspots sat above the port's own dialog and the two together read as
+	# two screens in one ("tymto novym dialogom by som komplet nahradil ten
+	# stary render detail", Marek 2026-09-12). Nothing of the original's
+	# look is lost: the dialog below is CUT FROM that very art (see
+	# _prepare_art_styles) and both of its rows are cells in it now.
 	_detail_marks.clear()
-	for i in DET_LEVEL_RECTS.size():
-		var r: Rect2 = DET_LEVEL_RECTS[i]
-		_detail_marks.append(_option_mark(panel, r, s))
-		var lvl: int = i
-		panel.add_child(_img_hotspot(r, s, func() -> void:
-			Settings.set_detail(lvl)
-			_refresh_option_marks()
-			_show_toast("Render detail: %s" % Settings.LEVEL_NAMES[lvl])))
-
 	_res_marks.clear()
-	for i in DET_RES_RECTS.size():
-		var r2: Rect2 = DET_RES_RECTS[i]
-		_res_marks.append(_option_mark(panel, r2, s))
-		var mode: int = i
-		panel.add_child(_img_hotspot(r2, s, func() -> void:
-			# DOS switched the VIDEO MODE here. The port always opens a
-			# modern window, so this is the 3D render scale instead: at
-			# 640 in a 1920-wide window the world is drawn a third of the
-			# size and stretched, which is what "preco ... je to take
-			# kostrbate" was (Marek 2026-09-12).
-			#
-			# DOS has no third cell here, so clicking the cell that is
-			# already on turns it back OFF, to the window's own size —
-			# otherwise this panel can set 320/640 and never cancel it.
-			var want: int = Settings.RES_NATIVE if Settings.resolution == mode else mode
-			Settings.set_resolution(want)
-			_refresh_display_marks()
-			_show_toast(_res_hint(want))))
-	panel.add_child(_img_hotspot(DET_EXIT_RECT, s,
-		func() -> void: _show_screen(_screen_options)))
-
-	# The port's own settings under the DOS panel, in two columns: in one
+	# The port's own settings, in a DOS window of their own below the art
+	# rather than loose buttons over the title screen. Two columns: in one
 	# they ran off the bottom of the screen once MUSIC joined them.
+	# Hug the settings, not the window: a DOS dialog is as wide as what it
+	# holds. SHRINK_CENTER alone did not do it — the row above is wider —
+	# so a CenterContainer hands the panel exactly its minimum size.
+	var frame_row := CenterContainer.new()
+	vb.add_child(frame_row)
+	var frame := PanelContainer.new()
+	frame.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	frame.add_theme_stylebox_override("panel", _get_panel_style())
+	frame_row.add_child(frame)
 	var grid := GridContainer.new()
 	grid.columns = 2
-	grid.add_theme_constant_override("h_separation", 40)
+	grid.add_theme_constant_override("h_separation", 28)
 	grid.add_theme_constant_override("v_separation", 12)
-	vb.add_child(grid)
+	frame.add_child(grid)
+	_field_paints.clear()
+	var c_detail := _cell(grid, "Render detail")
 	var c_res := _cell(grid, "Render resolution")
 	var c_bright := _cell(grid, "Brightness")
 	var c_window := _cell(grid, "Window")
@@ -1668,113 +1646,95 @@ func _build_display_screen(detail_tex: Variant) -> Control:
 	var c_hires := _cell(grid, "Hi-res art (640x480)")
 	var c_dyn := _cell(grid, "Dynamic lights")
 	var c_aa := _cell(grid, "Edge smoothing")
-	var smooth_btn := _option_button("", func() -> void: pass)
-	smooth_btn.custom_minimum_size = Vector2(200, 48)
-	smooth_btn.text = "ON" if Settings.texture_filter else "OFF"
-	smooth_btn.pressed.connect(func() -> void:
-		Settings.set_texture_filter(not Settings.texture_filter)
-		smooth_btn.text = "ON" if Settings.texture_filter else "OFF"
-		_show_toast("Textures reload on the next map."))
-	c_smooth.add_child(smooth_btn)
-	var hires_btn := _option_button("", func() -> void: pass)
-	hires_btn.custom_minimum_size = Vector2(200, 48)
-	hires_btn.text = "ON" if Settings.hires_weapons else "OFF"
-	hires_btn.pressed.connect(func() -> void:
-		Settings.set_hires_weapons(not Settings.hires_weapons)
-		hires_btn.text = "ON" if Settings.hires_weapons else "OFF"
-		_show_toast("The 640x480 weapon and HUD art load on the next start."))
-	c_hires.add_child(hires_btn)
-	var dyn_btn := _option_button("", func() -> void: pass)
-	dyn_btn.custom_minimum_size = Vector2(200, 48)
-	dyn_btn.text = "ON" if Settings.dynamic_lights else "OFF"
-	dyn_btn.pressed.connect(func() -> void:
-		Settings.set_dynamic_lights(not Settings.dynamic_lights)
-		dyn_btn.text = "ON" if Settings.dynamic_lights else "OFF"
-		_show_toast("Gunfire and explosions light the world; the geometry "
-			+ "that takes that light reloads on the next map."))
-	c_dyn.add_child(dyn_btn)
+	# RENDER DETAIL pulls the haze in (Settings.fog_scale), exactly what
+	# the DOS row above used to do.
+	_value_field(c_detail,
+		func() -> String: return String(Settings.LEVEL_NAMES[Settings.detail]),
+		func() -> bool: return false,
+		func() -> void:
+			Settings.set_detail((Settings.detail + 1) % Settings.LEVEL_NAMES.size())
+			_show_toast("Render detail %s — how far the haze lets you see."
+				% Settings.LEVEL_NAMES[Settings.detail]))
+	_value_field(c_smooth,
+		func() -> String: return "ON" if Settings.texture_filter else "OFF",
+		func() -> bool: return Settings.texture_filter,
+		func() -> void: Settings.set_texture_filter(not Settings.texture_filter),
+		"Textures reload on the next map.")
+	_value_field(c_hires,
+		func() -> String: return "ON" if Settings.hires_weapons else "OFF",
+		func() -> bool: return Settings.hires_weapons,
+		func() -> void: Settings.set_hires_weapons(not Settings.hires_weapons),
+		"The 640x480 weapon and HUD art load on the next start.")
+	_value_field(c_dyn,
+		func() -> String: return "ON" if Settings.dynamic_lights else "OFF",
+		func() -> bool: return Settings.dynamic_lights,
+		func() -> void: Settings.set_dynamic_lights(not Settings.dynamic_lights),
+		"Gunfire and explosions light the world; the geometry that takes "
+			+ "that light reloads on the next map.")
 	# MSAA: polygon edges only, so the DOS textures are untouched.
-	var aa_btn := _option_button("", func() -> void: pass)
-	aa_btn.custom_minimum_size = Vector2(200, 48)
-	aa_btn.text = String(Settings.MSAA_NAMES[Settings.msaa])
-	aa_btn.pressed.connect(func() -> void:
-		Settings.set_msaa((Settings.msaa + 1) % Settings.MSAA_NAMES.size())
-		aa_btn.text = String(Settings.MSAA_NAMES[Settings.msaa])
-		_show_toast("Smooths polygon EDGES at once; the textures stay as "
-			+ "DOS drew them."))
-	c_aa.add_child(aa_btn)
+	_value_field(c_aa,
+		func() -> String: return String(Settings.MSAA_NAMES[Settings.msaa]),
+		func() -> bool: return Settings.msaa > 0,
+		func() -> void: Settings.set_msaa((Settings.msaa + 1) % Settings.MSAA_NAMES.size()),
+		"Smooths polygon EDGES at once; the textures stay as DOS drew them.")
 
-	# Two render scales of the port's own, beside the DOS 320/640 cells
-	# above: the window's size, and twice it scaled back down.
-	var res_row := HBoxContainer.new()
-	res_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	res_row.add_theme_constant_override("separation", 10)
+	# RESOLUTION cycles inside ONE box, the way DOS cycles AREA on the
+	# network screen ("mapy sa prepinaju klikanim v AREA a tam sa
+	# rotuju"). Four boxes side by side made this dialog as wide as the
+	# screen — the DOS bitmap font spends 24 px on a character — and the
+	# box carries all four scales, the DOS panel's two included, so one
+	# place both shows and changes the whole setting. Before that, the
+	# panel above could set 320/640 and nothing could take it back: "uz sa
+	# potom neda to rozlisenie zrusit iba zmazanim z configu".
 	_res_buttons.clear()
-	# ALL FOUR scales in one row, the DOS panel's two included. They are
-	# one setting, and splitting them over two rows with two headings read
-	# as two: pick 640 above and the row below still said NATIVE, so there
-	# was no way back — "uz sa potom neda to rozlisenie zrusit iba
-	# zmazanim z configu" (Marek 2026-09-12).
-	for spec in [[Settings.RES_320, "320 X 200"], [Settings.RES_640, "640 X 480"],
-			[Settings.RES_NATIVE, "NATIVE"], [Settings.RES_SUPER2, "NATIVE X2"]]:
-		var rmode: int = int(spec[0])
-		var label: String = String(spec[1])
-		var rb := _option_button(label, func() -> void:
-			Settings.set_resolution(rmode)
-			_refresh_display_marks()
-			_show_toast(_res_hint(rmode)))
-		rb.custom_minimum_size = Vector2(170, 48)
-		rb.set_meta("res_mode", rmode)
-		rb.set_meta("res_label", label)
-		_res_buttons.append(rb)
-		res_row.add_child(rb)
-	c_res.add_child(res_row)
+	_res_buttons.append(_value_field(c_res,
+		func() -> String: return String(Settings.RES_NAMES[Settings.resolution]),
+		func() -> bool: return false,
+		func() -> void:
+			Settings.set_resolution((Settings.resolution + 1) % (Settings.RES_MAX + 1))
+			_show_toast(_res_hint(Settings.resolution))))
 
 	# The window, from the Settings autoload (it applies it at start-up).
 	# The title screen kept a second copy in display.cfg and put it back
 	# every time it opened, over whatever the in-game menu had chosen.
-	var modes := HBoxContainer.new()
-	modes.alignment = BoxContainer.ALIGNMENT_CENTER
-	modes.add_theme_constant_override("separation", 10)
 	_mode_buttons.clear()
-	for m in [Settings.WIN_WINDOWED, Settings.WIN_BORDERLESS, Settings.WIN_FULLSCREEN]:
-		var wm: int = m
-		var mb := _option_button(String(Settings.WINDOW_MODE_NAMES[wm]), func() -> void:
-			Settings.set_window_mode(wm)
-			_refresh_display_marks())
-		mb.custom_minimum_size = Vector2(200, 48)
-		mb.set_meta("win", wm)
-		_mode_buttons.append(mb)
-		modes.add_child(mb)
-	var size_btn := _option_button("", func() -> void:
-		Settings.set_window_size(posmod(Settings.window_size + 1, Settings.available_sizes().size()))
-		_refresh_display_marks())
-	size_btn.custom_minimum_size = Vector2(270, 48)
-	size_btn.set_meta("win_size", true)
-	size_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	_mode_buttons.append(size_btn)
-	c_window.add_child(modes)
-	c_window.add_child(size_btn)
+	_mode_buttons.append(_value_field(c_window,
+		func() -> String: return String(Settings.WINDOW_MODE_NAMES[Settings.window_mode]),
+		func() -> bool: return false,
+		func() -> void: Settings.set_window_mode(
+			(Settings.window_mode + 1) % Settings.WINDOW_MODE_NAMES.size())))
+	_mode_buttons.append(_value_field(c_window,
+		func() -> String: return Settings.size_name(Settings.window_size),
+		func() -> bool: return false,
+		func() -> void: Settings.set_window_size(
+			posmod(Settings.window_size + 1, Settings.available_sizes().size())),
+		"The size the game opens at in WINDOW mode."))
 
-	# Brightness: a multiplier on the DOS gamma (Settings.brightness),
-	# applied at once.
+	# Brightness — a multiplier on the DOS gamma, applied at once, and a
+	# SLIDER rather than two buttons ("tu gamu by som dal ako slider",
+	# Marek 2026-09-12). The track is the art's own value box, the filled
+	# part its green, the knob cut from the same cell's corner.
 	var bright := HBoxContainer.new()
 	bright.alignment = BoxContainer.ALIGNMENT_CENTER
 	bright.add_theme_constant_override("separation", 14)
-	var darker := _option_button("DARKER", func() -> void:
-		Settings.set_brightness(Settings.brightness() - 0.1)
+	var sl := ArtSlider.new()
+	sl.minv = Settings.BRIGHTNESS_MIN
+	sl.maxv = Settings.BRIGHTNESS_MAX
+	sl.value = Settings.brightness()
+	sl.trough = _art_track_sb if _art_track_sb != null else _dos_bevel(true)
+	sl.fill = _art_track_fill_sb if _art_track_fill_sb != null \
+		else _dos_bevel(true, DOS_ON_FILL)
+	sl.knob = _art_knob()
+	sl.custom_minimum_size = Vector2(230, 38)
+	sl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	sl.changed.connect(func(v: float) -> void:
+		Settings.set_brightness(v)
 		_refresh_brightness_label())
-	darker.custom_minimum_size = Vector2(160, 48)
-	bright.add_child(darker)
+	bright.add_child(sl)
 	_brightness_label = _section_label("")
-	_brightness_label.custom_minimum_size = Vector2(120, 48)
+	_brightness_label.custom_minimum_size = Vector2(110, 46)
 	_brightness_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	bright.add_child(_brightness_label)
-	var brighter := _option_button("BRIGHTER", func() -> void:
-		Settings.set_brightness(Settings.brightness() + 0.1)
-		_refresh_brightness_label())
-	brighter.custom_minimum_size = Vector2(160, 48)
-	bright.add_child(brighter)
 	c_bright.add_child(bright)
 	_refresh_brightness_label()
 
@@ -1822,21 +1782,15 @@ func _res_hint(mode: int) -> String:
 
 ## Mark the active resolution / mode button with a leading caret.
 func _refresh_display_marks() -> void:
-	for rb in _res_buttons:
-		var mode: int = int(rb.get_meta("res_mode", -1))
-		rb.text = ("> " if mode == Settings.resolution else "") \
-			+ String(rb.get_meta("res_label", "NATIVE (FULL WINDOW)"))
+	# Each value box redraws itself from the setting it shows; the DOS
+	# panel's own 320/640 cells keep their green fill on top.
+	for p in _field_paints:
+		if p.is_valid():
+			p.call()
 	for i in _res_marks.size():
 		var m: ColorRect = _res_marks[i]
 		if is_instance_valid(m):
 			m.visible = (i == Settings.resolution)
-	for mb in _mode_buttons:
-		if mb.has_meta("win_size"):
-			mb.text = "SIZE " + Settings.size_name(Settings.window_size)
-			mb.disabled = Settings.window_mode != Settings.WIN_WINDOWED
-			continue
-		var wm: int = mb.get_meta("win")
-		mb.text = ("> " if wm == Settings.window_mode else "") + String(Settings.WINDOW_MODE_NAMES[wm])
 
 ## DEBUG TOOLS — launches the asset viewers.
 func _build_debug_screen() -> Control:
@@ -1985,6 +1939,10 @@ func _framed_panel() -> Array:
 ## edges in shadow with a dark outline — exactly how the XnGine panels
 ## are drawn.
 func _get_panel_style() -> StyleBoxTexture:
+	# The real thing when DETAIL.IMG is loaded; the generated mottle only
+	# stands in when it is not.
+	if _art_panel_sb != null:
+		return _art_panel_sb
 	if _panel_sb != null:
 		return _panel_sb
 	const W := 160
@@ -2060,29 +2018,336 @@ func _menu_button(text: String, cb: Callable) -> Button:
 	return b
 
 ## Teal recessed-metal button styling, matching the generated panel.
+## --- the DOS window idiom ----------------------------------------------
+## The original art knows exactly two edges. A RAISED one, lit along the
+## top with the other three sides in shadow — that is the window frame
+## _get_panel_style() draws — and a SUNKEN one, its inverse, which is how
+## every box a VALUE sits in is drawn. The port's own controls were flat
+## rounded rectangles in colours of their own and read as another game's
+## UI beside that art ("nadizajnovat viac v style tych okien ktore uz
+## skynet ma ... nech to nie je uplne ako past na oko", Marek
+## 2026-09-12), so they are now cut from the same cloth: the same mottled
+## field, the same edge colours, square corners.
+const DOS_FIELD: Array = [
+	Color8(63, 83, 83), Color8(63, 83, 83), Color8(63, 83, 83),
+	Color8(59, 75, 79), Color8(59, 75, 79),
+	Color8(67, 95, 99), Color8(51, 63, 67),
+]
+const DOS_EDGE_LIT: Color = Color8(118, 150, 154)
+const DOS_EDGE_LIT2: Color = Color8(84, 118, 120)
+const DOS_EDGE_OUT: Color = Color8(40, 48, 48)
+const DOS_EDGE_SHADE: Color = Color8(48, 57, 60)
+## The green the DOS screens fill a chosen option with (the HIGH cell of
+## RENDER DETAIL), as a multiplier over the field so the mottle survives.
+## Crushing the red channel turned it into a neon slab next to the art —
+## the original is a pale, desaturated green, so all three channels rise.
+## Matched to what DOS actually shows: its own green wash (0.35, 0.95,
+## 0.55 at 30% over the field) lands near RGB 82/133/102, and since this
+## multiplies the ART's field now, not the dimmer generated one, the
+## factors are lower than they were.
+const DOS_ON_FILL: Color = Color(1.05, 1.6, 1.2)
+
+var _bevel_cache: Dictionary = {}
+
+## A 9-patch in that idiom. `inset` swaps the lit and shadowed sides (a
+## sunken value box, or a pressed button); `fill` multiplies the field.
+func _dos_bevel(inset: bool, fill: Color = Color.WHITE) -> StyleBoxTexture:
+	var key: String = "%s|%.2f_%.2f_%.2f" % [inset, fill.r, fill.g, fill.b]
+	if _bevel_cache.has(key):
+		return _bevel_cache[key]
+	const W: int = 40
+	const H: int = 40
+	const BV: int = 5
+	var img := Image.create_empty(W, H, false, Image.FORMAT_RGB8)
+	for y in H:
+		for x in W:
+			var dt: int = y
+			var dl: int = x
+			var d: int = mini(mini(dl, dt), mini(W - 1 - x, H - 1 - y))
+			var c: Color = DOS_FIELD[randi() % DOS_FIELD.size()] * fill
+			if d < 3:
+				# Which edge this pixel belongs to decides its shade, and
+				# `inset` is simply which pair of sides catches the light.
+				var top_left: bool = dt == d or dl == d
+				if top_left != inset:
+					c = DOS_EDGE_LIT if d < 2 else DOS_EDGE_LIT2
+				else:
+					c = DOS_EDGE_OUT if d == 0 else DOS_EDGE_SHADE
+			img.set_pixel(x, y, c)
+	var sb := StyleBoxTexture.new()
+	sb.texture = ImageTexture.create_from_image(img)
+	sb.set_texture_margin_all(BV)
+	sb.axis_stretch_horizontal = StyleBoxTexture.AXIS_STRETCH_MODE_TILE
+	sb.axis_stretch_vertical = StyleBoxTexture.AXIS_STRETCH_MODE_TILE
+	sb.content_margin_left = 12.0
+	sb.content_margin_right = 12.0
+	sb.content_margin_top = 9.0
+	sb.content_margin_bottom = 9.0
+	_bevel_cache[key] = sb
+	return sb
+
+## A box that SHOWS a value and cycles it when clicked: sunken, and
+## filled green while it is on, the way the DOS screens mark a choice.
+func _mark_button(b: Button, on: bool) -> void:
+	var fill: Color = DOS_ON_FILL if on else Color.WHITE
+	var text: Color = Color8(16, 40, 20) if on else Color8(128, 232, 160)
+	if _art_value_sb != null:
+		b.add_theme_stylebox_override("normal", _art_value_on_sb if on else _art_value_sb)
+		b.add_theme_stylebox_override("hover",
+			_art_value_on_sb if on else _art_value_hover_sb)
+		b.add_theme_stylebox_override("pressed", _art_value_down_sb)
+		b.add_theme_stylebox_override("focus", _art_value_on_sb if on else _art_value_sb)
+		b.add_theme_stylebox_override("disabled", _art_value_off_sb)
+		b.add_theme_color_override("font_color", text)
+		b.add_theme_color_override("font_hover_color", text if on else Color8(200, 255, 220))
+		b.add_theme_color_override("font_pressed_color", text)
+		b.add_theme_color_override("font_disabled_color", Color8(88, 108, 100))
+		return
+	b.add_theme_stylebox_override("normal", _dos_bevel(true, fill))
+	b.add_theme_stylebox_override("hover", _dos_bevel(true, fill * Color(1.25, 1.25, 1.25)))
+	b.add_theme_stylebox_override("pressed", _dos_bevel(false, fill))
+	b.add_theme_stylebox_override("focus", _dos_bevel(true, fill))
+	b.add_theme_stylebox_override("disabled", _dos_bevel(true, Color(0.65, 0.65, 0.65)))
+	b.add_theme_color_override("font_color", text)
+	b.add_theme_color_override("font_hover_color", text if on else Color8(200, 255, 220))
+	b.add_theme_color_override("font_pressed_color", text)
+	b.add_theme_color_override("font_disabled_color", Color8(88, 108, 100))
+
+## One value box in a settings cell. `text` renders the value, `on` says
+## whether it should read as lit, `flip` changes the setting.
+func _value_field(cell: VBoxContainer, text: Callable, on: Callable,
+		flip: Callable, hint: String = "") -> Button:
+	var b := _option_button("", func() -> void: pass)
+	b.custom_minimum_size = Vector2(200, 48)
+	# A value box is as wide as the value, not as wide as its column: let
+	# it fill and the dialog stretches to the screen edges, which no DOS
+	# window does.
+	b.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	var paint := func() -> void:
+		b.text = String(text.call())
+		_mark_button(b, bool(on.call()))
+	b.pressed.connect(func() -> void:
+		flip.call()
+		# Every box on the screen repaints, not just this one: a window
+		# mode can change what the size box reads.
+		_refresh_display_marks()
+		if not hint.is_empty():
+			_show_toast(hint))
+	_field_paints.append(paint)
+	paint.call()
+	cell.add_child(b)
+	return b
+
+## --- cut from the art itself -------------------------------------------
+## The palette above already matched the original exactly, and it was
+## still not enough: the DOS field is blotchy weathered metal, and a
+## per-pixel mottle beside it reads as a different game ("to pozadie
+## nevies pouzit s tych existujucich dialogov?", Marek 2026-09-12). So
+## the panel and the boxes are now REBUILT FROM DETAIL.IMG's own pixels —
+## its frame, its value box, and a clean patch of its metal — as
+## nine-patches at the 3x the art itself is drawn at, so one art pixel
+## stays one art pixel.
+const ART_FIELD: Rect2i = Rect2i(6, 14, 32, 40)      # clean weathered metal
+const ART_PANEL_BORDER: int = 4                      # art px of window frame
+const ART_CELL: Rect2i = Rect2i(34, 63, 60, 18)      # the "320 X 200" box
+const ART_CELL_FIELD: Rect2i = Rect2i(36, 65, 8, 10)
+const ART_CELL_BORDER: int = 2
+
+var _art_img: Image = null
+var _art_knob_tex: Texture2D = null
+var _art_panel_sb: StyleBoxTexture = null
+var _art_value_sb: StyleBoxTexture = null
+var _art_value_hover_sb: StyleBoxTexture = null
+var _art_value_down_sb: StyleBoxTexture = null
+var _art_value_on_sb: StyleBoxTexture = null
+var _art_value_off_sb: StyleBoxTexture = null
+var _art_track_sb: StyleBoxTexture = null
+var _art_track_fill_sb: StyleBoxTexture = null
+
+## Compose a nine-patch from `src`: `box`'s own four edges and corners for
+## the frame, `field` tiled for the middle, the whole magnified by
+## `scale`. `fill` multiplies the FIELD only, so a green option keeps the
+## original's frame.
+func _art_nine(src: Image, box: Rect2i, field: Rect2i, bw: int, scale: int,
+		fill: Color = Color.WHITE) -> StyleBoxTexture:
+	var tile: int = maxi(field.size.x, 8)
+	var w: int = bw * 2 + tile
+	var h: int = bw * 2 + tile
+	var inner_w: int = maxi(box.size.x - bw * 2, 1)
+	var inner_h: int = maxi(box.size.y - bw * 2, 1)
+	var out := Image.create_empty(w, h, false, Image.FORMAT_RGB8)
+	for y in h:
+		for x in w:
+			var ix: int = -1
+			var iy: int = -1
+			if x < bw:
+				ix = box.position.x + x
+			elif x >= w - bw:
+				ix = box.position.x + box.size.x - (w - x)
+			if y < bw:
+				iy = box.position.y + y
+			elif y >= h - bw:
+				iy = box.position.y + box.size.y - (h - y)
+			var c: Color
+			if ix >= 0 and iy >= 0:
+				c = src.get_pixel(ix, iy)                                 # corner
+			elif iy >= 0:
+				c = src.get_pixel(box.position.x + bw + (x - bw) % inner_w, iy)
+			elif ix >= 0:
+				c = src.get_pixel(ix, box.position.y + bw + (y - bw) % inner_h)
+			else:
+				c = src.get_pixel(field.position.x + (x - bw) % field.size.x,
+					field.position.y + (y - bw) % field.size.y) * fill
+			out.set_pixel(x, y, c)
+	out.resize(w * scale, h * scale, Image.INTERPOLATE_NEAREST)
+	var sb := StyleBoxTexture.new()
+	sb.texture = ImageTexture.create_from_image(out)
+	sb.set_texture_margin_all(bw * scale)
+	sb.axis_stretch_horizontal = StyleBoxTexture.AXIS_STRETCH_MODE_TILE
+	sb.axis_stretch_vertical = StyleBoxTexture.AXIS_STRETCH_MODE_TILE
+	sb.content_margin_left = 12.0
+	sb.content_margin_right = 12.0
+	sb.content_margin_top = 8.0
+	sb.content_margin_bottom = 8.0
+	return sb
+
+## Cut the styles out of DETAIL.IMG once, before any screen is built.
+## Without that art (Future Shock data, or a missing archive) they stay
+## null and the generated mottle stands in.
+func _prepare_art_styles(detail_tex: Variant) -> void:
+	if detail_tex == null or not (detail_tex is Texture2D):
+		return
+	var img: Image = (detail_tex as Texture2D).get_image()
+	if img == null or img.get_width() < ART_CELL.end.x or img.get_height() < ART_CELL.end.y:
+		return
+	var s: int = maxi(int(DET_PANEL_SCALE), 1)
+	_art_img = img
+	_art_panel_sb = _art_nine(img, Rect2i(0, 0, img.get_width(), img.get_height()),
+		ART_FIELD, ART_PANEL_BORDER, s)
+	_art_panel_sb.content_margin_left = 44.0
+	_art_panel_sb.content_margin_right = 44.0
+	_art_panel_sb.content_margin_top = 34.0
+	_art_panel_sb.content_margin_bottom = 34.0
+	# The box's FRAME comes from the cell, but its middle is tiled from the
+	# panel's big patch of metal: the 8x10 scrap inside the cell repeated
+	# often enough to show a seam down a wide green box.
+	_art_value_sb = _art_nine(img, ART_CELL, ART_FIELD, ART_CELL_BORDER, s)
+	_art_value_hover_sb = _art_nine(img, ART_CELL, ART_FIELD, ART_CELL_BORDER, s,
+		Color(1.3, 1.3, 1.3))
+	_art_value_down_sb = _art_nine(img, ART_CELL, ART_FIELD, ART_CELL_BORDER, s,
+		Color(0.78, 0.78, 0.78))
+	_art_value_on_sb = _art_nine(img, ART_CELL, ART_FIELD, ART_CELL_BORDER, s,
+		DOS_ON_FILL)
+	_art_value_off_sb = _art_nine(img, ART_CELL, ART_FIELD, ART_CELL_BORDER, s,
+		Color(0.65, 0.65, 0.65))
+	# The slider's track is the same box, but a stylebox's minimum height
+	# is its content margin, and the value box's 8 px made a track too
+	# thin to aim at — the knob hung below it rather than in it.
+	_art_track_sb = _art_nine(img, ART_CELL, ART_FIELD, ART_CELL_BORDER, s)
+	_art_track_fill_sb = _art_nine(img, ART_CELL, ART_FIELD, ART_CELL_BORDER, s,
+		DOS_ON_FILL)
+	for t in [_art_track_sb, _art_track_fill_sb]:
+		t.content_margin_top = 10.0
+		t.content_margin_bottom = 10.0
+	print("[menu] dialog styles cut from DETAIL.IMG (%dx%d art, %dx)"
+		% [img.get_width(), img.get_height(), s])
+
+## A slider drawn in the DOS idiom: the art's value box as the trough,
+## its green as the filled part, its corner as the knob. Godot's HSlider
+## draws its track at the stylebox's MINIMUM height, which came out a
+## hairline beside the boxes around it whatever the margins said, so this
+## draws the three pieces itself — and clicking anywhere on the trough
+## jumps there, which is what a player expects of a gamma dial.
+class ArtSlider extends Control:
+	signal changed(v: float)
+
+	var minv: float = 0.0
+	var maxv: float = 1.0
+	var step: float = 0.05
+	var value: float = 1.0
+	var trough: StyleBox = null
+	var fill: StyleBox = null
+	var knob: Texture2D = null
+
+	func _ready() -> void:
+		mouse_filter = Control.MOUSE_FILTER_STOP
+
+	func _fraction() -> float:
+		return clampf((value - minv) / maxf(maxv - minv, 0.0001), 0.0, 1.0)
+
+	func _draw() -> void:
+		var r := Rect2(Vector2.ZERO, size)
+		if trough != null:
+			draw_style_box(trough, r)
+		var t: float = _fraction()
+		if fill != null and t > 0.01:
+			draw_style_box(fill, Rect2(r.position, Vector2(r.size.x * t, r.size.y)))
+		if knob != null:
+			var kw: float = float(knob.get_width())
+			var kh: float = float(knob.get_height())
+			draw_texture(knob, Vector2(clampf(r.size.x * t - kw * 0.5, 0.0,
+				maxf(r.size.x - kw, 0.0)), (r.size.y - kh) * 0.5))
+
+	func _set_from_x(x: float) -> void:
+		var t: float = clampf(x / maxf(size.x, 1.0), 0.0, 1.0)
+		var v: float = snappedf(minv + t * (maxv - minv), step)
+		if is_equal_approx(v, value):
+			return
+		value = v
+		queue_redraw()
+		changed.emit(v)
+
+	func _gui_input(e: InputEvent) -> void:
+		if e is InputEventMouseButton:
+			var mb := e as InputEventMouseButton
+			if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+				_set_from_x(mb.position.x)
+		elif e is InputEventMouseMotion:
+			var mm := e as InputEventMouseMotion
+			if (mm.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
+				_set_from_x(mm.position.x)
+
+## The brightness slider's knob: the value box's own left frame, mirrored
+## so the grip is framed on both sides, with its real lit top and shaded
+## bottom rows — the original's metal, not a drawn approximation.
+func _art_knob() -> Texture2D:
+	if _art_knob_tex != null:
+		return _art_knob_tex
+	if _art_img == null:
+		return null
+	const KW: int = 7
+	const KH: int = 14
+	var k := Image.create_empty(KW, KH, false, Image.FORMAT_RGB8)
+	for y in KH:
+		for x in KW:
+			var sx: int = ART_CELL.position.x + (x if x < 4 else KW - 1 - x)
+			var sy: int = ART_CELL.position.y + (y if y < KH - 2 \
+				else ART_CELL.size.y - (KH - y))
+			k.set_pixel(x, y, _art_img.get_pixel(sx, sy))
+	var s: int = maxi(int(DET_PANEL_SCALE), 1)
+	k.resize(KW * s, KH * s, Image.INTERPOLATE_NEAREST)
+	_art_knob_tex = ImageTexture.create_from_image(k)
+	return _art_knob_tex
+
+## A button that DOES something (as against showing a value). DOS draws
+## both as the same raised box, so this is that box.
 func _style_button(b: Button) -> void:
-	var normal := StyleBoxFlat.new()
-	normal.bg_color = Color8(42, 56, 56)
-	normal.border_color = Color8(96, 128, 128)
-	normal.set_border_width_all(2)
-	normal.set_corner_radius_all(3)
-	normal.content_margin_left = 12.0
-	normal.content_margin_right = 12.0
-	normal.content_margin_top = 9.0
-	normal.content_margin_bottom = 9.0
-	var hover := normal.duplicate() as StyleBoxFlat
-	hover.bg_color = Color8(66, 92, 92)
-	hover.border_color = Color8(150, 192, 192)
-	var pressed := normal.duplicate() as StyleBoxFlat
-	pressed.bg_color = Color8(28, 38, 38)
-	pressed.border_color = Color8(80, 108, 108)
-	b.add_theme_stylebox_override("normal", normal)
-	b.add_theme_stylebox_override("hover", hover)
-	b.add_theme_stylebox_override("pressed", pressed)
-	b.add_theme_stylebox_override("focus", normal)
+	if _art_value_sb != null:
+		b.add_theme_stylebox_override("normal", _art_value_sb)
+		b.add_theme_stylebox_override("hover", _art_value_hover_sb)
+		b.add_theme_stylebox_override("pressed", _art_value_down_sb)
+		b.add_theme_stylebox_override("focus", _art_value_sb)
+		b.add_theme_stylebox_override("disabled", _art_value_off_sb)
+	else:
+		b.add_theme_stylebox_override("normal", _dos_bevel(false))
+		b.add_theme_stylebox_override("hover", _dos_bevel(false, Color(1.25, 1.25, 1.25)))
+		b.add_theme_stylebox_override("pressed", _dos_bevel(true))
+		b.add_theme_stylebox_override("focus", _dos_bevel(false))
+		b.add_theme_stylebox_override("disabled", _dos_bevel(false, Color(0.65, 0.65, 0.65)))
 	b.add_theme_color_override("font_color", Color8(206, 222, 222))
 	b.add_theme_color_override("font_hover_color", Color(1, 1, 1))
 	b.add_theme_color_override("font_pressed_color", Color8(150, 175, 175))
+	b.add_theme_color_override("font_disabled_color", Color8(108, 124, 124))
 	b.pressed.connect(func() -> void: Audio.play_sfx("BUTTON1.RAW"))
 
 ## Transparent hotspot button — invisible until hovered/pressed, so the
