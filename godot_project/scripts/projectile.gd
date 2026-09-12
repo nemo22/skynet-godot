@@ -175,6 +175,9 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 ## The soft halo that makes a bolt readable in flight. It must be a
 ## round FALLOFF, not a flat quad: the first cut had no texture, so a
 ## walker's laser read as "a blue semi-transparent square" (2026-09-04).
+## Energy of the light a round in flight throws (DYNAMIC LIGHTS only).
+const BOLT_LIGHT_ENERGY: float = 2.0
+
 func _add_glow(length: float) -> void:
 	var qm := QuadMesh.new()
 	var d: float = maxf(length, 60.0) * GLOW_SCALE
@@ -193,6 +196,17 @@ func _add_glow(length: float) -> void:
 	g.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	g.visible = false
 	add_child(g)
+	# DYNAMIC LIGHTS: a round in flight lights what it flies past, in its
+	# own measured colour (BOLT_COLOURS). Shadowless and short-ranged —
+	# a firefight can have a dozen of these in the air at once.
+	if Settings.dynamic_lights:
+		var l := OmniLight3D.new()
+		l.light_color = _color
+		l.light_energy = BOLT_LIGHT_ENERGY
+		l.omni_range = maxf(d, 200.0) * 2.0
+		l.omni_attenuation = 1.5
+		l.shadow_enabled = false
+		add_child(l)
 
 ## The motor flame at a rocket's tail. ROCKET.3D is a dark 31 x 27 u
 ## body seen from behind at night, inside its own smoke: 25-45 px of

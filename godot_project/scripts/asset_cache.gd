@@ -366,27 +366,52 @@ func cfa_frames(name: String, hires: bool = false) -> Array:
 	var pack: Resource = fetch("cfa_hi" if hires else "cfa", name, func() -> Resource:
 		var imgs := BSAReader.new()
 		var arcs: Array = ["MDMDHRES.BSA", "MDMDIMGS.BSA"] if hires else ["MDMDIMGS.BSA"]
-		var bytes := PackedByteArray()
+		# Take the first archive whose copy actually PARSES, not merely the
+		# first that holds the name: a set this loader cannot read has to
+		# fall through to the other one. Until 2026-09-12 the 640x480
+		# WEAPON*.CFA parsed to nothing and the player was left holding an
+		# invisible gun, with no warning anywhere.
 		for arc in arcs:
 			if not imgs.open(SkynetPaths.gamedata_path(arc), SkynetPaths.variant):
 				continue
-			bytes = imgs.read(name)
+			var bytes: PackedByteArray = imgs.read(name)
 			imgs.close()
-			if not bytes.is_empty():
-				break
-		if bytes.is_empty():
-			return null
-		var frames: Array = CFAFile.parse(bytes, palette(), true)
-		if frames.is_empty():
-			return null
-		var fp := FramePack.new()
-		for f in frames:
-			if f is Image:
-				fp.frames.append(_portable(f))
-		return fp)
+			if bytes.is_empty():
+				continue
+			var frames: Array = CFAFile.parse(bytes, palette(), true)
+			if frames.is_empty():
+				push_warning("[cfa] %s in %s did not parse — trying the next set"
+					% [name, arc])
+				continue
+			var fp := FramePack.new()
+			for f in frames:
+				if f is Image:
+					fp.frames.append(_portable(f))
+			return fp
+		return null)
 	if pack is FramePack:
 		return (pack as FramePack).frames
 	return []
+
+## Is `name`'s 640x480 copy the one a hi-res request would actually draw?
+## The caller needs this to SCALE the art — the two sets are authored for
+## a 320- and a 480-line screen — and the frame's own width cannot say:
+## WEAPON13's hi-res art is 145x194, narrower than several of the 320x200
+## viewmodels. Reads the archive record's header only (48 bytes), never
+## the frames, so a warm disk cache still gets a straight answer; memoised
+## per session.
+static var _cfa_hires_memo: Dictionary = {}
+func cfa_is_hires(name: String) -> bool:
+	if _cfa_hires_memo.has(name):
+		return bool(_cfa_hires_memo[name])
+	var out: bool = false
+	var b := BSAReader.new()
+	if b.open(SkynetPaths.gamedata_path("MDMDHRES.BSA"), SkynetPaths.variant):
+		var bytes: PackedByteArray = b.read(name)
+		b.close()
+		out = CFAFile.is_hires(bytes)
+	_cfa_hires_memo[name] = out
+	return out
 
 ## Editor scene of a map (built on demand, saved under converted/maps/).
 ## The editor cannot use resources outside res://, so the project keeps

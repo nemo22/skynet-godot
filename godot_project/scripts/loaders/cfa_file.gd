@@ -18,12 +18,53 @@
 
 extends RefCounted
 
+## SkyNET's 640x480 art (MDMDHRES.BSA) uses a SECOND layout, decoded
+## 2026-09-12. The parser above read its height as zero and threw the
+## file away, so HI-RES WEAPONS quietly drew no gun at all:
+##   +0  u32 x            +4  u32 y
+##   +8  u32 width        +12 u32 height
+##   +16 24 bytes of zero
+##   +40 u32 frame count
+##   +44 u32[count] frame offsets
+## The first frame offset is ALWAYS 44 + 4*count, and that is what tells
+## the two layouts apart — the same archive's RADCOUNT.CFA and TNET*.CFA
+## are still the 16-bit kind, so a version byte would not do.
+##
+## A frame body is row-based rather than one byte stream: per row, pairs
+## of (skip u8, count u8) followed by `count` palette bytes, until the
+## row covers `width`; a blank row is simply (width, 0). Verified across
+## all 14 WEAPON*.CFA — 73 of 73 frames decode to exactly width*height.
+const HIRES_HEADER: int = 44
+
+## Frame count if `bytes` is the 640x480 layout, else 0.
+static func hires_frame_count(bytes: PackedByteArray) -> int:
+	if bytes == null or bytes.size() < HIRES_HEADER + 8:
+		return 0
+	var w: int = bytes.decode_u32(8)
+	var h: int = bytes.decode_u32(12)
+	var n: int = bytes.decode_u32(40)
+	if w <= 0 or h <= 0 or w > 4096 or h > 4096 or n <= 0 or n > 64:
+		return 0
+	if HIRES_HEADER + n * 4 > bytes.size():
+		return 0
+	if bytes.decode_u32(HIRES_HEADER) != HIRES_HEADER + n * 4:
+		return 0
+	return n
+
+static func is_hires(bytes: PackedByteArray) -> bool:
+	return hires_frame_count(bytes) > 0
+
+
 ## Decode a .CFA buffer into an Array of ImageTexture, one per frame
 ## (or of Image when `as_images` — the asset cache stores those).
 ## Returns [] on a malformed file.
 static func parse(bytes: PackedByteArray, palette: PackedColorArray,
 		as_images: bool = false) -> Array:
-	if bytes == null or bytes.size() < 14 or palette.size() < 256:
+	if bytes == null or palette.size() < 256:
+		return []
+	if is_hires(bytes):
+		return _parse_hires(bytes, palette, as_images)
+	if bytes.size() < 14:
 		return []
 	var w: int = bytes.decode_u16(0)
 	var h: int = bytes.decode_u16(2)
@@ -86,5 +127,51 @@ static func parse(bytes: PackedByteArray, palette: PackedColorArray,
 					dst += 1
 		var img := Image.create_from_data(w, h, false,
 			Image.FORMAT_RGBA8, rgba)
+		frames.append(img if as_images else ImageTexture.create_from_image(img))
+	return frames
+
+## Decode the 640x480 layout (see the note above HIRES_HEADER).
+static func _parse_hires(bytes: PackedByteArray, palette: PackedColorArray,
+		as_images: bool) -> Array:
+	var w: int = bytes.decode_u32(8)
+	var h: int = bytes.decode_u32(12)
+	var count: int = bytes.decode_u32(40)
+	var size: int = bytes.size()
+	# 256-entry RGBA8 LUT; index 0 is the transparent one, as everywhere.
+	var lut := PackedByteArray()
+	lut.resize(256 * 4)
+	for i in 256:
+		var c: Color = palette[i]
+		lut[i * 4 + 0] = int(c.r * 255.0)
+		lut[i * 4 + 1] = int(c.g * 255.0)
+		lut[i * 4 + 2] = int(c.b * 255.0)
+		lut[i * 4 + 3] = 0 if i == 0 else 255
+	var frames: Array = []
+	for f in count:
+		var src: int = bytes.decode_u32(HIRES_HEADER + f * 4)
+		var stop: int = size
+		if f + 1 < count:
+			stop = mini(bytes.decode_u32(HIRES_HEADER + (f + 1) * 4), size)
+		var rgba := PackedByteArray()
+		rgba.resize(w * h * 4)          # zero-filled: skipped pixels stay clear
+		for row in h:
+			var x: int = 0
+			while x < w and src + 1 < stop:
+				var skip: int = bytes[src]
+				var n: int = bytes[src + 1]
+				src += 2
+				x += skip
+				for k in n:
+					if x >= w or src >= stop:
+						break
+					var lo: int = bytes[src] * 4
+					src += 1
+					var po: int = (row * w + x) * 4
+					rgba[po + 0] = lut[lo + 0]
+					rgba[po + 1] = lut[lo + 1]
+					rgba[po + 2] = lut[lo + 2]
+					rgba[po + 3] = lut[lo + 3]
+					x += 1
+		var img := Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba)
 		frames.append(img if as_images else ImageTexture.create_from_image(img))
 	return frames

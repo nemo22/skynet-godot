@@ -318,10 +318,9 @@ var _vm_layer: CanvasLayer = null
 var _viewmodel: TextureRect = null
 var _vm_cache: Dictionary = {}        # weapon idx → Array[ImageTexture]
 ## weapon idx → true when its frames came from the 640x480 set, which
-## draws at half the scale. The 320x200 viewmodels are all narrower than
+## draws at half the scale (Assets.cfa_is_hires decides which set).
 ## this, so the width tells the two sets apart.
 var _vm_hires: Dictionary = {}
-const HIRES_VM_MIN_WIDTH: float = 200.0
 var _vm_idx: int = 0
 var _vm_t: float = 0.0
 var _vm_firing: bool = false
@@ -1876,8 +1875,10 @@ func _load_viewmodels() -> void:
 		# The 640x480 art is twice the DOS pixels, so it draws at half
 		# the scale (see _layout_viewmodel) — otherwise the gun doubles
 		# in size. A weapon the hi-res set lacks falls back on its own.
-		var wide: bool = hires and frames[0] != null 			and (frames[0] as Texture2D).get_size().x > HIRES_VM_MIN_WIDTH
-		_vm_hires[i] = hires and wide
+		# WHICH SET the frames came from decides the scale, and only the
+		# file's own layout says that — not its width: the 640x480
+		# WEAPON13 is 145x194, narrower than several 320x200 viewmodels.
+		_vm_hires[i] = hires and Assets.cfa_is_hires(cfa)
 		print("[weapon] %s — %d viewmodel frames%s"
 			% [cfa, frames.size(), " (hi-res)" if _vm_hires.get(i, false) else ""])
 

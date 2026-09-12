@@ -81,11 +81,20 @@ var brightness_dos: float = 1.0
 ##                   in your hands (Marek asked for them, 2026-09-11)
 ##   texture_filter — smooth (linear) texture filtering instead of the
 ##                   software renderer's nearest sampling
+##   dynamic_lights — real lights from the gunfire, the explosions and
+##                   the flying rounds, which also means the world's
+##                   geometry has to TAKE light: DOS drew it flat and
+##                   unshaded, so a light on it would show nothing.
 var hires_weapons: bool = false
 var texture_filter: bool = false
+var dynamic_lights: bool = false
 
 func set_hires_weapons(on: bool) -> void:
 	hires_weapons = on
+	save()
+
+func set_dynamic_lights(on: bool) -> void:
+	dynamic_lights = on
 	save()
 
 func set_texture_filter(on: bool) -> void:
@@ -106,6 +115,7 @@ func _ready() -> void:
 			BRIGHTNESS_MIN, BRIGHTNESS_MAX)
 		hires_weapons = bool(cfg.get_value("video", "hires_weapons", false))
 		texture_filter = bool(cfg.get_value("video", "texture_filter", false))
+		dynamic_lights = bool(cfg.get_value("video", "dynamic_lights", false))
 	get_tree().root.size_changed.connect(apply_resolution)
 	get_window().content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
 	apply_window()
@@ -122,6 +132,7 @@ func save() -> void:
 	cfg.set_value("video", "brightness_dos", brightness_dos)
 	cfg.set_value("video", "hires_weapons", hires_weapons)
 	cfg.set_value("video", "texture_filter", texture_filter)
+	cfg.set_value("video", "dynamic_lights", dynamic_lights)
 	cfg.save(CFG_PATH)
 
 ## The multiplier on the DOS gamma.

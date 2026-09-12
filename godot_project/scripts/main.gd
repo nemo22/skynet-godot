@@ -1183,6 +1183,11 @@ const LIGHT_RANGE_PER_UNIT: float = 10.0    # variant-2 sub+8 → world units
 const LIGHT_ENERGY_DIV: float = 14.0        # variant-2 intensity → energy
 const INDOOR_AMBIENT: Color = Color(0.62, 0.62, 0.68)
 const OUTDOOR_AMBIENT: Color = Color(0.55, 0.55, 0.65)
+## With DYNAMIC LIGHTS on, the flat ambient comes down: a lamp pool or a
+## muzzle flash cannot be told from a fully lit wall. BRIGHTNESS still
+## rides on top, so the player keeps the last word either way.
+const DYN_AMBIENT_OUTDOOR: float = 0.7
+const DYN_AMBIENT_INDOOR: float = 0.55
 
 ## One OmniLight3D per enabled variant-2 light entity of an interior,
 ## plus the interior treatment (cached unshaded materials swapped for
@@ -1195,28 +1200,44 @@ func _light_level(level: LevelLoader.Level) -> void:
 	if we == null or we.environment == null:
 		return
 	var env: Environment = we.environment
+	# DYNAMIC LIGHTS is the player's setting, not the original's, and two
+	# things follow from it. The ambient comes down (see the constants) so
+	# that a lamp pool or a muzzle flash reads at all. And OUTDOOR maps
+	# get their lamps built for the first time: MAP.210 carries 32 and
+	# MAP.220 fifty street lamps that the DOS renderer never lit the
+	# ground with — until now this function simply returned outdoors.
+	var dyn: bool = Settings.dynamic_lights
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	if level.is_outdoor:
 		env.ambient_light_color = OUTDOOR_AMBIENT
-		env.ambient_light_energy = 1.25
+		env.ambient_light_energy = DYN_AMBIENT_OUTDOOR if dyn else 1.25
 		if sun != null:
 			sun.visible = true
-		return
-	env.ambient_light_sky_contribution = 1.0
-	env.ambient_light_color = INDOOR_AMBIENT
-	env.ambient_light_energy = 1.0
-	if sun != null:
-		sun.visible = false
+		if not dyn:
+			return
+	else:
+		env.ambient_light_sky_contribution = 1.0
+		env.ambient_light_color = INDOOR_AMBIENT
+		env.ambient_light_energy = DYN_AMBIENT_INDOOR if dyn else 1.0
+		if sun != null:
+			sun.visible = false
 	var cache: Dictionary = {}
-	_shade_recursive(level.entities, cache)
-	_shade_recursive(level.enemies, cache)
-	if level.sprites != null:
+	_shade_recursive(level.entities, cache, dyn)
+	_shade_recursive(level.enemies, cache, dyn)
+	if dyn and level.terrain != null:
+		# The ground takes light too, or every lamp would hang over a
+		# black street.
+		_shade_recursive(level.terrain, cache, true)
+	# Indoor sprites are shaded as before; outdoors DOS draws them at full
+	# light and the dim ambient would only blacken the pickups.
+	if level.sprites != null and not level.is_outdoor:
 		for s in level.sprites.get_children():
 			# ... except the fires, which DOS draws at full light.
 			if s is SpriteBase3D and not s.has_meta("fullbright"):
 				(s as SpriteBase3D).shaded = true
-	print("[level] interior: %d map lights, %d shaded materials"
-		% [_place_map_lights(level), cache.size()])
+	print("[level] %s: %d map lights, %d shaded materials"
+		% ["outdoor (dynamic lights)" if level.is_outdoor else "interior",
+			_place_map_lights(level), cache.size()])
 
 ## Indoor sprites rest on the floor the physics world actually has under
 ## them. The DOS record's Y sits a little above the floor and the port lifted the billboard's foot by a constant; the
@@ -1277,7 +1298,10 @@ func _place_map_lights(level: LevelLoader.Level) -> int:
 		level.action.map_lights = level.map_lights
 	return n
 
-static func _shade_recursive(n: Node, cache: Dictionary) -> void:
+## `per_pixel`: with DYNAMIC LIGHTS on the surfaces take their light per
+## pixel — a muzzle flash on a per-vertex wall lights the wall's corners
+## rather than the patch the flash is actually against.
+static func _shade_recursive(n: Node, cache: Dictionary, per_pixel: bool = false) -> void:
 	if n == null:
 		return
 	if n is MeshInstance3D:
@@ -1290,11 +1314,18 @@ static func _shade_recursive(n: Node, cache: Dictionary) -> void:
 					var dup: BaseMaterial3D = cache.get(key)
 					if dup == null:
 						dup = (m as BaseMaterial3D).duplicate()
-						dup.shading_mode = BaseMaterial3D.SHADING_MODE_PER_VERTEX
+						dup.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL \
+							if per_pixel else BaseMaterial3D.SHADING_MODE_PER_VERTEX
+						if per_pixel:
+							# The DOS art paints its own highlights; a shiny
+							# wall is what made the removed ENHANCED look
+							# glow, so keep these rough and nearly matt.
+							dup.roughness = 0.9
+							dup.metallic_specular = 0.2
 						cache[key] = dup
 					mi.set_surface_override_material(si, dup)
 	for c in n.get_children():
-		_shade_recursive(c, cache)
+		_shade_recursive(c, cache, per_pixel)
 
 ## DOS fills the frame with a flat sky colour before drawing the
 ## SKY_SKY.3D band, so nothing black shows above the dome. Sample the
@@ -3865,7 +3896,12 @@ func _build_status_ui() -> void:
 	panel.offset_top = -120.0                    # set precisely by _layout_hud
 	panel.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var ptex := _load_panel_texture()
+	# HI-RES ART: PANEL0.IMG is 640x96 in MDMDHRES.BSA against 320x40 in
+	# MDMDIMGS.BSA — SkyNET's own 640x480 mode art, four times the pixels
+	# ("co sa tyka toho hires tak staci aj hud", Marek 2026-09-12). The
+	# bar is stretched to the window either way, so the only difference
+	# is how sharp it is.
+	var ptex := _load_panel_texture("PANEL0.IMG", false, Settings.hires_weapons)
 	if ptex != null:
 		panel.texture = ptex
 		panel.stretch_mode = TextureRect.STRETCH_SCALE

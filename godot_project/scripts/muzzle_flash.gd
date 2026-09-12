@@ -18,6 +18,10 @@ const BSAReader := preload("res://scripts/loaders/bsa_reader.gd")
 
 const LIFETIME: float = 0.08
 const BANK: int = 219
+## Peak energy of the light the shot throws (DYNAMIC LIGHTS only).
+const FLASH_ENERGY: float = 4.0
+
+var _light: OmniLight3D = null
 
 static var _texture: Texture2D = null
 static var _palette_cache: PackedColorArray = PackedColorArray()
@@ -82,6 +86,19 @@ func setup(at: Vector3, tint: Color = Color.WHITE,
 		max_dim = 1.0
 	_sprite.pixel_size = size / max_dim
 	add_child(_sprite)
+	# DYNAMIC LIGHTS: the shot lights the walls around it for as long as
+	# the flash lives. DOS lit nothing, so this is the player's choice —
+	# and it only shows because the same setting makes the geometry take
+	# light (render_mode.style). No shadows: a firefight would cast
+	# dozens of shadow maps a second for an 0.08 s flash.
+	if Settings.dynamic_lights:
+		_light = OmniLight3D.new()
+		_light.light_color = tint
+		_light.light_energy = FLASH_ENERGY
+		_light.omni_range = maxf(size, 60.0) * 8.0
+		_light.omni_attenuation = 1.5
+		_light.shadow_enabled = false
+		add_child(_light)
 
 func _process(delta: float) -> void:
 	if _sprite == null:
@@ -92,3 +109,5 @@ func _process(delta: float) -> void:
 		return
 	var k: float = _t / LIFETIME              # 1 → 0
 	_sprite.modulate.a = k
+	if _light != null:
+		_light.light_energy = FLASH_ENERGY * k

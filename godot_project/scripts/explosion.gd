@@ -35,6 +35,11 @@ const NEAR_SIZE_RATIO: float = 0.4
 const BANK_ENEMY_DEATH: int = 358
 const BANK_ROCKET: int = 367
 
+## Peak energy of the light a blast throws (DYNAMIC LIGHTS only).
+const BLAST_ENERGY: float = 6.0
+
+var _light: OmniLight3D = null
+
 # Static frame cache keyed by bank id; loaded once per game session.
 static var _frames_by_bank: Dictionary = {}
 static var _palette_cache: PackedColorArray = PackedColorArray()
@@ -132,6 +137,17 @@ func setup(at: Vector3, radius: float,
 		max_dim = maxi(max_dim, int(maxf(sz.x, sz.y)))
 	_sprite.pixel_size = (_radius * 2.0) / float(max_dim)
 	add_child(_sprite)
+	# DYNAMIC LIGHTS: the blast lights the room, brightest at the
+	# blow-out and gone with the last frame (see _process). Shadowless,
+	# like the muzzle flash — it lives for a fraction of a second.
+	if Settings.dynamic_lights:
+		_light = OmniLight3D.new()
+		_light.light_color = Color(1.0, 0.72, 0.4)
+		_light.light_energy = BLAST_ENERGY
+		_light.omni_range = _radius * 6.0
+		_light.omni_attenuation = 1.5
+		_light.shadow_enabled = false
+		add_child(_light)
 
 func _process(delta: float) -> void:
 	if _sprite == null or _frames.is_empty():
@@ -145,3 +161,6 @@ func _process(delta: float) -> void:
 			queue_free()
 			return
 		_sprite.texture = _frames[_idx]
+		if _light != null:
+			_light.light_energy = BLAST_ENERGY \
+				* (1.0 - float(_idx) / float(maxi(_frames.size(), 1)))
