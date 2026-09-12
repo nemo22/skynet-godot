@@ -1,0 +1,106 @@
+# skynet-godot
+
+A Godot 4 port of the two 1996 XnGine shooters by Bethesda Softworks —
+*SkyNET* and *Future Shock*. The engine is rewritten in Godot; the game
+itself is read from **your own copy** of the original data: the BSA
+archives, the WLD heightmaps, the TEXTURE files, the maps, the sounds and
+the HMI music, all decoded at run time.
+
+Nothing from the original games is included here. You need the games.
+
+## What works
+
+- **The campaign** — all eight missions, the DOS mission scripts, the
+  objective counter, briefings with the original art and voice lines.
+- **The world** as the original drew it: DOS heightmap terrain, the
+  entity meshes, billboard sprites, palette-accurate textures, the night
+  sky with the moon, the dusk dome on missions 5–8.
+- **The rules read out of the DOS executable**, not guessed: door and
+  lift movers, proximity gates and chains, destructibles with their
+  damage stages, teleports, water levels that rise and fall, spawn
+  points, the jeep's and the HK's handling, enemy AI states and their
+  animation scripts, weapon cadences and ammo pools, cheats.
+- **Vehicles** — the jeep and the HK, with the DOS cockpits.
+- **Deathmatch** over LAN with bots, HUMAN and TERMINATOR classes,
+  machine vision and the motion detector, the original arenas.
+- **Save and load**, the pause menu, the DOS options screens, the
+  automap, statistics.
+- **Future Shock** data works too: point the game at that install and it
+  plays those maps and menus.
+
+There is also an Android export preset. It builds and runs, but it gets
+far less testing than the desktop builds.
+
+## Running a release build
+
+1. Download the build for your platform from the
+   [Releases](../../releases) page.
+2. Start it. On the **first run** it asks where the original games are
+   installed:
+   - the *SkyNET* folder — required. Point it either at the install root
+     or at its `GAMEDATA` directory; both work. It is recognised by
+     `MDMDMAP2.BSA`.
+   - the *Future Shock* folder — optional, recognised by `MDMDMAPS.BSA`.
+     Give it and the menu can start that game as well.
+3. The first start converts the original data into a cache next to it.
+   That takes a couple of minutes and only happens once.
+
+Both paths are remembered, so you are asked once. Start the game with
+`--setup` to point it somewhere else later.
+
+Platform notes:
+
+- **Windows** — a single `SkyNET.exe`.
+- **Linux** — `chmod +x SkyNET.x86_64` after downloading.
+- **macOS** — the `.app` inside the zip is **not signed** (it is built on
+  Windows), so Gatekeeper will refuse it: open it once with right-click →
+  *Open*, or clear the quarantine flag with
+  `xattr -dr com.apple.quarantine "SkyNET Godot Port.app"`.
+
+## Command line
+
+| Option | What it does |
+| --- | --- |
+| `--gamedata=DIR` | use this data directory for this run |
+| `--setup` | ask for the game folders again |
+| `--map=MAP.230` | start straight on a map, no menu |
+| `--host=MAP.605 --bots=3` | host a deathmatch at once |
+| `--join=ADDRESS[:PORT]` | join one |
+| `--import` | build the asset cache and quit |
+| `--solve[=SECONDS]` | let the solver play the mission and report |
+| `--screenshot=FILE` | save a frame and quit (for automation) |
+
+## Building from source
+
+Godot **4.7.2** (standard build, no C#). Open `godot_project/` in the
+editor, or export from the command line:
+
+```sh
+godot --headless --path godot_project --export-release "Windows Desktop" build/windows/SkyNET.exe
+godot --headless --path godot_project --export-release "Linux"          build/linux/SkyNET.x86_64
+godot --headless --path godot_project --export-release "macOS"          build/macos/SkyNET.zip
+```
+
+The project has three headless test suites that run the real game code:
+
+```sh
+godot --headless --path godot_project res://scenes/action_smoke_test.tscn
+godot --headless --path godot_project res://scenes/game_smoke_test.tscn
+godot --headless --path godot_project res://scenes/net_smoke_test.tscn
+```
+
+## How this was made
+
+Every rule that could be measured was taken from the original DOS build
+(SkyNET v1.01) rather than reinvented: the action handler table, the
+mover families, the AI state handlers, the weapon table, the mission
+tables, the water and border-box code. Where the port and the original
+disagreed, the disassembly decided. The test suites above exist so those
+findings stay fixed.
+
+## Legal
+
+A fan project, not affiliated with or endorsed by Bethesda Softworks or
+any rights holder of the original games. All trademarks belong to their
+owners. No original game content is distributed here — the port only
+reads data you already own.
