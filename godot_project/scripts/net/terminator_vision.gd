@@ -7,7 +7,7 @@
 extends Control
 
 const SCROLL_STEP: float = 0.07
-const LINES: int = 22
+const LINES: int = 44          # small type, so more of them fit the column
 const MARK_RANGE: float = 30000.0
 
 var game: Node = null                  # dm_game.gd (avatars, font)
@@ -66,17 +66,24 @@ func _draw() -> void:
 		draw_line(Vector2(0, y), Vector2(sz.x, y), Color(0.0, 0.0, 0.0, 0.16), 1.0)
 		y += 3.0
 	var f: Font = _font if _font != null else ThemeDB.fallback_font
-	var fs: int = 16
-	var lh: float = 20.0
-	var col := Color(1.0, 0.35, 0.25, 0.75)
+	# Sized off the window instead of fixed: 16 px of DOS bitmap font on a
+	# modern screen swallowed the arena behind it ("ten text co ide cez
+	# obrazovku trochu moc velky a je to potom neprehladne", Marek
+	# 2026-09-12). The readout is atmosphere, so it stays small, dim and
+	# tight against the edges — the target tags keep the readable size.
+	var fs: int = clampi(int(sz.y * 0.011), 8, 14)
+	var lh: float = float(fs) * 1.3
+	var col := Color(1.0, 0.35, 0.25, 0.5)
 	# Readout columns, clear of the HUD panel at the bottom.
 	var top: float = 100.0
 	var bottom: float = sz.y - 190.0
 	var n: int = int((bottom - top) / lh)
 	for i in mini(n, LINES):
 		var yy: float = top + float(i) * lh
-		draw_string(f, Vector2(12.0, yy), _left[i], HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
-		draw_string(f, Vector2(sz.x - 250.0, yy), _right[i], HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
+		draw_string(f, Vector2(10.0, yy), _left[i], HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
+		# The right column hugs the right edge whatever the font measures.
+		var rw: float = f.get_string_size(_right[i], HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+		draw_string(f, Vector2(sz.x - 10.0 - rw, yy), _right[i], HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
 	# Target brackets over every other living actor in the frustum.
 	var cam: Camera3D = get_viewport().get_camera_3d()
 	if cam == null or game == null:
@@ -106,4 +113,7 @@ func _draw() -> void:
 		draw_line(sp + Vector2(-4.0, 0.0), sp + Vector2(4.0, 0.0), c, 1.0)
 		draw_line(sp + Vector2(0.0, -4.0), sp + Vector2(0.0, 4.0), c, 1.0)
 		var tag := "%s  %dM" % [String(av.get("display_name")).to_upper(), int(dist / 32.0)]
-		draw_string(f, sp + Vector2(half + 6.0, 6.0), tag, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, c)
+		# Who and how far has to be legible — this is the one thing the
+		# machine vision is FOR — so it is not shrunk with the readout.
+		draw_string(f, sp + Vector2(half + 6.0, 6.0), tag, HORIZONTAL_ALIGNMENT_LEFT, -1,
+			maxi(fs + 2, 12), c)

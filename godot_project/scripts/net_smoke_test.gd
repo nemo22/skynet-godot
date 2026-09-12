@@ -104,6 +104,18 @@ func _run() -> void:
 			grounded += 1
 	_check(moved >= 2, "%d/3 bots walked under the bot brain" % moved)
 	_check(grounded == 3, "bots stay on the map (none fell through)")
+	# The bodies must ANIMATE, not slide about in one pose: "Postavicky len
+	# poskakuju a premiestnuju sa. Vobec tam nie je animacia behu, statia a
+	# podobne" (Marek 2026-09-12). Watch the bots' clip and frame for a
+	# second — bodies that are walking show several different frames.
+	var poses: Dictionary = {}
+	for _f in 60:
+		await get_tree().physics_frame
+		for a in avatars:
+			if is_instance_valid(a) and a.has_method("anim_state"):
+				poses[str(a.call("anim_state"))] = true
+	_check(poses.size() >= 3,
+		"the bots' bodies animate (%d distinct clip frames in a second)" % poses.size())
 	# Whether two bots find each other inside a fixed window is luck — on a
 	# loaded machine (this suite runs four Godot processes back to back)
 	# 12 s was not enough and the check failed with "0 shots". Keep the

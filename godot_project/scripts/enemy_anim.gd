@@ -33,6 +33,31 @@ const T800_FAMILY: Dictionary = {
 	"gib":    [61, 63, 10.0, false],
 }
 
+## The deathmatch avatars — AVSOLDER / AVFEMALE / AVTRMNTR and their
+## heads. They share one authoring (the frame-to-frame vertex deltas of
+## the soldier and of the terminator agree to two decimals: one skeleton,
+## several skins), so one table serves them all. No fan-port processor
+## covers them, so this was MEASURED off the vertex data on 2026-09-12
+## instead of decoded:
+##   0      the reference pose — 17.9 u deep, arms at the sides; not a
+##          pose to stand in, though it is the one the port used to show
+##   1-6    standing still: small deltas, the stance unchanged
+##   7-14   walking: the stride opens and closes, 72.9 -> 31.7 -> 72.8 u
+##   15-24  running: the longest stride, 79 u, over the lowest shoulders
+##   29-34  dying: the body's height collapses from 78 u to 31 u
+## Two entries are read with less confidence: 25-28 are four sharply
+## different poses (19-31 u apart), taken here as the hit stagger, and
+## 35-41 a second small in-place cycle, taken as the firing pose. Both
+## are one-shots, so a misreading twitches rather than breaks the body.
+const AVATAR: Dictionary = {
+	"idle":   [1, 6, 6.0, true],
+	"walk":   [7, 14, 10.0, true],
+	"run":    [15, 24, 14.0, true],
+	"hit":    [25, 28, 12.0, false],
+	"death":  [29, 34, 10.0, false],
+	"attack": [35, 41, 12.0, false],
+}
+
 ## Flencer (the small jumping robot). Just an idle pose + a single
 ## walk / strike cycle — the rest of the body is animated by
 ## per-bone blend calls instead of more AnimRecords.
@@ -115,6 +140,11 @@ static func table_for(mesh_base: String) -> Dictionary:
 		"t600pst", "t600rfl", "t800pst", "t800rfl",
 	]:
 		return T800_FAMILY
+	# The MP avatar bodies and their heads, which animate in step.
+	if nm.begins_with("avsol") or nm.begins_with("avfem") \
+			or nm.begins_with("avbtc") or nm.begins_with("avtrm") \
+			or nm == "avbutch":
+		return AVATAR
 	match nm:
 		"flencer":  return FLENCER
 		"grabber":  return GRABBER

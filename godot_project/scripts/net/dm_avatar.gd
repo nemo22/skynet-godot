@@ -1,7 +1,7 @@
 ## A deathmatch actor as seen by OTHER peers: every remote player and
-## every bot is one of these — a T800RFL endoskeleton (the DOS MP body)
-## on a player-sized capsule, walking / firing / dying through the
-## fan-port frame ranges (enemy_anim.gd T800_FAMILY).
+## every bot is one of these — a DOS MP avatar body with its own head
+## model on a player-sized capsule, walking / running / firing / dying
+## through the measured frame ranges (enemy_anim.gd AVATAR).
 ##
 ## Two drive modes:
 ##   * replicated (default): main peers feed `apply_pose()` and the body
@@ -17,7 +17,24 @@ const EnemyAnim := preload("res://scripts/enemy_anim.gd")
 const Explosion := preload("res://scripts/explosion.gd")
 const Debris := preload("res://scripts/debris.gd")
 
-const MODEL: String = "T800RFL.3D"
+## The DOS deathmatch bodies, from the avatar table in skynet.EXE (file
+## offset 0x84dd4): twelve named characters over three bodies, each one a
+## HEADLESS body plus a head model of its own. The head's vertices are
+## already in the body's coordinate space and its frames run in step with
+## the body's, so the two hang off one origin and share a frame number.
+##
+## The port used to put a T800RFL endoskeleton on everyone and tint the
+## humans olive, which is why a deathmatch was a crowd of identical
+## machines. TERMINATOR is AVTRMNTR (the leather jacket over the exposed
+## metal); the humans are the soldier and the woman, chosen by net id so
+## a crowd is not all one person. DOS lets a player pick their character
+## outright — the port's network screen picks the local one, but nothing
+## replicates that choice yet, so here the id decides.
+const HUMAN_LOOKS: Array = [
+	{"body": "AVSOLDER.3D", "head": "AVSOLHED.3D"},
+	{"body": "AVFEMALE.3D", "head": "AVFEMHED.3D"},
+]
+const TERMINATOR_LOOK: Dictionary = {"body": "AVTRMNTR.3D", "head": "AVTRMHED.3D"}
 const CAPSULE_RADIUS: float = 26.0
 const CAPSULE_HEIGHT: float = 88.0
 const EYE_HEIGHT: float = 75.0
@@ -34,7 +51,10 @@ var pitch: float = 0.0
 var flags: int = 0
 
 var _mesh: MeshInstance3D = null
+var _head: MeshInstance3D = null
 var _frames: Array = []
+var _head_frames: Array = []
+var _look: String = ""
 var _anim: Dictionary = {}
 var _clip: String = ""
 var _clip_t: float = 0.0
@@ -69,23 +89,11 @@ func setup(id: int, name_text: String, local: bool) -> void:
 	_shape.position = Vector3(0.0, CAPSULE_HEIGHT * 0.5, 0.0)
 	add_child(_shape)
 
-	_frames = Assets.mesh_frames(MODEL)
 	_mesh = MeshInstance3D.new()
-	if not _frames.is_empty():
-		_foot = (_frames[0] as ArrayMesh).get_aabb().position.y
-		for f in _frames:
-			if f is ArrayMesh:
-				_foot = minf(_foot, (f as ArrayMesh).get_aabb().position.y)
-		_mesh.mesh = _frames[1] if _frames.size() > 1 else _frames[0]
-	else:
-		var cm := CapsuleMesh.new()
-		cm.radius = CAPSULE_RADIUS
-		cm.height = CAPSULE_HEIGHT
-		_mesh.mesh = cm
-		_foot = -CAPSULE_HEIGHT * 0.5
-	_mesh.position = Vector3(0.0, -_foot, 0.0)
+	_head = MeshInstance3D.new()
 	add_child(_mesh)
-	_anim = EnemyAnim.table_for("t800rfl")
+	add_child(_head)
+	_wear(Net.class_of(id))
 
 	# No name tag over the head: it would give the body away across the
 	# map. Terminators read names through their machine vision instead.
@@ -94,21 +102,45 @@ func setup(id: int, name_text: String, local: bool) -> void:
 func set_display_name(n: String) -> void:
 	display_name = n
 
-## HUMAN players wear an olive tint over the endoskeleton (the data has
-## no human body model); TERMINATORs are the bare chrome machine.
+## The class decides the body: a HUMAN is one of the resistance figures,
+## a TERMINATOR the jacketed machine. No tint any more — these bodies
+## carry their own art.
 var cls: int = 0
 func set_class(c: int) -> void:
 	cls = c
+	_wear(c)
+
+## Put on the body and head for `c`, keeping whatever clip is running.
+func _wear(c: int) -> void:
 	if _mesh == null:
 		return
-	if c == Net.CLASS_HUMAN:
-		var m := StandardMaterial3D.new()
-		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		m.albedo_color = Color(0.45, 0.42, 0.22, 0.55)
-		_mesh.material_overlay = m
+	var look: Dictionary = TERMINATOR_LOOK if c == Net.CLASS_TERMINATOR \
+		else HUMAN_LOOKS[absi(net_id) % HUMAN_LOOKS.size()]
+	var body: String = String(look["body"])
+	if body == _look:
+		return
+	_look = body
+	_frames = Assets.mesh_frames(body)
+	_head_frames = Assets.mesh_frames(String(look["head"]))
+	_anim = EnemyAnim.table_for(body.get_basename().to_lower())
+	if _frames.is_empty():
+		# No art: a capsule, so a missing model cannot make an invisible
+		# opponent.
+		var cm := CapsuleMesh.new()
+		cm.radius = CAPSULE_RADIUS
+		cm.height = CAPSULE_HEIGHT
+		_mesh.mesh = cm
+		_head.mesh = null
+		_foot = -CAPSULE_HEIGHT * 0.5
 	else:
-		_mesh.material_overlay = null
+		_foot = (_frames[0] as ArrayMesh).get_aabb().position.y
+		for f in _frames:
+			if f is ArrayMesh:
+				_foot = minf(_foot, (f as ArrayMesh).get_aabb().position.y)
+	# ONE offset for both meshes — that is what keeps the head on the neck.
+	_mesh.position = Vector3(0.0, -_foot, 0.0)
+	_head.position = _mesh.position
+	_show_clip_frame()
 
 ## In a vehicle the avatar IS the vehicle: the HUMMER / HK_FTR model
 ## replaces the endoskeleton and the capsule grows to the hull.
@@ -126,6 +158,8 @@ func set_vehicle(v: int) -> void:
 		_veh_mesh = null
 	if _mesh != null:
 		_mesh.visible = v == 0
+	if _head != null:
+		_head.visible = v == 0          # the head is its own mesh now
 	# Engine loop others hear: careng1 (jeep) / hk2 (HK).
 	if _engine != null:
 		_engine.queue_free()
@@ -275,8 +309,15 @@ func _play(clip: String, restart: bool = false) -> void:
 	_show_clip_frame()
 
 func _step_anim(delta: float) -> void:
-	if _frames.is_empty() or not _anim.has(_clip):
+	if _frames.is_empty():
 		return
+	if not _anim.has(_clip):
+		# A clip the table does not carry used to stop the animation dead
+		# AND latch `_clip`, so one shot froze the body for the rest of the
+		# round (_physics_process never re-plays walk/idle over "attack").
+		_play("idle" if _anim.has("idle") else "walk")
+		if not _anim.has(_clip):
+			return
 	var a: Array = _anim[_clip]
 	var fps: float = float(a[2]) if float(a[2]) > 0.0 else EnemyAnim.DEFAULT_FPS
 	var n: int = int(a[1]) - int(a[0]) + 1
@@ -304,3 +345,11 @@ func _show_clip_frame() -> void:
 	var f: int = clampi(int(a[0]) + _clip_i, 0, _frames.size() - 1)
 	if _mesh.mesh != _frames[f]:
 		_mesh.mesh = _frames[f]
+	# The head is a model of its own on the same frame number.
+	if _head != null and f < _head_frames.size() and _head.mesh != _head_frames[f]:
+		_head.mesh = _head_frames[f]
+
+## Which frame of which clip is on show (the net smoke test watches this
+## to prove the bodies animate).
+func anim_state() -> Array:
+	return [_clip, _clip_i]
