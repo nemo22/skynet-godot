@@ -99,6 +99,24 @@ static func _model_mesh(name: String) -> ArrayMesh:
 		_mesh_cache[key] = am
 	return am
 
+## The bolt colours are MEASURED, not chosen: each LASERn.3D is a flat
+## 120-unit blade whose whole surface is one 1x1 texture record in
+## TEXTURE.001 — rec 4 for LASER1, 49 for LASER2, 83 for LASER3. Those
+## three pixels are (51,219,219) cyan, (99,231,99) green and
+## (235,51,51) red. The port had guessed LASER1 red and LASER2 blue,
+## which is why the jeep's plasma (ammo type 18 = laser2.3d, ammo table
+## 0x40828) came out blue instead of green.
+const BOLT_COLOURS: Dictionary = {
+	"LASER1.3D": Color(0.200, 0.859, 0.859),
+	"LASER2.3D": Color(0.388, 0.906, 0.388),
+	"LASER3.3D": Color(0.922, 0.200, 0.200),
+}
+
+## The colour a projectile model draws in, or `fallback` for a model
+## that is not one of the bolts (ROCKET.3D and the rest).
+static func colour_for(model: String, fallback: Color = Color(1.0, 0.75, 0.4)) -> Color:
+	return BOLT_COLOURS.get(model.to_upper(), fallback)
+
 ## Launch from `from` heading `dir`. `shooter` is never damaged by its
 ## own shot and its hitbox is flown through.
 func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,

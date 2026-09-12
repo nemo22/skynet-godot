@@ -702,7 +702,8 @@ func _build_netjoin_screen(tex: Variant) -> Control:
 # --- NETMENU1.IMG field boxes (320x200 image pixels) ---------------------
 const NM_NAME_RECT: Rect2 = Rect2(33, 9, 96, 9)
 const NM_SKILL_RECT: Rect2 = Rect2(63, 24, 14, 7)
-const NM_LIST_RECT: Rect2 = Rect2(8, 35, 121, 124)
+# (The left box held an arena list until 2026-09-12. DOS has none — the
+# AREA field cycles on click — so the box stays as the baked art shows it.)
 const NM_AREA_RECT: Rect2 = Rect2(168, 9, 145, 9)
 const NM_MAXP_RECT: Rect2 = Rect2(209, 24, 13, 7)
 const NM_TIME_RECT: Rect2 = Rect2(249, 24, 63, 7)
@@ -727,7 +728,6 @@ const BOT_SKILLS: Array = ["EASY", "NORMAL", "HARD"]
 
 var _screen_join: Control = null
 var _nm_fields: Dictionary = {}          # key → LineEdit
-var _nm_arena_buttons: Array = []
 var _nm_arena: int = 0
 var _nm_area_label: Label = null
 var _nm_skill_btn: Button = null
@@ -850,36 +850,14 @@ func _build_netmenu_screen(tex: Variant) -> Control:
 		_replenish = not _replenish
 		_nm_replenish_btn.text = "YES" if _replenish else "NO")
 
-	# Arena list in the left box.
-	var scroll := ScrollContainer.new()
-	scroll.position = NM_LIST_RECT.position * s
-	scroll.size = NM_LIST_RECT.size * s
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	panel.add_child(scroll)
-	var vb := VBoxContainer.new()
-	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	vb.add_theme_constant_override("separation", 0)
-	scroll.add_child(vb)
-	_nm_arena_buttons.clear()
-	var levels: Array = NetLevels.levels()
-	for i in levels.size():
-		var lv: Dictionary = levels[i]
-		if not _maps.has(String(lv["map"])):
-			continue
-		var b := Button.new()
-		b.text = " %s  %s" % [String(lv["name"]).to_upper(), String(lv["map"]).trim_prefix("MAP.")]
-		b.flat = true
-		b.focus_mode = Control.FOCUS_NONE
-		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		b.custom_minimum_size = Vector2(NM_LIST_RECT.size.x * s - 12.0, 8.0 * s)
-		_dos_font(b)
-		b.add_theme_color_override("font_color", Color(0.55, 0.85, 0.65))
-		b.add_theme_color_override("font_hover_color", Color(1, 1, 1))
-		_style_hotspot(b)
-		var idx: int = i
-		b.pressed.connect(func() -> void: _nm_select_arena(idx))
-		vb.add_child(b)
-		_nm_arena_buttons.append([b, idx])
+	# DOS has NO arena list: the AREA box itself cycles through the
+	# arenas when you click it ("mapy sa prepínajú klikaním v AREA a tam
+	# sa rotujú, nie je nikde zoznam zobrazený", Marek 2026-09-11). The
+	# port showed a scrolling list in the left box instead.
+	panel.add_child(_img_hotspot(NM_AREA_RECT, s, func() -> void:
+		var n: int = NetLevels.levels().size()
+		if n > 0:
+			_nm_select_arena((_nm_arena + 1) % n)))
 	_nm_select_arena(0)
 
 	# Message box: the fields the DOS screen never had.
@@ -945,10 +923,6 @@ func _nm_select_arena(idx: int) -> void:
 	var lv: Dictionary = levels[_nm_arena]
 	if _nm_area_label != null:
 		_nm_area_label.text = String(lv["name"]).to_upper()
-	for pair in _nm_arena_buttons:
-		var b: Button = pair[0]
-		b.add_theme_color_override("font_color",
-			Color(1.0, 0.9, 0.4) if int(pair[1]) == _nm_arena else Color(0.55, 0.85, 0.65))
 	var items: Dictionary = lv.get("items", {})
 	for key in items:
 		if _nm_fields.has(key):

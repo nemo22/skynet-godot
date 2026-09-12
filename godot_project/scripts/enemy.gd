@@ -915,12 +915,13 @@ func _shoot(muzzle: Vector3, dir: Vector3, ammo: int, dos_speed: float) -> void:
 		cfg["impact_sound"] = Audio.sound_name(isnd)
 	proj.setup(muzzle, dir, float(absi(dmg)), cfg, self)
 
+## Measured from each model's own 1x1 texture record in TEXTURE.001
+## (Projectile.BOLT_COLOURS): LASER1 cyan, LASER2 green, LASER3 red.
+## The port used to guess LASER1 red and LASER2 blue.
 static func _ammo_color(model: String) -> Color:
-	match model:
-		"LASER1.3D": return Color(1.0, 0.32, 0.22)
-		"LASER2.3D": return Color(0.45, 0.7, 1.0)
-		"ROCKET.3D": return Color(1.0, 0.75, 0.4)
-	return Color(1.0, 0.45, 0.22)
+	if model == "ROCKET.3D":
+		return Color(1.0, 0.75, 0.4)
+	return Projectile.colour_for(model, Color(1.0, 0.45, 0.22))
 
 # ---------------------------------------------------------------------
 # Legacy heuristic FSM (types without table data)

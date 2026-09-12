@@ -1530,12 +1530,16 @@ func _projectile_cfg(kind: String, w: Dictionary) -> Dictionary:
 				"splash": float(w.get("splash", 512.0)),
 				"trail": true, "impact_bank": 363,
 				"impact_sound": "EXPLO3.RAW", "hits": "enemy"}
+		# The bolt colours come from the models' own 1x1 textures, not from
+		# a guess (Projectile.BOLT_COLOURS): LASER1 cyan, LASER2 green.
+		# The jeep's plasma is ammo type 18 = laser2.3d, so it is GREEN —
+		# the port drew it blue ("s tým laserom v jeepe", 2026-09-11).
 		"laser":
-			return {"model": "LASER1.3D", "color": Color(1.0, 0.32, 0.22),
+			return {"model": "LASER1.3D", "color": Projectile.colour_for("LASER1.3D"),
 				"speed": 9000.0, "life": 1.2, "splash": 0.0,
 				"impact_bank": 364, "hits": "enemy"}
 		"plasma":
-			return {"model": "LASER2.3D", "color": Color(0.45, 0.7, 1.0),
+			return {"model": "LASER2.3D", "color": Projectile.colour_for("LASER2.3D"),
 				"speed": 4000.0, "life": 1.2, "splash": 0.0,
 				"impact_bank": 364, "hits": "enemy"}
 	return {"speed": 4000.0, "hits": "enemy"}
