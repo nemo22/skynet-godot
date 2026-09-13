@@ -47,8 +47,7 @@ func _ready() -> void:
 	else:
 		gamedata_dir = found
 		game_root = found
-	if not FileAccess.file_exists("%s/%s" % [gamedata_dir, PROBE_FILE]) \
-			and FileAccess.file_exists("%s/%s" % [gamedata_dir, PROBE_FILE_SHOCK]):
+	if variant_for(gamedata_dir) == BsaVariant.FUTURESHOCK_FULL:
 		game = "shock"
 		variant = BsaVariant.FUTURESHOCK_FULL
 		map_archive = PROBE_FILE_SHOCK
@@ -193,6 +192,16 @@ static func converted_dir_for(gamedata: String) -> String:
 
 func converted_dir() -> String:
 	return converted_dir_for(gamedata_dir if _has_data(gamedata_dir) else "")
+
+## Which game a data directory holds, as an archive key. Static like
+## locate_gamedata, because a `--script` tool gets no autoloads either -
+## `SkynetPaths` is not even a known identifier there, so the dev probes
+## in tools/ load this script and ask it directly.
+static func variant_for(dir: String) -> int:
+	if not FileAccess.file_exists("%s/%s" % [dir, PROBE_FILE]) \
+			and FileAccess.file_exists("%s/%s" % [dir, PROBE_FILE_SHOCK]):
+		return BsaVariant.FUTURESHOCK_FULL
+	return BsaVariant.SKYNET_FULL
 
 ## Static so the editor plugin (no autoloads there) can find it too.
 static func locate_gamedata() -> String:

@@ -10,8 +10,12 @@ extends SceneTree
 func _initialize() -> void:
 	var BSAReader = load("res://scripts/loaders/bsa_reader.gd")
 	var Mesh3D = load("res://scripts/loaders/mesh_3d.gd")
+	# The data directory the game itself uses (user://gamedata.cfg, or
+	# --gamedata=DIR); this used to be one machine's absolute path.
+	var Paths = load("res://scripts/skynet_paths.gd")
+	var gamedata: String = Paths.locate_gamedata()
 	var b = BSAReader.new()
-	if not b.open("C:/games/skynet/gamedata/MDMDENMS.BSA", 2):
+	if not b.open(gamedata + "/MDMDENMS.BSA", Paths.variant_for(gamedata)):
 		print("no MDMDENMS.BSA")
 		quit(1)
 		return

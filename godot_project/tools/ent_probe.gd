@@ -6,13 +6,17 @@ var _bytes: PackedByteArray
 func _initialize() -> void:
 	var BSAReader = load("res://scripts/loaders/bsa_reader.gd")
 	var MapFile = load("res://scripts/loaders/map_file.gd")
+	# The data directory the game itself uses (user://gamedata.cfg, or
+	# --gamedata=DIR); this used to be one machine's absolute path.
+	var Paths = load("res://scripts/skynet_paths.gd")
+	var gamedata: String = Paths.locate_gamedata()
 	var args := OS.get_cmdline_user_args()
 	var suffix: int = int(args[0]) if args.size() > 0 else 210
 	var want: Array = []
 	for i in range(1, args.size()):
 		want.append(args[i].to_upper())
 	var b = BSAReader.new()
-	b.open("C:/Games/skynet/gamedata/MDMDMAP2.BSA", 2)
+	b.open(gamedata + "/MDMDMAP2.BSA", Paths.variant_for(gamedata))
 	_bytes = b.read("MAP.%03d" % suffix)
 	var m = MapFile.parse(_bytes)
 	b.close()

@@ -1,6 +1,10 @@
 ## Measure Godot's omni light falloff in this project's units.
 ##
-##   godot --path . -s res://tools/light_probe.gd -- [energy] [range] [decay]
+##   godot --path . -s res://tools/light_probe.gd -- [energy] [range] [decay] [--out=PATH]
+##
+## The rendered frame is written to `user://probe.png` unless --out says
+## otherwise. It used to be saved to an absolute path in one machine's
+## temp directory, which was dead the moment that directory went.
 ##
 ## A white plane, one OmniLight3D 100 u above it, an orthographic camera
 ## looking straight down with no ambient, no tonemapping and no glow.
@@ -16,7 +20,13 @@ const HEIGHT: float = 100.0
 const PIX: int = 800
 
 func _initialize() -> void:
-	var args := OS.get_cmdline_user_args()
+	var out_path: String = "user://probe.png"
+	var args: Array = []
+	for a in OS.get_cmdline_user_args():
+		if String(a).begins_with("--out="):
+			out_path = String(a).substr(6)
+		elif not String(a).begins_with("--"):
+			args.append(a)
 	var energy: float = float(args[0]) if args.size() > 0 else 1.0
 	var rng: float = float(args[1]) if args.size() > 1 else 1000.0
 	var decay: float = float(args[2]) if args.size() > 2 else 1.0
@@ -63,7 +73,11 @@ func _initialize() -> void:
 		await process_frame
 	await RenderingServer.frame_post_draw
 	var img: Image = root.get_viewport().get_texture().get_image()
-	img.save_png("C:/Users/marek/AppData/Local/Temp/claude/C--Games-skynet/e86fa335-e69b-424c-8c68-77320a26c397/scratchpad/probe.png")
+	var err: int = img.save_png(out_path)
+	if err != OK:
+		print("[probe] cannot write %s (error %d)" % [out_path, err])
+	else:
+		print("[probe] frame written to %s" % ProjectSettings.globalize_path(out_path))
 	var mx: float = 0.0
 	for y in range(0, img.get_height(), 8):
 		for x in range(0, img.get_width(), 8):

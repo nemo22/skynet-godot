@@ -22,3 +22,9 @@ godot_project/*.log
 
 # Converted-asset cache (rebuilt from gamedata/ on first start)
 godot_project/converted/
+
+# Research tooling, not part of the port: a capstone driver for the
+# original GAME.EXE. Needs the exe and the Ghidra output, neither of
+# which is in this repo, so it cannot run from a clone. It stays on
+# disk because docs/implementation_plan.md cites it.
+godot_project/tools/x86dis.py
