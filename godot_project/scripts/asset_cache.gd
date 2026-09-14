@@ -184,7 +184,6 @@ func _forget_session() -> void:
 	_cfa_hires_memo.clear()
 	_cfa_offset_memo.clear()
 	_cfa_lo_memo.clear()
-	_res_norm = ""
 	_mods_norm = ""
 
 ## A level is about to load (main.gd). Session-cache entries that neither
@@ -480,7 +479,6 @@ var _manifest_checked_msec: int = 0
 var _trusted: Dictionary = {}            # relative path → PackedInt64Array [size, mtime]
 var _trust_session: Dictionary = {}      # relative path → recorded stamp, or [] when forgotten
 var _verified: Dictionary = {}           # normalised path → true (file and its dependencies)
-var _res_norm: String = ""
 var _mods_norm: String = ""
 
 ## Record a cache file this process has just written.
@@ -589,11 +587,17 @@ func _dep_ok(dp: String, depth: int) -> bool:
 			return false
 		_verified[n] = true
 		return true
-	# The game's own files: res://, outside the cache and the mods folder.
-	if _res_norm.is_empty():
-		_res_norm = _norm("res://")
+	# The game's own files: res://, outside the cache (handled above) and
+	# the mods folder. Judged by the res:// spelling, not by where res://
+	# lies on disk: an exported build has no such folder (globalize_path
+	# of res:// is empty there), and every cached file that references a
+	# script of the game — FramePack, the baked levels — was refused and
+	# rebuilt on every start.
+	if not dp.begins_with("res://"):
+		return false
+	if _mods_norm.is_empty():
 		_mods_norm = _norm(SkynetPaths.mods_dir())
-	return dp.begins_with("res://") and _under(n, _res_norm) and not _under(n, _mods_norm)
+	return not dp.contains("..") and not _under(n, _mods_norm)
 
 ## A path in one comparable spelling: absolute, forward slashes, no "..",
 ## case-folded where the file system ignores case.
