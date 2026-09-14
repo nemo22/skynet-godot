@@ -31,10 +31,8 @@ const Projectile := preload("res://scripts/projectile.gd")
 const Grenade := preload("res://scripts/grenade.gd")
 const MuzzleFlash := preload("res://scripts/muzzle_flash.gd")
 const SmokePuff := preload("res://scripts/smoke_puff.gd")
-const CFAFile := preload("res://scripts/loaders/cfa_file.gd")
-const BSAReader := preload("res://scripts/loaders/bsa_reader.gd")
-const Palette := preload("res://scripts/loaders/palette.gd")
 const Explosion := preload("res://scripts/explosion.gd")
+const PauseState := preload("res://scripts/pause_state.gd")
 ## How far ahead of the muzzle the player's own tracer starts, and how
 ## far it is allowed to reach.
 const TRACER_START: float = 420.0
@@ -55,7 +53,8 @@ var input_locked: bool = false
 var class_speed: float = 1.0
 ## Debug: when true, the player takes no damage. Static so the menu's
 ## DEBUG TOOLS screen can arm it before a map loads; F9 toggles it
-## in-game. Persists across scene changes.
+## in-game (not in a network game). Persists across map changes; the
+## title menu clears it, and so does starting a network game from it.
 static var god_mode: bool = false
 
 # Driven each frame by the TouchControls overlay; stays zero on desktop.
@@ -88,7 +87,7 @@ const STEP_HEIGHT: float = 80.0
 ## onto a face only when its normal's Y is at least 196/256 — cos 40° —
 ## and treats anything steeper as a wall to slide along, so the hills
 ## round the canyons cannot be walked over or round ("pôvodne hráč
-## nemohol chodiť po kopcoch", Marek, 2026-09-11). The jeep's wheels have
+## nemohol chodiť po kopcoch", playtest, 2026-09-11). The jeep's wheels have
 ## no such test and it climbs.
 const FOOT_MAX_SLOPE_DEG: float = 40.0
 const VEH_MAX_SLOPE_DEG: float = 75.0
@@ -156,7 +155,7 @@ var _weapons: Array = [
 	{"name": "HK ROCKETS",       "kind": "rocket",  "dmg": 400.0, "rate": 1,  "pool": 11, "cost": 1,   "snd": "", "snd_id": 26, "sel": 9,  "dry": 10, "cfa": "", "vx": 160, "splash": 512.0, "veh": 2},
 	# DOS record 13: no ammo type, no pool, no fire or dry sound, view X
 	# 168 — not a gun but the MP MOTION DETECTOR, the hand-held scanner a
-	# HUMAN player carries (Marek's DOS deathmatch, 2026-09-12). Its draw
+	# HUMAN player carries (the DOS deathmatch, 2026-09-12). Its draw
 	# code (0x132b00) marks the other players; see net/motion_detector.gd.
 	{"name": "MOTION DETECTOR",  "kind": "detector", "dmg": 0.0,  "rate": 2,  "pool": -1, "cost": 0,   "snd": "", "sel": -1, "dry": -1, "cfa": "WEAPON13.CFA", "animspd": 8, "vx": 168},
 ]
@@ -307,10 +306,6 @@ const POOL_TABLE: Dictionary = {
 	4: [500, 800], 5: [25, 99], 6: [20, 99], 7: [0, 99], 8: [2, 99],
 	9: [1, 99], 10: [1000, 2000], 11: [40, 50], 12: [9999, 9999],
 }
-## Rounds a generic ammo pickup adds per pool (placeholder until the
-## pickup sprite records are decoded into specific ammo types).
-const PICKUP_AMMO: Dictionary = {0: 50, 1: 10, 2: 5, 3: 2, 4: 50,
-	5: 5, 6: 3, 8: 1, 9: 1}
 var _pools: Dictionary = {}          # pool id → rounds left
 
 # --- weapon viewmodel (the gun drawn at the bottom of the screen) -------
@@ -366,6 +361,7 @@ func set_spawn(pos: Vector3, yaw: float, reset_state: bool = true) -> void:
 	if reset_state:
 		health = max_health
 		armor = 0.0
+		_net_env_dmg = 0.0                 # owed by the life that just ended
 		_reset_pools()
 		_reset_owned()
 	_sync_hud()
@@ -465,7 +461,7 @@ func set_vehicle(v: int) -> void:
 ## round the eye. Skynet.exe's HUD table (0x44700) names hummer.3d for
 ## the jeep and hkcockpt.3d for the HK. Back faces are culled, so from
 ## inside only the windscreen frame, the roll bar and the bonnet show - the
-## view in Marek's DOS screenshots (2026-09-11). The port had drawn
+## view in the DOS screenshots (2026-09-11). The port had drawn
 ## PANEL1/PANEL2.IMG instead, full-screen dashboards the executable never
 ## loads (panel0.img is its only panel name).
 ## The jeep's model rides the CAR (a pivot at the eye that tilts with the
@@ -479,7 +475,7 @@ const VEH_COCKPIT: Array = ["", "HUMMER.3D", "HKCOCKPT.3D"]
 ## camera position. DOS y is down and z ahead, so the jeep's 26,22,8 is
 ## (26, -22, -8) here: the eye sits in the LEFT seat, 22 over the model's
 ## origin, and the windscreen's centre post stands 30 to the right - the
-## post at the lower right of Marek's DOS shot, not a post in mid-view
+## post at the lower right of the DOS shot, not a post in mid-view
 ## (read as 0,26,22 it was; no placement round the car's middle matched).
 ## The HK's 0,4,16 is (0, -4, -16).
 const VEH_COCKPIT_OFFSET: Array = [Vector3.ZERO, Vector3(26.0, -22.0, -8.0), Vector3(0.0, -4.0, -16.0)]
@@ -487,6 +483,19 @@ var _cockpit_pivot: Node3D = null
 
 func _attach_cockpit(v: int) -> void:
 	if _cockpit_pivot != null and is_instance_valid(_cockpit_pivot):
+		# Its duplicated flat materials are let go first and the node is
+		# taken out of the world at once, then freed at the end of the
+		# frame. Left as it was, the materials went before the instance, and
+		# a respawn straight out of a vehicle (the player moves that same
+		# frame) had the renderer update an instance whose materials were
+		# gone — 16 "material is null" errors, 2026-09-14.
+		for c in _cockpit_pivot.get_children():
+			if c is MeshInstance3D:
+				for si in (c as MeshInstance3D).get_surface_override_material_count():
+					(c as MeshInstance3D).set_surface_override_material(si, null)
+		var holder: Node = _cockpit_pivot.get_parent()
+		if holder != null:
+			holder.remove_child(_cockpit_pivot)
 		_cockpit_pivot.queue_free()
 	_cockpit_pivot = null
 	if v == VEH_FOOT or _cam == null:
@@ -651,14 +660,17 @@ func _select_weapon(idx: int) -> void:
 	Audio.play_id(int(_weapons[idx].get("sel", -1)), -8.0)
 
 func _unhandled_input(event: InputEvent) -> void:
+	# The debug toggles stay out of a network game: hits are checked on the
+	# victim's machine, so F9 made a player invulnerable online, and F8
+	# flew through the arena walls.
 	if event is InputEventKey and event.pressed and not event.echo \
-			and event.keycode == KEY_F8:
+			and event.keycode == KEY_F8 and not Net.active:
 		noclip = not noclip
 		velocity = Vector3.ZERO
 		print("[player] noclip %s" % ("ON" if noclip else "OFF"))
 		return
 	if event is InputEventKey and event.pressed and not event.echo \
-			and event.keycode == KEY_F9:
+			and event.keycode == KEY_F9 and not Net.active:
 		god_mode = not god_mode
 		print("[player] god mode %s" % ("ON" if god_mode else "OFF"))
 		return
@@ -666,7 +678,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		return                           # touch handled by TouchControls
 	if event is InputEventMouseButton and event.pressed:
 		if not _captured and event.button_index == MOUSE_BUTTON_LEFT:
-			_capture(true)
+			# An overlay (Esc menu, console — they keep the game running in a
+			# network match) owns the cursor: a click is its, not the view's.
+			if not PauseState.mouse_wanted():
+				_capture(true)
 			return
 		if _captured and _act_on(event):
 			return
@@ -708,6 +723,7 @@ func _physics_process(delta: float) -> void:
 	rotation.y = _yaw
 	if _cam != null:
 		_cam.rotation.x = _pitch
+	_flush_env_damage(delta)
 
 	if input_locked:
 		# Dead / chatting / unspawned: gravity only, no intent.
@@ -845,37 +861,45 @@ const JEEP_AIM_PITCH_UP: float = 0.6
 const RAM_MIN_SPEED: float = 2.0
 const RAM_RADIUS: float = 120.0
 const RAM_TICK: float = 1.0 / 25.0
-var _ram_cd: Dictionary = {}       # enemy instance id -> seconds to the next dose
+var _ram_cd: Dictionary = {}       # enemy instance id -> _ram_clock of the next dose
+var _ram_clock: float = 0.0        # seconds driven, the clock _ram_cd counts in
+## The ram probe, built on first use and kept: a fresh query and sphere
+## every physics tick while driving created and freed a physics shape 60
+## times a second.
+var _ram_query: PhysicsShapeQueryParameters3D = null
+const RAM_CD_PRUNE: int = 16       # expired doses are swept past this many
 
 ## Direction the guns fire: where the camera looks. In the jeep the
 ## camera IS the turret - the mouse turns it, the keys drive the car -
 ## so the car's frame swings across the view as you aim and the
-## crosshair stays in the middle (Marek's DOS screenshots, 2026-09-11;
+## crosshair stays in the middle (the DOS screenshots, 2026-09-11;
 ## the port had moved a crosshair over a view fixed to the car).
 func aim_dir() -> Vector3:
 	return -_cam.global_transform.basis.z
 
-## Where the crosshair belongs on screen: always the middle now.
-func aim_screen_pos() -> Vector2:
-	return get_viewport().get_visible_rect().size * 0.5
-
 ## Drive into a robot: it takes the hit and the car rolls on (see RAM_*).
 func _ram_check(fwd: Vector3) -> void:
-	for k in _ram_cd.keys():
-		_ram_cd[k] -= get_physics_process_delta_time()
-		if _ram_cd[k] <= 0.0:
-			_ram_cd.erase(k)
+	# A dose is due again once the clock reaches its stamp — the same
+	# instant the old per-tick countdown ran out, without walking a key
+	# array every tick. Stale stamps are only swept when they pile up.
+	_ram_clock += get_physics_process_delta_time()
+	if _ram_cd.size() > RAM_CD_PRUNE:
+		for k in _ram_cd.keys():
+			if _ram_clock >= float(_ram_cd[k]):
+				_ram_cd.erase(k)
 	if absf(_veh_speed) < RAM_MIN_SPEED:
 		return
 	var space := get_world_3d().direct_space_state
-	var q := PhysicsShapeQueryParameters3D.new()
-	var sh := SphereShape3D.new()
-	sh.radius = RAM_RADIUS
-	q.shape = sh
+	if _ram_query == null:
+		var sh := SphereShape3D.new()
+		sh.radius = RAM_RADIUS
+		_ram_query = PhysicsShapeQueryParameters3D.new()
+		_ram_query.shape = sh
+		_ram_query.collide_with_areas = true
+		_ram_query.collide_with_bodies = true
+		_ram_query.exclude = [get_rid()]
+	var q := _ram_query
 	q.transform = Transform3D(Basis(), global_position + fwd * (90.0 * signf(_veh_speed)) + Vector3(0.0, 50.0, 0.0))
-	q.collide_with_areas = true
-	q.collide_with_bodies = true
-	q.exclude = [get_rid()]
 	for hit in space.intersect_shape(q, 8):
 		var n: Node = hit.get("collider") as Node
 		while n != null and not (n.has_method("take_damage")
@@ -884,9 +908,9 @@ func _ram_check(fwd: Vector3) -> void:
 		if n == null:
 			continue
 		var id: int = n.get_instance_id()
-		if _ram_cd.has(id):
+		if _ram_cd.has(id) and _ram_clock < float(_ram_cd[id]):
 			continue
-		_ram_cd[id] = RAM_TICK
+		_ram_cd[id] = _ram_clock + RAM_TICK
 		# DOS passes whatever the ram meets to ObjHit: a return of zero
 		# means the thing has no hit points — a building — and the caller
 		# negates the speed. A robot or a breakable map entity takes the
@@ -1014,10 +1038,8 @@ func _hover(delta: float, fwd_in: float, str_in: float) -> void:
 		# Long enough to find the ground from the top of the band, not
 		# just from just above the floor — the ceiling needs the same
 		# measurement the floor push does.
-		var q := PhysicsRayQueryParameters3D.create(global_position + Vector3(0.0, 20.0, 0.0),
+		var q := _hk_ray_query(global_position + Vector3(0.0, 20.0, 0.0),
 			global_position - Vector3(0.0, HK_CEILING_PROBE, 0.0))
-		q.collide_with_areas = false
-		q.exclude = [get_rid()]
 		var hit := space.intersect_ray(q)
 		if hit.has("position"):
 			var clearance: float = global_position.y - (hit["position"] as Vector3).y
@@ -1038,12 +1060,24 @@ func _hover(delta: float, fwd_in: float, str_in: float) -> void:
 ## floor below would seal the mission in ("exit z tunelov je vyssie ako
 ## ten limit"). Out under open sky the cap holds.
 func _roofed(space: PhysicsDirectSpaceState3D) -> bool:
-	var q := PhysicsRayQueryParameters3D.create(
+	var q := _hk_ray_query(
 		global_position + Vector3(0.0, 40.0, 0.0),
 		global_position + Vector3(0.0, HK_ROOF_PROBE, 0.0))
-	q.collide_with_areas = false
-	q.exclude = [get_rid()]
 	return not space.intersect_ray(q).is_empty()
+
+## The HK's ground and roof probes share one ray query, built on first use:
+## a new query (and exclude array) every physics tick while flying was
+## garbage for nothing. Bodies only, never the player's own.
+var _hk_ray: PhysicsRayQueryParameters3D = null
+
+func _hk_ray_query(from: Vector3, to: Vector3) -> PhysicsRayQueryParameters3D:
+	if _hk_ray == null:
+		_hk_ray = PhysicsRayQueryParameters3D.new()
+		_hk_ray.collide_with_areas = false
+		_hk_ray.exclude = [get_rid()]
+	_hk_ray.from = from
+	_hk_ray.to = to
+	return _hk_ray
 
 ## RUN: the Shift key, or the on-screen / automation button.
 func _sprinting() -> bool:
@@ -1452,22 +1486,23 @@ func _shoot(idx: int = -1) -> void:
 	# FUN_00126080, skynet_gh.c:28238). The TEXTURE.219 sprite is tinted
 	# to family colour so plasma flares blue, lasers red, bullets warm
 	# white.
-	var mf := MuzzleFlash.new()
-	get_tree().current_scene.add_child(mf)
 	# TEXTURE.219 is a 17x17 px sprite. DOS draws it as a small flare at
 	# the gun's muzzle; from 90 u a 36 u sprite filled a third of the
 	# screen, so it sits further out and smaller (a 2026-09-02 report).
-	mf.setup(muzzle + shot * 70.0, tint, 26.0 if kind == "shotgun" else 18.0)
+	# Pooled, like the tracer and the impact puff below: a node per shot
+	# was a new sprite (and light) at the weapon's fire rate.
+	var fx_parent: Node = get_tree().current_scene
+	MuzzleFlash.spawn(fx_parent, muzzle + shot * 70.0, tint, 26.0 if kind == "shotgun" else 18.0)
 
 	# Ballistic / straight projectiles take a separate path.
 	if kind == "grenade":
 		var g := Grenade.new()
-		get_tree().current_scene.add_child(g)
+		fx_parent.add_child(g)
 		g.setup(muzzle, shot, dmg, float(w.get("splash", 256.0)), self)
 		return
 	if kind == "rocket" or kind == "laser" or kind == "plasma":
 		var proj: Node3D = Projectile.new()
-		get_tree().current_scene.add_child(proj)
+		fx_parent.add_child(proj)
 		proj.setup(muzzle, shot, dmg, _projectile_cfg(kind, w), self)
 		return
 
@@ -1498,13 +1533,11 @@ func _shoot(idx: int = -1) -> void:
 		var reach: float = minf(beam_from.distance_to(endpoint), TRACER_MAX)
 		beam_to = beam_from + (endpoint - beam_from).normalized() * reach
 		if reach > 120.0:
-			var tr: MeshInstance3D = Tracer.new()
-			get_tree().current_scene.add_child(tr)
-			tr.setup(beam_from, beam_to, Color(1.0, 0.86, 0.55, 0.5), 2.0)
+			Tracer.spawn(fx_parent, beam_from, beam_to, Color(1.0, 0.86, 0.55, 0.5), 2.0)
 	# Shotgun: a puff of smoke lingering at the muzzle.
 	if kind == "shotgun":
 		var sm := SmokePuff.new()
-		get_tree().current_scene.add_child(sm)
+		fx_parent.add_child(sm)
 		sm.setup(muzzle + fwd * 30.0, 180.0)
 	if hit.has("collider"):
 		var n: Node = hit["collider"] as Node
@@ -1513,9 +1546,7 @@ func _shoot(idx: int = -1) -> void:
 		if n != null and n != self:
 			_deal(n, dmg)
 		else:
-			var puff := Explosion.new()
-			get_tree().current_scene.add_child(puff)
-			puff.setup(endpoint, 40.0, IMPACT_BANK_BULLET)
+			Explosion.spawn(fx_parent, endpoint, 40.0, IMPACT_BANK_BULLET)
 
 ## Damage `n` from this player's shot — deathmatch actors take the
 ## attributed form (their `net_damage` reports the hit to the server).
@@ -1677,6 +1708,12 @@ func take_damage(amount: float, scaled: bool = true) -> void:
 		# Deathmatch: the server owns our health — this is our own splash
 		# (rocket at the feet); other people's shots reach us as reports
 		# from THEIR machines, never through here.
+		if not scaled:
+			# Radiation and drowning arrive as a sliver every frame, and a
+			# reliable report each was a flood to the host: they are summed
+			# and sent by _flush_env_damage, the same total in far fewer hits.
+			_net_env_dmg += amount
+			return
 		Net.hit(Net.local_id, amount, Net.local_id, _weapon_idx)
 		return
 	if vehicle != VEH_FOOT:
@@ -1692,6 +1729,28 @@ func take_damage(amount: float, scaled: bool = true) -> void:
 		health = 0.0
 		Audio.play_sfx("EXPLO2.RAW", -2.0)
 		_capture(false)                          # release the mouse
+
+## Network game: environmental damage (take_damage with `scaled` false)
+## waiting to be reported, and how long it has waited. At most one report
+## per NET_ENV_SEND_INTERVAL; whatever is left goes out once it is due.
+const NET_ENV_SEND_INTERVAL: float = 0.1
+var _net_env_dmg: float = 0.0
+var _net_env_t: float = 0.0
+
+func _flush_env_damage(delta: float) -> void:
+	if _net_env_dmg <= 0.0:
+		return
+	if not Net.active:
+		_net_env_dmg = 0.0                       # the game it was owed to is gone
+		_net_env_t = 0.0
+		return
+	_net_env_t += delta
+	if _net_env_t < NET_ENV_SEND_INTERVAL:
+		return
+	var amount: float = _net_env_dmg
+	_net_env_dmg = 0.0
+	_net_env_t = 0.0
+	Net.hit(Net.local_id, amount, Net.local_id, _weapon_idx)
 
 ## A deathmatch hit from `attacker` (a server-side bot shooting the
 ## host, or a splash from another actor's projectile on this machine).
@@ -1709,29 +1768,6 @@ func net_damage(amount: float, attacker: Node) -> void:
 ## Respawn at the stored level start (set_spawn resets health and ammo).
 func respawn() -> void:
 	set_spawn(_spawn_pos, _spawn_yaw)
-
-## Pickup: top up the shared ammo pools (PICKUP_AMMO rounds each, capped
-## at the pool maximum). Returns true when at least one pool could take
-## more, so the pickup is consumed.
-func add_ammo(_rounds: int) -> bool:
-	var took := false
-	for p in PICKUP_AMMO:
-		var mx: int = int(POOL_TABLE[p][1])
-		var cur: int = int(_pools.get(p, 0))
-		if cur < mx:
-			_pools[p] = mini(cur + int(PICKUP_AMMO[p]), mx)
-			took = true
-	if took:
-		_sync_hud()
-	return took
-
-## Pickup: heal the player. Returns false when already at full health so
-## the pickup is left for later.
-func add_health(amount: int) -> bool:
-	if health >= max_health:
-		return false
-	health = minf(health + float(amount), max_health)
-	return true
 
 ## --- DOS pickup effects (handler 0x11d670, item table 0x35800) --------
 
@@ -1903,12 +1939,15 @@ func _act_on(event: InputEvent) -> bool:
 		return true
 	return false
 
+## No viewmodel frames — one shared empty list, not a new one each frame.
+const NO_FRAMES: Array = []
+
 ## Advance the viewmodel animation and keep it pinned bottom-centre.
 func _process(delta: float) -> void:
 	_step_death_view(delta)
 	if _viewmodel == null:
 		return
-	var frames: Array = _vm_cache.get(_weapon_idx, []) if vehicle == VEH_FOOT else []
+	var frames: Array = _vm_cache.get(_weapon_idx, NO_FRAMES) if vehicle == VEH_FOOT else NO_FRAMES
 	# A corpse holds no gun.
 	_viewmodel.visible = not frames.is_empty() and _death_t < 0.0
 	if frames.is_empty():
@@ -1934,7 +1973,7 @@ func _process(delta: float) -> void:
 ## --- the death view ---------------------------------------------------
 ## In a deathmatch the message said YOU DIED and the body went on
 ## standing: "asi by som ho zviezol k zemy a aj pohlad nech ide na chvilu
-## k zemi kym sa respawne" (Marek 2026-09-12). The DOS original is no
+## k zemi kym sa respawne" (playtest 2026-09-12). The DOS original is no
 ## guide — it wipes the screen — so this is the plain reading of it: the
 ## eye sinks from 75 to the floor and the head tips over, then holds
 ## there until the server respawns you. dm_game drives it.
@@ -1955,9 +1994,6 @@ func end_death_view() -> void:
 	if _cam != null:
 		_cam.position.y = float(VEH_EYE[VEH_FOOT])
 		_cam.rotation = Vector3(_pitch, 0.0, 0.0)
-
-func is_death_view() -> bool:
-	return _death_t >= 0.0
 
 func _step_death_view(delta: float) -> void:
 	if _death_t < 0.0 or _cam == null:

@@ -3,7 +3,7 @@
 ## Each viewer (texture atlas, 3D objects, enemies, sounds) is a scene of
 ## its own that the menu launches with change_scene_to_file, and not one
 ## of them had a way back: "ked niektoru zapnem uz sa neviem dostat na
-## spat do menu" (Marek 2026-09-12). Esc now returns to the menu, and
+## spat do menu" (playtest 2026-09-12). Esc now returns to the menu, and
 ## `add_hint` says so on screen — a tool you cannot leave is worse than
 ## no tool.
 

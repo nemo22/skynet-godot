@@ -26,6 +26,7 @@ extends Node3D
 const ImgFile := preload("res://scripts/loaders/img_file.gd")
 const BSAReader := preload("res://scripts/loaders/bsa_reader.gd")
 const Palette := preload("res://scripts/loaders/palette.gd")
+const PauseState := preload("res://scripts/pause_state.gd")
 
 ## A map cell (FUN_001364ac shifts the world coordinate right by 10).
 const CELL: float = 1024.0
@@ -106,8 +107,7 @@ func show_map(main: Node, level, player: Node3D, seen: Dictionary) -> void:
 		if vm is CanvasLayer and (vm as CanvasLayer).visible:
 			(vm as CanvasLayer).visible = false
 			_hidden_layers.append(vm)
-	get_tree().paused = true
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	PauseState.push(&"automap")
 
 func close_map() -> void:
 	if not open:
@@ -136,7 +136,7 @@ func close_map() -> void:
 		if is_instance_valid(l):
 			l.visible = true
 	_hidden_layers.clear()
-	get_tree().paused = false
+	PauseState.pop(&"automap")
 	closed.emit()
 
 # --- build -------------------------------------------------------------

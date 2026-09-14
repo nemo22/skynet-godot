@@ -236,7 +236,7 @@ func _run_map210_checks(level: LevelLoader.Level) -> void:
 	# A doorway sprite hangs above the floor the player walks on, so the
 	# touch test has to allow that height difference. Measuring it in 3D
 	# put MAP.210's truck out of reach entirely ("neviem sa dostať do
-	# toho nákladiaku", Marek 2026-09-12) — and the check above missed it
+	# toho nákladiaku", playtest 2026-09-12) — and the check above missed it
 	# because it fires the exit from the sprite's own position.
 	var truck: LevelLoader.MapFile.Entity = null
 	for t in action._teleports:
@@ -329,7 +329,7 @@ func _run_behaviour_checks() -> void:
 				"0x1B: the stacked crate is demolished with the one shot")
 
 	# MAP.210: the 0xF1 lever at the canyon exit opens BIGDOOR, the 0xF2
-	# behind the gate runs the SAME chain and closes it (Marek's DOS run,
+	# behind the gate runs the SAME chain and closes it (the DOS run,
 	# 2026-09-11). The mover clears its bit on arrival; the chain walk
 	# used to read the node's stale copy, flip 1 → 0 and never move again.
 	var l210: LevelLoader.Level = LevelLoader.new().load_level("MAP.210")
@@ -448,7 +448,7 @@ func _run_behaviour_checks() -> void:
 	# so a machine 1200 units off still runs. The port's window was one
 	# cell wide, so the HK never started in the game — the check above
 	# missed it because it ticks with the player right beside the HK
-	# ("na strechu malo prísť HK a nepriletelo", Marek 2026-09-12).
+	# ("na strechu malo prísť HK a nepriletelo", playtest 2026-09-12).
 	var l234b: LevelLoader.Level = LevelLoader.new().load_level("MAP.234")
 	if l234b != null and not l234b.action._path_vehicles.is_empty():
 		var off2: int = int(l234b.action._path_vehicles.keys()[0])

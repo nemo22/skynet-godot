@@ -41,8 +41,3 @@ static func parse(bytes: PackedByteArray) -> PackedColorArray:
 			b = (b << 2) | (b >> 4)
 		out[i] = Color8(r, g, b, 255)
 	return out
-
-## Load a palette file from disk.
-static func load_file(path: String) -> PackedColorArray:
-	var bytes := SkynetPaths.read_bytes(path)
-	return parse(bytes)

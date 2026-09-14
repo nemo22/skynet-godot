@@ -27,16 +27,18 @@
 
 extends Node3D
 
-const BSAReader    := preload("res://scripts/loaders/bsa_reader.gd")
-const Mesh3D       := preload("res://scripts/loaders/mesh_3d.gd")
-const Palette      := preload("res://scripts/loaders/palette.gd")
-const TextureCache := preload("res://scripts/loaders/texture_cache.gd")
 const Explosion    := preload("res://scripts/explosion.gd")
 
 ## .3D name → ArrayMesh, or false when the load failed (never retried).
 static var _mesh_cache: Dictionary = {}
-## The soft round sprite of the halos (_soft_dot), built once.
+## The soft round sprite of the halos (soft_dot), built once.
 static var _dot: Texture2D = null
+## Shared halo quads (by size), halo/exhaust materials (by colour) and
+## the fallback spheres: a shot used to build its own of each.
+static var _quads: Dictionary = {}
+static var _glow_mats: Dictionary = {}
+static var _spheres: Dictionary = {}
+static var _sphere_mats: Dictionary = {}
 ## How much wider a laser bolt is drawn than its 3x7 u model (see setup).
 const BOLT_FATTEN: float = 2.0
 ## Halo diameter as a fraction of the bolt's length.
@@ -67,36 +69,20 @@ var _mi: MeshInstance3D = null
 var _done: bool = false
 ## Hitboxes of actors this bolt passes through (the shooter, allies).
 var _ignore: Array[RID] = []
+## The flight ray, built once; its exclude list is rebuilt only when
+## _ignore grows.
+var _q: PhysicsRayQueryParameters3D = null
 
-## Load a projectile model with its textures (shared by every shot).
-static func _model_mesh(name: String) -> ArrayMesh:
+## Load a projectile model with its textures (shared by every shot). The
+## models live in MDMDENMS.BSA only; the asset cache builds them once
+## (converted/mesh/) with the same texture provider the old direct load
+## went through.
+static func model_mesh(name: String) -> ArrayMesh:
 	var key := name.to_upper()
 	if _mesh_cache.has(key):
 		return _mesh_cache[key] if _mesh_cache[key] is ArrayMesh else null
-	_mesh_cache[key] = false
-	var imgs := BSAReader.new()
-	if not imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"),
-			SkynetPaths.variant):
-		return null
-	var pal_bytes := SkynetPaths.palette_bytes()
-	imgs.close()
-	var palette := Palette.parse(pal_bytes)
-	var enms := BSAReader.new()
-	if not enms.open(SkynetPaths.gamedata_path("MDMDENMS.BSA"),
-			SkynetPaths.variant):
-		return null
-	var bytes := enms.read(key)
-	enms.close()
-	if bytes.is_empty() or palette.is_empty():
-		return null
-	var parsed: Mesh3D.Mesh3D = Mesh3D.parse(bytes, key)
-	if parsed == null:
-		return null
-	var tex_cache := TextureCache.new(palette, SkynetPaths.gamedata_dir)
-	var am := Mesh3D.build_textured_array_mesh(
-		parsed, Callable(tex_cache, "provide"))
-	if am != null:
-		_mesh_cache[key] = am
+	var am: ArrayMesh = Assets.mesh(key)
+	_mesh_cache[key] = am if am != null else false
 	return am
 
 ## The bolt colours are MEASURED, not chosen: each LASERn.3D is a flat
@@ -126,6 +112,15 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 	_damage = damage
 	_owner = shooter
 	add_to_group("projectile")               # cleared on a map change
+	_q = PhysicsRayQueryParameters3D.new()
+	_q.collide_with_areas = true               # actor hitboxes are Area3D
+	# An actor's own hitbox is an Area3D child, not the shooter itself:
+	# leave it out from the start instead of hitting it and flying on.
+	if shooter != null and shooter.has_method("hitbox_rid"):
+		var hb: RID = shooter.call("hitbox_rid")
+		if hb.is_valid():
+			_ignore.append(hb)
+	_rebuild_exclude()
 	_speed = float(cfg.get("speed", 3000.0))
 	_life = float(cfg.get("life", 5.0))
 	_splash = float(cfg.get("splash", 0.0))
@@ -138,7 +133,7 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 	var model_name: String = String(cfg.get("model", ""))
 	var am: ArrayMesh = null
 	if not model_name.is_empty():
-		am = _model_mesh(model_name)
+		am = model_mesh(model_name)
 	if am != null:
 		_mi.mesh = am
 		# The .3D projectiles do NOT agree on which way they point.
@@ -160,39 +155,73 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 		if not _is_bolt and bool(cfg.get("trail", false)):
 			_add_exhaust(am.get_aabb())
 	else:
-		var sm := SphereMesh.new()
-		var r: float = float(cfg.get("radius", 18.0))
-		sm.radius = r
-		sm.height = r * 2.0
-		_mi.mesh = sm
-		var mat := StandardMaterial3D.new()
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		mat.albedo_color = _color
-		_mi.material_override = mat
+		_mi.mesh = sphere_mesh(float(cfg.get("radius", 18.0)))
+		_mi.material_override = sphere_material(_color)
 	_mi.visible = false
 	add_child(_mi)
+
+## The fallback sphere of radius `r`, shared.
+static func sphere_mesh(r: float) -> SphereMesh:
+	var key: int = roundi(r * 100.0)
+	var sm: SphereMesh = _spheres.get(key)
+	if sm == null:
+		sm = SphereMesh.new()
+		sm.radius = r
+		sm.height = r * 2.0
+		_spheres[key] = sm
+	return sm
+
+## The fallback sphere's flat material in `col`, shared.
+static func sphere_material(col: Color) -> StandardMaterial3D:
+	var key: int = col.to_rgba32()
+	var m: StandardMaterial3D = _sphere_mats.get(key)
+	if m == null:
+		m = StandardMaterial3D.new()
+		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		m.albedo_color = col
+		_sphere_mats[key] = m
+	return m
+
+## A billboard quad `d` units across, shared by every halo of that size.
+static func glow_quad(d: float) -> QuadMesh:
+	var key: int = roundi(d * 100.0)
+	var qm: QuadMesh = _quads.get(key)
+	if qm == null:
+		qm = QuadMesh.new()
+		qm.size = Vector2(d, d)
+		_quads[key] = qm
+	return qm
+
+## The additive soft-dot material of the halos and the rocket motor, in
+## `col` (alpha included), shared.
+static func glow_material(col: Color) -> StandardMaterial3D:
+	var key: int = col.to_rgba32()
+	var m: StandardMaterial3D = _glow_mats.get(key)
+	if m == null:
+		m = StandardMaterial3D.new()
+		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+		m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+		m.albedo_texture = soft_dot()
+		m.albedo_color = col
+		m.disable_receive_shadows = true
+		_glow_mats[key] = m
+	return m
 
 ## The soft halo that makes a bolt readable in flight. It must be a
 ## round FALLOFF, not a flat quad: the first cut had no texture, so a
 ## walker's laser read as "a blue semi-transparent square" (2026-09-04).
 ## Energy of the light a round in flight throws (DYNAMIC LIGHTS only).
 const BOLT_LIGHT_ENERGY: float = 2.0
+## The rocket motor's colour.
+const EXHAUST_COLOUR: Color = Color(1.0, 0.72, 0.36, 1.0)
 
 func _add_glow(length: float) -> void:
-	var qm := QuadMesh.new()
 	var d: float = maxf(length, 60.0) * GLOW_SCALE
-	qm.size = Vector2(d, d)
 	var g := MeshInstance3D.new()
-	g.mesh = qm
-	var m := StandardMaterial3D.new()
-	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
-	m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-	m.albedo_texture = _soft_dot()
-	m.albedo_color = Color(_color.r, _color.g, _color.b, 0.45)
-	m.disable_receive_shadows = true
-	g.material_override = m
+	g.mesh = glow_quad(d)
+	g.material_override = glow_material(Color(_color.r, _color.g, _color.b, 0.45))
 	g.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	g.visible = false
 	add_child(g)
@@ -214,19 +243,9 @@ func _add_glow(length: float) -> void:
 ## the model was there, measured, just unreadable. A real rocket is
 ## seen by its motor; this is that, a hot additive dot at the tail.
 func _add_exhaust(aabb: AABB) -> void:
-	var qm := QuadMesh.new()
-	qm.size = Vector2(EXHAUST_SIZE, EXHAUST_SIZE)
 	var g := MeshInstance3D.new()
-	g.mesh = qm
-	var m := StandardMaterial3D.new()
-	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
-	m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-	m.albedo_texture = _soft_dot()
-	m.albedo_color = Color(1.0, 0.72, 0.36, 1.0)
-	m.disable_receive_shadows = true
-	g.material_override = m
+	g.mesh = glow_quad(EXHAUST_SIZE)
+	g.material_override = glow_material(EXHAUST_COLOUR)
 	g.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	# The tail is the model's end away from the nose (+Z for a rocket,
 	# whose body is on -Z); the projectile node itself never rotates.
@@ -236,7 +255,7 @@ func _add_exhaust(aabb: AABB) -> void:
 	add_child(g)
 
 ## A 32x32 radial soft dot: bright in the middle, clear at the edge.
-static func _soft_dot() -> Texture2D:
+static func soft_dot() -> Texture2D:
 	if _dot != null:
 		return _dot
 	var n: int = 32
@@ -257,7 +276,7 @@ static func _soft_dot() -> Texture2D:
 ## `fatten` thickens the two thin axes of the bolt itself. NOT via
 ## Basis.scaled(): in Godot 4 that scales along the WORLD axes, so a
 ## bolt flying along world X was stretched sideways into a flat slab
-## lying across the screen — the "výstrely sú ako keby z boku" Marek
+## lying across the screen — the "výstrely sú ako keby z boku" playtest
 ## sent a picture of, reported four times, and not fixed by aiming it.
 func _bolt_basis(fatten: float = 1.0) -> Basis:
 	var body: Vector3 = _dir if _body_forward else -_dir
@@ -306,12 +325,11 @@ func _physics_process(delta: float) -> void:
 		_mi.basis = _bolt_basis(BOLT_FATTEN)
 	var to := global_position + _dir * _speed * delta
 	var space := get_world_3d().direct_space_state
-	var q := PhysicsRayQueryParameters3D.create(global_position, to)
-	q.collide_with_areas = true                # actor hitboxes are Area3D
-	q.exclude = _ignore.duplicate()
-	if _owner is CollisionObject3D:
-		q.exclude.append((_owner as CollisionObject3D).get_rid())
-	var hit := space.intersect_ray(q)
+	if _q == null:
+		return                                   # setup() never ran
+	_q.from = global_position
+	_q.to = to
+	var hit := space.intersect_ray(_q)
 	if not hit.has("position"):
 		global_position = to
 		return
@@ -326,6 +344,7 @@ func _physics_process(delta: float) -> void:
 			# The shooter or an ally — fly straight through.
 			if collider is CollisionObject3D:
 				_ignore.append((collider as CollisionObject3D).get_rid())
+				_rebuild_exclude()
 			global_position = hit["position"] + _dir * 2.0
 			return
 		if _splash <= 0.0:
@@ -333,6 +352,16 @@ func _physics_process(delta: float) -> void:
 		_finish(hit["position"], true)
 		return
 	_finish(hit["position"], true)               # solid geometry
+
+## The flight ray's exclude list: every hitbox flown through so far plus
+## the shooter's own body. Built whole and assigned once — the property
+## hands out a copy, so appending to `_q.exclude` changed nothing and the
+## shooter was only left out after its first hit on itself.
+func _rebuild_exclude() -> void:
+	var ex: Array[RID] = _ignore.duplicate()
+	if is_instance_valid(_owner) and _owner is CollisionObject3D:
+		ex.append((_owner as CollisionObject3D).get_rid())
+	_q.exclude = ex
 
 ## Enemy shots hurt the player, player shots hurt enemies; in a
 ## deathmatch every other actor is fair game. "none" = a replicated
@@ -396,7 +425,5 @@ func _finish(at: Vector3, impact: bool) -> void:
 		if _impact_bank > 0:
 			var scene := get_tree().current_scene
 			if scene != null:
-				var ex := Explosion.new()
-				scene.add_child(ex)
-				ex.setup(at, maxf(_splash * 0.6, 45.0), _impact_bank)
+				Explosion.spawn(scene, at, maxf(_splash * 0.6, 45.0), _impact_bank)
 	queue_free()

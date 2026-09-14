@@ -99,11 +99,15 @@ func _input(event: InputEvent) -> void:
 			_fingers[-1] = id
 		queue_redraw()
 
+## The buttons held right now. One dictionary, refilled: _process asks
+## every frame, and a new one each time was garbage for nothing.
+var _held_buf: Dictionary = {}
+
 func _held() -> Dictionary:
-	var h := {}
-	for id in _fingers.values():
-		h[id] = true
-	return h
+	_held_buf.clear()
+	for f in _fingers:
+		_held_buf[_fingers[f]] = true
+	return _held_buf
 
 func _process(_delta: float) -> void:
 	if not visible:

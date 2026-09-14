@@ -36,6 +36,33 @@ extends RefCounted
 ## all 14 WEAPON*.CFA — 73 of 73 frames decode to exactly width*height.
 const HIRES_HEADER: int = 44
 
+## Decoded-size guards: a 522-byte file could declare 255 frames of
+## 2048x2048 (4.3 GB of RGBA). Neither layout's encoding expands a byte to
+## more than ~128 pixels, and every real CFA of both games stays under 24
+## pixels per file byte and 2 million pixels in all (JOYBTN, WEAPON00).
+const MAX_PIXELS_PER_BYTE: int = 128
+const MAX_TOTAL_PIXELS: int = 16 * 1024 * 1024
+
+## True when w×h×frames cannot be a genuine file of `size` bytes, or is
+## more than a viewmodel strip could ever need.
+static func _too_big(w: int, h: int, frames: int, size: int) -> bool:
+	var total: int = w * h * frames
+	return total > MAX_TOTAL_PIXELS or total > size * MAX_PIXELS_PER_BYTE
+
+## The 256-entry RGBA8 look-up as one 32-bit word per palette index
+## (to_int32_array keeps the bytes in memory order, so a word written back
+## with to_byte_array lays out R, G, B, A); index 0 is transparent.
+static func _lut32(palette: PackedColorArray) -> PackedInt32Array:
+	var lut := PackedByteArray()
+	lut.resize(256 * 4)
+	for i in 256:
+		var c: Color = palette[i]
+		lut[i * 4 + 0] = int(c.r * 255.0)
+		lut[i * 4 + 1] = int(c.g * 255.0)
+		lut[i * 4 + 2] = int(c.b * 255.0)
+		lut[i * 4 + 3] = 0 if i == 0 else 255
+	return lut.to_int32_array()
+
 ## Frame count if `bytes` is the 640x480 layout, else 0.
 static func hires_frame_count(bytes: PackedByteArray) -> int:
 	if bytes == null or bytes.size() < HIRES_HEADER + 8:
@@ -84,24 +111,17 @@ static func parse(bytes: PackedByteArray, palette: PackedColorArray,
 		return []
 	if 12 + frame_count * 2 > bytes.size():
 		return []
+	if _too_big(w, h, frame_count, bytes.size()):
+		return []
 
-	# 256-entry RGBA8 LUT; index 0 → transparent.
-	var lut := PackedByteArray()
-	lut.resize(256 * 4)
-	for i in 256:
-		var c: Color = palette[i]
-		lut[i * 4 + 0] = int(c.r * 255.0)
-		lut[i * 4 + 1] = int(c.g * 255.0)
-		lut[i * 4 + 2] = int(c.b * 255.0)
-		lut[i * 4 + 3] = 0 if i == 0 else 255
-
+	var lut := _lut32(palette)
 	var npx: int = w * h
 	var size: int = bytes.size()
 	var frames: Array = []
 	for f in frame_count:
 		var src: int = bytes.decode_u16(12 + f * 2)
-		var rgba := PackedByteArray()
-		rgba.resize(npx * 4)
+		var rgba := PackedInt32Array()
+		rgba.resize(npx)                 # zero-filled: undecoded pixels stay clear
 		var dst: int = 0
 		while dst < npx and src < size:
 			var c: int = bytes[src]
@@ -112,32 +132,21 @@ static func parse(bytes: PackedByteArray, palette: PackedColorArray,
 				for k in n:
 					if dst >= npx or src >= size:
 						break
-					var lo: int = bytes[src] * 4
+					rgba[dst] = lut[bytes[src]]
 					src += 1
-					var po: int = dst * 4
-					rgba[po + 0] = lut[lo + 0]
-					rgba[po + 1] = lut[lo + 1]
-					rgba[po + 2] = lut[lo + 2]
-					rgba[po + 3] = lut[lo + 3]
 					dst += 1
 			else:
 				# Run of (c - 0x7F) pixels of the next byte.
 				if src >= size:
 					break
-				var lo: int = bytes[src] * 4
+				var word: int = lut[bytes[src]]
 				src += 1
-				var n: int = c - 0x7F
+				var n: int = mini(c - 0x7F, npx - dst)
 				for k in n:
-					if dst >= npx:
-						break
-					var po: int = dst * 4
-					rgba[po + 0] = lut[lo + 0]
-					rgba[po + 1] = lut[lo + 1]
-					rgba[po + 2] = lut[lo + 2]
-					rgba[po + 3] = lut[lo + 3]
+					rgba[dst] = word
 					dst += 1
 		var img := Image.create_from_data(w, h, false,
-			Image.FORMAT_RGBA8, rgba)
+			Image.FORMAT_RGBA8, rgba.to_byte_array())
 		frames.append(img if as_images else ImageTexture.create_from_image(img))
 	return frames
 
@@ -148,25 +157,21 @@ static func _parse_hires(bytes: PackedByteArray, palette: PackedColorArray,
 	var h: int = bytes.decode_u32(12)
 	var count: int = bytes.decode_u32(40)
 	var size: int = bytes.size()
+	if _too_big(w, h, count, size):
+		return []
 	# 256-entry RGBA8 LUT; index 0 is the transparent one, as everywhere.
-	var lut := PackedByteArray()
-	lut.resize(256 * 4)
-	for i in 256:
-		var c: Color = palette[i]
-		lut[i * 4 + 0] = int(c.r * 255.0)
-		lut[i * 4 + 1] = int(c.g * 255.0)
-		lut[i * 4 + 2] = int(c.b * 255.0)
-		lut[i * 4 + 3] = 0 if i == 0 else 255
+	var lut := _lut32(palette)
 	var frames: Array = []
 	for f in count:
 		var src: int = bytes.decode_u32(HIRES_HEADER + f * 4)
 		var stop: int = size
 		if f + 1 < count:
 			stop = mini(bytes.decode_u32(HIRES_HEADER + (f + 1) * 4), size)
-		var rgba := PackedByteArray()
-		rgba.resize(w * h * 4)          # zero-filled: skipped pixels stay clear
+		var rgba := PackedInt32Array()
+		rgba.resize(w * h)              # zero-filled: skipped pixels stay clear
 		for row in h:
 			var x: int = 0
+			var base: int = row * w
 			while x < w and src + 1 < stop:
 				var skip: int = bytes[src]
 				var n: int = bytes[src + 1]
@@ -175,14 +180,9 @@ static func _parse_hires(bytes: PackedByteArray, palette: PackedColorArray,
 				for k in n:
 					if x >= w or src >= stop:
 						break
-					var lo: int = bytes[src] * 4
+					rgba[base + x] = lut[bytes[src]]
 					src += 1
-					var po: int = (row * w + x) * 4
-					rgba[po + 0] = lut[lo + 0]
-					rgba[po + 1] = lut[lo + 1]
-					rgba[po + 2] = lut[lo + 2]
-					rgba[po + 3] = lut[lo + 3]
 					x += 1
-		var img := Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba)
+		var img := Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba.to_byte_array())
 		frames.append(img if as_images else ImageTexture.create_from_image(img))
 	return frames

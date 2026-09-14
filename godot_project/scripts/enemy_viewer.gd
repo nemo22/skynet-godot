@@ -15,7 +15,6 @@ const ANIM_FPS: float = 12.0
 
 @onready var pivot:  Node3D            = $Pivot
 @onready var camera: Camera3D          = $Pivot/Camera3D
-@onready var sun:    DirectionalLight3D = $Sun
 @onready var status: Label             = $UI/Status
 @onready var help:   Label             = $UI/Help
 
@@ -25,7 +24,6 @@ var _cache: TextureCache
 var _idx: int = 0
 var _instance: MeshInstance3D
 var _parsed: Mesh3D.Mesh3D
-var _surfaces: Array = []   ## per-surface materials & face-groups for rebuilding
 var _frame_idx: int = 0
 var _anim_time: float = 0.0
 var _anim_playing: bool = true

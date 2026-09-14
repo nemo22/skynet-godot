@@ -4,13 +4,13 @@
 ## On foot: a small green cross — the DOS one is a few pixels, and the
 ## port's first was three times that ("zameriavaci kriz je prilis velky",
 ## 2026-09-04). In a vehicle: the DOS reticle CROSHAIR.IMG, the dashed
-## circle in Marek's DOS jeep screenshots (2026-09-11). Skynet.exe's aim
+## circle in the DOS jeep screenshots (2026-09-11). Skynet.exe's aim
 ## table (0x443ca) names mdmaim.img on foot and croshair.img for the jeep
 ## and the HK. Its pixels are palette colours; it is drawn as a mask in the
 ## DOS green, scaled from the 200-line screen to this one — or, when
 ## MDMDHRES.BSA has it, the 640x480 version (120x120 against 71x59: the
 ## 320x200 one is squashed for that mode's tall pixels) scaled from 480
-## lines, which is sharp instead of a blocky blow-up (Marek, 2026-09-11).
+## lines, which is sharp instead of a blocky blow-up (playtest, 2026-09-11).
 
 extends Control
 

@@ -25,14 +25,22 @@ static func parse(bytes: PackedByteArray, palette: PackedColorArray, transparent
 		return null
 	if bytes.size() < 12 + w * h:
 		return null
-	var rgba := PackedByteArray()
-	rgba.resize(w * h * 4)
+	# 256-entry RGBA8 lookup, then one 32-bit word per pixel (to_int32_array /
+	# to_byte_array keep the bytes in memory order, so each word lays out
+	# R, G, B, A) instead of a Color look-up and float maths per pixel.
+	var lut := PackedByteArray()
+	lut.resize(256 * 4)
+	for i in 256:
+		var c: Color = palette[i]
+		lut[i * 4 + 0] = int(c.r * 255.0)
+		lut[i * 4 + 1] = int(c.g * 255.0)
+		lut[i * 4 + 2] = int(c.b * 255.0)
+		lut[i * 4 + 3] = 0 if (transparent0 and i == 0) else 255
+	var lut32: PackedInt32Array = lut.to_int32_array()
+	var px: PackedByteArray = bytes.slice(12, 12 + w * h)
+	var rgba := PackedInt32Array()
+	rgba.resize(w * h)
 	for i in w * h:
-		var c: Color = palette[bytes[12 + i]]
-		var o: int = i * 4
-		rgba[o + 0] = int(c.r * 255.0)
-		rgba[o + 1] = int(c.g * 255.0)
-		rgba[o + 2] = int(c.b * 255.0)
-		rgba[o + 3] = 0 if (transparent0 and bytes[12 + i] == 0) else 255
-	var img := Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba)
+		rgba[i] = lut32[px[i]]
+	var img := Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba.to_byte_array())
 	return ImageTexture.create_from_image(img)

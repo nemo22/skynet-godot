@@ -146,7 +146,6 @@ class Entity:
 class MapFile:
 	## Per-name defaults from the 0x233C list: name index -> {hp, state, link}.
 	var defaults: Dictionary = {}
-	var cell_count: int = 0
 	var grid_width: int = 0
 	var grid_height: int = 0
 	var names: Array[String] = []
@@ -205,7 +204,6 @@ static func parse(bytes: PackedByteArray) -> MapFile:
 	if gw == 0 or gh == 0 or gw > 1024 or gh > 1024: return null
 
 	var m := MapFile.new()
-	m.cell_count = _u32(bytes, 0)
 	m.grid_width = gw
 	m.grid_height = gh
 
@@ -237,8 +235,22 @@ static func parse(bytes: PackedByteArray) -> MapFile:
 	# Entity grid at 0x253C.
 	var cgrid: int = PAYLOAD_OFFSET
 	if cgrid + gw * gh * 4 > bytes.size():
-		return m  # no entities — return what we have
+		# A grid running past the end of the file is a truncated or corrupt
+		# MAP. It used to come back as a valid map with no entities (the
+		# level loaded as an empty world); null makes callers report it.
+		push_warning("[map] %dx%d cell grid runs past the end of the file (%d bytes)"
+			% [gw, gh, bytes.size()])
+		return null
 
+	# Every entity block is walked at most once, and no file holds more
+	# blocks than fit in it. Only a self-loop A -> A used to be caught: an
+	# A -> B -> A cycle added 1 024 copies per cell, so a crafted 4 MB MAP
+	# could ask for a billion Entity objects (skipped 0x08 blocks looped
+	# without allocating, a billion iterations instead). No MAP of SkyNET or
+	# Future Shock reaches a block twice (all 267 checked, longest cell
+	# chain 147), so real maps parse exactly as before.
+	var visited: Dictionary = {}
+	var max_blocks: int = bytes.size() / BLOCK_MIN
 	for cz in gh:
 		for cx in gw:
 			var ci: int = cz * gw + cx
@@ -246,6 +258,9 @@ static func parse(bytes: PackedByteArray) -> MapFile:
 			var safety: int = 0
 			while e_off != 0 and e_off != 0xFFFFFFFF and e_off != 0xFFFFFFFE \
 					and e_off + BLOCK_MIN <= bytes.size() and safety < 1024:
+				if visited.has(e_off) or visited.size() >= max_blocks:
+					break
+				visited[e_off] = true
 				safety += 1
 				var nxt_for_continue: int = _u32(bytes, e_off)
 				var flags_byte: int = bytes[e_off + 20]
@@ -356,6 +371,8 @@ static func parse(bytes: PackedByteArray) -> MapFile:
 				m.entities_by_off[e_off] = e
 				if nxt_for_continue == e_off: break  # defensive self-loop
 				e_off = nxt_for_continue
+	if visited.size() >= max_blocks:
+		push_warning("[map] more entity blocks than the file can hold — entity walk cut at %d" % max_blocks)
 	_read_names(m, bytes)
 	return m
 

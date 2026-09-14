@@ -16,7 +16,10 @@
 ##
 ## Method prefixes: `_c_*` = client → server RPC (the sender is the actor),
 ## `_s_*` = server → client RPC (also invoked locally on the host so one
-## code path updates every peer), `_srv_*` = server-only logic.
+## code path updates every peer), `_srv_*` = server-only logic. Every
+## `_c_*` is untrusted input: it passes a `_srv_client_*` / `_gate` check
+## (admitted sender, per-peer rate budget, sane values) before it counts.
+## The hello and the kick are raw bytes, not RPCs (see PROTOCOL_VERSION).
 extends Node
 
 signal player_joined(id: int)
@@ -34,6 +37,8 @@ signal match_over(reason: String)
 signal match_restarted
 signal time_changed(sec: int)
 signal class_changed(id: int, cls: int)
+## The local player picked a class; it is worn from the next spawn.
+signal class_requested(cls: int)
 signal welcome_received
 signal connection_failed(reason: String)
 signal disconnected(reason: String)
@@ -62,6 +67,61 @@ const CLASS_NAMES: Array = ["HUMAN", "TERMINATOR"]
 const F_MOVING: int = 1
 const F_FIRING: int = 2
 const F_DEAD: int = 4
+
+## Wire protocol version, sent in the hello. Bump it whenever an RPC on
+## this node is added, removed, renamed or changes its arguments: Godot
+## addresses RPCs by their index in the node's sorted method list, so two
+## builds with different RPC sets cannot even deliver a call to each
+## other. That is why the hello and the kick travel as raw bytes
+## (send_bytes), outside that list — a mismatch still gets its reason
+## across instead of hanging on "Connecting...".
+const PROTOCOL_VERSION: int = 2
+const HELLO_TAG: String = "SKYNET_HELLO"      # HELLO_TAG|version|class|name
+const KICK_TAG: String = "SKYNET_KICK"        # KICK_TAG|reason
+const MAX_RAW_BYTES: int = 256
+## A peer that has not said hello by then is dropped (a silent connection
+## would hold a slot for ever); a kicked peer gets this long to take its
+## reason and go before it is cut off.
+const HELLO_TIMEOUT_MS: int = 10000
+const KICK_GRACE_MS: int = 2000
+const MAX_NAME_LEN: int = 16
+const MAX_CHAT_LEN: int = 120
+const MAX_SERVER_NAME_LEN: int = 48
+## LAN browser replies: at most one per source address per this long, and
+## only so many probes read per frame.
+const DISCOVERY_REPLY_MS: int = 500
+const DISCOVERY_MAX_PER_POLL: int = 16
+const DISCOVERY_SEEN_MAX: int = 256
+
+## Sanity bounds for what clients report. The arena is a 65 536-unit
+## square (256 cells of 256), so a coordinate four times that is garbage.
+const WORLD_BOUND: float = 262144.0
+## The biggest single hit any weapon deals: the SATCHEL's blast, 700
+## (fly_camera.gd secondary table; the rockets are 400). A client's
+## reported hit is clamped to it.
+const MAX_HIT_DAMAGE: float = 700.0
+## The hitscan ray is 60 000 units long (fly_camera.gd, bot_brain.gd);
+## farther than that plus pose lag, the reporter cannot have hit anyone.
+const MAX_HIT_RANGE: float = 64000.0
+## Somebody killed with a rocket or grenade still in the air may still
+## land it: a trade counts for both.
+const DEAD_SHOT_GRACE_MS: int = 1500
+## Reach checked against the server's last pose of the taker: the DOS
+## grab box (80 across, 160 up) / the 600-unit use ray plus half an HK
+## hull, each with room for pose lag at full speed.
+const PICKUP_REACH: float = 800.0
+const VEHICLE_REACH: float = 1400.0
+## Per-peer budgets for client RPCs as [per second, burst]; anything past
+## a budget is dropped. Poses come at POSE_HZ, the fastest gun (SUPER UZI)
+## fires 20 rounds a second, one splash reports several hits at once;
+## hits on yourself (drowning, radiation) arrive once per rendered frame
+## and hurt nobody else, so they get their own, looser budget. The rest
+## are human-speed actions. RL_DAMAGE counts hit points dealt to others,
+## each hit capped at the victim's full health so overkill is free: a
+## satchel in a full arena at once, then the SUPER UZI's 1000 a second.
+enum { RL_POSE, RL_FIRE, RL_HIT, RL_SELF_HIT, RL_CHAT, RL_PICKUP, RL_VEHICLE, RL_CLASS, RL_DAMAGE }
+const RATE_LIMITS: Array = [[30.0, 15.0], [20.0, 20.0], [60.0, 60.0], [300.0, 300.0], [2.0, 4.0],
+	[10.0, 10.0], [4.0, 4.0], [2.0, 3.0], [1500.0, 6000.0]]
 
 ## NETLEVEL item category → sprite indices to pick from (PickupData.ITEMS).
 const ITEM_SPRITES: Dictionary = {
@@ -105,7 +165,16 @@ var level_ready: bool = false
 var pending_message: String = ""
 
 var _peer: ENetMultiplayerPeer = null
-var _pending_hellos: Array = []            # [[id, name]] before the level is up
+var _pending_hellos: Dictionary = {}       # id → [name, cls] before the level is up
+var _hello_deadline: Dictionary = {}       # id → msec: connected, no hello yet
+var _kick_at: Dictionary = {}              # id → msec: kicked, cut off then
+var _buckets: Dictionary = {}              # id → [Bucket per RL_*]
+var _level_ready_peers: Dictionary = {}    # id → true: had its level_ready spawn
+var _pending_class: Dictionary = {}        # id → class for the next spawn
+var _died_at: Dictionary = {}              # id → msec of the last death
+var _kick_reason: String = ""              # client: why the server sent us away
+var _due: Array = []                       # scratch list for the timer sweeps
+var _discovery_seen: Dictionary = {}       # ip → msec of the last reply
 var _respawn_at: Dictionary = {}           # id → msec
 var _pickup_respawn_at: Dictionary = {}    # key → msec
 var _next_pickup_key: int = 1
@@ -113,7 +182,6 @@ var _pose_accum: float = 0.0
 var _time_sent: int = -1
 var _discovery: PacketPeerUDP = null
 var _bot_seq: int = 0
-var _joining: bool = false
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
@@ -156,7 +224,7 @@ func _load_cfg() -> void:
 		local_avatar = maxi(int(cfg.get_value("net", "avatar", local_avatar)), 0)
 
 func save_name(n: String) -> void:
-	local_name = n.strip_edges().substr(0, 16)
+	local_name = _clean_text(n, MAX_NAME_LEN)
 	if local_name.is_empty():
 		local_name = "PLAYER"
 	var cfg := ConfigFile.new()
@@ -177,9 +245,13 @@ func host(cfg: Dictionary) -> bool:
 		push_error("[net] cannot host on port %d: %s" % [port, error_string(err)])
 		_peer = null
 		return false
+	# The host relays what clients send itself, checked on the way; Godot's
+	# own relay would pass client-to-client packets through unchecked.
+	(multiplayer as SceneMultiplayer).server_relay = false
 	multiplayer.multiplayer_peer = _peer
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
+	(multiplayer as SceneMultiplayer).peer_packet.connect(_on_peer_packet)
 	active = true
 	local_id = 1
 	players.clear()
@@ -215,7 +287,7 @@ func join(ip: String, port: int, name: String) -> bool:
 	multiplayer.connected_to_server.connect(_on_connected)
 	multiplayer.connection_failed.connect(_on_connection_failed)
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
-	_joining = true
+	(multiplayer as SceneMultiplayer).peer_packet.connect(_on_peer_packet)
 	players.clear()
 	pickups.clear()
 	print("[net] connecting to %s:%d as %s" % [ip, port, local_name])
@@ -227,14 +299,13 @@ func leave() -> void:
 	if _peer != null:
 		for sig in [["peer_connected", _on_peer_connected], ["peer_disconnected", _on_peer_disconnected],
 				["connected_to_server", _on_connected], ["connection_failed", _on_connection_failed],
-				["server_disconnected", _on_server_disconnected]]:
+				["server_disconnected", _on_server_disconnected], ["peer_packet", _on_peer_packet]]:
 			if multiplayer.is_connected(sig[0], sig[1]):
 				multiplayer.disconnect(sig[0], sig[1])
 		_peer.close()
 		multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 		_peer = null
 	active = false
-	_joining = false
 	match_running = false
 	level_ready = false
 	local_id = 0
@@ -242,6 +313,13 @@ func leave() -> void:
 	pickups.clear()
 	spawn_points.clear()
 	_pending_hellos.clear()
+	_hello_deadline.clear()
+	_kick_at.clear()
+	_buckets.clear()
+	_level_ready_peers.clear()
+	_pending_class.clear()
+	_died_at.clear()
+	_kick_reason = ""
 	_respawn_at.clear()
 	_pickup_respawn_at.clear()
 
@@ -253,17 +331,26 @@ func _new_player(name: String, bot: bool, cls: int = CLASS_HUMAN) -> Dictionary:
 
 func _on_peer_connected(id: int) -> void:
 	print("[net] peer %d connected" % id)
+	_hello_deadline[id] = Time.get_ticks_msec() + HELLO_TIMEOUT_MS
 
 func _on_peer_disconnected(id: int) -> void:
 	print("[net] peer %d left" % id)
+	# Queued while the host loaded: without this it was admitted anyway
+	# once the level came up, a ghost on the roster for good.
+	_pending_hellos.erase(id)
+	_hello_deadline.erase(id)
+	_kick_at.erase(id)
+	_buckets.erase(id)
 	if players.has(id):
-		_s_player_remove.rpc(id)
-		_s_player_remove(id)
+		_srv_remove_player(id)
 
 func _on_connected() -> void:
 	local_id = multiplayer.get_unique_id()
 	print("[net] connected, my id %d — hello" % local_id)
-	_c_hello.rpc_id(1, local_name, local_class)
+	var hello: String = "%s|%d|%d|%s" % [HELLO_TAG, PROTOCOL_VERSION, local_class,
+		_clean_text(local_name, MAX_NAME_LEN)]              # the config file may hold anything
+	(multiplayer as SceneMultiplayer).send_bytes(hello.to_utf8_buffer(), 1,
+		MultiplayerPeer.TRANSFER_MODE_RELIABLE)
 
 func _on_connection_failed() -> void:
 	print("[net] connection failed")
@@ -271,35 +358,130 @@ func _on_connection_failed() -> void:
 	connection_failed.emit("Could not reach the server.")
 
 func _on_server_disconnected() -> void:
-	print("[net] server went away")
+	# A kick is its reason followed by the disconnect: show the reason,
+	# not "closed the game".
+	var reason: String = _kick_reason
+	var in_game: bool = active
+	print("[net] server went away%s" % ("" if reason.is_empty() else " — " + reason))
 	leave()
-	disconnected.emit("The server closed the game.")
+	if reason.is_empty():
+		disconnected.emit("The server closed the game.")
+	else:
+		_report_kick(reason, in_game)
 
 # ---------------------------------------------------------------------
 # Join handshake
 # ---------------------------------------------------------------------
 
-@rpc("any_peer", "call_remote", "reliable")
-func _c_hello(name: String, cls: int = CLASS_HUMAN) -> void:
-	if not is_server():
+## Raw packets, outside the RPC table: the hello on the server, the kick on
+## a client.
+func _on_peer_packet(id: int, pkt: PackedByteArray) -> void:
+	if pkt.size() > MAX_RAW_BYTES:
 		return
-	var id: int = multiplayer.get_remote_sender_id()
+	var text: String = pkt.get_string_from_utf8()
+	if is_server():
+		if text.begins_with(HELLO_TAG + "|"):
+			_srv_hello(id, text)
+	elif id == 1 and _kick_reason.is_empty() and text.begins_with(KICK_TAG + "|"):
+		_kick_reason = _clean_text(text.substr(KICK_TAG.length() + 1), MAX_RAW_BYTES)
+		if _kick_reason.is_empty():
+			_kick_reason = "Kicked by the server."
+		# Not from inside the multiplayer poll that delivered it.
+		_client_kicked.call_deferred()
+
+func _client_kicked() -> void:
+	if _kick_reason.is_empty():
+		return                                 # the disconnect already reported it
+	var reason: String = _kick_reason
+	var in_game: bool = active
+	leave()
+	_report_kick(reason, in_game)
+
+## The join screen listens for `connection_failed`; a game in progress for
+## `disconnected`.
+func _report_kick(reason: String, in_game: bool) -> void:
+	if in_game:
+		disconnected.emit(reason)
+	else:
+		connection_failed.emit(reason)
+
+## Server: a hello, "SKYNET_HELLO|version|class|name". A peer already
+## admitted, queued or kicked is ignored: a replayed hello used to re-admit
+## with the score wiped, a new name and "ENTERED THE GAME" again.
+func _srv_hello(id: int, text: String) -> void:
+	if players.has(id) or _pending_hellos.has(id) or _kick_at.has(id):
+		return
+	var parts: PackedStringArray = text.split("|", true, 3)
+	if parts.size() < 2:
+		return                                 # garbage: the hello deadline drops it
+	# The version is read before the rest, so a later build with another
+	# hello layout is still told why.
+	var version: int = parts[1].to_int() if parts[1].is_valid_int() else -1
+	if version != PROTOCOL_VERSION:
+		_srv_kick(id, "Version mismatch: the server speaks network protocol %d, this game %d. Both need the same build."
+			% [PROTOCOL_VERSION, version])
+		return
+	if parts.size() < 4:
+		return
+	_hello_deadline.erase(id)
+	var cls: int = clampi(parts[2].to_int(), 0, 1) if parts[2].is_valid_int() else CLASS_HUMAN
+	var nm: String = _clean_text(parts[3], MAX_NAME_LEN)
 	if not level_ready:
-		_pending_hellos.append([id, name, cls])
+		_pending_hellos[id] = [nm, cls]
 		return
-	_srv_admit(id, name, cls)
+	_srv_admit(id, nm, cls)
+
+## Server: tell `id` why and let it go. The reason travels as raw bytes (a
+## client of another build must still read it); ENet disconnects the peer
+## once that is sent, and `_process` cuts it off after KICK_GRACE_MS if it
+## hangs on.
+func _srv_kick(id: int, reason: String) -> void:
+	if _kick_at.has(id) or not multiplayer.get_peers().has(id):
+		return
+	print("[net] kicking peer %d: %s" % [id, reason])
+	_pending_hellos.erase(id)
+	_hello_deadline.erase(id)
+	_kick_at[id] = Time.get_ticks_msec() + KICK_GRACE_MS
+	(multiplayer as SceneMultiplayer).send_bytes(("%s|%s" % [KICK_TAG, reason]).to_utf8_buffer(), id,
+		MultiplayerPeer.TRANSFER_MODE_RELIABLE)
+	var pp: ENetPacketPeer = _peer.get_peer(id)
+	if pp != null:
+		pp.peer_disconnect_later()
+
+## Server: peers that never said hello, and kicked peers still hanging on,
+## are cut off. They stay in `_kick_at` as -1 until peer_disconnected
+## arrives, so a hello squeezed in meanwhile is not taken.
+func _srv_drop_stale_peers(now: int) -> void:
+	_due.clear()
+	for id in _hello_deadline:
+		if now >= int(_hello_deadline[id]):
+			_due.append(id)
+	for id in _kick_at:
+		if int(_kick_at[id]) >= 0 and now >= int(_kick_at[id]):
+			_due.append(id)
+	for id in _due:
+		_hello_deadline.erase(id)
+		if multiplayer.get_peers().has(id):
+			print("[net] dropping peer %d (no hello / kicked)" % id)
+			_kick_at[id] = -1
+			_peer.disconnect_peer(id)
+		else:
+			_kick_at.erase(id)
 
 func _srv_admit(id: int, name: String, cls: int = CLASS_HUMAN) -> void:
+	# Already in, or gone while the host was still loading.
+	if players.has(id) or not multiplayer.get_peers().has(id):
+		return
 	var maxp: int = int(settings.get("max_players", 0))
 	var humans: int = 0
 	for p in players.values():
 		if not bool(p["bot"]):
 			humans += 1
 	if maxp > 0 and humans >= maxp:
-		_s_kick.rpc_id(id, "Server is full.")
+		_srv_kick(id, "Server is full.")
 		return
 	# Unique display name.
-	var base := name.strip_edges().substr(0, 16)
+	var base := _clean_text(name, MAX_NAME_LEN)
 	if base.is_empty():
 		base = "PLAYER"
 	var nm := base
@@ -341,15 +523,9 @@ func _s_welcome(cfg: Dictionary, roster: Dictionary, wire: Dictionary, tl: int, 
 	time_left = float(tl)
 	match_running = running
 	active = true
-	_joining = false
 	print("[net] welcome: map %s, %d players, %d pickups" % [settings.get("map", "?"), players.size(), pickups.size()])
 	welcome_received.emit()
 	roster_changed.emit()
-
-@rpc("authority", "call_remote", "reliable")
-func _s_kick(reason: String) -> void:
-	leave()
-	connection_failed.emit(reason)
 
 @rpc("authority", "call_remote", "reliable")
 func _s_player_add(id: int, info: Dictionary) -> void:
@@ -361,8 +537,20 @@ func _s_player_add(id: int, info: Dictionary) -> void:
 func _s_player_remove(id: int) -> void:
 	players.erase(id)
 	_respawn_at.erase(id)
+	_buckets.erase(id)
+	_level_ready_peers.erase(id)
+	_pending_class.erase(id)
+	_died_at.erase(id)
 	player_left.emit(id)
 	roster_changed.emit()
+
+## Server: `id` leaves the game — out of any seat first (the vehicle
+## stayed hidden and unenterable with a departed driver), then off every
+## roster.
+func _srv_remove_player(id: int) -> void:
+	_srv_vehicle_driver_died(id)
+	_s_player_remove.rpc(id)
+	_s_player_remove(id)
 
 ## The map is loaded on this peer: ask the server for a spawn. On the
 ## host this also releases queued joins.
@@ -371,8 +559,10 @@ func report_level_ready() -> void:
 		return
 	if is_server():
 		level_ready = true
-		for h in _pending_hellos:
-			_srv_admit(int(h[0]), String(h[1]), int(h[2]) if h.size() > 2 else CLASS_HUMAN)
+		_level_ready_peers.clear()             # a new level: one spawn each on it
+		for id in _pending_hellos.keys():
+			var h: Array = _pending_hellos[id]
+			_srv_admit(int(id), String(h[0]), int(h[1]))
 		_pending_hellos.clear()
 		_srv_respawn(local_id)
 		for id in players:
@@ -383,17 +573,93 @@ func report_level_ready() -> void:
 
 @rpc("any_peer", "call_remote", "reliable")
 func _c_level_ready() -> void:
-	if not is_server():
+	if is_server():
+		_srv_level_ready(multiplayer.get_remote_sender_id())
+
+## Server: `id` has the arena up — its first spawn. Honoured once per peer
+## per level: it respawns at full health, so a replay was a free heal.
+## (restart_match respawns everybody itself and needs no second one.)
+func _srv_level_ready(id: int) -> void:
+	if not players.has(id) or _level_ready_peers.has(id):
 		return
-	var id: int = multiplayer.get_remote_sender_id()
-	if players.has(id):
+	_level_ready_peers[id] = true
+	if not is_bot(id) and id != local_id:
 		# A late joiner needs everyone's current place before their own
 		# spawn (poses only flow while people move).
 		for other in players:
 			if other != id and bool(players[other]["alive"]):
 				var p: Dictionary = players[other]
-				_s_pose.rpc_id(id, other, p["pos"], 0.0, 0.0, 0)
-		_srv_respawn(id)
+				_s_pose.rpc_id(id, other, p["pos"], 0.0, 0.0, _server_flags(other, 0))
+	_srv_respawn(id)
+
+# ---------------------------------------------------------------------
+# Client input checks (server)
+# ---------------------------------------------------------------------
+
+## A token bucket: `rate` tokens a second, holding at most `burst`.
+class Bucket:
+	var rate: float
+	var burst: float
+	var tokens: float
+	var last: int
+
+	func _init(r: float, b: float) -> void:
+		rate = r
+		burst = b
+		tokens = b
+		last = Time.get_ticks_msec()
+
+	## Spend `cost` if there is that much; false = over the budget.
+	func take(cost: float = 1.0) -> bool:
+		var now: int = Time.get_ticks_msec()
+		tokens = minf(burst, tokens + float(now - last) * 0.001 * rate)
+		last = now
+		if tokens < cost:
+			return false
+		tokens -= cost
+		return true
+
+## Server: may RPC sender `id` do `kind` (RL_*) now? Admitted peers only —
+## nothing before the hello, nothing after a kick — each kind within its
+## RATE_LIMITS budget. Whatever fails is dropped.
+func _gate(id: int, kind: int) -> bool:
+	return players.has(id) and _bucket(id, kind).take()
+
+func _bucket(id: int, kind: int) -> Bucket:
+	if not _buckets.has(id):
+		var list: Array = []
+		for lim in RATE_LIMITS:
+			list.append(Bucket.new(float(lim[0]), float(lim[1])))
+		_buckets[id] = list
+	return _buckets[id][kind]
+
+## A reported position that can be a place in an arena.
+func _sane_pos(p: Vector3) -> bool:
+	return p.is_finite() and absf(p.x) <= WORLD_BOUND and absf(p.y) <= WORLD_BOUND \
+		and absf(p.z) <= WORLD_BOUND
+
+## Player-supplied text made safe to show: control characters and the
+## bidi overrides that turn a line around are stripped, the ends trimmed,
+## the length capped. The raw string is cut first, so a huge one costs
+## nothing to scan.
+func _clean_text(s: String, max_len: int) -> String:
+	s = s.substr(0, max_len * 4)
+	for i in s.length():
+		if _is_bad_char(s.unicode_at(i)):
+			var out: String = ""
+			for j in s.length():
+				var c: int = s.unicode_at(j)
+				if not _is_bad_char(c):
+					out += String.chr(c)
+			s = out
+			break
+	return s.strip_edges().substr(0, max_len)
+
+## C0/C1 controls and DEL; LRM/RLM, the line/paragraph separators and the
+## bidi embeddings, overrides and isolates (U+202A-202E, U+2066-2069).
+func _is_bad_char(c: int) -> bool:
+	return c < 0x20 or (c >= 0x7F and c <= 0x9F) or c == 0x200E or c == 0x200F \
+		or (c >= 0x2028 and c <= 0x202E) or (c >= 0x2066 and c <= 0x2069)
 
 # ---------------------------------------------------------------------
 # Poses and fire (visual replication)
@@ -421,17 +687,38 @@ func bot_pose(id: int, pos: Vector3, yaw: float, pitch: float, flags: int) -> vo
 @rpc("any_peer", "call_remote", "unreliable_ordered")
 func _c_pose(pos: Vector3, yaw: float, pitch: float, flags: int) -> void:
 	if is_server():
-		_srv_pose(multiplayer.get_remote_sender_id(), pos, yaw, pitch, flags)
+		_srv_client_pose(multiplayer.get_remote_sender_id(), pos, yaw, pitch, flags)
+
+## Server: a client's pose, if it is a sane one within its budget (it is
+## relayed to everybody and becomes the server's idea of where they are).
+func _srv_client_pose(id: int, pos: Vector3, yaw: float, pitch: float, flags: int) -> void:
+	if not _gate(id, RL_POSE) or not _sane_pos(pos) or not is_finite(yaw) or not is_finite(pitch):
+		return
+	_srv_pose(id, pos, yaw, pitch, flags)
 
 func _srv_pose(id: int, pos: Vector3, yaw: float, pitch: float, flags: int) -> void:
 	if not players.has(id):
 		return
 	players[id]["pos"] = pos
-	for p in multiplayer.get_peers():
-		if p != id:
+	flags = _server_flags(id, flags)
+	# Straight to the admitted human peers: no get_peers() array per pose.
+	for p in players:
+		if p > 1 and p != id:
 			_s_pose.rpc_id(p, id, pos, yaw, pitch, flags)
 	if id != local_id:
 		pose_received.emit(id, pos, yaw, pitch, flags)
+
+## Pose flags as the server knows them: moving and firing are the owner's
+## word, dead and the vehicle bits are server state — a client could
+## otherwise show itself on foot while it drives.
+func _server_flags(id: int, flags: int) -> int:
+	flags &= F_MOVING | F_FIRING
+	if not is_alive(id):
+		flags |= F_DEAD
+	var key: int = vehicle_of(id)
+	if key != 0:
+		flags |= (int(vehicles[key]["kind"]) & 3) << F_VEH_SHIFT
+	return flags
 
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _s_pose(id: int, pos: Vector3, yaw: float, pitch: float, flags: int) -> void:
@@ -456,13 +743,20 @@ func bot_fire(id: int, weapon: int, from: Vector3, dir: Vector3) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func _c_fire(weapon: int, from: Vector3, dir: Vector3) -> void:
 	if is_server():
-		_srv_fire(multiplayer.get_remote_sender_id(), weapon, from, dir)
+		_srv_client_fire(multiplayer.get_remote_sender_id(), weapon, from, dir)
+
+## Server: a client's shot, drawn on every other peer (flash, tracer, ray)
+## — so only within its budget, from a real place in a real direction.
+func _srv_client_fire(id: int, weapon: int, from: Vector3, dir: Vector3) -> void:
+	if not _gate(id, RL_FIRE) or not _sane_pos(from) or not dir.is_finite() or dir.length_squared() < 0.01:
+		return
+	_srv_fire(id, weapon, from, dir.normalized())
 
 func _srv_fire(id: int, weapon: int, from: Vector3, dir: Vector3) -> void:
 	if players.has(id):
 		players[id]["weapon"] = weapon
-	for p in multiplayer.get_peers():
-		if p != id:
+	for p in players:
+		if p > 1 and p != id:
 			_s_fire.rpc_id(p, id, weapon, from, dir)
 	if id != local_id:
 		fired.emit(id, weapon, from, dir)
@@ -480,7 +774,7 @@ func _s_fire(id: int, weapon: int, from: Vector3, dir: Vector3) -> void:
 ## Report a hit on `victim` for `dmg` by `attacker` (the local player, or a
 ## bot on the server). Anyone may report; the server applies it.
 func hit(victim: int, dmg: float, attacker: int, weapon: int) -> void:
-	if not active or dmg <= 0.0:
+	if not active or not is_finite(dmg) or dmg <= 0.0:
 		return
 	if is_server():
 		_srv_hit(victim, dmg, attacker, weapon)
@@ -490,10 +784,30 @@ func hit(victim: int, dmg: float, attacker: int, weapon: int) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func _c_hit(victim: int, dmg: float, weapon: int) -> void:
 	if is_server():
-		_srv_hit(victim, dmg, multiplayer.get_remote_sender_id(), weapon)
+		_srv_client_hit(multiplayer.get_remote_sender_id(), victim, dmg, weapon)
+
+## Server: a hit a client says it scored. The shooter's machine detects
+## hits, so this is where a forged one stops: an admitted shooter that is
+## alive (or was killed a moment ago with a shot in the air), a real
+## positive amount no bigger than any weapon deals, a victim within ray
+## range of it, and a damage budget per second. (`_c_hit(anyone, 1e9)`
+## killed, NaN left hp NaN for good, a negative amount healed.)
+func _srv_client_hit(id: int, victim: int, dmg: float, weapon: int) -> void:
+	if not _gate(id, RL_SELF_HIT if victim == id else RL_HIT) or not players.has(victim) \
+			or not is_finite(dmg) or dmg <= 0.0:
+		return
+	if not is_alive(id) and Time.get_ticks_msec() - int(_died_at.get(id, 0)) > DEAD_SHOT_GRACE_MS:
+		return
+	dmg = minf(dmg, MAX_HIT_DAMAGE)
+	if victim != id:
+		if (players[id]["pos"] as Vector3).distance_to(players[victim]["pos"]) > MAX_HIT_RANGE:
+			return
+		if not _bucket(id, RL_DAMAGE).take(minf(dmg, max_hp_of(victim))):
+			return
+	_srv_hit(victim, dmg, id, weapon)
 
 func _srv_hit(victim: int, dmg: float, attacker: int, weapon: int) -> void:
-	if not match_running or not players.has(victim):
+	if not match_running or not players.has(victim) or not is_finite(dmg) or dmg <= 0.0:
 		return
 	var v: Dictionary = players[victim]
 	if not bool(v["alive"]):
@@ -533,8 +847,13 @@ func _srv_kill(victim: int, killer: int, weapon: int) -> void:
 	var v: Dictionary = players[victim]
 	v["alive"] = false
 	v["deaths"] = int(v["deaths"]) + 1
+	_died_at[victim] = Time.get_ticks_msec()
 	_srv_vehicle_driver_died(victim)
-	if killer == victim or killer <= 0 or not players.has(killer):
+	# Only yourself, the world (id 0: drowning, radiation, unattributed
+	# splash) or somebody already gone make it a suicide. Bots are NEGATIVE
+	# ids — `killer <= 0` took a frag off whoever a bot killed and never
+	# gave the bot one.
+	if killer == victim or killer == 0 or not players.has(killer):
 		# Suicide / world: the DOS scoring_death penalty — one frag off.
 		if players.has(victim):
 			v["kills"] = int(v["kills"]) - 1
@@ -574,6 +893,17 @@ func _srv_respawn(id: int) -> void:
 	if not players.has(id) or not match_running:
 		return
 	_respawn_at.erase(id)
+	# No seat carries into the new life: restart_match and level_ready
+	# respawn a driver who never died, and the server kept counting them
+	# inside (the hull's damage cut, the jeep hidden where it was left).
+	_srv_vehicle_driver_died(id)
+	# A class picked during the last life is worn from now (set_class).
+	if _pending_class.has(id):
+		var cls: int = int(_pending_class[id])
+		_pending_class.erase(id)
+		if cls != class_of(id):
+			_s_class.rpc(id, cls)
+			_s_class(id, cls)
 	var sp: Dictionary = _srv_pick_spawn()
 	var v: Dictionary = players[id]
 	v["hp"] = max_hp_of(id)
@@ -658,18 +988,29 @@ func server_place_pickups(ammo_spots: Array, weapon_spots: Array) -> void:
 	print("[net] placed %d pickups on %d ammo / %d weapon spots" % [pickups.size(), a.size(), w.size()])
 
 ## The local actor (or a server bot, via `by`) walked over pickup `key`.
-func request_pickup(key: int, by: int = -1) -> void:
+## `by` = 0 is the local player: bots are NEGATIVE ids, and the old
+## "by < 0 means local" handed every bot's pickup to the host.
+func request_pickup(key: int, by: int = 0) -> void:
 	if not active or not pickups.has(key) or bool(pickups[key]["taken"]):
 		return
 	if is_server():
-		_srv_pickup(key, local_id if by < 0 else by)
+		_srv_pickup(key, local_id if by == 0 else by)
 	else:
 		_c_pickup.rpc_id(1, key)
 
 @rpc("any_peer", "call_remote", "reliable")
 func _c_pickup(key: int) -> void:
 	if is_server():
-		_srv_pickup(key, multiplayer.get_remote_sender_id())
+		_srv_client_pickup(multiplayer.get_remote_sender_id(), key)
+
+## Server: a client says it walked over `key` — granted only if the
+## server's last pose of it stands near (from anywhere on the map worked).
+func _srv_client_pickup(id: int, key: int) -> void:
+	if not _gate(id, RL_PICKUP) or not pickups.has(key):
+		return
+	if (players[id]["pos"] as Vector3).distance_to(pickups[key]["pos"]) > PICKUP_REACH:
+		return
+	_srv_pickup(key, id)
 
 func _srv_pickup(key: int, by: int) -> void:
 	if not pickups.has(key) or bool(pickups[key]["taken"]) or not players.has(by):
@@ -733,9 +1074,7 @@ func set_bot_count(n: int) -> void:
 		if is_bot(id):
 			bots.append(id)
 	while bots.size() > n:
-		var id: int = bots.pop_back()
-		_s_player_remove.rpc(id)
-		_s_player_remove(id)
+		_srv_remove_player(bots.pop_back())
 	while bots.size() < n:
 		var id: int = _srv_add_bot()
 		bots.append(id)
@@ -751,7 +1090,7 @@ func set_bot_count(n: int) -> void:
 # ---------------------------------------------------------------------
 
 func send_chat(text: String) -> void:
-	text = text.strip_edges().substr(0, 120)
+	text = _clean_text(text, MAX_CHAT_LEN)
 	if text.is_empty() or not active:
 		return
 	if is_server():
@@ -762,7 +1101,16 @@ func send_chat(text: String) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func _c_chat(text: String) -> void:
 	if is_server():
-		_srv_chat(multiplayer.get_remote_sender_id(), text.substr(0, 120))
+		_srv_client_chat(multiplayer.get_remote_sender_id(), text)
+
+## Server: a client's line — within its budget (every line lands in every
+## peer's chat log), cleaned and capped before anything else touches it.
+func _srv_client_chat(id: int, text: String) -> void:
+	if not _gate(id, RL_CHAT):
+		return
+	text = _clean_text(text, MAX_CHAT_LEN)
+	if not text.is_empty():
+		_srv_chat(id, text)
 
 func _srv_chat(from: int, text: String) -> void:
 	_s_chat.rpc(from, text)
@@ -833,11 +1181,23 @@ func _process(delta: float) -> void:
 		return
 	var now: int = Time.get_ticks_msec()
 	_srv_vehicles_tick(now)
-	for id in _respawn_at.keys():
-		if now >= int(_respawn_at[id]):
+	if not _hello_deadline.is_empty() or not _kick_at.is_empty():
+		_srv_drop_stale_peers(now)
+	# The timer sweeps collect what is due into one scratch list instead
+	# of copying every key list every frame.
+	if not _respawn_at.is_empty():
+		_due.clear()
+		for id in _respawn_at:
+			if now >= int(_respawn_at[id]):
+				_due.append(id)
+		for id in _due:
 			_srv_respawn(id)
-	for k in _pickup_respawn_at.keys():
-		if now >= int(_pickup_respawn_at[k]):
+	if not _pickup_respawn_at.is_empty():
+		_due.clear()
+		for k in _pickup_respawn_at:
+			if now >= int(_pickup_respawn_at[k]):
+				_due.append(k)
+		for k in _due:
 			_pickup_respawn_at.erase(k)
 			if pickups.has(k):
 				_s_pickup_spawn.rpc(k)
@@ -867,13 +1227,18 @@ func scoreboard() -> Array:
 
 # --- LAN discovery (server side; the browser lives in net_discovery.gd) --
 
+## Binds every interface on purpose: a socket bound to one LAN address
+## does not hear broadcasts on every OS. `_poll_discovery` filters the
+## senders instead.
 func _start_discovery() -> void:
+	_discovery_seen.clear()
 	_discovery = PacketPeerUDP.new()
 	if _discovery.bind(DISCOVERY_PORT) != OK:
 		push_warning("[net] discovery port %d busy — the server will not show in the LAN browser" % DISCOVERY_PORT)
 		_discovery = null
 
 func _stop_discovery() -> void:
+	_discovery_seen.clear()
 	if _discovery != null:
 		_discovery.close()
 		_discovery = null
@@ -881,10 +1246,25 @@ func _stop_discovery() -> void:
 func _poll_discovery() -> void:
 	if _discovery == null:
 		return
-	while _discovery.get_available_packet_count() > 0:
+	# A bounded number per frame, so a flood of probes cannot stall the host.
+	for _i in DISCOVERY_MAX_PER_POLL:
+		if _discovery.get_available_packet_count() <= 0:
+			break
 		var pkt: PackedByteArray = _discovery.get_packet()
-		if pkt.get_string_from_utf8() != DISCOVERY_MAGIC:
+		var ip: String = _discovery.get_packet_ip()
+		var port: int = _discovery.get_packet_port()
+		if pkt.size() != DISCOVERY_MAGIC.length() or pkt.get_string_from_utf8() != DISCOVERY_MAGIC:
 			continue
+		# The reply is bigger than the probe: answered for anywhere, a
+		# spoofed probe would make the host a (small) reflector.
+		if not _is_lan_ip(ip):
+			continue
+		var now: int = Time.get_ticks_msec()
+		if _discovery_seen.has(ip) and now - int(_discovery_seen[ip]) < DISCOVERY_REPLY_MS:
+			continue
+		if _discovery_seen.size() >= DISCOVERY_SEEN_MAX:
+			_discovery_seen.clear()
+		_discovery_seen[ip] = now
 		var humans: int = 0
 		var bots: int = 0
 		for p in players.values():
@@ -892,11 +1272,28 @@ func _poll_discovery() -> void:
 				bots += 1
 			else:
 				humans += 1
-		var reply := {"name": String(settings.get("name", "SKYNET")), "map": String(settings.get("map", "")),
+		var reply := {"name": String(settings.get("name", "SKYNET")).substr(0, MAX_SERVER_NAME_LEN),
+			"map": String(settings.get("map", "")).substr(0, MAX_NAME_LEN),
 			"players": humans, "bots": bots, "max": int(settings.get("max_players", 0)),
 			"port": int(settings.get("port", DEFAULT_PORT))}
-		_discovery.set_dest_address(_discovery.get_packet_ip(), _discovery.get_packet_port())
+		_discovery.set_dest_address(ip, port)
 		_discovery.put_packet(JSON.stringify(reply).to_utf8_buffer())
+
+## Private, loopback and link-local IPv4 only (10/8, 172.16/12,
+## 192.168/16, 127/8, 169.254/16): the browser is a LAN feature.
+func _is_lan_ip(ip: String) -> bool:
+	if ip.begins_with("::ffff:"):
+		ip = ip.substr(7)                      # IPv4-mapped IPv6
+	var parts: PackedStringArray = ip.split(".")
+	if parts.size() != 4:
+		return false
+	for part in parts:
+		if not part.is_valid_int() or part.to_int() < 0 or part.to_int() > 255:
+			return false
+	var a: int = parts[0].to_int()
+	var b: int = parts[1].to_int()
+	return a == 10 or a == 127 or (a == 172 and b >= 16 and b <= 31) \
+		or (a == 192 and b == 168) or (a == 169 and b == 254)
 
 # ---------------------------------------------------------------------
 # Player classes
@@ -926,7 +1323,7 @@ func max_hp_of(id: int) -> float:
 	return float(CLASS_HP[class_of(id)])
 
 ## Choose HUMAN / TERMINATOR for the local player; in a running game it
-## takes effect on the next spawn (the server tracks it).
+## takes effect on the next spawn (the server keeps it until then).
 func set_class(cls: int) -> void:
 	local_class = clampi(cls, 0, 1)
 	var cfg := ConfigFile.new()
@@ -940,18 +1337,24 @@ func set_class(cls: int) -> void:
 		_srv_set_class(local_id, local_class)
 	else:
 		_c_set_class.rpc_id(1, local_class)
+	class_requested.emit(local_class)
 
 @rpc("any_peer", "call_remote", "reliable")
 func _c_set_class(cls: int) -> void:
-	if is_server():
+	if is_server() and _gate(multiplayer.get_remote_sender_id(), RL_CLASS):
 		_srv_set_class(multiplayer.get_remote_sender_id(), cls)
 
+## Server: remember `id`'s class for its next spawn (_srv_respawn puts it
+## on). It used to switch bodies and health on every peer at once, in the
+## middle of a fight.
 func _srv_set_class(id: int, cls: int) -> void:
 	if not players.has(id):
 		return
 	cls = clampi(cls, 0, 1)
-	_s_class.rpc(id, cls)
-	_s_class(id, cls)
+	if cls == class_of(id):
+		_pending_class.erase(id)
+	else:
+		_pending_class[id] = cls
 
 @rpc("authority", "call_remote", "reliable")
 func _s_class(id: int, cls: int) -> void:
@@ -1013,10 +1416,6 @@ func vehicle_of(id: int) -> int:
 			return int(k)
 	return 0
 
-func vehicle_kind_of(id: int) -> int:
-	var k: int = vehicle_of(id)
-	return int(vehicles[k]["kind"]) if k > 0 else 0
-
 ## Local player wants the seat of parked vehicle `key`.
 func request_vehicle(key: int) -> void:
 	if not active or not vehicles.has(key):
@@ -1038,12 +1437,34 @@ func leave_vehicle(pos: Vector3, yaw: float) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func _c_vehicle_enter(key: int) -> void:
 	if is_server():
-		_srv_vehicle_enter(multiplayer.get_remote_sender_id(), key)
+		_srv_client_vehicle_enter(multiplayer.get_remote_sender_id(), key)
 
 @rpc("any_peer", "call_remote", "reliable")
 func _c_vehicle_exit(pos: Vector3, yaw: float) -> void:
 	if is_server():
-		_srv_vehicle_exit(multiplayer.get_remote_sender_id(), pos, yaw)
+		_srv_client_vehicle_exit(multiplayer.get_remote_sender_id(), pos, yaw)
+
+## Server: a client wants a seat — only within reach of the vehicle by the
+## server's last pose of it.
+func _srv_client_vehicle_enter(id: int, key: int) -> void:
+	if not _gate(id, RL_VEHICLE) or not vehicles.has(key):
+		return
+	if (players[id]["pos"] as Vector3).distance_to(vehicles[key]["pos"]) > VEHICLE_REACH:
+		return
+	_srv_vehicle_enter(id, key)
+
+## Server: a client climbs out. Where it says is where the vehicle stays
+## parked for everybody, so a wild or far-off place is replaced by the
+## server's last pose of the driver.
+func _srv_client_vehicle_exit(id: int, pos: Vector3, yaw: float) -> void:
+	if not _gate(id, RL_VEHICLE):
+		return
+	var known: Vector3 = players[id]["pos"]
+	if not _sane_pos(pos) or pos.distance_to(known) > VEHICLE_REACH:
+		pos = known
+	if not is_finite(yaw):
+		yaw = 0.0
+	_srv_vehicle_exit(id, pos, yaw)
 
 func _srv_vehicle_enter(id: int, key: int) -> void:
 	if not vehicles.has(key) or not is_alive(id) or vehicle_of(id) != 0:
@@ -1080,14 +1501,19 @@ func _srv_vehicle_driver_died(id: int) -> void:
 	_vehicle_respawn_at[key] = Time.get_ticks_msec() + int(VEHICLE_RESPAWN * 1000.0)
 
 func _srv_vehicles_tick(now: int) -> void:
-	for k in _vehicle_respawn_at.keys():
+	if _vehicle_respawn_at.is_empty():
+		return
+	_due.clear()
+	for k in _vehicle_respawn_at:
 		if now >= int(_vehicle_respawn_at[k]):
-			_vehicle_respawn_at.erase(k)
-			if vehicles.has(k) and int(vehicles[k]["driver"]) == 0:
-				var v: Dictionary = vehicles[k]
-				v["pos"] = v["home"]
-				_s_vehicle.rpc(k, 0, v["pos"], float(v["yaw"]))
-				_s_vehicle(k, 0, v["pos"], float(v["yaw"]))
+			_due.append(k)
+	for k in _due:
+		_vehicle_respawn_at.erase(k)
+		if vehicles.has(k) and int(vehicles[k]["driver"]) == 0:
+			var v: Dictionary = vehicles[k]
+			v["pos"] = v["home"]
+			_s_vehicle.rpc(k, 0, v["pos"], float(v["yaw"]))
+			_s_vehicle(k, 0, v["pos"], float(v["yaw"]))
 
 signal vehicle_changed(key: int, driver: int, pos: Vector3, yaw: float)
 

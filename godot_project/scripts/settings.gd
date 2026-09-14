@@ -60,7 +60,7 @@ const WINDOW_SIZES: Array = [
 ## RES_SUPER2 is the port's own addition: the world drawn at TWICE the
 ## window's width and scaled back down. The DOS art cannot get sharper,
 ## but the geometry can — "vektory predsa mozu byt renderovane vo vyssom
-## ... rozliseni" (Marek 2026-09-12).
+## ... rozliseni" (playtest 2026-09-12).
 enum { RES_320 = 0, RES_640 = 1, RES_NATIVE = 2, RES_SUPER2 = 3 }
 const RES_NAMES: Array = ["320 X 200", "640 X 480", "NATIVE", "NATIVE X2"]
 const RES_WIDTHS: Array = [320.0, 640.0, 0.0, 0.0]
@@ -101,7 +101,7 @@ var brightness_dos: float = 1.0
 ## Two looks the original could not offer, both OFF by default so the
 ## port still starts as DOS drew it:
 ##   hires_weapons — the 640x480 WEAPON*.CFA of MDMDHRES.BSA for the gun
-##                   in your hands (Marek asked for them, 2026-09-11)
+##                   in your hands (asked for in playtest, 2026-09-11)
 ##   texture_filter — smooth (linear) texture filtering instead of the
 ##                   software renderer's nearest sampling
 ##   dynamic_lights — real lights from the gunfire, the explosions and
@@ -111,18 +111,28 @@ var brightness_dos: float = 1.0
 var hires_weapons: bool = false
 var texture_filter: bool = false
 var dynamic_lights: bool = false
+## The running game applies these at once (main.gd listens), not on the
+## next map.
+signal hires_weapons_changed(on: bool)
+signal texture_filter_changed(on: bool)
+signal dynamic_lights_changed(on: bool)
 
 func set_hires_weapons(on: bool) -> void:
 	hires_weapons = on
 	save()
+	hires_weapons_changed.emit(on)
 
 func set_dynamic_lights(on: bool) -> void:
 	dynamic_lights = on
 	save()
+	Render.restyle_all()               # the cached materials follow at once
+	dynamic_lights_changed.emit(on)
 
 func set_texture_filter(on: bool) -> void:
 	texture_filter = on
 	save()
+	Render.restyle_all()
+	texture_filter_changed.emit(on)
 
 func _ready() -> void:
 	var cfg := ConfigFile.new()

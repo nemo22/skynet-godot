@@ -106,7 +106,7 @@ const MOVER_TABLE: Dictionary = {
 	# p6=688), not to the rotator: they are the LIFT — MAP.233's 231EL
 	# rises 688 units to the Cyberdyne roof. The port had them swinging,
 	# so the elevator only turned on the spot ("ten výťah sa iba otáča",
-	# Marek 2026-09-12).
+	# playtest 2026-09-12).
 	0xa5: ["slide", 1, 688], 0xa6: ["slide", 1, 688],
 	0xa7: ["swing", 1, 256], 0xa8: ["swing", 1, 256],
 	0xa9: ["swing", 1, 512], 0xaa: ["swing", 1, 512],
@@ -152,7 +152,6 @@ const ACT_VOICE: int = 0xED         # voice line (VOICE.PRS id at sub+2, 0x137df
 const ACT_HINT_FIRST: int = 0x1C    # [G1].. handler 0x13779d, message only
 const ACT_HINT_LAST: int = 0x25
 const ACT_OBJECTIVE_FIRST: int = 0x26   # [M1].. handler 0x1377d0, counter--
-const ACT_OBJECTIVE_LAST: int = 0x2A
 const ACT_FAIL: int = 0x2B          # handler 0x13782d: MISSION FAILED now
 ## Countdown relay (v1.01 handler 0x138038, disassembled 2026-09-11):
 ## while enabled, once the objective counter is above zero and equal to
@@ -214,6 +213,15 @@ var _nodes: Dictionary = {}       # file_off → Node3D (visual, optional)
 var _movers: Dictionary = {}      # file_off → mover runtime state
 var _prox: Array = []             # entities with a proximity act type
 var _teleports: Array = []        # entities with act 0xF0
+## Their world positions, index for index — tick() tests them every
+## physics step, and the records never move.
+var _prox_pos: PackedVector3Array = PackedVector3Array()
+var _teleport_pos: PackedVector3Array = PackedVector3Array()
+## Act byte and link as parsed, per file offset: save_state() keeps the
+## ones play changed (a cue retired to 0xFF, the water valves swapping
+## 0xd9/0xda, a path end cut off), which re-parsing the map would undo.
+var _parsed_act: Dictionary = {}
+var _parsed_link: Dictionary = {}
 var _light_ents: Array = []       # variant-2 lights with a light act
 ## Message/objective entities no chain points at: the player's own to
 ## trigger with the use key (see setup).
@@ -249,12 +257,6 @@ var _prox_latched: Dictionary = {} # file_off → true while player inside
 var _armed: Dictionary = {}       # file_off → armed earlier this tick
 var _touch_latched: Dictionary = {} # teleport file_off → player touching
 var _teleport_fired: bool = false   # one map change per level instance
-## In a vehicle an armed exit fires as the player passes it — the HK
-## flies into the tunnel mouth of MAP.270 (0xF1 button → 0xF0 sprite) and
-## the DOS handler changes the map the tick the exit is enabled; nobody
-## presses a key in a cockpit (Marek, 2026-09-05). On foot the use key
-## stays (the truck doors).
-var drive_through: bool = false
 ## The use key's first frame. DOS 0x137e2e opens with `cmp [0x2c7f], 1`
 ## — ACTIVATE went down this very frame — and only then flips every live
 ## 0xEF gate within 60 u; walking into one does nothing (disassembled
@@ -294,6 +296,8 @@ var _unhandled_logged: Dictionary = {}
 func setup(map: MapFile.MapFile) -> void:
 	_map = map
 	for e in map.entities:
+		_parsed_act[e.file_off] = e.link_act_type
+		_parsed_link[e.file_off] = e.link_next
 		# Placement MARKERS (enemy starts, radiation sources …) keep
 		# other data where a sprite keeps its act byte — an enemy
 		# marker's "act" is its enemy type.
@@ -303,10 +307,13 @@ func setup(map: MapFile.MapFile) -> void:
 		if act == ACT_PROX_GATE:
 			if gate_runs(e):
 				_prox.append(e)
+				_prox_pos.append(_dos_pos(e))
 		elif act == ACT_PROX_CHAIN_A or act == ACT_PROX_CHAIN_B:
 			_prox.append(e)
+			_prox_pos.append(_dos_pos(e))
 		elif act == ACT_TELEPORT:
 			_teleports.append(e)
+			_teleport_pos.append(_dos_pos(e))
 		elif (e.flags & 3) == 2 and is_light_act(act):
 			_light_ents.append(e)
 		elif act >= ACT_HINT_FIRST and act <= ACT_FAIL:
@@ -355,7 +362,7 @@ static func euler_basis(pitch: float, yaw: float, roll: float) -> Basis:
 ## Euler composition with that component advanced. The old
 ## `base * Basis(axis, angle)` was right for yaw only: the two halves of
 ## MAP.281's drawbridge (0xC3/0xC4, roll ±512) swung one down, one UP
-## (Marek, 2026-09-05: "ten druhý sa zle rotuje").
+## (playtest, 2026-09-05: "ten druhý sa zle rotuje").
 static func swing_basis(euler: Vector3, axis_i: int, delta: float) -> Basis:
 	var e := euler
 	match axis_i:
@@ -604,6 +611,12 @@ func _fire_teleport(t: MapFile.Entity) -> bool:
 	teleport_requested.emit(t.exit_map, t.exit_marker_id)
 	return true
 
+## The level controller could not take the exit (no previous map, a
+## target missing from the archive): this level stays, so its other exits
+## must still work — the one-map-change latch is let go again.
+func teleport_refused() -> void:
+	_teleport_fired = false
+
 ## ObjFlipLink + immediate ObjDoAction, DOS order: flip the chain from
 ## the entity, then run the entity's own action.
 func _trigger(e: MapFile.Entity) -> void:
@@ -632,9 +645,20 @@ func _flip_link(start: MapFile.Entity) -> void:
 ## the front face and the lit ON texture (222/1, 222/3) on the back. DOS
 ## shows the pressed state by the texture alone — the panel does not
 ## turn ("obrazovky po kliknutí sa neotáčajú, len sa flipne textúra",
-## Marek, 2026-09-11); the port turned it 180°, which swung a panel whose
+## playtest, 2026-09-11); the port turned it 180°, which swung a panel whose
 ## origin is off its face round to the far side. The two faces swap
 ## materials instead, so the front shows the lit art where it stands.
+## Every button a chain has flipped, drawn again from its record — after
+## main.gd re-lit the level (DYNAMIC LIGHTS changed), which replaces the
+## surface materials the lit face was shown with.
+func refresh_switch_visuals() -> void:
+	for off in _nodes:
+		var n = _nodes[off]
+		if n != null and is_instance_valid(n) and (n as Node).has_meta("switch_lit"):
+			var e: MapFile.Entity = _map.entities_by_off.get(off) if _map != null else null
+			if e != null:
+				_refresh_switch_visual(e)
+
 func _refresh_switch_visual(e: MapFile.Entity) -> void:
 	var node: Node3D = _nodes.get(e.file_off)
 	if node == null or not is_instance_valid(node):
@@ -672,7 +696,10 @@ func _do_action(e: MapFile.Entity) -> void:
 
 ## Per-tick sweep — the DOS engine re-runs enabled entities' handlers
 ## every tick; movers advance while enabled, proximity types watch the
-## player, teleports fire once when enabled.
+## player, teleports fire once when enabled. main.gd runs it on the
+## physics step: DOS ticked at a fixed rate, and the movers carry the
+## collision bodies the player stands on. Motion scales by `delta`, and
+## the triggers only need to see the player once a step.
 func tick(delta: float, player_pos: Vector3) -> void:
 	if _map == null:
 		return
@@ -702,7 +729,8 @@ func tick(delta: float, player_pos: Vector3) -> void:
 	# (see press_use). 0xF1/0xF2 watch the player's presence; variant-1
 	# meshes with state bit 3 (the wall buttons, state 0x09) stay on the
 	# use key — walking past a button must not press it.
-	for e in _prox:
+	for pi in _prox.size():
+		var e: MapFile.Entity = _prox[pi]
 		# 0xEF gates and the 0xF1 / 0xF2 chain triggers all watch the
 		# player (handlers 0x137e2e and 0x1379c4); the radii differ.
 		# MAP.220's mission objective hangs off an 0xF2 button 1024 units
@@ -714,7 +742,7 @@ func tick(delta: float, player_pos: Vector3) -> void:
 		# at the back wall of the cab, state 0x09, no mesh at all.)
 		if _spent.has(e.file_off):
 			continue
-		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
+		var epos: Vector3 = _prox_pos[pi]
 		var inside: bool = _within(epos, player_pos, _prox_radius(e))
 		var latched: bool = _prox_latched.get(e.file_off, false)
 		# 0xF1/0xF2 are ONE-SHOT. Their handler (0x1379c4) ends by calling
@@ -810,8 +838,9 @@ func tick(delta: float, player_pos: Vector3) -> void:
 	# sprite ARMS the exit (state bit 0); the map change itself needs
 	# the use key — in DOS you walk into the truck and press use at its
 	# rear doors, nothing happens just by standing there.
-	for e in _teleports:
-		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
+	for ti in _teleports.size():
+		var e: MapFile.Entity = _teleports[ti]
+		var epos: Vector3 = _teleport_pos[ti]
 		var touching: bool = _within_touch(epos, player_pos, TELEPORT_TOUCH_RADIUS)
 		if touching and not _touch_latched.get(e.file_off, false):
 			e.state_byte |= 1
@@ -834,10 +863,11 @@ func tick(delta: float, player_pos: Vector3) -> void:
 func activate_teleport(player_pos: Vector3) -> bool:
 	if _teleport_fired:
 		return false
-	for e in _teleports:
+	for ti in _teleports.size():
+		var e: MapFile.Entity = _teleports[ti]
 		if (e.state_byte & 1) == 0:
 			continue
-		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
+		var epos: Vector3 = _teleport_pos[ti]
 		if not _within_touch(epos, player_pos, TELEPORT_TOUCH_RADIUS + PROX_GATE_RADIUS):
 			continue
 		if not _reachable(player_pos, epos):
@@ -846,10 +876,11 @@ func activate_teleport(player_pos: Vector3) -> bool:
 	# Standing in an ENABLED exit gate whose chain has not flipped (the
 	# spawn pre-latched it, e.g. the truck interiors start beside their
 	# DOOR): the use key goes through anyway.
-	for g in _prox:
+	for gi in _prox.size():
+		var g: MapFile.Entity = _prox[gi]
 		if g.link_act_type != ACT_PROX_GATE or _spent.has(g.file_off):
 			continue
-		var gpos := Vector3(float(g.x), -float(g.y), -float(g.z))
+		var gpos: Vector3 = _prox_pos[gi]
 		if not _within(gpos, player_pos, _prox_radius(g)):
 			continue
 		if not _reachable(player_pos, gpos):
@@ -913,13 +944,13 @@ func use_nearby(player_pos: Vector3) -> bool:
 ## for the player to step out and back in instead of bouncing straight
 ## back.
 func arm_proximity(player_pos: Vector3) -> void:
-	for e in _prox:
-		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
-		if _within(epos, player_pos, _prox_radius(e)):
+	for pi in _prox.size():
+		var e: MapFile.Entity = _prox[pi]
+		if _within(_prox_pos[pi], player_pos, _prox_radius(e)):
 			_prox_latched[e.file_off] = true
-	for e in _teleports:
-		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
-		if _within_touch(epos, player_pos, TELEPORT_TOUCH_RADIUS):
+	for ti in _teleports.size():
+		var e: MapFile.Entity = _teleports[ti]
+		if _within_touch(_teleport_pos[ti], player_pos, TELEPORT_TOUCH_RADIUS):
 			_touch_latched[e.file_off] = true
 
 func _prox_radius(e: MapFile.Entity) -> float:
@@ -1069,9 +1100,17 @@ static func _within_touch(epos: Vector3, player_pos: Vector3, radius: float) -> 
 ## and re-applied on return.
 func save_state() -> Dictionary:
 	var states: Dictionary = {}
+	# Act bytes and links play has changed ("acts" / "links", 2026-09-14;
+	# a snapshot without them restores as before).
+	var acts: Dictionary = {}
+	var links: Dictionary = {}
 	if _map != null:
 		for e in _map.entities:
 			states[e.file_off] = e.state_byte
+			if e.link_act_type != int(_parsed_act.get(e.file_off, e.link_act_type)):
+				acts[e.file_off] = e.link_act_type
+			if e.link_next != int(_parsed_link.get(e.file_off, e.link_next)):
+				links[e.file_off] = e.link_next
 	var movers: Dictionary = {}
 	for off in _movers:
 		var m: Dictionary = _movers[off]
@@ -1084,10 +1123,13 @@ func save_state() -> Dictionary:
 		"states": states, "movers": movers, "destr": destr,
 		"hp": _hp.duplicate(), "spent": _spent.duplicate(),
 		"spawned": _spawned.duplicate(),
+		"acts": acts, "links": links,
 	}
 
 ## Re-apply a save_state() snapshot. Call after every node is registered
-## (register_node / register_destructible) so the visuals refresh too.
+## (register_node / register_destructible) so the visuals refresh too —
+## and before the Behaviour branch enters the tree (main.gd), whose _ready
+## fires the cues the records say are armed.
 func restore_state(snap: Dictionary) -> void:
 	if _map == null or snap.is_empty():
 		return
@@ -1096,14 +1138,30 @@ func restore_state(snap: Dictionary) -> void:
 		var e: MapFile.Entity = _map.entities_by_off.get(off)
 		if e != null:
 			e.state_byte = int(states[off])
+	# A cue that fired is retired (0xFF) and a water valve remembers which
+	# way it goes next; sync_from_records reads the retirement onto the
+	# cue nodes, or an objective would count again on the next flip.
+	var acts: Dictionary = snap.get("acts", {})
+	for off in acts:
+		var e: MapFile.Entity = _map.entities_by_off.get(off)
+		if e != null:
+			e.link_act_type = int(acts[off])
+	var links: Dictionary = snap.get("links", {})
+	for off in links:
+		var e: MapFile.Entity = _map.entities_by_off.get(off)
+		if e != null:
+			e.link_next = int(links[off])
 	if behaviour != null:
 		behaviour.sync_from_records()
 	_hp = (snap.get("hp", {}) as Dictionary).duplicate()
 	_spent = (snap.get("spent", {}) as Dictionary).duplicate()
 	# Robots an 0xF3 chain already let out come back out (the dead ones
-	# the map overlay removes on its own).
+	# the map overlay removes on its own). They were counted for the
+	# STATISTICS page when they first appeared.
+	Stats.hold_enemy_count = true
 	for off in (snap.get("spawned", {}) as Dictionary):
 		_spawn_in(int(off))
+	Stats.hold_enemy_count = false
 	var movers: Dictionary = snap.get("movers", {})
 	for off in movers:
 		if not _movers.has(off):
@@ -1259,7 +1317,7 @@ func _break_down(e: MapFile.Entity) -> void:
 	if not _destr.has(e.file_off):
 		return
 	# One stage per blow: MAP.248's girder has to ram 248WALL several
-	# times before it gives (Marek's DOS run, 2026-09-11) — each press of
+	# times before it gives (the DOS run, 2026-09-11) — each press of
 	# the START BOX swings the girder and enables the wall once. Until then
 	# the port ran every stage at the first enable and the wall fell at
 	# the first touch.
@@ -1314,12 +1372,10 @@ func _destroy(e: MapFile.Entity) -> void:
 		if scene != null:
 			var k: int = 0
 			for s in fx:
-				var ex := Explosion.new()
-				scene.add_child(ex)
 				var at: Vector3 = centre
 				if k > 0:
 					at += Vector3(randf_range(-0.5, 0.5) * spread, 0.0, randf_range(-0.5, 0.5) * spread)
-				ex.setup(at, radius * 1.6, int(s) >> 7)
+				Explosion.spawn(scene, at, radius * 1.6, int(s) >> 7)
 				k += 1
 		var pl := node.get_tree().get_first_node_in_group("player")
 		if pl is Node3D and pl.has_method("take_damage"):
@@ -1345,9 +1401,7 @@ func _blast(node: Node3D, final: bool) -> void:
 		return
 	var scene := node.get_tree().current_scene
 	if scene != null:
-		var ex := Explosion.new()
-		scene.add_child(ex)
-		ex.setup(centre, radius * (1.6 if final else 1.0))
+		Explosion.spawn(scene, centre, radius * (1.6 if final else 1.0))
 	if final:
 		var pl := node.get_tree().get_first_node_in_group("player")
 		if pl is Node3D and pl.has_method("take_damage"):

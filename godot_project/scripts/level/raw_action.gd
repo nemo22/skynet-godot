@@ -22,6 +22,3 @@ extends Node3D
 ## DOS state byte, as read.
 @export var state: int = 0
 @export var targets: Array[NodePath] = []
-
-func is_relay() -> bool:
-	return act == 0

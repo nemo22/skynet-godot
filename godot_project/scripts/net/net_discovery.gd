@@ -5,6 +5,13 @@ extends RefCounted
 
 const PROBE_INTERVAL: float = 2.0
 const ENTRY_TTL: float = 6.0
+## Anyone on the network can answer a broadcast, so what comes back is
+## bounded and checked: this many servers listed, replies this big read,
+## this many a tick, names this long.
+const MAX_SERVERS: int = 64
+const MAX_REPLY_BYTES: int = 512
+const MAX_PER_TICK: int = 64
+const MAX_NAME_LEN: int = 48
 
 var servers: Dictionary = {}          # "ip:port" → {ip, port, name, map, players, bots, max, seen}
 var _udp: PacketPeerUDP = null
@@ -42,25 +49,55 @@ func tick(delta: float) -> bool:
 		for t in targets:
 			_udp.set_dest_address(t, Net.DISCOVERY_PORT)
 			_udp.put_packet(magic)
-	while _udp.get_available_packet_count() > 0:
+	for _i in MAX_PER_TICK:
+		if _udp.get_available_packet_count() <= 0:
+			break
 		var pkt: PackedByteArray = _udp.get_packet()
-		var ip: String = _udp.get_packet_ip()
-		var data = JSON.parse_string(pkt.get_string_from_utf8())
-		if not (data is Dictionary):
-			continue
-		var port: int = int(data.get("port", Net.DEFAULT_PORT))
-		var key := "%s:%d" % [ip, port]
-		var entry := {"ip": ip, "port": port, "name": String(data.get("name", "?")),
-			"map": String(data.get("map", "?")), "players": int(data.get("players", 0)),
-			"bots": int(data.get("bots", 0)), "max": int(data.get("max", 0)),
-			"seen": Time.get_ticks_msec()}
-		if not servers.has(key) or servers[key]["players"] != entry["players"] \
-				or servers[key]["map"] != entry["map"]:
+		if accept_reply(_udp.get_packet_ip(), pkt):
 			changed = true
-		servers[key] = entry
 	var now := Time.get_ticks_msec()
 	for k in servers.keys():
 		if now - int(servers[k]["seen"]) > int(ENTRY_TTL * 1000.0):
 			servers.erase(k)
 			changed = true
 	return changed
+
+## One reply from `ip`: listed (or refreshed) when every field has the type
+## it should. A `players` that was not a number used to stop tick() with a
+## script error. Returns true when the list changed.
+func accept_reply(ip: String, pkt: PackedByteArray) -> bool:
+	if pkt.size() > MAX_REPLY_BYTES:
+		return false
+	var data = JSON.parse_string(pkt.get_string_from_utf8())
+	if not (data is Dictionary):
+		return false
+	var port: int = clampi(_num(data, "port", Net.DEFAULT_PORT), 1, 65535)
+	var key := "%s:%d" % [ip, port]
+	if not servers.has(key) and servers.size() >= MAX_SERVERS:
+		return false
+	var entry := {"ip": ip, "port": port, "name": _text(data, "name", "?"),
+		"map": _text(data, "map", "?"), "players": clampi(_num(data, "players", 0), 0, 999),
+		"bots": clampi(_num(data, "bots", 0), 0, 999), "max": clampi(_num(data, "max", 0), 0, 999),
+		"seen": Time.get_ticks_msec()}
+	var changed: bool = not servers.has(key) or servers[key]["players"] != entry["players"] \
+			or servers[key]["map"] != entry["map"]
+	servers[key] = entry
+	return changed
+
+## A JSON number field as an int (JSON numbers arrive as floats), or
+## `fallback` when it is missing, not a number or not finite.
+func _num(d: Dictionary, key: String, fallback: int) -> int:
+	var v = d.get(key, fallback)
+	if typeof(v) == TYPE_INT:
+		return v
+	if typeof(v) == TYPE_FLOAT and is_finite(v):
+		return int(clampf(v, -1e9, 1e9))
+	return fallback
+
+## A JSON string field, cleaned (Net._clean_text) and capped.
+func _text(d: Dictionary, key: String, fallback: String) -> String:
+	var v = d.get(key, fallback)
+	if typeof(v) != TYPE_STRING:
+		return fallback
+	var s: String = Net._clean_text(v, MAX_NAME_LEN)
+	return s if not s.is_empty() else fallback

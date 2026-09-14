@@ -1,10 +1,7 @@
-## Main scene controller. Browses MAP.* in MDMDMAP2.BSA, loads a level
-## via LevelLoader, and lets the user cycle through maps.
+## Main scene controller. Browses MAP.* in MDMDMAP2.BSA and loads a level
+## via LevelLoader.
 ##
 ## Key bindings (in addition to the global F1..F5 scene switch):
-##   PageUp / [ / P     previous map
-##   PageDown / ] / N   next map
-##   Home / End         first / last map
 ##   F6 / F7            quicksave / quickload (slot 1 of the LOAD menu)
 ##   ESC                in-game menu (resume / save / load / cheats / main menu)
 ##   ~  or Alt+\        console (DOS cheat codes work as commands)
@@ -12,7 +9,6 @@
 extends Node3D
 
 const LevelLoader := preload("res://scripts/level_loader.gd")
-const MidiSynth := preload("res://scripts/midi_synth.gd")
 const BSAReader   := preload("res://scripts/loaders/bsa_reader.gd")
 const ImgFile     := preload("res://scripts/loaders/img_file.gd")
 const Palette     := preload("res://scripts/loaders/palette.gd")
@@ -27,7 +23,9 @@ const DmGame      := preload("res://scripts/net/dm_game.gd")
 const WldTerrain  := preload("res://scripts/loaders/wld_terrain.gd")
 const LevelScene  := preload("res://scripts/level_scene.gd")
 const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
-const CamPath     := preload("res://tools/cam_path.gd")
+const CamPath     := preload("res://scripts/cam_path.gd")
+const PauseState  := preload("res://scripts/pause_state.gd")
+const EffectWarmup := preload("res://scripts/effect_warmup.gd")
 
 ## Map to load on startup (falls back to first map if missing).
 @export var initial_map: String = "MAP.210"
@@ -102,8 +100,17 @@ var _prev_map_name: String = ""
 var _pending_marker_set: int = -1
 var _map_state: Dictionary = {}
 var _fade: ColorRect = null
+## Every level change runs through _change_level, one at a time: two at
+## once (an exit fired during another's fade, F7 during an exit) tore the
+## level down twice, and a save taken mid-change stored the exit as used.
+## `_level_gen` counts the changes; a coroutine that waited (the
+## mission-complete delay) checks it before acting on a level that is gone.
+var _level_busy: bool = false
+var _level_gen: int = 0
 ## Player snapshot from a save file, applied at the end of _begin_level.
 var _pending_player: Dictionary = {}
+## A loaded save's mission counters (Stats), laid over the mission script.
+var _pending_stats: Dictionary = {}
 ## Esc menu (level stays loaded) and the `~` console.
 var _pause: CanvasLayer = null
 var _console: CanvasLayer = null
@@ -151,7 +158,6 @@ var _tactical: Control = null
 var _stats_box: Control = null
 var _briefing_tabs: Dictionary = {}        # name -> the tab Button
 var _briefing_text: Label = null           # objectives / dialogue text
-var _briefing_toast_label: Label = null    # transient "tab unavailable" note
 var _briefing_scroll: ScrollContainer = null
 var _briefing_pending_map: String = ""     # map to load when BEGIN is pressed
 
@@ -170,9 +176,11 @@ func _ready() -> void:
 	if Net.active:
 		initial_map = String(Net.settings.get("map", initial_map))
 	_build_status_ui()
+	_watch_settings()
 	_console = GameConsole.new()
 	_console.handler = self
 	add_child(_console)
+	_console.closed.connect(_refresh_net_input_lock)
 	_pause = PauseMenu.new()
 	_pause.game = self
 	add_child(_pause)
@@ -195,13 +203,27 @@ func _ready() -> void:
 
 	_map_idx = _maps.find(initial_map)
 	if _map_idx < 0: _map_idx = 0
-	# A slot picked in the LOAD menu replaces the normal start.
+	# A slot picked in the LOAD menu replaces the normal start — when it
+	# reads and its map exists. A damaged or foreign save used to leave an
+	# empty black scene; it now starts the game normally and says why.
 	var slot: int = SkynetPaths.pending_load_slot
 	SkynetPaths.pending_load_slot = -1
-	if slot >= 0 and SaveGame.exists(slot):
-		load_from_slot(slot)
+	var saved: Dictionary = SaveGame.read(slot) if slot >= 0 else {}
+	if not saved.is_empty() and _maps.has(String(saved.get("map", ""))):
+		load_from_slot(slot, saved)
 	else:
+		if slot >= 0:
+			var why: String = SaveGame.last_error
+			if why.is_empty():
+				why = "empty slot" if saved.is_empty() else "saved map %s is missing" % String(saved.get("map", "?"))
+			push_warning("[skynet] slot %d did not load (%s) — normal start" % [slot + 1, why])
 		_load_current()
+
+func _exit_tree() -> void:
+	_unwatch_settings()
+	# Leaving the game scene (main menu, a dev scene switch): nothing may
+	# stay paused or hold the mouse.
+	PauseState.reset()
 
 ## Does this mesh already carry a collision body? Static geometry comes
 ## out of the baked level scene with one (and the loader gives the rest
@@ -452,7 +474,7 @@ func _cli_place() -> void:
 		var pitch := deg_to_rad(float(_cli.get("pitch", 0.0)))
 		player.set_view(yaw, pitch)
 	# --campath=FILE|auto:...: fly the camera along a scripted path, for a
-	# RECORDED promo clip (see tools/cam_path.gd). Godot's own Movie Maker
+	# RECORDED promo clip (see scripts/cam_path.gd). Godot's own Movie Maker
 	# turns real-time sync off, so nobody can play along while it records
 	# — the camera has to be driven, and driving it also means the shot
 	# comes out the same after every change to the game.
@@ -515,7 +537,7 @@ func _cli_after_level() -> void:
 		var parts: PackedStringArray = String(_cli["near"]).split(":")
 		var nodes: Array = get_tree().get_nodes_in_group(parts[0])
 		var ni: int = int(parts[1]) if parts.size() > 1 else 0
-		# "group:N:dist" stands that far off instead (a skull wants 120).
+		# "group:N:dist" stands that far off instead.
 		var dist: float = float(parts[2]) if parts.size() > 2 else 260.0
 		if ni < nodes.size() and nodes[ni] is Node3D:
 			var tgt: Vector3 = (nodes[ni] as Node3D).global_position
@@ -599,116 +621,12 @@ func _cli_after_level() -> void:
 			player.global_position, rad_to_deg(player.rotation.y), rad_to_deg(player.get("_pitch"))])
 		if _cli.has("quit-after-shot"):
 			get_tree().quit()
-	elif _cli.has("sprite-probe"):
-		# Agent diagnostics: how far above the floor each billboard's
-		# bottom edge sits (anchoring checks).
-		await get_tree().physics_frame
-		await get_tree().physics_frame
-		var space := get_world_3d().direct_space_state
-		var lvl := _current_level
-		if lvl != null and lvl.sprites != null:
-			var gaps: Array = []
-			for s in lvl.sprites.get_children():
-				if not (s is Sprite3D) or (s as Sprite3D).texture == null:
-					continue
-				var sp := s as Sprite3D
-				var half: float = float(sp.texture.get_height()) * sp.pixel_size * 0.5
-				var bottom: Vector3 = sp.global_position - Vector3(0.0, half, 0.0)
-				var q := PhysicsRayQueryParameters3D.create(bottom + Vector3(0, 8, 0), bottom - Vector3(0, 4000, 0))
-				var hit := space.intersect_ray(q)
-				var gap: float = -1.0
-				if hit.has("position"):
-					gap = bottom.y - (hit["position"] as Vector3).y
-				gaps.append(gap)
-				print("[sprite-probe] %s h=%.0f bottom=%.0f gap=%.0f" % [sp.name, half * 2.0, bottom.y, gap])
-			gaps.sort()
-			if not gaps.is_empty():
-				print("[sprite-probe] %d sprites, median gap %.0f" % [gaps.size(), gaps[gaps.size() / 2]])
-	elif _cli.has("floor-probe"):
-		# Agent diagnostics: what is under the spawn (fall-through reports).
-		await get_tree().physics_frame
-		await get_tree().physics_frame
-		var space := get_world_3d().direct_space_state
-		var p: Vector3 = player.global_position
-		for off in [Vector3.ZERO, Vector3(150, 0, 0), Vector3(-150, 0, 0), Vector3(0, 0, 150), Vector3(0, 0, -150)]:
-			var a: Vector3 = p + off
-			for top in [40.0, 400.0]:
-				var q := PhysicsRayQueryParameters3D.create(Vector3(a.x, a.y + top, a.z), Vector3(a.x, a.y - 3000.0, a.z))
-				q.collide_with_areas = false
-				var hit := space.intersect_ray(q)
-				var what: String = "nothing"
-				if hit.has("position"):
-					var c: Node = hit["collider"] as Node
-					what = "%s at y=%.0f n=%s" % [c.get_parent().name if c != null and c.get_parent() != null else "?",
-						(hit["position"] as Vector3).y, hit.get("normal", Vector3.ZERO)]
-				print("[probe] from %s +%.0f: %s" % [a, top, what])
-		var shape := CapsuleShape3D.new()
-		shape.radius = 22.0
-		shape.height = 80.0
-		var sq := PhysicsShapeQueryParameters3D.new()
-		sq.shape = shape
-		sq.transform = Transform3D(Basis(), p + Vector3(0.0, 40.0, 0.0))
-		var overl := space.intersect_shape(sq, 8)
-		var names: Array = []
-		for o in overl:
-			var c: Node = o["collider"] as Node
-			names.append(c.get_parent().name if c != null and c.get_parent() != null else "?")
-		print("[probe] capsule at spawn overlaps: %s" % [names])
-		await get_tree().create_timer(float(_cli.get("shot-delay", 3.0))).timeout
-		print("[probe] after settle: pos=%s on_floor=%s" % [player.global_position, player.is_on_floor()])
-		if _cli.has("quit-after-shot"):
-			get_tree().quit()
 	elif _cli.has("perf"):
 		# --perf[=secs]: stand still and measure the FRAME TIMES, because
 		# "it stutters" is about the worst frames, not the average.
 		await _perf_probe(float(_cli.get("perf", 8.0)))
 		if _cli.has("quit-after-shot"):
 			get_tree().quit()
-	elif _cli.has("jumptest"):
-		# --jumptest[=run|walk]: measure the jump the player actually
-		# gets — run forward, jump, and report the gap cleared and the
-		# height reached ("jump so Shiftom by mal skočiť ďalej").
-		await _jump_test(String(_cli.get("jumptest", "run")))
-		if _cli.has("quit-after-shot"):
-			get_tree().quit()
-	elif _cli.has("dump-enemies"):
-		# Agent diagnostics: settle, then print every enemy's placement
-		# against the surface under it (sunken / floating actors).
-		await get_tree().create_timer(float(_cli.get("shot-delay", 3.0))).timeout
-		_dump_enemies()
-		if _cli.has("quit-after-shot"):
-			get_tree().quit()
-
-## Agent diagnostic: run forward, jump, and print how far and how high
-## the player got. `mode` = "run" (Shift held) or "walk".
-func _jump_test(mode: String) -> void:
-	if not is_instance_valid(player):
-		return
-	player.noclip = false
-	await get_tree().create_timer(1.0, true, false, true).timeout
-	player.ui_sprint = mode != "walk"
-	player.ui_move = Vector2(0.0, 1.0)
-	# Run up first, so the take-off speed is the sprint speed.
-	for _i in 40:
-		await get_tree().physics_frame
-	var takeoff: Vector3 = player.global_position
-	var peak: float = takeoff.y
-	player.ui_vert = 1.0
-	for _i in 3:
-		await get_tree().physics_frame
-	player.ui_vert = 0.0
-	var frames: int = 0
-	while not player.is_on_floor() and frames < 600:
-		peak = maxf(peak, player.global_position.y)
-		frames += 1
-		await get_tree().physics_frame
-	var land: Vector3 = player.global_position
-	player.ui_move = Vector2.ZERO
-	player.ui_sprint = false
-	print("[jump] %s: takeoff %s land %s  gap %.0f u  rise %.0f u  air %.2f s" % [
-		mode, takeoff.round(), land.round(),
-		Vector2(land.x - takeoff.x, land.z - takeoff.z).length(),
-		peak - takeoff.y, float(frames) / 60.0])
 
 ## Frame-time probe. Prints the distribution, not just the average: a
 ## mean of 8 ms with a 90 ms worst frame is exactly what "docela dost to
@@ -761,31 +679,6 @@ func _perf_probe(secs: float) -> void:
 		Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0,
 		Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME)])
 
-func _dump_enemies() -> void:
-	var space := get_world_3d().direct_space_state
-	for e in get_tree().get_nodes_in_group("enemy"):
-		if not (e is Node3D) or not is_instance_valid(e):
-			continue
-		var p: Vector3 = (e as Node3D).global_position
-		var foot: float = p.y + float(e.get("_foot_offset"))
-		# Floor right under the feet (from 40 u above them) and the first
-		# surface above the head — sunk actors show a negative clearance.
-		var q := PhysicsRayQueryParameters3D.create(Vector3(p.x, foot + 40.0, p.z), Vector3(p.x, foot - 300.0, p.z))
-		q.collide_with_areas = false
-		var hit := space.intersect_ray(q)
-		var clear: String = "none"
-		if hit.has("position"):
-			clear = "%.0f" % (foot - (hit["position"] as Vector3).y)
-		var q2 := PhysicsRayQueryParameters3D.create(Vector3(p.x, foot + 40.0, p.z), Vector3(p.x, foot + 600.0, p.z))
-		q2.collide_with_areas = false
-		var hit2 := space.intersect_ray(q2)
-		var head: String = "none"
-		if hit2.has("position"):
-			head = "%.0f" % ((hit2["position"] as Vector3).y - foot)
-		var brain = e.get("_brain")
-		print("[enemy] %-24s type=%3d st=%2s pos=(%.0f, %.0f, %.0f) feet=%.0f floor_clearance=%s ceiling_above_feet=%s" % [
-			e.name, int(e.get("_type_id")), str(brain.state) if brain != null else "-", p.x, p.y, p.z, foot, clear, head])
-
 func _scan_maps() -> void:
 	var bsa := BSAReader.new()
 	if not bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant):
@@ -810,8 +703,8 @@ static func _suffix(name: String) -> int:
 	return int(parts[1])
 
 func _load_current() -> void:
-	_clear_level()
 	if _map_idx < 0 or _map_idx >= _maps.size():
+		_clear_level()
 		_set_status("No map at index %d" % _map_idx)
 		return
 	var name := _maps[_map_idx]
@@ -822,12 +715,11 @@ func _load_current() -> void:
 	# with --write-movie it would record that screen until the disk filled
 	# (it recorded 912 MB of it before I noticed), so --campath skips it
 	# like --screenshot does.
-	if (_cli.has("screenshot") and not _cli.has("tab")) or _cli.has("no-briefing") \
-			or _cli.has("campath") or _cli.has("walk") or Net.active:
-		_begin_level(name)
-	elif not _maybe_show_briefing(name):
-		_begin_level(name)
-	elif _cli.has("screenshot"):
+	var no_briefing: bool = (_cli.has("screenshot") and not _cli.has("tab")) \
+		or _cli.has("no-briefing") or _cli.has("campath") or _cli.has("walk") or Net.active
+	if not await _change_level(name, false, not no_briefing):
+		return
+	if _briefing_overlay != null and _cli.has("screenshot"):
 		# --tab=TACTICAL --screenshot=…: capture the mission screen itself.
 		await get_tree().create_timer(float(_cli.get("shot-delay", 1.5))).timeout
 		if _cli.has("tab"):
@@ -875,15 +767,16 @@ func _unblock_furniture(level: LevelLoader.Level) -> void:
 	if n > 0:
 		print("[level] %d small props made walk-through" % n)
 
+## Only _change_level calls this (one level change at a time).
 func _begin_level(name: String) -> void:
+	var gen: int = _level_gen
+	# The session cache lets go of what neither this map nor the last used.
+	Assets.level_started()
 	print("[skynet] loading %s" % name)
-	if _cli.has("debug-collisions"):
-		# Agent aid: draw every collision shape (wireframes) — where a box
-		# really sits, not where its mesh is drawn. Must be on before the
-		# level's bodies enter the tree.
-		get_tree().debug_collisions_hint = true
 	_ensure_mission_script(name)
 	await get_tree().process_frame
+	if gen != _level_gen:
+		return
 
 	var loader := LevelLoader.new()
 	var level := loader.load_level(name)
@@ -921,7 +814,10 @@ func _begin_level(name: String) -> void:
 					and level.action.is_solid_mover(c.file_off()) and LevelBehaviour.is_door_like(c.mesh))
 				if solid_mover or _is_small_prop(c, level):
 					_make_box_collision(c)          # DOS-style solid box
-				else:
+				elif not LevelScene.add_collision(c, String(c.get_meta("mesh_name", c.name)).to_upper()):
+					# (The shared, cached shape — backface_collision already
+					# on — is the normal case; a mesh the cache refuses gets
+					# its own.)
 					c.create_trimesh_collision()    # walls, buildings, bridges
 					_enable_backfaces(c)
 				# A moving StaticBody does not push the player — a closing
@@ -937,6 +833,12 @@ func _begin_level(name: String) -> void:
 				if c is Node3D and not (c as Node3D).is_inside_tree():
 					outside += 1
 			print("[spawn-probe] entities: %d children, %d outside the tree" % [level.entities.get_child_count(), outside])
+	# Re-apply this map's state overlay when we have been here before —
+	# BEFORE the Behaviour branch enters the tree: a cue armed in the MAP
+	# data fires in its _ready, and one that fired on an earlier visit (or
+	# before the save) must find its bit down and its act retired, or the
+	# radio line plays and the objective counts again.
+	_apply_map_state(level, name)
 	# The Behaviour branch (scripts/level/behaviour.gd): the chains and
 	# the cues. Signals first — a cue armed in the MAP data fires in its
 	# _ready, the moment it enters the tree.
@@ -981,12 +883,12 @@ func _begin_level(name: String) -> void:
 		level.sky.position = player.global_position
 	_set_sky_fill(level, name)
 	_light_level(level)
-	# Re-apply this map's state overlay when we have been here before.
-	_apply_map_state(level, name)
 
 	# Let the freshly-added trimesh collision register in the physics
 	# space before the spawn-clearance query runs.
 	await get_tree().physics_frame
+	if gen != _level_gen:
+		return
 	_settle_sprites(level)
 	_frame_camera(level)
 	# Gates/doorways the spawn already sits in must be left before they
@@ -994,7 +896,9 @@ func _begin_level(name: String) -> void:
 	# gate they came through.
 	if level.action != null and is_instance_valid(player):
 		level.action.arm_proximity(player.global_position)
-	_cli_after_level()
+	# (The automation switches — _cli_after_level — run once _change_level
+	# has finished: a scripted `use` that takes an exit is a level change
+	# of its own.)
 
 	# Ambient bed — wind for outdoor maps.
 	if level.is_outdoor:
@@ -1016,10 +920,14 @@ func _begin_level(name: String) -> void:
 	_mission_hostiles = 0
 	if _campaign_maps.has(name):
 		_mission_start_map = name
+	elif _mission_of(_mission_start_map) != _mission_of(name):
+		# Entered a mission somewhere other than its start map (--map, the
+		# console, an old save): the start map is the mission's own.
+		_mission_start_map = _mission_start_for(name)
 	if _is_campaign_main(name):
 		_mission_hostiles = get_tree().get_nodes_in_group("enemy").size()
 	if _dm == null and not Net.active:
-		Stats.add_enemies(get_tree().get_nodes_in_group("enemy").size())
+		_count_mission_enemies(level, name)
 	# Vehicle missions (Skynet.exe mission table 0x34846, +8 = player
 	# mode): mission 2 and 6 are driven in the jeep, mission 7 flown in
 	# the HK, for the whole mission including its sub-maps.
@@ -1037,6 +945,28 @@ func _begin_level(name: String) -> void:
 	_set_hud_mode(player.vehicle if is_instance_valid(player) else 0)
 	if _dm != null:
 		_dm.on_level_ready(level)
+
+## STATISTICS "ENEMIES DESTROYED": the mission's enemies, each counted
+## once. This used to add the whole "enemy" group on every map entry and
+## every load — robots already dead or already counted included. An enemy
+## is known by its start marker's identity (_entity_key); on an outdoor map
+## that identity is shared with the map's variants (MAP.216 is MAP.210's
+## base with the same robots), indoors it is the map's own. Robots an 0xF3
+## spawn point lets out are counted by enemy.gd when they appear.
+func _count_mission_enemies(level: LevelLoader.Level, name: String) -> void:
+	var n: int = 0
+	for e in get_tree().get_nodes_in_group("enemy"):
+		var id: String = "%s|%s" % [name, e.name]
+		if e.has_meta("marker_off") and level.map != null:
+			var rec = level.map.entities_by_off.get(int(e.get_meta("marker_off")))
+			if rec != null:
+				if rec.marker_type < 0:
+					continue                    # an 0xF3 spawn sprite's robot
+				id = ("" if level.is_outdoor else name + "|") + _entity_key(level.map, rec)
+		if Stats.count_enemy(id):
+			n += 1
+	if n > 0:
+		print("[stats] %s: %d enemies counted for the mission (%d in all)" % [name, n, Stats.enemies])
 
 ## Place the camera at the DOS player-start marker (marker_type 0), facing
 ## the direction marker (marker_type 1) — read by LevelLoader. Falls back
@@ -1203,9 +1133,11 @@ func _find_clear_spawn(pos: Vector3) -> Vector3:
 ## DOS player: eye 75 units above the feet (DAT_00038ce5 = 0x4b,
 ## skynet_gh.c:25016); marker/start positions are EYE positions.
 const EYE_HEIGHT: float = 75.0
-## Outdoor depth haze (world units) — DOS fades distant terrain out.
+## Outdoor depth haze (world units) — DOS fades distant terrain out. It
+## starts at FOG_BEGIN pushed out by the stretch, and is solid at
+## LevelLoader.FOG_FAR (_apply_fog_distances).
 const FOG_BEGIN: float = 3500.0
-const FOG_END: float = 16000.0
+const FOG_BEGIN_STRETCH: float = 1.9
 ## Props up to this AABB extent collide as boxes. 0 = off: an AABB box
 ## turns open props (tables, counters, arches) into solid blocks — the
 ## MAP.218 spawn ended up inside one, was relocated outside the room and
@@ -1360,15 +1292,32 @@ static func _shade_recursive(n: Node, cache: Dictionary, per_pixel: bool = false
 						dup.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL \
 							if per_pixel else BaseMaterial3D.SHADING_MODE_PER_VERTEX
 						if per_pixel:
-							# The DOS art paints its own highlights; a shiny
-							# wall is what made the removed ENHANCED look
-							# glow, so keep these rough and nearly matt.
+							# The DOS art paints its own highlights, so keep
+							# these rough and nearly matt.
 							dup.roughness = 0.9
 							dup.metallic_specular = 0.2
+						dup.set_meta(LIT_COPY_META, true)
 						cache[key] = dup
 					mi.set_surface_override_material(si, dup)
 	for c in n.get_children():
 		_shade_recursive(c, cache, per_pixel)
+
+## Marks a material _shade_recursive made, so a re-light can take it off.
+const LIT_COPY_META := &"lit_copy"
+
+## Undo _shade_recursive under `n`: its lit copies come off the surfaces
+## (other overrides — a lit button face — stay).
+static func _unshade_recursive(n: Node) -> void:
+	if n == null or not is_instance_valid(n):
+		return
+	if n is MeshInstance3D:
+		var mi := n as MeshInstance3D
+		for si in mi.get_surface_override_material_count():
+			var m: Material = mi.get_surface_override_material(si)
+			if m != null and m.has_meta(LIT_COPY_META):
+				mi.set_surface_override_material(si, null)
+	for c in n.get_children():
+		_unshade_recursive(c)
 
 ## DOS fills the frame with a flat sky colour before drawing the
 ## SKY_SKY.3D band, so nothing black shows above the dome. Sample the
@@ -1425,10 +1374,7 @@ func _set_sky_fill(level: LevelLoader.Level, map_name: String = "") -> void:
 		env.fog_light_energy = 1.0
 		env.fog_sun_scatter = 0.0
 		env.fog_density = 1.0
-		# RENDER DETAIL pulls the haze in (Settings.fog_scale, from the
-		# DOS far-clip table 1408 / 2176 / 2432).
-		env.fog_depth_begin = FOG_BEGIN * Settings.fog_scale()
-		env.fog_depth_end = FOG_END * Settings.fog_scale()
+		# (The distances: _apply_fog_distances, from _apply_render_env.)
 		env.fog_depth_curve = 1.0
 		env.fog_aerial_perspective = 0.0
 		env.fog_sky_affect = 0.0
@@ -1549,11 +1495,63 @@ func _update_moon() -> void:
 ## Seconds the MISSION COMPLETE screen stays before the next mission.
 const AUTO_ADVANCE_SEC: float = 6.0
 
-## The BRIGHTNESS setting (OPTIONS → DETAIL, console `brightness`) is the
-## DOS gamma, and it applies at once.
-func _watch_brightness() -> void:
-	if not Settings.brightness_changed.is_connected(_refresh_brightness):
-		Settings.brightness_changed.connect(_refresh_brightness)
+## The player's settings apply the moment they change, not on the next
+## map: BRIGHTNESS (the DOS gamma), RENDER DETAIL (the haze, occlusion
+## culling), the hi-res art, DYNAMIC LIGHTS and SMOOTH TEXTURES. Settings
+## is an autoload and outlives this scene, so _exit_tree lets go again.
+func _settings_links() -> Array:
+	return [
+		[Settings.brightness_changed, _refresh_brightness],
+		[Settings.detail_changed, _on_detail_changed],
+		[Settings.hires_weapons_changed, _on_hires_changed],
+		[Settings.dynamic_lights_changed, _on_lighting_setting_changed],
+		[Settings.texture_filter_changed, _on_lighting_setting_changed],
+	]
+
+func _watch_settings() -> void:
+	for link in _settings_links():
+		var sig: Signal = link[0]
+		if not sig.is_connected(link[1]):
+			sig.connect(link[1])
+
+func _unwatch_settings() -> void:
+	for link in _settings_links():
+		var sig: Signal = link[0]
+		if sig.is_connected(link[1]):
+			sig.disconnect(link[1])
+
+## RENDER DETAIL: the haze distances and occlusion culling of the level up.
+func _on_detail_changed(_level: int = 0) -> void:
+	get_viewport().use_occlusion_culling = Settings.detail > Settings.LOW
+	var we: WorldEnvironment = get_node_or_null("WorldEnvironment")
+	if _current_level != null and _current_level.is_outdoor and we != null and we.environment != null:
+		_apply_fog_distances(we.environment)
+
+## HI-RES ART: the HUD bar and the gun in your hands swap sets.
+func _on_hires_changed(_on: bool = false) -> void:
+	if _hud_panel != null:
+		var ptex := _load_panel_texture("PANEL0.IMG", false, Settings.hires_weapons)
+		if ptex != null:
+			_hud_panel.texture = ptex
+	if is_instance_valid(player) and player.has_method("_load_viewmodels"):
+		player.call("_load_viewmodels")
+
+## DYNAMIC LIGHTS / SMOOTH TEXTURES: Render.restyle_all() has brought the
+## cached materials along; the level's own lit copies (_shade_recursive)
+## and its lamps are built again.
+func _on_lighting_setting_changed(_on: bool = false) -> void:
+	var level := _current_level
+	if level == null:
+		return
+	for l in level.map_lights.values():
+		if l != null and is_instance_valid(l):
+			(l as Node).queue_free()
+	level.map_lights.clear()
+	for branch in [level.entities, level.enemies, level.terrain]:
+		_unshade_recursive(branch)
+	_light_level(level)
+	if level.action != null:
+		level.action.refresh_switch_visuals()
 
 func _refresh_brightness(_v: float = 1.0) -> void:
 	var we: WorldEnvironment = get_node_or_null("WorldEnvironment")
@@ -1579,7 +1577,6 @@ func _apply_render_env(level: LevelLoader.Level, env: Environment, fill: Color) 
 	env.adjustment_brightness = DOS_BRIGHTNESS * Settings.brightness()
 	env.adjustment_contrast = DOS_CONTRAST
 	env.adjustment_saturation = DOS_SATURATION
-	_watch_brightness()
 	if sun != null:
 		sun.light_energy = 1.35
 		sun.light_color = Color(1.0, 0.97, 0.92)
@@ -1588,8 +1585,17 @@ func _apply_render_env(level: LevelLoader.Level, env: Environment, fill: Color) 
 		# next hill: the sky colour, not a third of it, and pushed
 		# out with the far clip.
 		env.fog_light_color = fill.lerp(Color(0.16, 0.14, 0.16), 0.35)
-		env.fog_depth_begin = FOG_BEGIN * 1.9 * Settings.fog_scale()
-		env.fog_depth_end = FOG_END * 1.8 * Settings.fog_scale()
+		_apply_fog_distances(env)
+
+## Where the outdoor haze starts and where it is solid. The solid end IS
+## LevelLoader.FOG_FAR — the distance past which the loader stops drawing
+## geometry (visibility ranges) — so the two cannot drift apart: a haze
+## ending beyond it would show things popping out. RENDER DETAIL pulls both
+## fog distances in, never out (Settings.fog_scale, from the DOS far-clip
+## table 1408 / 2176 / 2432), so FOG_FAR stays a safe culling distance.
+func _apply_fog_distances(env: Environment) -> void:
+	env.fog_depth_begin = FOG_BEGIN * FOG_BEGIN_STRETCH * Settings.fog_scale()
+	env.fog_depth_end = LevelLoader.FOG_FAR * Settings.fog_scale()
 
 ## Pin the sky mesh to the camera position each frame (DOS FUN_00133bbb
 ## re-centres SKY_SKY.3D on the camera). Orientation stays fixed so the
@@ -1600,7 +1606,6 @@ var _campath_t: float = -1.0
 var _walk_target := Vector2.ZERO
 var _walk_route: Array = []
 var _walk_stuck: float = 0.0
-var _walk_last := Vector3.ZERO
 var _walk_limit: float = 0.0
 var _walk_best: float = 1e9        # closest approach to the target so far
 var _walk_t: float = -1.0
@@ -1651,7 +1656,6 @@ func _walk_step(delta: float) -> void:
 					player.is_on_wall(), player.is_on_ceiling(), desc])
 		else:
 			_walk_stuck = maxf(_walk_stuck, 0.0) if _walk_stuck >= 0.0 else _walk_stuck + delta
-	_walk_last = p
 	if _walk_t > _walk_limit:
 		player.ui_move = Vector2.ZERO
 		print("[walk] end after %.1f s at %s (%s)" % [_walk_t, p,
@@ -1669,6 +1673,24 @@ func _walk_step(delta: float) -> void:
 		print("[walk] t=%.1f pos=%s %s vy=%.0f%s" % [_walk_t, p,
 			"floor" if player.is_on_floor() else "air", player.velocity.y,
 			" (at target)" if arrived else ""])
+
+## What the HUD read-outs last showed (_process writes a label only when
+## its value moves). HUD_UNSET: nothing shown yet.
+const HUD_UNSET: int = -1000000
+var _hud_hp: int = HUD_UNSET
+var _hud_low: int = HUD_UNSET
+var _hud_ammo: int = HUD_UNSET
+var _hud_air: int = -1
+var _hud_weapon: String = ""
+var _hud_second_name: String = ""
+var _hud_second_count: int = HUD_UNSET
+
+## Entity action system — movers, proximity triggers, teleports — on the
+## physics step (see ActionSystem.tick).
+func _physics_process(delta: float) -> void:
+	if _current_level != null and _current_level.action != null \
+			and is_instance_valid(player):
+		_current_level.action.tick(delta, player.global_position)
 
 func _process(delta: float) -> void:
 	_walk_step(delta)
@@ -1706,27 +1728,31 @@ func _process(delta: float) -> void:
 				if here.distance_to(n.global_position) < 6000.0 \
 						and camera.is_position_in_frustum(n.global_position):
 					_seen_meshes[n.get_instance_id()] = true
-	# Entity action system — movers, proximity triggers, teleports.
-	if _current_level != null and _current_level.action != null \
-			and is_instance_valid(player):
-		_current_level.action.drive_through = int(player.vehicle) != 0
-		_current_level.action.tick(delta, player.global_position)
 	if _health_label != null and is_instance_valid(player):
 		var hp: int = int(maxf(0.0, player.health))
 		var frac: float = 0.0
 		if player.max_health > 0.0:
 			frac = clampf(player.health / player.max_health, 0.0, 1.0)
-		_health_label.text = "%d" % hp
 		var low: bool = frac <= 0.3
-		_health_label.add_theme_color_override("font_color",
-			Color(1, 0.4, 0.32) if low else Color(0.55, 0.95, 0.62))
-		if _health_fill != null:
+		# The read-outs change a few times a minute; a label set every frame
+		# (and a theme override, which re-shapes it) cost a frame's worth of
+		# text layout for nothing. Each is written when its value moves.
+		if hp != _hud_hp:
+			_hud_hp = hp
+			_health_label.text = str(hp)
+		if int(low) != _hud_low:
+			_hud_low = int(low)
+			_health_label.add_theme_color_override("font_color",
+				Color(1, 0.4, 0.32) if low else Color(0.55, 0.95, 0.62))
+			if _health_fill != null:
+				# The DOS panel's fill is a flat rect that goes red when the
+				# soldier is nearly done.
+				_health_fill.color = Color(0.9, 0.3, 0.22) if low else Color(0.3, 0.85, 0.4)
+		if _health_fill != null and _health_fill.anchor_right != frac:
 			_health_fill.anchor_right = frac
-			# The DOS panel's fill is a flat rect that goes red when the
-			# soldier is nearly done.
-			_health_fill.color = Color(0.9, 0.3, 0.22) if low else Color(0.3, 0.85, 0.4)
-		if _armor_fill != null:
-			_armor_fill.anchor_right = clampf(player.armor, 0.0, 1.0)
+		var armor_frac: float = clampf(player.armor, 0.0, 1.0)
+		if _armor_fill != null and _armor_fill.anchor_right != armor_frac:
+			_armor_fill.anchor_right = armor_frac
 		# Radiation: dose from the marker-4 sources, charged per second.
 		if not _rad_sources.is_empty() and _game_over == null:
 			_rad_dose = _radiation_dose(player.global_position + Vector3(0.0, 37.5, 0.0))
@@ -1735,29 +1761,47 @@ func _process(delta: float) -> void:
 		else:
 			_rad_dose = 0.0
 		_update_radiation_feedback(delta)
-		if _rad_fill != null:
-			_rad_fill.anchor_right = clampf(_rad_dose / RAD_MAX_DOSE, 0.0, 1.0)
+		var rad_frac: float = clampf(_rad_dose / RAD_MAX_DOSE, 0.0, 1.0)
+		if _rad_fill != null and _rad_fill.anchor_right != rad_frac:
+			_rad_fill.anchor_right = rad_frac
 		_fade_hurt(delta)
+		var air: int = -1
 		if _water != null:
 			_step_water(delta)
 			_update_water_tint()
 			if player.head_under and player.air < 10.0:
-				_set_status("AIR %d" % maxi(int(ceil(player.air)), 0), 0.4)
-		_weapon_label.text = str(player.weapon_name)
+				air = maxi(int(ceil(player.air)), 0)
+		if air != _hud_air or (air >= 0 and _status_label.text.is_empty()):
+			# When the second changes (or the line was cleared), not a timer
+			# and a status write every frame.
+			_hud_air = air
+			if air >= 0:
+				_set_status("AIR %d" % air, 1.2)
+		var wname: String = str(player.weapon_name)
+		if wname != _hud_weapon:
+			_hud_weapon = wname
+			_weapon_label.text = wname
 		if _second_label != null:
 			var sc: int = int(player.secondary_ammo)
-			_second_label.text = "%s  x%d" % [str(player.secondary_name), sc]
-			_second_label.modulate = Color(1, 1, 1) if sc > 0 else Color(0.55, 0.5, 0.5)
+			var sname: String = str(player.secondary_name)
+			if sc != _hud_second_count or sname != _hud_second_name:
+				_hud_second_count = sc
+				_hud_second_name = sname
+				_second_label.text = "%s  x%d" % [sname, sc]
+				_second_label.modulate = Color(1, 1, 1) if sc > 0 else Color(0.55, 0.5, 0.5)
 		if _hud_mode != player.vehicle:
 			_set_hud_mode(player.vehicle)
 		if _hud_mode != 0:
 			_update_vehicle_hud()
 		var am: int = int(player.ammo)
-		# A device with nothing to fire (the MP motion detector) shows no
-		# count at all.
-		_ammo_label.text = "" if am < 0 else "%d" % am
-		_ammo_label.add_theme_color_override("font_color",
-			Color(1, 0.4, 0.32) if am == 0 else Color(0.55, 0.95, 0.62))
+		if am != _hud_ammo:
+			# A device with nothing to fire (the MP motion detector) shows no
+			# count at all.
+			_ammo_label.text = "" if am < 0 else str(am)
+			if (am == 0) != (_hud_ammo == 0) or _hud_ammo == HUD_UNSET:
+				_ammo_label.add_theme_color_override("font_color",
+					Color(1, 0.4, 0.32) if am == 0 else Color(0.55, 0.95, 0.62))
+			_hud_ammo = am
 		if hp <= 0 and _game_over == null and _dm == null:
 			_show_game_over()
 	# No DOS mission ends by body count: they end when the objective
@@ -1831,7 +1875,7 @@ const RAD_MAX_DOSE: float = 50.0        # per source, DOS min(r*50, 12800) >> 8
 var _rad_sources: Array = []            # [{pos: Vector3, strength: float}]
 ## Being irradiated has to be felt, not just measured: DOS clicks a
 ## Geiger counter and washes the screen red, and without either the
-## player just dies for no visible reason (Marek, 2026-09-06: "mám
+## player just dies for no visible reason (playtest, 2026-09-06: "mám
 ## pocit, že tie radiačné zóny nefungujú" — they did, they killed him
 ## in four seconds, silently).
 const RAD_CLICK_SLOW: float = 0.7      # seconds between clicks at a trace
@@ -1983,6 +2027,15 @@ func _setup_water(level: LevelLoader.Level) -> void:
 		_water_tint.visible = false
 	if y == INF:
 		return
+	# Back on a map whose water a chain moved: the surface where it had got
+	# to, still gliding toward where it was going (_save_map_state).
+	var snap: Dictionary = _map_state.get(_level_name(), {})
+	if snap.has("water"):
+		_water_target = float(snap["water"])
+		y = float(snap.get("water_y", _water_target))
+		if is_instance_valid(player):
+			player.water_level = y
+		EnemyRef.water_y = y
 	# One flat surface over the whole 65536-unit map grid. It is drawn
 	# transparent and two-sided, so the world above still occludes it and
 	# it is there when you look up from below.
@@ -2064,6 +2117,10 @@ var _objectives_left: int = 0
 var _mission_texts: Array = []        # [M1]..[M5] every entry — DOS counts them all
 var _objective_cursor: Array = []     # per section: entries shown so far
 var _pending_objectives: Dictionary = {}  # a loaded save's counter (_ensure_mission_script)
+var _objectives_total: int = 0        # every [M] entry of the script
+## The mission whose MISSION COMPLETE banner has been shown (-1 none): a
+## sub-map of a won mission entered afterwards must not win it again.
+var _mission_ended_key: int = -1
 
 ## Mission number a map belongs to (its start map): the sub-maps of
 ## mission 1 are 211..218, mission 5 starts on MAP.252 but scripts from
@@ -2085,6 +2142,7 @@ func _ensure_mission_script(map_name: String) -> void:
 	_mission_objectives = []
 	_mission_hints = []
 	_objectives_left = 0
+	_objectives_total = 0
 	_mission_texts = []
 	_objective_cursor = []
 	var bsa := BSAReader.new()
@@ -2098,12 +2156,22 @@ func _ensure_mission_script(map_name: String) -> void:
 	_mission_objectives = brief.get("missions", [])
 	_mission_hints = brief.get("hints", [])
 	_mission_tactical = brief.get("tactical", [])
-	Stats.begin_mission()
+	# STATISTICS: a new mission starts its counters — but a save loaded
+	# goes back to its own, and a save of the mission being played that
+	# carries none (before 2026-09-14) keeps the running ones; it used to
+	# zero them on every load.
+	var loading: bool = int(_pending_objectives.get("key", -1)) == key
+	if loading and int(_pending_stats.get("key", -1)) == key:
+		Stats.restore_mission(_pending_stats)
+	elif not (loading and Stats.mission_key == key):
+		Stats.begin_mission(key)
+	_pending_stats = {}
 	_mission_texts = brief.get("mission_texts", [])
 	for sec in _mission_texts:
 		_objective_cursor.append(0)
 		_objectives_left += (sec as Array).size()
-	if int(_pending_objectives.get("key", -1)) == key:
+	_objectives_total = _objectives_left
+	if loading:
 		_objectives_left = int(_pending_objectives.get("left", _objectives_left))
 		var cur: Array = _pending_objectives.get("cursor", [])
 		for i in mini(cur.size(), _objective_cursor.size()):
@@ -2129,13 +2197,35 @@ func _on_objective_complete(idx: int) -> void:
 		_current_level.action.objectives_left = _objectives_left
 	print("[skynet] objective %d done, %d left" % [idx + 1, _objectives_left])
 	_set_status(text if not text.is_empty() else "OBJECTIVE COMPLETE.", 6.0)
-	if _objectives_left <= 0 and not _mission_done and _game_over == null:
-		_mission_done = true
-		# Let the line be read before the banner covers it (the DOS engine
-		# holds the end screen back while a message is on screen).
-		await get_tree().create_timer(2.5).timeout
-		if _game_over == null:
-			_show_mission_complete()
+	_finish_mission_if_done(2.5)
+
+## The mission's counter has run out: MISSION COMPLETE, once per mission,
+## after `delay` seconds — the last line gets read before the banner covers
+## it (the DOS engine holds the end screen back while a message is up).
+## The wait runs on the game clock, so it stops under the Esc menu or the
+## automap instead of putting the banner over them; and if the level
+## changes meanwhile (an exit, a load) it gives up — _change_level asks
+## again once the new level is up, which is also how a save made with no
+## objectives left finishes its mission.
+func _finish_mission_if_done(delay: float) -> void:
+	if _dm != null or Net.active or _mission_key < 0 or _objectives_total <= 0 \
+			or _objectives_left > 0 or _mission_ended_key == _mission_key:
+		return
+	if _mission_done or _game_over != null or _current_level == null:
+		return                          # already on its way, or nothing to win on
+	_mission_done = true
+	var gen: int = _level_gen
+	var key: int = _mission_key
+	if delay > 0.0:
+		await get_tree().create_timer(delay, false).timeout
+	if gen != _level_gen or key != _mission_key:
+		return
+	if _game_over != null:
+		# Killed in the wait (or act 0x2B): RESPAWN asks again.
+		_mission_done = false
+		return
+	_mission_ended_key = key
+	_show_mission_complete()
 
 ## The engine's own hint when the player reaches a border box's edge:
 ## hint slot 8 = [G9], which on MAP.260 reads "The highway is the other
@@ -2232,9 +2322,13 @@ func _level_name() -> String:
 func _on_teleport_requested(target_map: int, marker_set: int) -> void:
 	var cur: String = _level_name()
 	var target: String
+	if _level_busy:
+		_refuse_teleport()                    # the level is on its way out anyway
+		return
 	if target_map <= 0:
 		if _prev_map_name.is_empty():
 			_set_status("Exit leads back, but there is no previous map")
+			_refuse_teleport()
 			return
 		target = _prev_map_name
 	else:
@@ -2242,33 +2336,95 @@ func _on_teleport_requested(target_map: int, marker_set: int) -> void:
 	var t_idx: int = _maps.find(target)
 	if t_idx < 0:
 		_set_status("Exit target %s is not in MDMDMAP2.BSA" % target)
+		_refuse_teleport()
 		return
 	print("[skynet] exit %s → %s (marker set %d)" % [cur, target, marker_set])
 	_prev_map_name = cur
 	_pending_marker_set = marker_set
-	_map_idx = t_idx
 	_transition(target)
+
+## The exit was not taken: the action system's one-map-change latch is
+## released, or every other exit of this map would stay dead.
+func _refuse_teleport() -> void:
+	if _current_level != null and _current_level.action != null:
+		_current_level.action.teleport_refused()
 
 ## Fade out, swap the level, fade back in. Exits bypass the briefing —
 ## this is an in-mission move.
 func _transition(target: String) -> void:
-	await _fade_to(1.0, 0.25)
+	_change_level(target, true, false)
+
+## THE way a level changes — exits, the console's `map`, loading a save,
+## the next mission, the briefing's BEGIN — one at a time (`_level_busy`;
+## false when one is already running or the map does not exist).
+##   fade_out  fade to black first (exits, loads); otherwise cut to black
+##   briefing  a mission start map shows its briefing instead of loading
+##             (BEGIN comes back here)
+##   saved     a save's session dictionary, installed after the tear-down
+## The old level keeps running during the fade-out, but the player's
+## controls do not, and saving and loading wait (save_to_slot) — an exit
+## saved mid-fade was stored as already used.
+func _change_level(map_name: String, fade_out: bool, briefing: bool, saved: Dictionary = {}) -> bool:
+	var idx: int = _maps.find(map_name)
+	if _level_busy or idx < 0:
+		if _level_busy:
+			print("[skynet] %s: a level change is already running — ignored" % map_name)
+		return false
+	_level_busy = true
+	_level_gen += 1
+	if not Net.active and is_instance_valid(player):
+		player.set("input_locked", true)
+	if fade_out:
+		await _fade_to(1.0, 0.25)
+	else:
+		_fade_to(1.0, 0.0)
+	# _clear_level snapshots the live map into _map_state — BEFORE a save's
+	# overlay replaces that dictionary.
 	_clear_level()
-	await _begin_level(target)
-	await _fade_to(0.0, 0.35)
+	_map_idx = idx
+	if not saved.is_empty():
+		_install_save(saved)
+	if briefing and _maybe_show_briefing(map_name):
+		_end_level_change()
+		return true
+	await _begin_level(map_name)
+	_end_level_change()
+	if _current_level != null:
+		# Behind the black: every combat effect drawn once, so the first
+		# shot does not stall on loading and compiling them.
+		EffectWarmup.warm(_current_level.entities if _current_level.entities != null else self)
+		_cli_after_level()
+	_fade_to(0.0, 0.35)
+	if not saved.is_empty():
+		_set_status("GAME LOADED.")
+	# A mission whose last objective fell while the level changed (or a
+	# save from the moment it fell) ends now.
+	_finish_mission_if_done(2.5)
+	return true
+
+func _end_level_change() -> void:
+	_level_busy = false
+	if not Net.active and is_instance_valid(player):
+		player.set("input_locked", _campath != null)
 
 ## --- Save / load (docs §N.4) -----------------------------------------------
 ## A save is the DOS session state: the current map, the previous-map
 ## register, every map's Mst overlay and the player. Maps reload from
 ## disk on load, as they do on every transition.
 
-## Snapshot the running game into `slot`. False when no level is up.
+## Snapshot the running game into `slot`. False when no level is up, or
+## while the game is between states: a level change running, the mission
+## already won (a save then stored 0 objectives left — a mission that
+## could never end again), an end screen up.
 func save_to_slot(slot: int) -> bool:
-	if _dm != null:
+	if _dm != null or Net.active:
 		_set_status("NO SAVING IN A NETWORK GAME.")
 		return false
 	if _current_level == null or not is_instance_valid(player):
 		_set_status("NOTHING TO SAVE.")
+		return false
+	if _level_busy or _mission_done or _game_over != null:
+		_set_status("CANNOT SAVE NOW.")
 		return false
 	_save_map_state()
 	var data := {
@@ -2280,6 +2436,9 @@ func save_to_slot(slot: int) -> bool:
 		"player": player.save_state(),
 		"objectives": {"key": _mission_key, "left": _objectives_left,
 			"cursor": _objective_cursor.duplicate()},
+		# 2026-09-14 — both optional on load (see _install_save).
+		"mission_start_map": _mission_start_map,
+		"stats": Stats.mission_state(),
 	}
 	if not SaveGame.write(slot, data):
 		_set_status("SAVE FAILED.")
@@ -2289,44 +2448,63 @@ func save_to_slot(slot: int) -> bool:
 	return true
 
 ## Restore `slot`: tear the current level down, install the saved state
-## and reload the saved map with the player where they were.
-func load_from_slot(slot: int) -> bool:
-	if _dm != null:
+## and reload the saved map with the player where they were. `data` is
+## the slot already read (the LOAD menu's start in _ready).
+func load_from_slot(slot: int, data: Dictionary = {}) -> bool:
+	if _dm != null or Net.active:
 		_set_status("NO LOADING IN A NETWORK GAME.")
 		return false
-	var data: Dictionary = SaveGame.read(slot)
+	if _level_busy:
+		_set_status("CANNOT LOAD NOW.")
+		return false
 	if data.is_empty():
-		_set_status("EMPTY SLOT.")
+		data = SaveGame.read(slot)
+	if data.is_empty():
+		_set_status("EMPTY SLOT." if SaveGame.last_error.is_empty()
+			else "CANNOT LOAD: " + SaveGame.last_error.to_upper())
 		return false
 	var map_name: String = String(data.get("map", ""))
-	var idx: int = _maps.find(map_name)
-	if idx < 0:
+	if not _maps.has(map_name):
 		_set_status("SAVED MAP %s IS MISSING." % map_name)
 		return false
 	print("[skynet] loading slot %d: %s" % [slot, map_name])
-	# Whatever screen is up (briefing, end screen) goes away first.
+	# Whatever screen is up (console, Esc menu, briefing, end screen) goes
+	# away first, each through its own close so nothing stays paused.
+	_close_overlays()
 	if _briefing_overlay != null:
 		_briefing_teardown()
-	get_tree().paused = false
-	if _game_over != null:
-		_game_over.queue_free()
-		_game_over = null
-	await _fade_to(1.0, 0.25)
-	# _clear_level snapshots the live map into _map_state — do it BEFORE
-	# the saved overlay replaces that dictionary.
-	_clear_level()
+	_dismiss_end_screen()
+	return await _change_level(map_name, true, false, data)
+
+## A save's session state, laid in between the tear-down and the load.
+func _install_save(data: Dictionary) -> void:
 	_map_state = data.get("map_state", {})
 	_prev_map_name = String(data.get("prev_map", ""))
 	_pending_marker_set = -1
 	_pending_player = data.get("player", {})
 	# The mission script is read again and the saved counter laid over it.
 	_pending_objectives = data.get("objectives", {})
+	_pending_stats = data.get("stats", {})
 	_mission_key = -1
-	_map_idx = idx
-	await _begin_level(map_name)
-	await _fade_to(0.0, 0.35)
-	_set_status("GAME LOADED.")
-	return true
+	_mission_ended_key = -1
+	# The start map picks the next mission. A save without it (before
+	# 2026-09-14) takes the saved map's mission's own — keeping the one of
+	# the mission being played sent a mission-1 save on to mission 3.
+	var map_name: String = String(data.get("map", ""))
+	var start: String = String(data.get("mission_start_map", ""))
+	if not _campaign_maps.has(start) or _mission_of(start) != _mission_of(map_name):
+		start = _mission_start_for(map_name)
+	_mission_start_map = start
+
+## The campaign map mission `map_name` starts on ("" outside the campaign).
+func _mission_start_for(map_name: String) -> String:
+	var key: int = _mission_of(map_name)
+	if key < 0:
+		return ""
+	for m in _campaign_maps:
+		if _mission_of(m) == key:
+			return m
+	return ""
 
 ## End of _begin_level: put the player back where the save left them.
 func _apply_pending_player() -> void:
@@ -2339,6 +2517,10 @@ func _apply_pending_player() -> void:
 		if _current_level != null and _current_level.action != null:
 			_current_level.action.arm_proximity(player.global_position)
 
+## Fade the screen to `alpha` over `dur` seconds (0 = at once). A newer
+## fade replaces one still running — the fade-in after a load is not
+## awaited, and the next exit may already be fading out.
+var _fade_tween: Tween = null
 func _fade_to(alpha: float, dur: float) -> void:
 	if _fade == null:
 		var cl := CanvasLayer.new()
@@ -2349,9 +2531,20 @@ func _fade_to(alpha: float, dur: float) -> void:
 		_fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_fade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		cl.add_child(_fade)
+	if _fade_tween != null and _fade_tween.is_valid():
+		_fade_tween.kill()
+	_fade_tween = null
+	if dur <= 0.0:
+		_fade.color.a = alpha
+		return
 	var tw := create_tween()
+	_fade_tween = tw
 	tw.tween_property(_fade, "color:a", alpha, dur)
-	await tw.finished
+	# Not tw.finished: a killed tween never emits it.
+	await get_tree().create_timer(dur, false).timeout
+	if _fade_tween == tw:
+		_fade.color.a = alpha
+		_fade_tween = null
 
 ## Snapshot the current map before it is torn down (DOS MstSave): which
 ## enemy markers are dead, which pickups were taken, and the action
@@ -2375,7 +2568,7 @@ func _save_map_state() -> void:
 		for c in lvl.sprites.get_children():
 			if c.has_meta("pickup_off"):
 				taken.erase(c.get_meta("pickup_off"))
-	_map_state[_level_name()] = {
+	var snap: Dictionary = {
 		"dead": dead, "taken": taken,
 		"action": lvl.action.save_state() if lvl.action != null else {},
 		# Entity signature for variant maps (MAP.216/217 are the base of
@@ -2385,6 +2578,13 @@ func _save_map_state() -> void:
 		"grid": Vector2i(lvl.map.grid_width, lvl.map.grid_height),
 		"outdoor": lvl.is_outdoor,
 	}
+	# Where a chain has moved the water (acts 0xd6-0xda), and where the
+	# surface has got to on its way — the marker alone put MAP.254's
+	# drained sewer back under water (2026-09-14; absent = the marker).
+	if _water != null and is_instance_valid(_water) and _water_target != INF:
+		snap["water"] = _water_target
+		snap["water_y"] = _water.position.y
+	_map_state[_level_name()] = snap
 
 ## Identity of an entity across map variants: kind + name/type + exact
 ## DOS position (shared objects keep their coordinates when a map is
@@ -2439,7 +2639,10 @@ func _import_variant_state(level: LevelLoader.Level, name: String) -> Dictionary
 	var best_ratio: float = 0.6
 	var best_remap: Dictionary = {}
 	for other in _map_state:
-		if other == name:
+		# Variants are of the same mission: _map_state spans the whole
+		# session, and MAP.250's harbour shares MAP.240's grid and much of
+		# its scenery — it could inherit mission 4's dead and picked-up.
+		if other == name or _mission_of(String(other)) != _mission_of(name):
 			continue
 		var snap: Dictionary = _map_state[other]
 		if snap.get("grid", Vector2i.ZERO) != Vector2i(level.map.grid_width, level.map.grid_height):
@@ -2472,12 +2675,21 @@ func _import_variant_state(level: LevelLoader.Level, name: String) -> Dictionary
 			out["taken"][best_remap[off]] = true
 	var act_src: Dictionary = src.get("action", {})
 	var act: Dictionary = {}
-	for part in ["states", "movers", "destr", "hp", "spent"]:
+	for part in ["states", "movers", "destr", "hp", "spent", "acts"]:
 		var d: Dictionary = {}
 		for off in act_src.get(part, {}):
 			if best_remap.has(off):
 				d[best_remap[off]] = act_src[part][off]
 		act[part] = d
+	# A link's value is an offset too: cut (0) stays cut, a target the
+	# variant lacks is left as this map has it.
+	var links: Dictionary = {}
+	var link_src: Dictionary = act_src.get("links", {})
+	for off in link_src:
+		var to: int = int(link_src[off])
+		if best_remap.has(off) and (to <= 0 or best_remap.has(to)):
+			links[best_remap[off]] = to if to <= 0 else int(best_remap[to])
+	act["links"] = links
 	out["action"] = act
 	print("[skynet] %s: first visit — importing state from variant %s (%d%% of meshes shared, %d dead, %d taken)"
 		% [name, best, int(best_ratio * 100.0), out["dead"].size(), out["taken"].size()])
@@ -2522,7 +2734,7 @@ func _next_campaign_map() -> String:
 	# From the map the mission began on: a mission often ends on a sub-map
 	# or an interior whose number lies past every mission map (MAP.230's
 	# ends aboard the submarine), and that used to end the campaign —
-	# "hodilo ma to do hlavného menu" (Marek, 2026-09-11).
+	# "hodilo ma to do hlavného menu" (playtest, 2026-09-11).
 	var at: int = _campaign_maps.find(_mission_start_map)
 	if at >= 0:
 		return _campaign_maps[at + 1] if at + 1 < _campaign_maps.size() else ""
@@ -2582,18 +2794,20 @@ func _show_end_screen(title: String, color: Color, respawnable: bool,
 		ttl.add_theme_font_size_override("font_size", 56)
 		ttl.add_theme_color_override("font_color", color)
 		vb.add_child(ttl)
-	get_tree().paused = true
+	# Paused, and the mouse freed for whatever comes next — the buttons
+	# here, or the next briefing's tabs and the main menu after a won
+	# mission, which inherited a captured mouse (2026-09-03: "mission
+	# complete and it just hung").
+	PauseState.push(&"end_screen")
+	# Main is paused under this screen, so its _input never sees Enter or
+	# Space: the keys ride on a button of the (always processing) layer.
+	cl.add_child(_br_keybtn([KEY_ENTER, KEY_KP_ENTER, KEY_SPACE], _end_screen_accept))
 	if respawnable:
 		vb.add_child(_game_over_button("RESPAWN", _game_over_respawn))
 		vb.add_child(_game_over_button("MAIN MENU", _game_over_menu))
-		# The mouse is captured while playing — free it or the buttons
-		# cannot be clicked (2026-09-03: "mission complete and it just hung").
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		if is_instance_valid(player) and player.has_method("_capture"):
-			player.call("_capture", false)
 		return
 	# A won mission is DOS's banner and nothing else — WELLDONE.IMG for a
-	# few seconds, then the next mission's briefing (Marek's DOSBox run,
+	# few seconds, then the next mission's briefing (a DOSBox run,
 	# 2026-09-11; the port had NEXT MISSION / MAIN MENU buttons under it).
 	# Enter / Space skip the wait; after the last mission, the main menu.
 	var my: CanvasLayer = cl
@@ -2606,14 +2820,21 @@ func _show_end_screen(title: String, color: Color, respawnable: bool,
 
 ## Clear the end screen and load `map_name` (the next campaign mission).
 func _advance_to(map_name: String) -> void:
-	get_tree().paused = false
-	if _game_over != null:
-		_game_over.queue_free()
-		_game_over = null
+	if _level_busy:
+		return
+	_dismiss_end_screen()
 	var idx: int = _maps.find(map_name)
 	if idx >= 0:
 		_map_idx = idx
 		_load_current()
+
+## The end screen goes, and its hold on the pause with it.
+func _dismiss_end_screen() -> void:
+	if _game_over != null:
+		if is_instance_valid(_game_over):
+			_game_over.queue_free()
+		_game_over = null
+	PauseState.pop(&"end_screen")
 
 ## Show the pre-mission briefing for a mission "main" map, if one exists.
 ## Returns true when a briefing screen is up — the caller then defers the
@@ -2806,7 +3027,9 @@ func _show_briefing(map_num: int, objectives: String, lines: Array) -> void:
 	_stats_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	screen.add_child(_stats_box)
 
-	get_tree().paused = true
+	# Paused, with a cursor for the tabs — the screen after a won mission
+	# used to come up with the mouse still captured.
+	PauseState.push(&"briefing")
 	if not get_viewport().size_changed.is_connected(_briefing_layout):
 		get_viewport().size_changed.connect(_briefing_layout)
 	_briefing_layout()
@@ -2973,7 +3196,7 @@ func _briefing_begin() -> void:
 	var m: String = _briefing_pending_map
 	_briefing_teardown()
 	if m != "":
-		_begin_level(m)
+		_change_level(m, false, false)
 
 ## Esc — abort the mission and return to the main menu.
 func _briefing_exit() -> void:
@@ -3049,40 +3272,14 @@ func _briefing_page_img() -> Texture2D:
 		return _briefing_pages[_briefing_page].get("img", null)
 	return null
 
-## Briefly flash a note across the briefing scene picture.
-func _briefing_toast(msg: String) -> void:
-	if _briefing_scene == null or not is_instance_valid(_briefing_scene):
-		return
-	if _briefing_toast_label == null or not is_instance_valid(_briefing_toast_label):
-		var l := Label.new()
-		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		l.add_theme_color_override("font_color", Color(1, 0.86, 0.4))
-		l.add_theme_color_override("font_outline_color", Color(0, 0, 0))
-		l.add_theme_constant_override("outline_size", 5)
-		l.add_theme_font_size_override("font_size", int(clampf(
-			get_viewport().get_visible_rect().size.y / 30.0, 16.0, 34.0)))
-		l.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		_br_anchor(l, Rect2(24, 66, 272, 32))
-		_briefing_scene.get_parent().add_child(l)
-		_briefing_toast_label = l
-	_briefing_toast_label.text = msg
-	_briefing_toast_label.visible = true
-	var tm := get_tree().create_timer(2.4)
-	tm.timeout.connect(func() -> void:
-		if is_instance_valid(_briefing_toast_label):
-			_briefing_toast_label.visible = false)
-
 func _briefing_teardown() -> void:
-	get_tree().paused = false
+	PauseState.pop(&"briefing")
 	if get_viewport().size_changed.is_connected(_briefing_layout):
 		get_viewport().size_changed.disconnect(_briefing_layout)
 	_briefing_pages = []
 	_briefing_text = null
 	_briefing_scroll = null
 	_briefing_scene = null
-	_briefing_toast_label = null
 	_briefing_pending_map = ""
 	if _briefing_overlay != null:
 		_briefing_overlay.queue_free()
@@ -3105,16 +3302,24 @@ func _game_over_button(text: String, cb: Callable) -> Button:
 	return b
 
 func _game_over_respawn() -> void:
-	get_tree().paused = false
-	if _game_over != null:
-		_game_over.queue_free()
-		_game_over = null
+	_dismiss_end_screen()
 	if is_instance_valid(player):
 		player.respawn()
+	_finish_mission_if_done(2.5)          # the counter may have run out as he died
 
 func _game_over_menu() -> void:
-	get_tree().paused = false
 	_return_to_menu()
+
+## Enter / Space on the end screen: its first choice.
+func _end_screen_accept() -> void:
+	if _game_over == null:
+		return
+	if _game_over_respawnable:
+		_game_over_respawn()
+	elif _game_over_next != "":
+		_advance_to(_game_over_next)
+	else:
+		_game_over_menu()
 
 func _clear_level() -> void:
 	# The hostile counter belongs to the map being torn down.
@@ -3159,18 +3364,19 @@ func _input(event: InputEvent) -> void:
 		return
 	var k: int = event.keycode
 	if _game_over != null and is_instance_valid(_game_over):
-		# The end screen has the keyboard: Enter/Space = the first button.
-		if k == KEY_ENTER or k == KEY_KP_ENTER or k == KEY_SPACE:
-			if _game_over_respawnable:
-				_game_over_respawn()
-			elif _game_over_next != "":
-				_advance_to(_game_over_next)
-			else:
-				_game_over_menu()
+		# The end screen has the keyboard (its Enter/Space button does the
+		# work — this node is paused under it).
 		get_viewport().set_input_as_handled()
 		return
-	# (Esc/~ inside the pause menu or console are theirs — this node is
-	# paused while either is up.)
+	# Esc, ~ and the rest belong to an overlay that is up: its own screens
+	# (menu.gd, the console, the automap) and the deathmatch chat box take
+	# them in _input / _unhandled_input. In single player this node is
+	# paused under them anyway; a network game is never paused, and this
+	# handler used to eat the Esc that should have closed the chat box or
+	# stepped back through the Esc menu. Nothing opens mid level change.
+	if _level_busy or PauseState.is_paused() \
+			or (_dm != null and bool(_dm.get("_chat_open"))):
+		return
 	if k == KEY_ESCAPE:
 		# The in-game menu: the level keeps running underneath, only
 		# its MAIN MENU item drops it.
@@ -3186,17 +3392,7 @@ func _input(event: InputEvent) -> void:
 		open_console()
 		get_viewport().set_input_as_handled()
 	elif _dm != null:
-		return                              # no map hopping / saves in a match
-	elif k == KEY_PAGEUP or k == KEY_BRACKETLEFT or k == KEY_P:
-		_step_map(-1)
-	elif k == KEY_PAGEDOWN or k == KEY_BRACKETRIGHT or k == KEY_N:
-		_step_map(+1)
-	elif k == KEY_HOME:
-		_map_idx = 0
-		_load_current()
-	elif k == KEY_END:
-		_map_idx = _maps.size() - 1
-		_load_current()
+		return                              # no saves in a match
 	elif k == KEY_F6:                       # quicksave (F1-F5 dev, F8/F9 cheats)
 		save_to_slot(SaveGame.QUICK_SLOT)
 	elif k == KEY_F7:                       # quickload
@@ -3216,27 +3412,24 @@ func _toggle_automap() -> void:
 		_automap = preload("res://scripts/automap.gd").new()
 		add_child(_automap)
 		_automap.connect("closed", func() -> void:
-			if is_instance_valid(player) and player.has_method("_capture"):
+			# Back to the view — unless something else still has the cursor.
+			if is_instance_valid(player) and player.has_method("_capture") \
+					and not PauseState.mouse_wanted():
 				player.call("_capture", true))
 	_automap.call("show_map", self, _current_level, player, _seen_meshes)
 
-func _step_map(d: int) -> void:
-	if _maps.is_empty(): return
-	_map_idx = (_map_idx + d + _maps.size()) % _maps.size()
-	_load_current()
-
 func _return_to_menu() -> void:
-	get_tree().paused = false
+	PauseState.reset()
 	Net.leave()
 	get_tree().change_scene_to_file("res://scenes/menu.tscn")
 
 ## --- In-game menu, console, cheats -----------------------------------------
 
+## (The overlays free the mouse through PauseState.push, which lets the
+## player's own capture go.)
 func open_pause_menu() -> void:
 	if _pause == null or _current_level == null:
 		return
-	if is_instance_valid(player):
-		player.release_mouse()
 	_pause.open()
 
 func close_pause_menu() -> void:
@@ -3248,9 +3441,18 @@ func open_console(preset: String = "") -> void:
 		return
 	if _pause != null and _pause.is_open:
 		_pause.close()
-	if is_instance_valid(player):
-		player.release_mouse()
 	_console.open(preset)
+	_refresh_net_input_lock()
+
+## Network game: the tree never pauses, so the player's controls stop
+## instead while dead, not yet spawned, chatting or while an overlay (Esc
+## menu, console) has the keyboard — and come back when the last of those
+## goes. pause_menu.gd and the console's `closed` call this too.
+func _refresh_net_input_lock() -> void:
+	if not Net.active or _dm == null or not is_instance_valid(player):
+		return
+	var dead: bool = bool(_dm.get("_dead_local")) or not bool(_dm.get("_spawned"))
+	player.set("input_locked", dead or bool(_dm.get("_chat_open")) or PauseState.is_paused())
 
 ## State the CHEATS page mirrors on its toggle buttons.
 func cheat_state() -> Dictionary:
@@ -3261,7 +3463,7 @@ func cheat_state() -> Dictionary:
 
 ## Every word run_command answers to — the console's Tab completion.
 const COMMAND_NAMES: Array = [
-	"ammo", "armor", "arnold", "bake", "bane", "boom", "bots", "brightness", "killall", "wait", "floormap", "wallmap", "walkto", "movers", "what",
+	"ammo", "armor", "arnold", "bake", "cbane", "boom", "bots", "brightness", "killall", "wait", "floormap", "wallmap", "walkto", "movers", "what",
 	"cheats", "class", "counters", "drop", "dump", "enemies", "exit", "fly",
 	"gamma", "give", "god", "heal", "health", "help", "hp", "illbeback", "load",
 	"map", "maps", "menu", "moon", "music", "nextlevel", "nitrous", "noclip",
@@ -3284,6 +3486,25 @@ const CHEATS_TEXT := """[b]DOS cheat codes[/b] (CHEAT.PRS, typed after Alt+\\ in
   willnotstop (immortal) · nitrous (faster) · illbeback (next level)
   showspawns (list enemies) · whoami · version · win"""
 
+## What the console refuses in a network game: the cheats and everything
+## that changes the world or the player beyond what playing does — it
+## replicates to the match (and `map` / `load` would tear the arena down).
+## Information, the view and the local settings stay. A few only refuse
+## with arguments: `health` alone reads the health, `health 500` sets it.
+const NET_REFUSED: Array = [
+	"map", "tp", "tpveh", "aim", "god", "willnotstop", "csej", "noclip", "fly",
+	"arnold", "cskydere", "superuzi", "cskyder", "give", "slugs", "ammo", "ckugler",
+	"surgery", "cfalck", "heal", "nitrous", "churtig", "illbeback", "cbane", "nextlevel",
+	"drop", "bake", "rebake", "walkto", "killall", "boom", "moon", "shoot", "weapon",
+	"win", "cslut", "save", "load",
+]
+const NET_REFUSED_WITH_ARGS: Array = ["health", "hp", "armor", "speed"]
+
+## Text from outside the game's own strings (player names, typed words,
+## the OS user name) for a BBCode reply: "[" is shown, never obeyed.
+static func _bb(s: String) -> String:
+	return s.replace("[", "[lb]")
+
 ## Console / cheat-menu command line. Returns the reply (BBCode ok).
 func run_command(line: String) -> String:
 	var parts: PackedStringArray = line.strip_edges().split(" ", false)
@@ -3292,6 +3513,9 @@ func run_command(line: String) -> String:
 	var cmd: String = parts[0].to_lower()
 	var args: PackedStringArray = parts.slice(1)
 	var p := player if is_instance_valid(player) else null
+	if Net.active and (NET_REFUSED.has(cmd) or (NET_REFUSED_WITH_ARGS.has(cmd) and not args.is_empty())
+			or ((cmd == "throw" or cmd == "secondary") and not args.is_empty() and args[0].to_lower() == "now")):
+		return "'%s' is not allowed in a network game" % _bb(cmd)
 	match cmd:
 		"help", "?":
 			return HELP_TEXT
@@ -3300,7 +3524,7 @@ func run_command(line: String) -> String:
 		"version", "cversion":
 			return "SkyNET Godot port — Godot %s" % Engine.get_version_info().get("string", "?")
 		"whoami":
-			return "%s — map %s" % [OS.get_environment("USERNAME"), _level_name()]
+			return "%s — map %s" % [_bb(OS.get_environment("USERNAME")), _level_name()]
 		"maps":
 			return "%d maps: %s" % [_maps.size(), " ".join(_maps)]
 		"map":
@@ -3311,8 +3535,9 @@ func run_command(line: String) -> String:
 				want = "MAP.%03d" % int(want)
 			var idx: int = _maps.find(want)
 			if idx < 0:
-				return "no such map: %s" % want
-			_map_idx = idx
+				return "no such map: %s" % _bb(want)
+			if _level_busy:
+				return "a level change is already running"
 			_prev_map_name = ""
 			_pending_marker_set = -1
 			_close_overlays()
@@ -3487,7 +3712,7 @@ func run_command(line: String) -> String:
 				return "ammo filled"
 			var idx: int = _weapon_index(p, " ".join(args))
 			if idx < 0:
-				return "unknown weapon '%s' (slot 0-12 or a name)" % " ".join(args)
+				return "unknown weapon '%s' (slot 0-12 or a name)" % _bb(" ".join(args))
 			p.give_weapon(idx)
 			return "%s" % String(p._weapons[idx]["name"])
 		"slugs", "ammo", "ckugler":
@@ -3526,6 +3751,8 @@ func run_command(line: String) -> String:
 			var nxt: String = _next_campaign_map()
 			if nxt.is_empty():
 				return "end of the campaign"
+			if _level_busy:
+				return "a level change is already running"
 			_close_overlays()
 			_advance_to(nxt)
 			return "next mission: %s" % nxt
@@ -3604,7 +3831,7 @@ func run_command(line: String) -> String:
 			var made: int = 0
 			for mn in which:
 				var sp: String = LevelScene.scene_path(String(mn))
-				if not sp.is_empty() and ResourceLoader.exists(sp) and not Assets.read_only:
+				if not sp.is_empty() and ResourceLoader.exists(sp):
 					DirAccess.remove_absolute(ProjectSettings.globalize_path(sp))
 				if not Assets.level_scene(String(mn)).is_empty():
 					made += 1
@@ -3735,7 +3962,6 @@ func run_command(line: String) -> String:
 			_walk_t = 0.0
 			_walk_stuck = 0.0
 			_walk_best = 1e9
-			_walk_last = player.global_position if is_instance_valid(player) else Vector3.ZERO
 			if is_instance_valid(player):
 				player.set("noclip", false)
 			return "walking to %s" % _walk_target
@@ -3765,9 +3991,7 @@ func run_command(line: String) -> String:
 		"boom":
 			if not is_instance_valid(player):
 				return "no player"
-			var ex := Explosion.new()
-			add_child(ex)
-			ex.setup(player.global_position + Vector3(0, 60, 0) - player.global_transform.basis.z * 420.0, 220.0)
+			Explosion.spawn(self, player.global_position + Vector3(0, 60, 0) - player.global_transform.basis.z * 420.0, 220.0)
 			return "boom"
 		"moon":
 			if _moon == null:
@@ -3795,8 +4019,11 @@ func run_command(line: String) -> String:
 		"win", "cslut":
 			if _current_level == null:
 				return "no level"
+			if _level_busy:
+				return "a level change is already running"
 			_close_overlays()
 			_mission_done = true
+			_mission_ended_key = _mission_key
 			_show_mission_complete()
 			return "mission complete"
 		"showspawns", "cfyr", "enemies":
@@ -3831,8 +4058,13 @@ func run_command(line: String) -> String:
 				return "slot 1-%d" % SaveGame.SLOTS
 			if not SaveGame.exists(slot):
 				return "slot %d is empty" % (slot + 1)
+			var sdata: Dictionary = SaveGame.read(slot)
+			if sdata.is_empty():
+				return "slot %d: %s" % [slot + 1, _bb(SaveGame.last_error)]
+			if _level_busy:
+				return "a level change is already running"
 			_close_overlays()
-			load_from_slot(slot)
+			load_from_slot(slot, sdata)
 			return "loading slot %d" % (slot + 1)
 		"music":
 			if args.is_empty():
@@ -3849,7 +4081,7 @@ func run_command(line: String) -> String:
 				if not track.ends_with(".HMI"):
 					track += ".HMI"
 				Audio.play_music(track)
-				return "music %s" % (Audio.music_name() if not Audio.music_name().is_empty() else "failed")
+				return "music %s" % (_bb(Audio.music_name()) if not Audio.music_name().is_empty() else "failed")
 			return "usage: music [0-100 | off | t200 | title]"
 		"menu":
 			_close_overlays()
@@ -3882,19 +4114,24 @@ func run_command(line: String) -> String:
 				return "not in a network game"
 			var rows: Array = []
 			for r in Net.scoreboard():
-				rows.append("  %-16s %3d frags %3d deaths%s" % [r[1], r[2], r[3], "  (bot)" if r[4] else ""])
+				# Names are the players' own text: escaped, or "[b]" in one
+				# restyles the console (the padding is done before escaping).
+				rows.append("  %s %3d frags %3d deaths%s" % [_bb("%-16s" % String(r[1])),
+					int(r[2]), int(r[3]), "  (bot)" if r[4] else ""])
 			return "%d players\n%s" % [rows.size(), "\n".join(rows)]
 		"quit", "exit":
 			get_tree().quit()
 			return ""
-	return "unknown command '%s' — try help" % cmd
+	return "unknown command '%s' — try help" % _bb(cmd)
 
-## Console and pause menu both go away before a level change.
+## Console, pause menu and automap all go away before a level change.
 func _close_overlays() -> void:
 	if _console != null and _console.is_open:
 		_console.close()
 	if _pause != null and _pause.is_open:
 		_pause.close()
+	if _automap != null and is_instance_valid(_automap) and bool(_automap.get("open")):
+		_automap.call("close_map")
 
 static func _bool_arg(args: PackedStringArray, fallback: bool) -> bool:
 	if args.is_empty():
@@ -3965,7 +4202,7 @@ func _build_status_ui() -> void:
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	# HI-RES ART: PANEL0.IMG is 640x96 in MDMDHRES.BSA against 320x40 in
 	# MDMDIMGS.BSA — SkyNET's own 640x480 mode art, four times the pixels
-	# ("co sa tyka toho hires tak staci aj hud", Marek 2026-09-12). The
+	# ("co sa tyka toho hires tak staci aj hud", playtest 2026-09-12). The
 	# bar is stretched to the window either way, so the only difference
 	# is how sharp it is.
 	var ptex := _load_panel_texture("PANEL0.IMG", false, Settings.hires_weapons)
@@ -4108,7 +4345,7 @@ func _load_panel_texture(name: String = "PANEL0.IMG", transparent0: bool = false
 ## own model round the eye (FlyCamera._attach_cockpit). PANEL1/PANEL2.IMG
 ## are in the archive, but the executable never loads them - panel0.img
 ## is its only panel name - and the full-screen dashboards the port showed
-## since 2026-09-03 were a guess Marek's DOS screenshots disproved. The
+## since 2026-09-03 were a guess the DOS screenshots disproved. The
 ## overlay machinery stays for a panel name, should one ever turn up.
 const VEH_PANELS: Array = ["", "", ""]
 const VEH_READOUTS: Dictionary = {

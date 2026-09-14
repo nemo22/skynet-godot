@@ -1,10 +1,9 @@
-## Autoload: locates the bundled original game data (SKYNET / FutureShock).
+## Autoload: locates the original game data (SKYNET / Future Shock).
 ##
-## The needed GAMEDATA (4 BSA archives + WLD.* + TEXTURE.*) is bundled
-## under res://gamedata/ so it ships inside the exported PCK — this lets
-## the same build run on desktop AND Android. FileAccess with a res://
-## path reads from the project folder in the editor and from the PCK in
-## an exported build.
+## Published builds carry no game data: the player points the game at
+## their own GAMEDATA folder (4 BSA archives + WLD.* + TEXTURE.*) on first
+## start (data_setup.gd), remembered in user://gamedata.cfg. A personal
+## build (Android) may bundle it under res://gamedata instead.
 
 extends Node
 
@@ -47,147 +46,96 @@ func _ready() -> void:
 	else:
 		gamedata_dir = found
 		game_root = found
-	if variant_for(gamedata_dir) == BsaVariant.FUTURESHOCK_FULL:
+	_adopt_game(gamedata_dir)
+	print("[paths] gamedata: %s (%s)" % [gamedata_dir, game])
+
+## Game, archive key and map archive name for the data in `dir`.
+func _adopt_game(dir: String) -> void:
+	if variant_for(dir) == BsaVariant.FUTURESHOCK_FULL:
 		game = "shock"
 		variant = BsaVariant.FUTURESHOCK_FULL
 		map_archive = PROBE_FILE_SHOCK
-	print("[paths] gamedata: %s (%s)" % [gamedata_dir, game])
-	_mount_packs()
+	else:
+		game = "skynet"
+		variant = BsaVariant.SKYNET_FULL
+		map_archive = PROBE_FILE
 
-# --- resource packs (release layout) ---------------------------------
-## A release may keep the converted-asset cache in `converted.pck`, an
-## ordinary Godot resource pack (PCKPacker, built with map_dump
-## --makepack) that `load_resource_pack` maps into res://. Verified on
-## 4.7.2: DirAccess listings and resources read out of a mounted pack,
-## and PCKPacker itself runs in an exported build.
-##
-## Mounted here — before Assets reads its directory — so Assets can take
-## res://converted as a ready-made (read-only) cache. A directory on disk
-## always wins when no pack is there, which is the dev setup.
-const PACKS: Dictionary = {
-	"converted": ["res://converted", "res://converted/VERSION"],
-}
-## Names from PACKS that are mounted in this run.
-var mounted_packs: PackedStringArray = PackedStringArray()
-
-func pack_mounted(name: String) -> bool:
-	return name in mounted_packs
-
-## Where a <name>.pck may sit: next to the executable (release), next to
-## the project (dev), in user:// (a cache built at first start) and next
-## to the game data (portable install). `--pack=PATH` forces one,
-## `--no-packs` skips them.
-func _pack_bases() -> Array:
-	var bases: Array = []
-	if OS.has_feature("template"):
-		bases.append(OS.get_executable_path().get_base_dir())
-	bases.append(ProjectSettings.globalize_path("res://").trim_suffix("/"))
-	bases.append(ProjectSettings.globalize_path("user://").trim_suffix("/"))
-	if _has_data(gamedata_dir) and not gamedata_dir.begins_with("res://"):
-		bases.append(gamedata_dir.get_base_dir())
-	return bases
-
-func _mount_packs() -> void:
-	var args: PackedStringArray = OS.get_cmdline_args()
-	args.append_array(OS.get_cmdline_user_args())
-	if "--no-packs" in args:
-		print("[paths] resource packs skipped (--no-packs)")
-		return
-	var forced: Array = []
-	for a in args:
-		if a.begins_with("--pack="):
-			forced.append(a.substr(7).strip_edges())
-	for pack_name in PACKS:
-		var probe: String = PACKS[pack_name][1]
-		var path := ""
-		for f in forced:
-			if f.get_file().get_basename() == pack_name:
-				path = f            # --pack= wins even over a dev directory
-		if path.is_empty() and FileAccess.file_exists(probe):
-			continue                       # already there (dev directory / link)
-		if path.is_empty():
-			for b in _pack_bases():
-				var cand: String = "%s/%s.pck" % [b, pack_name]
-				if FileAccess.file_exists(cand):
-					path = cand
-					break
-		if path.is_empty():
-			continue
-		if not ProjectSettings.load_resource_pack(path):
-			push_warning("[paths] %s could not be mounted" % path)
-			continue
-		if not FileAccess.file_exists(probe):
-			push_warning("[paths] %s mounted but has no %s" % [path, probe])
-			continue
-		mounted_packs.append(pack_name)
-		print("[paths] mounted %s → %s" % [path, PACKS[pack_name][0]])
-
-## Pack `src_dir` into the resource pack `out_path`, its contents mapped
-## under `prefix` (a res:// path). The counterpart of _mount_packs: this
-## is how converted.pck is built from a finished cache — PCKPacker works
-## in an exported build too, so the game itself can do it after the
-## first-start import.
-## `skip` drops directories by name anywhere in the tree.
-## Returns {ok, error, files, bytes_in, bytes_out, msec}.
-static func build_pack(src_dir: String, prefix: String, out_path: String,
-		skip: PackedStringArray = PackedStringArray()) -> Dictionary:
-	var out: Dictionary = {"ok": false, "error": "", "files": 0,
-		"bytes_in": 0, "bytes_out": 0, "msec": 0}
-	var src: String = src_dir.trim_suffix("/").trim_suffix(BACKSLASH)
-	if not DirAccess.dir_exists_absolute(src):
-		out["error"] = "no such directory: " + src
-		return out
-	var t0 := Time.get_ticks_msec()
-	var p := PCKPacker.new()
-	var err := p.pck_start(out_path)
-	if err != OK:
-		out["error"] = "cannot create %s: %s" % [out_path, error_string(err)]
-		return out
-	var n: Array = [0, 0]
-	_pack_dir(p, src, prefix.trim_suffix("/"), n, skip)
-	err = p.flush(false)
-	if err != OK:
-		out["error"] = "flush: " + error_string(err)
-		return out
-	out["ok"] = true
-	out["files"] = n[0]
-	out["bytes_in"] = n[1]
-	out["bytes_out"] = FileAccess.get_file_as_bytes(out_path).size()
-	out["msec"] = Time.get_ticks_msec() - t0
-	return out
+# (No converted.pck: mounting a resource pack from a folder the player can
+# write to would let whoever put it there replace any res:// script.)
 
 const BACKSLASH := "\\"
 
-static func _pack_dir(p: PCKPacker, abs_dir: String, prefix: String, n: Array,
-		skip: PackedStringArray) -> void:
-	var d := DirAccess.open(abs_dir)
-	if d == null:
-		return
-	for f in d.get_files():
-		var abs: String = abs_dir + "/" + f
-		if p.add_file(prefix + "/" + f, abs) == OK:
-			n[0] += 1
-			n[1] += FileAccess.get_file_as_bytes(abs).size()
-	for sub in d.get_directories():
-		if sub in skip:
-			continue
-		_pack_dir(p, abs_dir + "/" + sub, prefix + "/" + sub, n, skip)
+## Per directory: upper-case file name → the name on disk. Every name the
+## port asks for is built upper-case, as DOS wrote it, but data copied
+## onto a case-sensitive file system (Linux) often arrives lower-case.
+static var _disk_names: Dictionary = {}
+
+static func _names_in(dir: String) -> Dictionary:
+	var known = _disk_names.get(dir)
+	if known is Dictionary:
+		return known
+	var names: Dictionary = {}
+	if DirAccess.dir_exists_absolute(dir):
+		for f in DirAccess.get_files_at(dir):
+			var up: String = f.to_upper()
+			# Two spellings of one name (Linux): the DOS one wins.
+			if f == up or not names.has(up):
+				names[up] = f
+	_disk_names[dir] = names
+	return names
+
+## `dir`/`name` spelt as the file is on disk, whatever its letter case;
+## "" when there is no such file.
+static func find_file(dir: String, name: String) -> String:
+	if dir.is_empty():
+		return ""
+	var real: String = String(_names_in(dir).get(name.to_upper(), ""))
+	if not real.is_empty():
+		return "%s/%s" % [dir, real]
+	# A folder that cannot be listed may still open files by name.
+	var exact: String = "%s/%s" % [dir, name]
+	return exact if FileAccess.file_exists(exact) else ""
 
 static func _has_data(dir: String) -> bool:
-	return not dir.is_empty() and (FileAccess.file_exists("%s/%s" % [dir, PROBE_FILE])
-		or FileAccess.file_exists("%s/%s" % [dir, PROBE_FILE_SHOCK]))
+	return not dir.is_empty() and (not find_file(dir, PROBE_FILE).is_empty()
+		or not find_file(dir, PROBE_FILE_SHOCK).is_empty())
+
+## Where map mods live. A development run keeps them in the project
+## (res://mods, which the editor writes); an exported build beside the
+## game data, <parent of GAMEDATA>/mods — never inside the pack. Data
+## bundled in the pack (Android) has no such folder: user://mods then.
+static func mods_dir() -> String:
+	if not OS.has_feature("template"):
+		return "res://mods"
+	var dir: String = ""
+	var tree := Engine.get_main_loop() as SceneTree
+	var me: Node = tree.root.get_node_or_null("SkynetPaths") if tree != null else null
+	if me != null:
+		dir = String(me.get("gamedata_dir"))
+	if not _has_data(dir):
+		dir = locate_gamedata()
+	if dir.is_empty() or dir.begins_with("res://"):
+		return "user://mods"
+	return dir.get_base_dir() + "/mods"
 
 ## The converted-asset cache lives NEXT TO the game data (the player
 ## asked for a portable install: <game>/gamedata + <game>/converted),
-## never in the per-user Godot directory. Data bundled inside the
-## project (res://gamedata) keeps the cache in the project while
-## developing; an exported build cannot write res://, so that case
-## falls back to user://.
+## never in the per-user Godot directory. An exported build cannot
+## write res://, so data bundled there falls back to user://.
+##
+## A development checkout keeps SkyNET's cache in the project itself,
+## res://converted (gitignored, skipped by the export plugin), so the
+## editor can open the map scenes and every saved resource references
+## res:// paths — no directory link needed. Future Shock's record
+## numbers collide with SkyNET's, so its cache always stays beside its
+## own data.
 static func converted_dir_for(gamedata: String) -> String:
 	if gamedata.is_empty():
 		return "user://converted"
+	if not OS.has_feature("template") and game_of(gamedata) != "shock":
+		return "res://converted"
 	if gamedata.begins_with("res://"):
-		return "user://converted" if OS.has_feature("template") else "res://converted"
+		return "user://converted"
 	return gamedata.get_base_dir() + "/converted"
 
 func converted_dir() -> String:
@@ -198,8 +146,8 @@ func converted_dir() -> String:
 ## `SkynetPaths` is not even a known identifier there, so the dev probes
 ## in tools/ load this script and ask it directly.
 static func variant_for(dir: String) -> int:
-	if not FileAccess.file_exists("%s/%s" % [dir, PROBE_FILE]) \
-			and FileAccess.file_exists("%s/%s" % [dir, PROBE_FILE_SHOCK]):
+	if find_file(dir, PROBE_FILE).is_empty() \
+			and not find_file(dir, PROBE_FILE_SHOCK).is_empty():
 		return BsaVariant.FUTURESHOCK_FULL
 	return BsaVariant.SKYNET_FULL
 
@@ -231,10 +179,21 @@ static func locate_gamedata() -> String:
 				return cand
 	return ""
 
+## Palette bytes already read, by "<data dir>|<which>": the loader, the
+## HUD, sprites and every effect ask, and each read opened MDMDIMGS.BSA
+## and parsed its directory again. Other data reads afresh.
+var _col_memo: Dictionary = {}
+
 ## The game palette: SkyNET keeps SKYNET.COL (or BRIEF.COL) inside
 ## MDMDIMGS.BSA; Future Shock ships SHOCK.COL / BRIEF.COL loose in
 ## GAMEDATA. Every palette reader goes through here.
 func palette_bytes() -> PackedByteArray:
+	var key: String = "%s|*game" % gamedata_dir
+	if not _col_memo.has(key):
+		_col_memo[key] = _read_palette()
+	return _col_memo[key]
+
+func _read_palette() -> PackedByteArray:
 	var BSAReader = load("res://scripts/loaders/bsa_reader.gd")
 	var imgs = BSAReader.new()
 	if imgs.open(gamedata_path("MDMDIMGS.BSA"), variant):
@@ -255,6 +214,12 @@ func palette_bytes() -> PackedByteArray:
 ## Any .COL palette by name: the image archive first (SkyNET keeps them
 ## there), then loose in GAMEDATA (Future Shock). Empty when absent.
 func col_bytes(name: String) -> PackedByteArray:
+	var key: String = "%s|%s" % [gamedata_dir, name]
+	if not _col_memo.has(key):
+		_col_memo[key] = _read_col(name)
+	return _col_memo[key]
+
+func _read_col(name: String) -> PackedByteArray:
 	var BSAReader = load("res://scripts/loaders/bsa_reader.gd")
 	var imgs = BSAReader.new()
 	if imgs.open(gamedata_path("MDMDIMGS.BSA"), variant):
@@ -278,6 +243,12 @@ func first_col_bytes(names: Array) -> PackedByteArray:
 ## The briefing/menu UI palette: BRIEF.COL in the archive (SkyNET) or
 ## loose (Future Shock); the game palette when neither exists.
 func ui_palette_bytes() -> PackedByteArray:
+	var key: String = "%s|*ui" % gamedata_dir
+	if not _col_memo.has(key):
+		_col_memo[key] = _read_ui_palette()
+	return _col_memo[key]
+
+func _read_ui_palette() -> PackedByteArray:
 	var BSAReader = load("res://scripts/loaders/bsa_reader.gd")
 	var imgs = BSAReader.new()
 	if imgs.open(gamedata_path("MDMDIMGS.BSA"), variant):
@@ -320,24 +291,28 @@ func other_game_dir() -> String:
 	return ""
 
 ## Start the game again on another data directory — the menu's FUTURE
-## SHOCK entry (and, from Future Shock, the way back). Every autoload
-## opened its archives on this directory, so a fresh process is the
-## honest way to switch. The engine arguments are kept (an editor run
-## keeps its --path), --gamedata is replaced.
+## SHOCK entry (and, from Future Shock, the way back). The game, the
+## archive keys and a dozen static caches are fixed at startup and the
+## two games share record numbers, so a fresh process is the honest way
+## to switch. The caller quits right after.
+##
+## Nothing from this run's command line is carried over (a --map,
+## --host or --screenshot must not replay in the other game) except,
+## for a run from the editor, the project path.
 func relaunch_with_gamedata(dir: String) -> bool:
 	if not _has_data(dir):
 		return false
-	var args: PackedStringArray = PackedStringArray()
-	for a in OS.get_cmdline_args():
-		if not a.begins_with("--gamedata="):
-			args.append(a)
-	var user: PackedStringArray = PackedStringArray()
-	for a in OS.get_cmdline_user_args():
-		if not a.begins_with("--gamedata=") and not a.begins_with("--map="):
-			user.append(a)
-	user.append("--gamedata=" + dir)
-	args.append("--")
-	args.append_array(user)
+	var args := PackedStringArray()
+	if not OS.has_feature("template"):
+		args.append_array(["--path", ProjectSettings.globalize_path("res://")])
+	args.append_array(["--", "--gamedata=" + dir])
+	if OS.has_feature("template") and OS.has_feature("pc"):
+		# The engine starts the new instance once this one has shut down,
+		# so the ports, the audio device and the user:// files are free.
+		OS.set_restart_on_exit(true, args)
+		print("[paths] restart on exit with %s" % " ".join(args))
+		return true
+	# set_restart_on_exit does nothing for a run started from the editor.
 	var pid: int = OS.create_process(OS.get_executable_path(), args)
 	print("[paths] relaunch %s %s → pid %d" % [OS.get_executable_path().get_file(), " ".join(args), pid])
 	return pid > 0
@@ -354,6 +329,8 @@ static func resolve_data_dir(picked: String) -> String:
 	var d: String = picked.strip_edges().trim_suffix("/").trim_suffix(BACKSLASH)
 	if d.is_empty():
 		return ""
+	# The player may have copied the data in since a folder was last listed.
+	_disk_names.clear()
 	for cand in [d, d + "/gamedata", d + "/GAMEDATA",
 			d + "/shock/GAMEDATA", d + "/shock/gamedata", d + "/SHOCK/GAMEDATA"]:
 		if _has_data(cand):
@@ -362,9 +339,9 @@ static func resolve_data_dir(picked: String) -> String:
 
 ## Which game a data directory holds: "skynet", "shock", or "" for neither.
 static func game_of(dir: String) -> String:
-	if FileAccess.file_exists("%s/%s" % [dir, PROBE_FILE]):
+	if not find_file(dir, PROBE_FILE).is_empty():
 		return "skynet"
-	if FileAccess.file_exists("%s/%s" % [dir, PROBE_FILE_SHOCK]):
+	if not find_file(dir, PROBE_FILE_SHOCK).is_empty():
 		return "shock"
 	return ""
 
@@ -382,10 +359,16 @@ func set_other_game_dir(dir: String) -> bool:
 
 ## Remember a data directory chosen in the menu.
 func set_gamedata_dir(dir: String) -> bool:
+	_disk_names.clear()
 	if not _has_data(dir):
 		return false
 	gamedata_dir = dir
 	game_root = dir
+	# The archive key and map archive follow the data (Future Shock picked
+	# here found no maps until a restart). This process's record caches are
+	# still the old game's, so data_setup.gd restarts on another game.
+	_adopt_game(dir)
+	_col_memo.clear()
 	var cfg := ConfigFile.new()
 	# Load first: a fresh ConfigFile would drop the other game's path.
 	cfg.load(GAMEDATA_CFG)
@@ -408,8 +391,11 @@ var selected_map: String = ""
 ## the selected map and resets this to -1.
 var pending_load_slot: int = -1
 
+## `filename` in the data directory, spelt as on disk (see find_file);
+## the name as given when no such file exists.
 func gamedata_path(filename: String) -> String:
-	return "%s/%s" % [gamedata_dir, filename]
+	var p: String = find_file(gamedata_dir, filename)
+	return p if not p.is_empty() else "%s/%s" % [gamedata_dir, filename]
 
 func read_bytes(path: String) -> PackedByteArray:
 	var f := FileAccess.open(path, FileAccess.READ)

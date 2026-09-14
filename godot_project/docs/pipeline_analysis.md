@@ -1,7 +1,7 @@
 # SkyNET / FutureShock — DOS rendering pipeline analysis
 
 Synthesised from parallel agent decodes of the DOS and Win32 builds.
-The authoritative DOS reference is `C:\Games\SKYNET\skynet_gh.c`
+The authoritative DOS reference is `skynet_gh.c`
 (Ghidra decompile of SKYNET.EXE, 66 379 lines); Win32 cross-reference
 is `FutureShock32_noblob.exe.c` / `fshock.exe.c`. `FUN_xxxxxxxx` names
 and line numbers anchor into `skynet_gh.c` unless noted; older

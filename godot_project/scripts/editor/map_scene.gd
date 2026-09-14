@@ -37,9 +37,13 @@ const MapEntityRec := preload("res://scripts/editor/map_entity_rec.gd")
 ## drops them all when it moves on.
 const BUILD_VERSION: int = 2
 
-## Where a map's scene lives in the asset cache.
+## Where a map's scene lives in the asset cache ("" without a cache, or
+## for a map name that is not a plain file name).
 static func scene_path(map_name: String) -> String:
-	return "%s/maps/%s.scn" % [Assets.root, map_name.to_upper()]
+	var m: String = Assets.safe_key(map_name)
+	if Assets.root.is_empty() or m.is_empty():
+		return ""
+	return "%s/maps/%s.scn" % [Assets.root, m]
 
 ## Build the editable scene tree for `map_name` (not yet packed).
 ## Returns null when the map cannot be loaded.
@@ -139,19 +143,14 @@ static func build(map_name: String) -> Node3D:
 					sprites.add_child(sp)
 	# The runtime nodes built by the loader are not needed here.
 	for n in [level.terrain, level.entities, level.enemies, level.sprites,
-			level.sky, level.occluders, level.overlay]:
+			level.sky, level.occluders, level.overlay, level.behaviour]:
 		if n != null and is_instance_valid(n):
 			n.free()
 	_own(root, root)
 	return root
 
 ## Build, pack and save `map_name`; returns the .scn path ("" on failure).
-## Built through the project link (res://converted) when it exists, so
-## the editor can open the result.
 static func save(map_name: String) -> String:
-	return String(Assets.with_project_link(func() -> String: return _save_now(map_name)))
-
-static func _save_now(map_name: String) -> String:
 	var root := build(map_name)
 	if root == null:
 		return ""
@@ -162,11 +161,14 @@ static func _save_now(map_name: String) -> String:
 		push_error("[mapscene] pack failed for %s: %s" % [map_name, error_string(err)])
 		return ""
 	var p := scene_path(map_name)
+	if p.is_empty():
+		return ""
 	DirAccess.make_dir_recursive_absolute(p.get_base_dir())
 	err = ResourceSaver.save(ps, p, ResourceSaver.FLAG_COMPRESS)
 	if err != OK:
 		push_error("[mapscene] save failed for %s: %s" % [p, error_string(err)])
 		return ""
+	Assets.trust_record(p)
 	return p
 
 static func _own(n: Node, owner: Node) -> void:

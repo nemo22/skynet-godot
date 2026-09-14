@@ -29,6 +29,9 @@
 const MAGIC := "HMI-MIDISONG061595"
 const TRACK_MAGIC := "HMI-MIDITRACK"
 const REC: int = 5
+## More tracks than any song needs (the game's own have 6-17); a header
+## count up to 65 535 is ignored past this.
+const MAX_TRACKS: int = 256
 
 static func _u16(b: PackedByteArray, o: int) -> int:
 	return b[o] | (b[o + 1] << 8)
@@ -45,28 +48,38 @@ static func parse(b: PackedByteArray) -> Dictionary:
 		division = 96
 	if rate <= 0 or rate > 1000:
 		rate = 120
-	var ntracks: int = _u16(b, 0xE4)
+	var ntracks: int = mini(_u16(b, 0xE4), MAX_TRACKS)
 	var table: int = _u32(b, 0xE8)
 	if ntracks <= 0 or table <= 0 or table + ntracks * 4 > b.size():
 		return {}
 	var offs: Array = []
 	for i in ntracks:
 		offs.append(_u32(b, table + i * 4))
+	# A track ends where the next one (in file order) starts: one sorted
+	# list answers that by binary search.
+	var starts := PackedInt64Array(offs)
+	starts.sort()
 	# [key, tick, kind, ch, d1, d2] rows; key orders same-tick events:
 	# controllers/programs first, then note-offs, then note-ons.
 	var rows: Array = []
 	var length: int = 0
+	var parsed: Dictionary = {}
 	for i in ntracks:
 		var off: int = offs[i]
+		# Each distinct track once, in table order: a crafted table naming
+		# one track over and over used to parse it that many times.
+		if parsed.has(off):
+			continue
+		parsed[off] = true
 		if off <= 0 or off + 0x60 > b.size():
 			continue
 		if b.slice(off, off + TRACK_MAGIC.length()).get_string_from_ascii() != TRACK_MAGIC:
 			continue
 		var pos: int = off + _u32(b, off + 0x57)
 		var end: int = b.size()
-		for j in ntracks:
-			if offs[j] > off and offs[j] < end:
-				end = offs[j]
+		var nxt: int = starts.bsearch(off, false)    # first start > off
+		if nxt < starts.size():
+			end = mini(starts[nxt], end)
 		var t: int = _parse_track(b, pos, end, rows, {})
 		if t > length:
 			length = t
@@ -83,12 +96,21 @@ static func parse(b: PackedByteArray) -> Dictionary:
 		ev[o + 4] = r[5]
 	return {"division": division, "rate": rate, "length": length, "events": ev}
 
+## Standard MIDI variable-length number, at most 4 bytes (28 bits; the
+## game's songs use 3). Returns -1 for a longer one: without the cap ten
+## continuation bytes overflowed into a negative length that moved the
+## read position backwards, and the track loop never ended.
 static func _varlen(b: PackedByteArray, st: Array) -> int:
 	var v: int = 0
 	var pos: int = st[0]
+	var n: int = 0
 	while pos < b.size():
+		if n == 4:
+			st[0] = pos
+			return -1
 		var c: int = b[pos]
 		pos += 1
+		n += 1
 		v = (v << 7) | (c & 0x7F)
 		if (c & 0x80) == 0:
 			break
@@ -103,39 +125,26 @@ static func _push(rows: Array, tick: int, kind: int, ch: int, d1: int, d2: int) 
 		prio = 2
 	rows.append([tick * 4 + prio, tick, kind, ch, d1, d2])
 
-## Per-track parser diagnostics (format work): one line per track.
-static func diagnose(b: PackedByteArray) -> Array:
-	var out: Array = []
-	if b.size() < 0x100 or b.slice(0, MAGIC.length()).get_string_from_ascii() != MAGIC:
-		return ["not an HMI song"]
-	out.append("division %d rate %d Hz tracks %d" % [_u16(b, 0xD2), _u16(b, 0xD4), _u16(b, 0xE4)])
-	var ntracks: int = _u16(b, 0xE4)
-	var table: int = _u32(b, 0xE8)
-	var offs: Array = []
-	for i in ntracks:
-		offs.append(_u32(b, table + i * 4))
-	for i in ntracks:
-		var off: int = offs[i]
-		var end: int = b.size()
-		for j in ntracks:
-			if offs[j] > off and offs[j] < end:
-				end = offs[j]
-		var rows: Array = []
-		var stats: Dictionary = {}
-		var t: int = _parse_track(b, off + _u32(b, off + 0x57), end, rows, stats)
-		out.append("track %2d @%05x..%05x data+%03x: %5d ev, end tick %6d, %s, fe=%s, last@%05x" % [
-			i, off, end, _u32(b, off + 0x57), rows.size(), t, String(stats.get("end", "?")),
-			str(stats.get("fe", {})), int(stats.get("last", 0))])
-	return out
-
 ## Parse one track's event stream into `rows`; returns its end tick.
 static func _parse_track(b: PackedByteArray, pos: int, end: int, rows: Array, stats: Dictionary) -> int:
 	var st: Array = [pos]
 	var tick: int = 0
 	var status: int = 0
+	var size: int = b.size()
+	var last: int = -1
 	stats["end"] = "ran off the end"
 	while st[0] < end:
-		tick += _varlen(b, st)
+		# Every event moves forward; one that does not is corrupt data, and
+		# looping on it would hang the main thread.
+		if st[0] <= last:
+			stats["end"] = "stalled"
+			break
+		last = st[0]
+		var delta: int = _varlen(b, st)
+		if delta < 0:
+			stats["end"] = "corrupt delta time"
+			break
+		tick += delta
 		if st[0] >= end:
 			break
 		var c: int = b[st[0]]
@@ -165,13 +174,22 @@ static func _parse_track(b: PackedByteArray, pos: int, end: int, rows: Array, st
 			status = 0
 			continue
 		if status == 0xFF:
+			if st[0] >= size:
+				stats["end"] = "truncated meta event"
+				break
 			var mt: int = b[st[0]]
 			st[0] += 1
 			var ln: int = _varlen(b, st)
 			if mt == 0x2F:
 				stats["end"] = "end of track"
 				break
+			if ln < 0:
+				stats["end"] = "corrupt meta length"
+				break
 			if mt == 0x51 and ln == 3:
+				if st[0] + 3 > size:
+					stats["end"] = "truncated tempo"
+					break
 				var us: int = (b[st[0]] << 16) | (b[st[0] + 1] << 8) | b[st[0] + 2]
 				_push(rows, tick, 0x51, 0, us, 0)
 			st[0] += ln
@@ -179,6 +197,9 @@ static func _parse_track(b: PackedByteArray, pos: int, end: int, rows: Array, st
 			continue
 		if status == 0xF0 or status == 0xF7:
 			var ln: int = _varlen(b, st)
+			if ln < 0:
+				stats["end"] = "corrupt sysex length"
+				break
 			st[0] += ln
 			status = 0
 			continue
@@ -188,6 +209,13 @@ static func _parse_track(b: PackedByteArray, pos: int, end: int, rows: Array, st
 			break
 		var kind: int = status & 0xF0
 		var ch: int = status & 0x0F
+		# Data bytes the event reads below; a file cut short mid-event must
+		# not index past the buffer.
+		var reads: int = 2 if kind == 0x90 or kind == 0xB0 or kind == 0xE0 else \
+			(1 if kind == 0x80 or kind == 0xC0 else 0)
+		if st[0] + reads > size:
+			stats["end"] = "truncated event"
+			break
 		match kind:
 			0x80:
 				var n: int = b[st[0]]
@@ -198,6 +226,9 @@ static func _parse_track(b: PackedByteArray, pos: int, end: int, rows: Array, st
 				var v: int = b[st[0] + 1]
 				st[0] += 2
 				var dur: int = _varlen(b, st)
+				if dur < 0:
+					stats["end"] = "corrupt note duration"
+					break
 				if stats.has("durs"):
 					(stats["durs"] as Array).append(dur)
 				if v == 0:

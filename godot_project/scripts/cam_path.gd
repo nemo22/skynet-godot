@@ -8,7 +8,7 @@
 ## the clock is no longer wall-clock, so nobody can play along while it
 ## records. The camera has to be driven.
 ##
-##   godot --path godot_project --write-movie C:/tmp/shot.avi --fixed-fps 60 \
+##   godot --path godot_project --write-movie shot.avi --fixed-fps 60 \
 ##       --resolution 1280x720 -- --map=MAP.210 --campath=PATH
 ##
 ## PATH is either a JSON file of keys:

@@ -13,7 +13,6 @@ const TextureCache := preload("res://scripts/loaders/texture_cache.gd")
 
 @onready var pivot: Node3D    = $Pivot
 @onready var camera: Camera3D = $Pivot/Camera3D
-@onready var sun: DirectionalLight3D = $Sun
 @onready var status: Label    = $UI/Status
 @onready var help:   Label    = $UI/Help
 

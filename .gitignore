@@ -7,6 +7,7 @@
 !/README.md
 !/LICENSE
 !/screenshots/
+!/.github/
 
 # Godot editor cache / imports
 godot_project/.godot/

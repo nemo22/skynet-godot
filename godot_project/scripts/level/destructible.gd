@@ -32,6 +32,3 @@ extends StaticBody3D
 @export var destroy_type: int = 0
 @export var destroy_param: int = 0
 @export var targets: Array[NodePath] = []
-
-func stage_count() -> int:
-	return stages.size()

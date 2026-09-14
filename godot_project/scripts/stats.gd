@@ -20,6 +20,15 @@ var shots: int = 0
 var hits: int = 0
 var kills: int = 0
 var enemies: int = 0
+## The mission these counters belong to (its start-map number), -1 none.
+var mission_key: int = -1
+## Enemies already counted this mission, by identity (main.gd): a map
+## entered again, or a save loaded, must not add its robots a second time.
+var _counted: Dictionary = {}
+## Held while a map's saved state is re-applied: the robots an 0xF3 spawn
+## point had already let out come back out through enemy.gd's spawn_in(),
+## which counts them — they were counted when they first appeared.
+var hold_enemy_count: bool = false
 # Career (persisted).
 var total_shots: int = 0
 var total_hits: int = 0
@@ -43,16 +52,46 @@ func _save() -> void:
 	cfg.save(CFG_PATH)
 
 ## A new mission starts: the per-mission counters go back to zero.
-func begin_mission() -> void:
+func begin_mission(key: int = -1) -> void:
 	shots = 0
 	hits = 0
 	kills = 0
 	enemies = 0
+	mission_key = key
+	_counted.clear()
 
-## How many enemies this map holds (added up across a mission's maps).
+## Enemies that appeared (added up across a mission's maps).
 func add_enemies(n: int) -> void:
+	if hold_enemy_count:
+		return
 	enemies += n
 	total_enemies += n
+
+## One enemy of the mission, counted the first time its `identity` is
+## seen. True when it was new.
+func count_enemy(identity: String) -> bool:
+	if _counted.has(identity):
+		return false
+	_counted[identity] = true
+	add_enemies(1)
+	return true
+
+## The mission's counters for a save file.
+func mission_state() -> Dictionary:
+	return {"key": mission_key, "shots": shots, "hits": hits, "kills": kills,
+		"enemies": enemies, "counted": _counted.keys()}
+
+## Back to a saved mission's counters (the career totals stay as they are —
+## they live in stats.cfg, not in a save).
+func restore_mission(d: Dictionary) -> void:
+	mission_key = int(d.get("key", -1))
+	shots = int(d.get("shots", 0))
+	hits = int(d.get("hits", 0))
+	kills = int(d.get("kills", 0))
+	enemies = int(d.get("enemies", 0))
+	_counted.clear()
+	for k in (d.get("counted", []) as Array):
+		_counted[String(k)] = true
 
 func shot() -> void:
 	shots += 1

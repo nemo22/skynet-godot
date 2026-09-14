@@ -26,6 +26,8 @@
 extends RefCounted
 
 const MapEntityRec := preload("res://scripts/editor/map_entity_rec.gd")
+## Static paths only: the editor plugin runs this without the autoloads.
+const Paths := preload("res://scripts/skynet_paths.gd")
 
 const PAYLOAD_OFFSET: int = 0x253C
 ## Shortest entity block (variant 2) — chain walks stop before it would overrun.
@@ -36,10 +38,17 @@ const END_B: int = 0xFFFFFFFE
 const SKIP_FLAG: int = 0x08
 const MARKER_Y_LIFT: int = 0x10
 
-## Edited maps are written here; the level loader prefers them over
-## the MDMDMAP2.BSA entry.
+## Edited maps are written here (the mods folder: res://mods in a
+## checkout, beside the game data in a release); the level loader prefers
+## them over the MDMDMAP2.BSA entry. "" for a map name that is not a plain
+## file name.
 static func mod_path(map_name: String) -> String:
-	return "res://mods/maps/%s" % map_name.to_upper()
+	var m: String = map_name.to_upper()
+	if m.is_empty() or m.contains("..") \
+			or RegEx.create_from_string("^[A-Z0-9_.\\-]+$").search(m) == null:
+		push_error("[mapwriter] refused map name %s" % map_name)
+		return ""
+	return "%s/maps/%s" % [Paths.mods_dir(), m]
 
 # ---------------------------------------------------------------------
 # byte helpers
@@ -367,6 +376,8 @@ static func export_map(root: Node, path: String = "", log: Array = []) -> bool:
 		return false
 	if path.is_empty():
 		path = mod_path(String(root.get("map_name")))
+		if path.is_empty():
+			return false
 	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:

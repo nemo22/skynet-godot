@@ -65,7 +65,7 @@ func _list_texture_files(dir_path: String) -> PackedStringArray:
 		var n := d.get_next()
 		if n.is_empty(): break
 		if d.current_is_dir(): continue
-		if n.begins_with("TEXTURE."):
+		if n.to_upper().begins_with("TEXTURE."):
 			out.append(n)
 	d.list_dir_end()
 	out.sort()

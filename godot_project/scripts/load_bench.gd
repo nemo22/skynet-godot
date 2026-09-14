@@ -10,6 +10,7 @@ const MAPS: Array = ["MAP.210", "MAP.218", "MAP.240"]
 
 func _ready() -> void:
 	for m in MAPS:
+		Assets.level_started()               # as main.gd does before every level
 		var t0 := Time.get_ticks_msec()
 		var lvl := LevelLoader.new().load_level(m)
 		var t1 := Time.get_ticks_msec()
@@ -17,5 +18,6 @@ func _ready() -> void:
 		if lvl != null and lvl.entities:
 			n = lvl.entities.get_child_count()
 		print("[bench] %s: %d ms (%d entity meshes)" % [m, t1 - t0, n])
-	print("[bench] assets: %d hits, %d misses, root %s" % [Assets.hits, Assets.misses, Assets.root])
+	print("[bench] assets: %d hits, %d misses, %d not ours, root %s"
+		% [Assets.hits, Assets.misses, Assets.untrusted, Assets.root])
 	get_tree().quit(0)

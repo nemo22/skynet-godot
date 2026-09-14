@@ -66,7 +66,6 @@ var _has_target: bool = false
 var _death_t: float = 0.0
 var _shape: CollisionShape3D = null
 var _foot: float = 0.0
-var _last_pos: Vector3 = Vector3.ZERO
 var _moving_t: float = 0.0
 
 func setup(id: int, name_text: String, local: bool) -> void:
@@ -98,9 +97,6 @@ func setup(id: int, name_text: String, local: bool) -> void:
 	# No name tag over the head: it would give the body away across the
 	# map. Terminators read names through their machine vision instead.
 	_play("idle")
-
-func set_display_name(n: String) -> void:
-	display_name = n
 
 ## The class decides the body: a HUMAN is one of the resistance figures,
 ## a TERMINATOR the jacketed machine. No tint any more — these bodies
@@ -197,6 +193,10 @@ func eye() -> Vector3:
 
 ## A replicated pose from the owner.
 func apply_pose(pos: Vector3, y: float, p: float, f: int) -> void:
+	# One NaN here would put the body (and its collision) nowhere for good;
+	# the server checks, this is the last line.
+	if not pos.is_finite() or not is_finite(y) or not is_finite(p):
+		return
 	_target_pos = pos
 	_target_yaw = y
 	_target_pitch = p
@@ -239,9 +239,7 @@ func die() -> void:
 	Audio.play_sfx_3d("EXPLO2.RAW", global_position + Vector3(0.0, 40.0, 0.0), -4.0)
 	var scene := get_tree().current_scene
 	if scene != null:
-		var ex := Explosion.new()
-		scene.add_child(ex)
-		ex.setup(global_position + Vector3(0.0, 50.0, 0.0), 90.0)
+		Explosion.spawn(scene, global_position + Vector3(0.0, 50.0, 0.0), 90.0)
 		for _i in 3:
 			var d := Debris.new()
 			scene.add_child(d)

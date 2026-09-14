@@ -16,8 +16,6 @@ extends RefCounted
 const BSAReader    := preload("res://scripts/loaders/bsa_reader.gd")
 const Mesh3D       := preload("res://scripts/loaders/mesh_3d.gd")
 const MapFile      := preload("res://scripts/loaders/map_file.gd")
-const Palette      := preload("res://scripts/loaders/palette.gd")
-const TextureNNN   := preload("res://scripts/loaders/texture_nnn.gd")
 const TextureCache := preload("res://scripts/loaders/texture_cache.gd")
 const WldTerrain   := preload("res://scripts/loaders/wld_terrain.gd")
 const Enemy        := preload("res://scripts/enemy.gd")
@@ -30,12 +28,8 @@ const Pickup       := preload("res://scripts/pickup.gd")
 const PickupData   := preload("res://scripts/pickup_data.gd")
 const LevelScene   := preload("res://scripts/level_scene.gd")
 const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
+const Explosion    := preload("res://scripts/explosion.gd")
 
-## Variant-3 billboard sprite banks (sprite_index >> 7) → TEXTURE.NNN file.
-## "weapons flat" banks are weapon/ammo pickups, "equipment" is gear; the
-## rest are decorative scenery (barrels, rubble, bushes, corpses …).
-const SPRITE_AMMO_BANKS   := [200, 201]   # TEXTURE.200/201 "weapons flat"
-const SPRITE_HEALTH_BANKS := [214]        # TEXTURE.214 "equipment"
 ## World units per sprite texel — billboards are sized texture_px × this.
 ## DOS draws a flat at texture_dims × a perspective scale (skynet_gh.c
 ## FUN_0014f4xx: `tex_w * puVar1[0x11]`); the texture dimensions already
@@ -80,33 +74,36 @@ const PASSIVE_ENEMIES: Array = [
 	"boxtrck",   # transport box on a lift — TODO: scripted-move behaviour
 ]
 
-## Per-enemy combat stats: [max_health, shot_damage, fire_interval,
-## move_speed]. Hand-tuned (the DOS table is not statically extractable);
-## actors not listed use ENEMY_STATS_DEFAULT.
-const ENEMY_STATS_DEFAULT: Array = [60.0, 9.0, 1.9, 480.0]
+## Per-enemy stats for the fallback FSM: [max_health, fire_interval,
+## move_speed]. Hand-tuned; the DOS type table (enemy_ai_data.gd, read in
+## Enemy.configure) overrides them for every type that carries data.
+## There is no damage column: a shot's damage is its DOS ammo record's
+## (+0x0c of table 0x40728, AIData.AMMO) — the old one was never read.
+## Actors not listed use ENEMY_STATS_DEFAULT.
+const ENEMY_STATS_DEFAULT: Array = [60.0, 1.9, 480.0]
 const ENEMY_STATS: Dictionary = {
-	"raptor":   [45.0, 7.0, 1.6, 720.0],
-	"globe":    [30.0, 6.0, 2.0, 560.0],
-	"drone":    [35.0, 6.0, 1.9, 600.0],
-	"scout":    [40.0, 7.0, 1.8, 700.0],
-	"flencer":  [40.0, 6.0, 1.8, 600.0],
-	"hk_ftr":   [120.0, 14.0, 1.4, 900.0],
-	"hk_bmbr":  [150.0, 16.0, 1.6, 800.0],
-	"hvytrrt":  [100.0, 12.0, 1.3, 0.0],
-	"hvytrrt2": [110.0, 12.0, 1.3, 0.0],
-	"hvytrrt3": [110.0, 13.0, 1.2, 0.0],
-	"smltrrt":  [60.0, 8.0, 1.5, 0.0],
-	"guntwr1":  [140.0, 11.0, 1.6, 0.0],
-	"guntwr3":  [150.0, 12.0, 1.5, 0.0],
-	"endorfl":  [70.0, 10.0, 1.5, 480.0],
-	"endoskel": [70.0, 9.0, 1.6, 500.0],
-	"t600pst":  [80.0, 9.0, 1.6, 440.0],
-	"t600rfl":  [85.0, 11.0, 1.4, 440.0],
-	"t800pst":  [110.0, 10.0, 1.5, 460.0],
-	"t800rfl":  [120.0, 12.0, 1.3, 460.0],
-	"mantnk":   [200.0, 18.0, 1.4, 380.0],
-	"hvytnk":   [240.0, 20.0, 1.5, 320.0],
-	"hvrtnk":   [160.0, 15.0, 1.5, 520.0],
+	"raptor":   [45.0, 1.6, 720.0],
+	"globe":    [30.0, 2.0, 560.0],
+	"drone":    [35.0, 1.9, 600.0],
+	"scout":    [40.0, 1.8, 700.0],
+	"flencer":  [40.0, 1.8, 600.0],
+	"hk_ftr":   [120.0, 1.4, 900.0],
+	"hk_bmbr":  [150.0, 1.6, 800.0],
+	"hvytrrt":  [100.0, 1.3, 0.0],
+	"hvytrrt2": [110.0, 1.3, 0.0],
+	"hvytrrt3": [110.0, 1.2, 0.0],
+	"smltrrt":  [60.0, 1.5, 0.0],
+	"guntwr1":  [140.0, 1.6, 0.0],
+	"guntwr3":  [150.0, 1.5, 0.0],
+	"endorfl":  [70.0, 1.5, 480.0],
+	"endoskel": [70.0, 1.6, 500.0],
+	"t600pst":  [80.0, 1.6, 440.0],
+	"t600rfl":  [85.0, 1.4, 440.0],
+	"t800pst":  [110.0, 1.5, 460.0],
+	"t800rfl":  [120.0, 1.3, 460.0],
+	"mantnk":   [200.0, 1.4, 380.0],
+	"hvytnk":   [240.0, 1.5, 320.0],
+	"hvrtnk":   [160.0, 1.5, 520.0],
 }
 
 ## Per-type hit points from the Skynet.exe enemy table at VA 0x44d00:
@@ -244,7 +241,6 @@ class Level:
 	## borrowed one when the game ships none (Future Shock 040/080).
 	var wld_suffix: String = ""
 	var map_bytes: PackedByteArray = PackedByteArray()   # the MAP file as loaded
-	var terrain_tex: TextureNNN.TexFile   # TEXTURE.NNN for map-specific terrain materials
 	## Player spawn read from the MAP markers (DOS-faithful):
 	##   marker_type 0 = start position, marker_type 1 = facing direction.
 	var player_start: Vector3 = Vector3.ZERO
@@ -304,14 +300,8 @@ func load_level(map_name: String) -> Level:
 	_trace = []
 	_trace_t0 = Time.get_ticks_usec()
 
-	# Palette (shared) ---------------------------------------------
-	var imgs := BSAReader.new()
-	if not imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"), SkynetPaths.variant):
-		push_error("[level] cannot open MDMDIMGS.BSA")
-		return null
-	var pal_bytes := SkynetPaths.palette_bytes()
-	imgs.close()
-	var palette := Palette.parse(pal_bytes)
+	# Palette (shared, parsed once per session by the asset cache) ------
+	var palette: PackedColorArray = Assets.palette()
 	if palette.is_empty():
 		push_error("[level] palette load failed")
 		return null
@@ -324,7 +314,7 @@ func load_level(map_name: String) -> Level:
 	var map_bytes := maps.read(map_name)
 	maps.close()
 	# An edited map (editor export) overrides the archive entry.
-	var mod := "res://mods/maps/%s" % map_name.to_upper()
+	var mod: String = SkynetPaths.mods_dir() + ("/maps/%s" % map_name.to_upper())
 	if FileAccess.file_exists(mod):
 		var mb := SkynetPaths.read_bytes(mod)
 		if not mb.is_empty():
@@ -419,16 +409,6 @@ func load_level(map_name: String) -> Level:
 	# builds the same objects from the records (F2, class by class).
 	level.behaviour.sleep_geometry(level.behaviour)
 	level.action.behaviour = level.behaviour
-
-	# Terrain tile textures — the WLD chunk header references TEXTURE.302
-	# (verified: 62× 64×64 "lndscps" records). Each cell binds one tile by
-	# (layer2 & 0x3F); build_terrain_mesh tiles it world-planar so roads
-	# flow unbroken across cells.
-	if level.is_outdoor:
-		var tex302_bytes := SkynetPaths.read_bytes(
-			SkynetPaths.gamedata_path("TEXTURE.302"))
-		if not tex302_bytes.is_empty():
-			level.terrain_tex = TextureNNN.parse(tex302_bytes)
 
 	_phase("baked scene")
 	# Terrain mesh — built once and served from the asset cache
@@ -646,9 +626,8 @@ func load_level(map_name: String) -> Level:
 				emi.max_health = float(ENEMY_HP[et])
 			emi.set_meta("marker_off", e.file_off)
 			level.enemy_marker_offs.append(e.file_off)
-			emi.shot_damage = st[1]
-			emi.fire_interval = st[2]
-			emi.move_speed = st[3]
+			emi.fire_interval = st[1]
+			emi.move_speed = st[2]
 			# DOS type data (state id, speed, turn, fire params, script,
 			# frame-event sounds …) — overrides the hand-tuned numbers.
 			emi.configure(et)
@@ -715,15 +694,17 @@ func load_level(map_name: String) -> Level:
 			en += 1
 	level.enemy_count = en
 	print("[level] placed %d enemies (variant-3 markers)" % en)
-	for et in enemy_hist:
-		var nm: String = "?" if et < 0 or et >= ENEMY_MESH.size() \
-			else ENEMY_MESH[et]
-		var fc: int = 0
-		var sample: Array = enemy_frame_cache.get(nm + ".3D", [])
-		if sample is Array:
-			fc = sample.size()
-		print("[enemy] type %d (0x%X) ×%d → %s  frames=%d"
-			% [et, et, enemy_hist[et], nm, fc])
+	# The per-type histogram is a load diagnostic: --load-trace only.
+	if _trace_on:
+		for et in enemy_hist:
+			var nm: String = "?" if et < 0 or et >= ENEMY_MESH.size() \
+				else ENEMY_MESH[et]
+			var fc: int = 0
+			var sample = enemy_frame_cache.get(nm.to_upper() + ".3D", [])
+			if sample is Array:
+				fc = (sample as Array).size()
+			print("[enemy] type %d (0x%X) ×%d → %s  frames=%d"
+				% [et, et, enemy_hist[et], nm, fc])
 
 	# --- Billboard sprites + pickups (variant-3 non-marker) ---------
 	_phase("enemies")
@@ -844,26 +825,6 @@ func load_level(map_name: String) -> Level:
 	print("[level] placed %d variant-1 meshes, centroid %s"
 		% [n, level.centroid])
 
-	# Rotation debug: show angle values per mesh type (pitch/yaw/roll).
-	var rot_samples: Dictionary = {}
-	for e in level.map.entities:
-		if (e.flags & 3) != 1: continue
-		var ename: String = MapFile.entity_name(level.map, e)
-		if ename.is_empty(): continue
-		if not rot_samples.has(ename):
-			rot_samples[ename] = []
-		if rot_samples[ename].size() < 3:
-			rot_samples[ename].append([e.off_x, e.off_y, e.off_z])
-	for ename in rot_samples:
-		for vals in rot_samples[ename]:
-			var pitch: int = vals[0] & 0x7FF
-			var yaw: int   = vals[1] & 0x7FF
-			var roll: int  = vals[2] & 0x7FF
-			print("[rot] %s: raw=(%d,%d,%d) pitch/yaw/roll deg=(%.1f,%.1f,%.1f)"
-				% [ename, vals[0], vals[1], vals[2],
-				   pitch * 360.0 / 2048.0, yaw * 360.0 / 2048.0,
-				   roll * 360.0 / 2048.0])
-
 	# Nothing was baked for this map (or the MAP has changed): build the
 	# occluders now, and write the whole static half out as a Godot scene
 	# so the next start just instantiates it.
@@ -872,6 +833,19 @@ func load_level(map_name: String) -> Level:
 		level.occluders = LevelScene.build_occluders(level)
 		LevelScene.save_from(level, map_name)
 		print("[level] %s: bake took %d ms" % [map_name, Time.get_ticks_msec() - t0])
+
+	# Outdoors, what stands wholly past the haze is not drawn at all. After
+	# the bake on purpose: the saved scene stays exactly as it was.
+	if level.is_outdoor:
+		limit_draw_distance(level.entities)
+		limit_draw_distance(level.sprites)
+		if level.enemies != null:
+			for a in level.enemies.get_children():
+				if a is Node3D:
+					var r: float = float(a.call("bounds_radius")) if a.has_method("bounds_radius") else 0.0
+					# Animation frames reach past frame 0's bounds (a stride,
+					# a swung arm): half as much again, and some.
+					limit_draw_distance(a, r * 1.5 + 200.0, true)
 
 	_phase("sky+rest")
 	if _trace_on:
@@ -955,7 +929,7 @@ static func _best_fit_wld(map: MapFile.MapFile) -> String:
 	var best: String = ""
 	var best_on: int = 0
 	for f in d.get_files():
-		if not f.begins_with("WLD."):
+		if not f.to_upper().begins_with("WLD."):
 			continue
 		var w = WldTerrain.parse(SkynetPaths.read_bytes("%s/%s" % [dir, f]))
 		if w == null:
@@ -1152,9 +1126,7 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 		else:
 			# A record with several frames is a DOS animated billboard —
 			# the fires (216 flames, 218 campfires, 208/206 burning drums)
-			# store four. Only the ENHANCED shader fire ever moved in the
-			# port; the DOS look showed frame 0 (Marek, 2026-09-11: "prečo
-			# sa sprity už neanimujú?").
+			# store four, played in a loop from a per-entity start frame.
 			var anim: SpriteFrames = sprite_anim(e.sprite_index)
 			if anim != null:
 				var a := AnimatedSprite3D.new()
@@ -1180,43 +1152,79 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 		if e.link_act_type == 0 and PickupData.AMBIENT.has(e.sprite_index):
 			Audio.attach_loop_3d(int(PickupData.AMBIENT[e.sprite_index]), spr, -10.0)
 	print("[level] placed %d billboard sprites (%d pickups)" % [placed, pickups])
-	var keys := bank_hist.keys()
-	keys.sort()
-	for b in keys:
-		print("[sprite] bank %d x%d" % [b, bank_hist[b]])
+	if _trace_on:                                # a load diagnostic
+		var keys := bank_hist.keys()
+		keys.sort()
+		for b in keys:
+			print("[sprite] bank %d x%d" % [b, bank_hist[b]])
+
+## Where the outdoor haze is solid at RENDER DETAIL HIGH (16 000 x 1.8).
+## main.gd takes its fog end from here (_apply_fog_distances); MED and
+## LOW pull it in, never out.
+const FOG_FAR: float = 16000.0 * 1.8
+const DRAW_MARGIN: float = 200.0
+
+## Stop drawing each piece of geometry under `root` once it is wholly past
+## FOG_FAR, where depth fog has painted every pixel of it the flat haze
+## colour (Godot measures the visibility range to the instance's AABB
+## centre, so the piece's own radius goes on top). `radius` > 0 is one
+## bound for every piece (an actor, whose frames move); 0 sizes each from
+## its own bounds. `include_root` covers `root` itself.
+static func limit_draw_distance(root: Node, radius: float = 0.0, include_root: bool = false) -> void:
+	if root == null:
+		return
+	if include_root and root is Node3D:
+		_limit_one(root, (root as Node3D).transform, radius)
+	_limit_below(root, Transform3D(), radius)
+
+static func _limit_below(n: Node, xf: Transform3D, radius: float) -> void:
+	for c in n.get_children():
+		if not (c is Node3D):
+			continue
+		var cxf: Transform3D = xf * (c as Node3D).transform
+		_limit_one(c, cxf, radius)
+		_limit_below(c, cxf, radius)
+
+static func _limit_one(n: Node, xf: Transform3D, radius: float) -> void:
+	if not (n is GeometryInstance3D):
+		return
+	var gi := n as GeometryInstance3D
+	var r: float = radius
+	if r <= 0.0 and gi is SpriteBase3D:
+		# A sprite's bounds exist only once it has drawn; its rectangle
+		# exists as soon as it has a texture.
+		var sb := gi as SpriteBase3D
+		var s: Vector3 = xf.basis.get_scale().abs()
+		r = sb.get_item_rect().size.length() * sb.pixel_size * 0.5 * maxf(s.x, maxf(s.y, s.z))
+	elif r <= 0.0:
+		r = (xf * gi.get_aabb()).size.length() * 0.5
+	# The margin is hysteresis around the end (Forward+); the end is set so
+	# that even its low side stays past FOG_FAR + r.
+	gi.visibility_range_end = FOG_FAR + r + DRAW_MARGIN * 2.0
+	gi.visibility_range_end_margin = DRAW_MARGIN
 
 ## Frames per second of the DOS animated billboards. An estimate: the
 ## rate of the scenery animation is not traced yet (the effect pool's
 ## explosions run near 24 fps, which makes a four-frame fire flicker).
 const SPRITE_ANIM_FPS: float = 12.0
 static var _anim_cache: Dictionary = {}      # sprite index → SpriteFrames or null
-static var _bank_bytes: Dictionary = {}      # bank → TEXTURE.NNN bytes
 
 ## The frames of a multi-frame sprite record as SpriteFrames ("default",
-## looping), or null for a single-frame one. Cached for the session.
+## looping), or null for a single-frame one. The frames are converted once
+## into the asset cache (Explosion.bank_frames — a single-frame record is
+## remembered there as such, never decoded); the SpriteFrames are kept for
+## the session.
 static func sprite_anim(sprite_index: int) -> SpriteFrames:
 	if _anim_cache.has(sprite_index):
 		return _anim_cache[sprite_index]
-	var bank: int = sprite_index >> 7
-	if not _bank_bytes.has(bank):
-		_bank_bytes[bank] = SkynetPaths.read_bytes(
-			SkynetPaths.gamedata_path("TEXTURE.%03d" % bank))
-	var bytes: PackedByteArray = _bank_bytes[bank]
+	var frames: Array = Explosion.bank_frames(sprite_index >> 7, sprite_index & 0x7F, 2)
 	var sf: SpriteFrames = null
-	if not bytes.is_empty():
-		var recs: Array = TextureNNN.parse_record_frames(bytes, sprite_index & 0x7F)
-		if recs.size() > 1:
-			var pal: PackedColorArray = Palette.parse(SkynetPaths.palette_bytes())
-			sf = SpriteFrames.new()
-			sf.set_animation_speed("default", SPRITE_ANIM_FPS)
-			sf.set_animation_loop("default", true)
-			for r in recs:
-				var t: Texture2D = TextureNNN.to_image_texture(r, pal, true) \
-					if r != null and r.width > 0 else null
-				if t != null:
-					sf.add_frame("default", t)
-			if sf.get_frame_count("default") < 2:
-				sf = null
+	if frames.size() >= 2:
+		sf = SpriteFrames.new()
+		sf.set_animation_speed("default", SPRITE_ANIM_FPS)
+		sf.set_animation_loop("default", true)
+		for t in frames:
+			sf.add_frame("default", t)
 	_anim_cache[sprite_index] = sf
 	return sf
 
@@ -1284,6 +1292,8 @@ static func spawn_item(level: Level, pos: Vector3, si: int) -> Sprite3D:
 	var world_h: float = float(tex.get_height()) * px
 	spr.position = Vector3(pos.x, ground + world_h * 0.5, pos.z)
 	level.sprites.add_child(spr)
+	if level.is_outdoor:
+		_limit_one(spr, spr.transform, 0.0)
 	if PickupData.AMBIENT.has(si):
 		Audio.attach_loop_3d(int(PickupData.AMBIENT[si]), spr, -10.0)
 	return spr

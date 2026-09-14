@@ -7,7 +7,7 @@
 ## This drew HUMMER.3D, and HUMMER.3D is the jeep's INTERIOR — the shell
 ## the port draws around the driver's eye — so a parked jeep in an arena
 ## was a white floor pan with a dashboard standing in the open ("net jeep
-## v mp arene sa zobrazuje zle", Marek 2026-09-13, with the screenshot
+## v mp arene sa zobrazuje zle", playtest 2026-09-13, with the screenshot
 ## that showed it). Measured: HUMMER is 106x75x227 against HUMMERTK's
 ## 114x124x234, and DOS's own MP table (skynet.EXE 0x84dd4, records 13
 ## and 14) names NETHUMER.3D with a separate turret and barrel, and
@@ -74,6 +74,8 @@ func setup(k: int, vehicle_kind: int, pos: Vector3, yaw: float) -> void:
 	place(pos, yaw)
 
 func place(pos: Vector3, yaw: float) -> void:
+	if not pos.is_finite() or not is_finite(yaw):
+		return                                 # a broken place would lose the body
 	global_position = pos
 	rotation.y = yaw
 

@@ -112,7 +112,8 @@ func _on_dir_selected(dir: String) -> void:
 	elif game == "shock":
 		# The player pointed at Future Shock: take it as the game to play.
 		_skynet = found
-		_skynet_label.text = "FUTURE SHOCK (played as the main game): %s" % found
+		_skynet_label.text = "FUTURE SHOCK (played as the main game%s): %s" % [
+			"" if SkynetPaths.game == "shock" else " — the game restarts on it", found]
 		_continue.disabled = false
 	else:
 		_skynet_label.text = "SKYNET: no MDMDMAP2.BSA under %s" % dir
@@ -120,9 +121,19 @@ func _on_dir_selected(dir: String) -> void:
 func _on_continue() -> void:
 	if _skynet.is_empty():
 		return
+	var started_as: String = SkynetPaths.game
 	SkynetPaths.set_gamedata_dir(_skynet)
 	if not _shock.is_empty():
 		SkynetPaths.set_other_game_dir(_shock)
+	# The game this process started as fixed the archive keys, the sound
+	# archive and a dozen static record caches, and the two games share
+	# record numbers: the other game's data gets a fresh process, as the
+	# menu's FUTURE SHOCK entry does. Both folders are remembered above.
+	if SkynetPaths.game != started_as and SkynetPaths.relaunch_with_gamedata(_skynet):
+		_skynet_label.text = "STARTING %s…" % ("FUTURE SHOCK" if SkynetPaths.game == "shock" else "SKYNET")
+		_continue.disabled = true
+		get_tree().quit()
+		return
 	finished.emit(_skynet, _shock)
 	queue_free()
 

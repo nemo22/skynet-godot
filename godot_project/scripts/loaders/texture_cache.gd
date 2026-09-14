@@ -21,7 +21,12 @@ func _init(p: PackedColorArray, root: String) -> void:
 func _archive(archive_id: int) -> TextureNNN.TexFile:
 	if _files.has(archive_id):
 		return _files[archive_id]
-	var path: String = "%s/TEXTURE.%03d" % [gamedata_root, archive_id]
+	# Whatever letter case the data was copied with (Linux).
+	var path: String = preload("res://scripts/skynet_paths.gd").find_file(
+		gamedata_root, "TEXTURE.%03d" % archive_id)
+	if path.is_empty():
+		_files[archive_id] = null
+		return null
 	var f := FileAccess.open(path, FileAccess.READ)
 	if f == null:
 		_files[archive_id] = null

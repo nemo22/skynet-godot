@@ -14,7 +14,6 @@ const BotBrain := preload("res://scripts/net/bot_brain.gd")
 const LevelLoader := preload("res://scripts/level_loader.gd")
 const WldTerrain := preload("res://scripts/loaders/wld_terrain.gd")
 const Pickup := preload("res://scripts/pickup.gd")
-const PickupData := preload("res://scripts/pickup_data.gd")
 const Tracer := preload("res://scripts/tracer.gd")
 const MuzzleFlash := preload("res://scripts/muzzle_flash.gd")
 const Projectile := preload("res://scripts/projectile.gd")
@@ -23,10 +22,13 @@ const SmokePuff := preload("res://scripts/smoke_puff.gd")
 const Explosion := preload("res://scripts/explosion.gd")
 const TerminatorVision := preload("res://scripts/net/terminator_vision.gd")
 const MotionDetector := preload("res://scripts/net/motion_detector.gd")
+const PauseState := preload("res://scripts/pause_state.gd")
 
 const SPRITE_PIXEL_SIZE: float = 2.0
 const FEED_LINES: int = 5
 const FEED_TTL: float = 6.0
+const CHAT_LINES: int = 6
+const CHAT_TTL: float = 10.0
 
 var main: Node = null
 var player: CharacterBody3D = null
@@ -52,7 +54,7 @@ var _center_t: float = 0.0
 var _board: PanelContainer = null
 var _board_text: RichTextLabel = null
 var _chat_log: VBoxContainer = null
-var _chat_items: Array = []
+var _chat_items: Array = []             # [[Label, expire_msec]], oldest first
 var _chat_edit: LineEdit = null
 var _chat_open: bool = false
 var _over: CanvasLayer = null
@@ -89,6 +91,7 @@ func setup(m: Node, p: CharacterBody3D) -> void:
 	Net.time_changed.connect(func(_s: int) -> void: _refresh_scores())
 	Net.disconnected.connect(_on_disconnected)
 	Net.class_changed.connect(_on_class_changed)
+	Net.class_requested.connect(_on_class_requested)
 	Net.vehicle_changed.connect(_on_vehicle_changed)
 	if player != null and not player.use_pressed.is_connected(_on_use_pressed):
 		player.use_pressed.connect(_on_use_pressed)
@@ -102,7 +105,8 @@ func _exit_tree() -> void:
 			["pickup_taken", _on_pickup_taken], ["pickup_spawned", _on_pickup_spawned],
 			["chat_received", _on_chat], ["match_over", _on_match_over],
 			["match_restarted", _on_restarted], ["disconnected", _on_disconnected],
-			["class_changed", _on_class_changed], ["vehicle_changed", _on_vehicle_changed]]:
+			["class_changed", _on_class_changed], ["class_requested", _on_class_requested],
+			["vehicle_changed", _on_vehicle_changed]]:
 		if Net.is_connected(sig[0], sig[1]):
 			Net.disconnect(sig[0], sig[1])
 
@@ -174,7 +178,7 @@ func on_level_ready(lvl) -> void:
 		Net.server_place_pickups(ammo_spots, weapon_spots)
 		# The vehicles used to go on the WEAPON spots — the very spots the
 		# pickup crates stand on — so a jeep could end up parked inside a
-		# crate ("blbost - zle spawnute vozidlo", Marek 2026-09-13, with
+		# crate ("blbost - zle spawnute vozidlo", playtest 2026-09-13, with
 		# the picture of one half-swallowed by a box). They now take the
 		# spots no pickup is on, ammo spots included: MAP.605 has 56 of
 		# those against six vehicles, so there is room to be picky.
@@ -256,7 +260,8 @@ func _on_respawned(id: int, pos: Vector3, yaw: float) -> void:
 		player.set_vehicle(0)
 		player.set_spawn(pos, yaw, true)
 		_apply_local_class()
-		player.set("input_locked", _chat_open)
+		# The Esc menu or the console may be up: they keep the controls.
+		player.set("input_locked", _chat_open or PauseState.is_paused())
 		if level != null and level.action != null:
 			level.action.arm_proximity(pos)
 		_center_msg("", 0.0)
@@ -285,15 +290,14 @@ func _physics_process(delta: float) -> void:
 	Net.send_pose(player.global_position, float(player.get("_yaw")), float(player.get("_pitch")), f, delta)
 
 func _process(delta: float) -> void:
-	# Kill feed ageing, centre message, hit flash.
+	# Kill feed and chat ageing, centre message, hit flash. Both lists are
+	# in the order the lines came, so the expired ones are at the front
+	# (no new array every frame, no timer per chat line).
 	var now := Time.get_ticks_msec()
-	var keep: Array = []
-	for it in _feed_items:
-		if now > int(it[1]):
-			(it[0] as Label).queue_free()
-		else:
-			keep.append(it)
-	_feed_items = keep
+	while not _feed_items.is_empty() and now > int(_feed_items[0][1]):
+		(_feed_items.pop_front()[0] as Label).queue_free()
+	while not _chat_items.is_empty() and now > int(_chat_items[0][1]):
+		(_chat_items.pop_front()[0] as Label).queue_free()
 	if _center_t > 0.0:
 		_center_t -= delta
 		if _center_t <= 0.0:
@@ -322,9 +326,7 @@ func _on_fired(id: int, weapon: int, from: Vector3, dir: Vector3) -> void:
 	if scene == null or kind == "melee":
 		return
 	var tint: Color = player._KIND_COLOR.get(kind, Color.WHITE)
-	var mf := MuzzleFlash.new()
-	scene.add_child(mf)
-	mf.setup(from, tint, 48.0 if kind == "shotgun" else 36.0)
+	MuzzleFlash.spawn(scene, from, tint, 48.0 if kind == "shotgun" else 36.0)
 	match kind:
 		"grenade":
 			var g := Grenade.new()
@@ -346,9 +348,7 @@ func _on_fired(id: int, weapon: int, from: Vector3, dir: Vector3) -> void:
 				q.exclude = [av.get_rid()]
 			var hit := space.intersect_ray(q)
 			var endpoint: Vector3 = hit["position"] if hit.has("position") else to
-			var tr: MeshInstance3D = Tracer.new()
-			scene.add_child(tr)
-			tr.setup(from, endpoint, tint)
+			Tracer.spawn(scene, from, endpoint, tint)
 			if kind == "shotgun":
 				var sm := SmokePuff.new()
 				scene.add_child(sm)
@@ -356,9 +356,7 @@ func _on_fired(id: int, weapon: int, from: Vector3, dir: Vector3) -> void:
 			if hit.has("collider"):
 				var n: Node = hit["collider"] as Node
 				if n != null and not n.is_in_group("dm_actor") and not n.is_in_group("player"):
-					var puff := Explosion.new()
-					scene.add_child(puff)
-					puff.setup(endpoint, 40.0, player.IMPACT_BANK_BULLET)
+					Explosion.spawn(scene, endpoint, 40.0, player.IMPACT_BANK_BULLET)
 
 # ---------------------------------------------------------------------
 # Health, death, score
@@ -377,7 +375,11 @@ func _on_local_health(hp: float, armor: float, _attacker: int) -> void:
 
 func _on_died(victim: int, killer: int, weapon: int) -> void:
 	var vn: String = Net.name_of(victim)
-	if killer == victim or killer <= 0 or not Net.players.has(killer):
+	# A plain death only for yourself, the world (id 0) or someone gone:
+	# bots are NEGATIVE ids, and `killer <= 0` wrote their kills off as
+	# "DIED" / "YOU DIED".
+	var no_killer: bool = killer == victim or killer == 0 or not Net.players.has(killer)
+	if no_killer:
 		_feed_line("%s DIED" % vn, Color(1.0, 0.75, 0.4))
 	else:
 		_feed_line("%s KILLED %s  [%s]" % [Net.name_of(killer), vn, weapon_name(weapon)],
@@ -391,7 +393,7 @@ func _on_died(victim: int, killer: int, weapon: int) -> void:
 		if player.has_method("begin_death_view"):
 			player.call("begin_death_view")
 		Audio.play_sfx("EXPLO2.RAW", -2.0)
-		var who: String = "YOU DIED" if killer == victim or killer <= 0 else "KILLED BY %s" % Net.name_of(killer)
+		var who: String = "YOU DIED" if no_killer else "KILLED BY %s" % Net.name_of(killer)
 		_center_msg(who, Net.RESPAWN_DELAY + 1.0)
 	else:
 		var av = _avatars.get(victim)
@@ -613,17 +615,23 @@ func _refresh_scores() -> void:
 		_clock.text = "%d:%02d" % [s / 60, s % 60]
 	else:
 		_clock.text = ""
-	var txt := "[b]%s[/b]   %s\n" % [String(Net.settings.get("name", "DEATHMATCH")), String(Net.settings.get("map", ""))]
+	var txt := "[b]%s[/b]   %s\n" % [_bb(String(Net.settings.get("name", "DEATHMATCH"))),
+		_bb(String(Net.settings.get("map", "")))]
 	txt += "[table=4][cell][b]PLAYER[/b][/cell][cell][b]FRAGS[/b][/cell][cell][b]DEATHS[/b][/cell][cell][/cell]"
 	for r in rows:
 		var mine: bool = int(r[0]) == Net.local_id
-		var nm: String = String(r[1])
+		var nm: String = _bb(String(r[1]))
 		if mine:
 			nm = "[color=#8effa0]%s[/color]" % nm
 		txt += "[cell]%s[/cell][cell]  %d[/cell][cell]  %d[/cell][cell] %s[/cell]" % [nm, int(r[2]), int(r[3]),
 			"BOT" if bool(r[4]) else ""]
 	txt += "[/table]"
 	_board_text.text = txt
+
+## Text for a BBCode label: every opening bracket becomes [lb], so a name
+## like "[color=red]" or "[/table]" is shown instead of obeyed.
+static func _bb(s: String) -> String:
+	return s.replace("[", "[lb]")
 
 # --- chat -----------------------------------------------------------------
 
@@ -636,8 +644,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_close_chat()
 			get_viewport().set_input_as_handled()
 		return
-	if _over != null:
-		return
+	if _over != null or PauseState.is_paused():
+		return                              # no chat box under the Esc menu / console
 	if k == KEY_T or k == KEY_ENTER or k == KEY_KP_ENTER:
 		_open_chat()
 		get_viewport().set_input_as_handled()
@@ -655,8 +663,8 @@ func _close_chat() -> void:
 	_chat_open = false
 	_chat_edit.visible = false
 	if player != null:
-		player.set("input_locked", _dead_local)
-		if not _dead_local:
+		player.set("input_locked", _dead_local or PauseState.is_paused())
+		if not _dead_local and not PauseState.mouse_wanted():
 			player.call("_capture", true)
 
 func _on_chat_submit(text: String) -> void:
@@ -668,14 +676,10 @@ func _on_chat(from: int, text: String) -> void:
 	l.text = "%s: %s" % [Net.name_of(from), text]
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_chat_log.add_child(l)
-	_chat_items.append(l)
-	while _chat_items.size() > 6:
-		(_chat_items.pop_front() as Label).queue_free()
-	var tm := get_tree().create_timer(10.0)
-	tm.timeout.connect(func() -> void:
-		if is_instance_valid(l):
-			_chat_items.erase(l)
-			l.queue_free())
+	# Aged out in _process after CHAT_TTL.
+	_chat_items.append([l, Time.get_ticks_msec() + int(CHAT_TTL * 1000.0)])
+	while _chat_items.size() > CHAT_LINES:
+		(_chat_items.pop_front()[0] as Label).queue_free()
 
 # --- end of round -----------------------------------------------------
 
@@ -750,11 +754,14 @@ func _apply_local_class() -> void:
 
 func _on_class_changed(id: int, cls: int) -> void:
 	if id == Net.local_id:
-		_center_msg("NEXT LIFE: %s" % Net.CLASS_NAMES[cls], 2.0)
-		return
+		return                       # worn on the respawn that follows (_apply_local_class)
 	var av = _avatars.get(id)
 	if av != null and is_instance_valid(av):
 		av.set_class(cls)
+
+## The local player picked a class: the server keeps it for the next spawn.
+func _on_class_requested(cls: int) -> void:
+	_center_msg("NEXT LIFE: %s" % Net.CLASS_NAMES[clampi(cls, 0, 1)], 2.0)
 
 # --- vehicles (NETLEVEL jeeps / hks) ----------------------------------------
 

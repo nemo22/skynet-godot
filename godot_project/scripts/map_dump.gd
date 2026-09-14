@@ -1,6 +1,6 @@
 ## Dev tool: print the marker / sprite inventory of MAP files and dump
 ## menu art to PNG. Headless:
-##   godot --headless --path . res://scenes/map_dump.tscn -- --maps=600,601 --img=NETMENU1.IMG --out=C:/tmp
+##   godot --headless --path . res://scenes/map_dump.tscn -- --maps=600,601 --img=NETMENU1.IMG --out=OUT_DIR
 extends Node
 
 const BSAReader := preload("res://scripts/loaders/bsa_reader.gd")
@@ -16,12 +16,6 @@ func _ready() -> void:
 		if a.begins_with("--") and a.find("=") > 0:
 			cli[a.substr(2, a.find("=") - 2)] = a.substr(a.find("=") + 1)
 	var out_dir: String = String(cli.get("out", "."))
-	if cli.has("wldmatch"):
-		preload("res://tools/wldmatch.gd").run(String(cli["wldmatch"]))
-	if cli.has("mats"):
-		preload("res://tools/terrain_mats.gd").run(String(cli["mats"]))
-	if cli.has("terrain"):
-		preload("res://tools/terrain_census.gd").run(String(cli["terrain"]))
 	if cli.has("objectives"):
 		preload("res://tools/objective_census.gd").run(String(cli["objectives"]))
 	if cli.has("borders"):
@@ -39,6 +33,9 @@ func _ready() -> void:
 				print("%s: missing" % name)
 				continue
 			var m := MapFile.parse(bytes)
+			if m == null:
+				print("%s: unreadable" % name)
+				continue
 			var outdoor: bool = bytes.size() > 9028 and bytes[9028] != 0
 			if bytes.size() > 9032:
 				print("   header +9028 flag = %d (u32 %d)" % [bytes[9028], bytes[9028] | (bytes[9029] << 8) | (bytes[9030] << 16) | (bytes[9031] << 24)])
@@ -52,7 +49,7 @@ func _ready() -> void:
 				print("   header u32 @9000: %s" % [words])
 				var head: Array = []
 				for k in 16:
-					head.append(bytes[k] | (bytes[k + 1] << 8) | (bytes[k + 2] << 16) | (bytes[k + 3] << 24) if false else bytes[k * 4] | (bytes[k * 4 + 1] << 8) | (bytes[k * 4 + 2] << 16) | (bytes[k * 4 + 3] << 24))
+					head.append(bytes[k * 4] | (bytes[k * 4 + 1] << 8) | (bytes[k * 4 + 2] << 16) | (bytes[k * 4 + 3] << 24))
 				print("   header u32 @0: %s" % [head])
 			if cli.has("find"):
 				find_entities(m, String(cli["find"]))
@@ -109,8 +106,6 @@ func _ready() -> void:
 				print("===== %s.TXT (%d bytes) =====" % [sfx, raw.size()])
 				print(raw.get_string_from_ascii())
 			bb.close()
-	if cli.has("makepack"):
-		make_pack(String(cli["makepack"]))
 	if cli.has("links"):
 		dump_links(String(cli["links"]))
 	if cli.has("names"):
@@ -270,6 +265,8 @@ static func dump_inventory(dir: String, maps_arg: String) -> void:
 		if bytes.is_empty():
 			continue
 		var m := MapFile.parse(bytes)
+		if m == null:
+			continue
 		for e in m.entities:
 			var v: int = e.flags & 3
 			if v == 1:
@@ -471,6 +468,9 @@ static func dump_links(spec: String) -> void:
 			print("%s: missing" % name)
 			continue
 		var m = MapFile.parse(bytes)
+		if m == null:
+			print("%s: unreadable" % name)
+			continue
 		print("%s links:" % name)
 		var targets: Dictionary = {}
 		for e in m.entities:
@@ -508,6 +508,8 @@ static func dump_radiation(spec: String) -> void:
 		if bytes.is_empty():
 			continue
 		var m = MapFile.parse(bytes)
+		if m == null:
+			continue
 		var start := Vector3.ZERO
 		var srcs: Array = []
 		for e in m.entities:
@@ -530,27 +532,6 @@ static func dump_radiation(spec: String) -> void:
 			print(l)
 	bsa.close()
 
-## --makepack=SRC,PREFIX,OUT.pck: pack a directory into a Godot resource
-## pack the game can mount at run time — `converted.pck` out of a
-## finished asset cache (see SkynetPaths.PACKS / build_pack):
-##   --makepack=C:/games/skynet/converted,res://converted,C:/games/skynet/converted.pck
-## A fourth field lists directory names to leave out (";" separated).
-static func make_pack(spec: String) -> void:
-	var v: PackedStringArray = spec.split(",")
-	if v.size() < 3:
-		print("[pack] need SRC,PREFIX,OUT.pck[,skip;skip]")
-		return
-	var skip := PackedStringArray()
-	if v.size() > 3:
-		skip = v[3].split(";", false)
-	var r: Dictionary = SkynetPaths.build_pack(v[0], v[1], v[2], skip)
-	if not bool(r["ok"]):
-		print("[pack] FAILED: %s" % r["error"])
-		return
-	print("[pack] %s: %d files, %.1f MB in, %.1f MB out (%.1f s)"
-		% [v[2], r["files"], float(r["bytes_in"]) / 1048576.0,
-			float(r["bytes_out"]) / 1048576.0, float(r["msec"]) / 1000.0])
-
 ## --names=231: the raw 8-byte name slots of the MAP header (index, bytes)
 ## next to what the parser accepted, and every variant-1 entity whose
 ## name index the parser could not resolve.
@@ -564,6 +545,9 @@ static func dump_names(spec: String) -> void:
 		if bytes.is_empty():
 			continue
 		var m = MapFile.parse(bytes)
+		if m == null:
+			print("%s: unreadable" % name)
+			continue
 		print("%s: parser accepted %d names; header u32 @0..0x10: %d %d %d %d %d" % [name, m.names.size(),
 			bytes.decode_u32(0), bytes.decode_u32(4), bytes.decode_u32(8), bytes.decode_u32(12), bytes.decode_u32(16)])
 		var off: int = 20

@@ -17,12 +17,9 @@
 extends Node3D
 
 const Explosion  := preload("res://scripts/explosion.gd")
-const TextureNNN := preload("res://scripts/loaders/texture_nnn.gd")
-const Palette    := preload("res://scripts/loaders/palette.gd")
-const BSAReader  := preload("res://scripts/loaders/bsa_reader.gd")
 const BurningPool := preload("res://scripts/burning_pool.gd")
 
-## Playtest 2026-09-03 (Marek): the DOS grenade flew "more in a straight
+## Playtest 2026-09-03: the DOS grenade flew "more in a straight
 ## line than a ballistic curve" — 2400/2400 dropped 1200 u per 2400 u of
 ## travel, a visible lob. Faster and lighter: 3400 u/s, 1400 u/s².
 const GRAVITY: float = 1400.0
@@ -37,6 +34,9 @@ const SPRITE_PIXEL_SIZE: float = 2.0
 
 static var _sprite_tex: Texture2D = null
 static var _sprite_tried: bool = false
+## The fallback body when the sprite is missing, shared.
+static var _body_mesh: SphereMesh = null
+static var _body_mat: StandardMaterial3D = null
 
 var _vel: Vector3 = Vector3.ZERO
 var _life: float = FUSE_TIME
@@ -53,28 +53,17 @@ var _fire: bool = false
 ## A replicated copy of somebody else's grenade: flies and bangs, hurts
 ## nobody on this machine (the thrower's copy does the damage).
 var visual_only: bool = false
+## The flight ray, built once in setup() (the thrower left out).
+var _ray: PhysicsRayQueryParameters3D = null
 
-## TEXTURE.217 record 2 as a texture (loaded once per session).
-static func _load_sprite() -> Texture2D:
+## TEXTURE.217 record 2 as a texture, index 0 transparent — the same
+## record decode the level's billboards get, converted once into the
+## asset cache (converted/tex/T217_002_A).
+static func sprite_texture() -> Texture2D:
 	if _sprite_tried:
 		return _sprite_tex
 	_sprite_tried = true
-	var imgs := BSAReader.new()
-	if not imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"),
-			SkynetPaths.variant):
-		return null
-	var pal_bytes: PackedByteArray = SkynetPaths.palette_bytes()
-	imgs.close()
-	var palette := Palette.parse(pal_bytes)
-	var bytes := SkynetPaths.read_bytes(
-		SkynetPaths.gamedata_path("TEXTURE.%03d" % SPRITE_BANK))
-	if palette.size() < 256 or bytes.is_empty():
-		return null
-	var tf := TextureNNN.parse(bytes)
-	if tf == null or SPRITE_RECORD >= tf.records.size():
-		return null
-	_sprite_tex = TextureNNN.to_image_texture(
-		tf.records[SPRITE_RECORD], palette, true)
+	_sprite_tex = Assets.texture(SPRITE_BANK, SPRITE_RECORD, true)
 	return _sprite_tex
 
 ## Launch from `from` heading `dir` (unit vector). Initial speed is
@@ -91,7 +80,7 @@ func setup(from: Vector3, dir: Vector3, damage: float, splash: float,
 	_life = _fuse
 	_burst = bool(cfg.get("burst", false))
 	_fire = bool(cfg.get("fire", false))
-	var tex := _load_sprite()
+	var tex := sprite_texture()
 	if tex != null:
 		var spr := Sprite3D.new()
 		spr.texture = tex
@@ -102,16 +91,21 @@ func setup(from: Vector3, dir: Vector3, damage: float, splash: float,
 		spr.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
 		add_child(spr)
 	else:
+		if _body_mesh == null:
+			_body_mesh = SphereMesh.new()
+			_body_mesh.radius = 14.0
+			_body_mesh.height = 28.0
+			_body_mat = StandardMaterial3D.new()
+			_body_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			_body_mat.albedo_color = Color(0.32, 0.45, 0.22)   # olive-drab body
 		var mi := MeshInstance3D.new()
-		var sm := SphereMesh.new()
-		sm.radius = 14.0
-		sm.height = 28.0
-		mi.mesh = sm
-		var mat := StandardMaterial3D.new()
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		mat.albedo_color = Color(0.32, 0.45, 0.22)   # olive-drab body
-		mi.material_override = mat
+		mi.mesh = _body_mesh
+		mi.material_override = _body_mat
 		add_child(mi)
+	_ray = PhysicsRayQueryParameters3D.new()
+	_ray.collide_with_areas = true             # enemy hitboxes are areas
+	if _owner is CollisionObject3D:
+		_ray.exclude = [(_owner as CollisionObject3D).get_rid()]
 
 func _physics_process(delta: float) -> void:
 	if _exploded:
@@ -125,12 +119,10 @@ func _physics_process(delta: float) -> void:
 	_vel.y -= GRAVITY * delta
 	var to: Vector3 = global_position + _vel * delta
 	var space := get_world_3d().direct_space_state
-	if space != null:
-		var q := PhysicsRayQueryParameters3D.create(global_position, to)
-		q.collide_with_areas = true             # enemy hitboxes are areas
-		if _owner is CollisionObject3D:
-			q.exclude = [(_owner as CollisionObject3D).get_rid()]
-		var hit := space.intersect_ray(q)
+	if space != null and _ray != null:
+		_ray.from = global_position
+		_ray.to = to
+		var hit := space.intersect_ray(_ray)
 		if hit.has("position"):
 			# Detonate on anything damageable (DOS: the projectile's impact
 			# callback fires on the first object hit — a robot, a car, a
@@ -144,7 +136,7 @@ func _physics_process(delta: float) -> void:
 				return
 			# Off a wall it bounces; on the floor it drops dead and skids a
 			# little — the DOS grenade never hopped back up off the ground
-			# (Marek, 2026-09-05).
+			# (playtest, 2026-09-05).
 			var nrm: Vector3 = hit.get("normal", Vector3.UP)
 			global_position = hit["position"] + nrm * 2.0
 			if nrm.y > 0.6:
@@ -173,9 +165,7 @@ func _detonate(at: Vector3) -> void:
 	if visual_only:
 		var vscene := get_tree().current_scene
 		if vscene != null:
-			var vex := Explosion.new()
-			vscene.add_child(vex)
-			vex.setup(at, 280.0, IMPACT_BANK)
+			Explosion.spawn(vscene, at, 280.0, IMPACT_BANK)
 		queue_free()
 		return
 	for a in get_tree().get_nodes_in_group("dm_actor"):
@@ -207,9 +197,7 @@ func _detonate(at: Vector3) -> void:
 				pl.take_damage(_damage * 0.55 * (1.0 - d / _splash))
 	var scene := get_tree().current_scene
 	if scene != null:
-		var ex := Explosion.new()
-		scene.add_child(ex)
-		ex.setup(at, 280.0, IMPACT_BANK)
+		Explosion.spawn(scene, at, 280.0, IMPACT_BANK)
 		if _fire:
 			var bp := BurningPool.new()
 			scene.add_child(bp)

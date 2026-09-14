@@ -4,8 +4,8 @@
 ## A SkyNET map drives everything that moves, opens, breaks, plays or
 ## counts with three things per entity: an action id (a slot of the
 ## Skynet.exe 0x59b00 handler table), a state byte, and a link to the
-## next entity of a chain. The census (tools/act_census.gd) says that
-## surface is small — a few hundred movers, a couple of hundred
+## next entity of a chain. A census of every map showed that surface is
+## small — a few hundred movers, a couple of hundred
 ## destructibles, proximity gates, exits, sounds and messages, chains
 ## of two or three links — so each of those becomes one of the scenes
 ## in scenes/level/, instantiated here with its exports filled in from
@@ -290,9 +290,27 @@ static func mover_animation(p: Dictionary, euler: Vector3, base: Basis) -> Anima
 ## Is this mover mesh a door/gate LEAF (a box collider) rather than a
 ## room segment that moves (its trimesh)? Leaves are thin, or carry no
 ## walkable floor plate in their lower third.
+##
+## The floor test walks every triangle through surface_get_arrays (a copy
+## of the whole mesh), and main.gd asks for every mover leaf on every map
+## load — of the same few cached meshes. The answer is kept per mesh
+## resource (path + instance, so a reconverted mesh is asked again).
+static var _door_like_memo: Dictionary = {}
+
 static func is_door_like(mesh: Mesh) -> bool:
 	if mesh == null:
 		return false
+	var key: String = ""
+	if not mesh.resource_path.is_empty():
+		key = "%s#%d" % [mesh.resource_path, mesh.get_instance_id()]
+		if _door_like_memo.has(key):
+			return bool(_door_like_memo[key])
+	var door: bool = _door_like_uncached(mesh)
+	if not key.is_empty():
+		_door_like_memo[key] = door
+	return door
+
+static func _door_like_uncached(mesh: Mesh) -> bool:
 	var aabb: AABB = mesh.get_aabb()
 	var s: Vector3 = aabb.size
 	if minf(s.x, minf(s.y, s.z)) <= DOOR_LEAF_MAX_THICKNESS:
@@ -435,41 +453,6 @@ static func mission_node(level) -> Node:
 			total += 1
 	m.objectives_total = total
 	return m
-
-## The tallies the census wants, without building anything: relays
-## (act-less chain members), links that end at a marker or at an entity
-## with no node, meshes that hang under a cue node, looping sounds that
-## sit in a chain, mover ids on entities that are not meshes.
-static func link_report(map: MapFile.MapFile, transfrm: Dictionary) -> Dictionary:
-	var r: Dictionary = {"relays": 0, "dangling": 0, "to_markers": 0, "cues_with_mesh": 0,
-		"loops_in_chains": 0, "mover_ids_off_mesh": 0}
-	if map == null:
-		return r
-	var targeted := chain_targets(map)
-	var kinds: Dictionary = {}
-	for e in map.entities:
-		kinds[e.file_off] = kind_of(map, e, transfrm, targeted)
-	for e in map.entities:
-		var k: String = kinds[e.file_off]
-		if k.is_empty():
-			continue
-		var variant: int = e.flags & 3
-		var name: String = MapFile.entity_name(map, e) if variant == 1 else ""
-		if k == "raw" and e.link_act_type == 0:
-			r["relays"] += 1
-		if k == "raw" and ActionSystem.is_mover(e.link_act_type):
-			r["mover_ids_off_mesh"] += 1
-		if k == "sound_loop" and (_link_of(map, e) != null or targeted.has(e.file_off)):
-			r["loops_in_chains"] += 1
-		if variant == 1 and k in MESHLESS_KINDS and not name.is_empty() 				and wants_action(e, name, transfrm):
-			r["cues_with_mesh"] += 1
-		var t: MapFile.Entity = _link_of(map, e)
-		if t != null:
-			if t.marker_type >= 0:
-				r["to_markers"] += 1
-			elif String(kinds[t.file_off]).is_empty():
-				r["dangling"] += 1
-	return r
 
 static func _make(kind: String, level, e: MapFile.Entity, transfrm: Dictionary,
 		shapes: Dictionary, mission: Node, report: Dictionary) -> Node:

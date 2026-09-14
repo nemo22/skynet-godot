@@ -37,6 +37,8 @@ static func run(list: String) -> void:
 			if bytes.is_empty():
 				continue
 			var map := MapFile.parse(bytes)
+			if map == null:
+				continue
 			for e in map.entities:
 				if e.marker_type >= 0:
 					continue

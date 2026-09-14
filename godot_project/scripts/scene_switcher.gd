@@ -44,10 +44,23 @@ func _ready() -> void:
 	_label.text = "F1 Level   F2 Atlas   F3 Objects   F4 Enemies   F5 Sounds   ESC Quit"
 	canvas.add_child(_label)
 
+## Save the window to `path` as a PNG after `delay` seconds, then quit when
+## `quit` (the menu's `--menu-shot`). Lives in this autoload rather than
+## in the menu so a scene change in the meantime cannot cancel it.
+func capture_after(path: String, delay: float, quit: bool) -> void:
+	await get_tree().create_timer(maxf(delay, 0.0)).timeout
+	await RenderingServer.frame_post_draw
+	var img: Image = get_viewport().get_texture().get_image()
+	var err: int = img.save_png(path) if img != null else ERR_CANT_CREATE
+	print("[menu] screenshot %s (%s)" % [path, error_string(err)])
+	if quit:
+		get_tree().quit()
+
 func _input(event: InputEvent) -> void:
 	if not dev:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		var k: int = event.keycode
 		if SCENES.has(k):
+			preload("res://scripts/pause_state.gd").reset()   # a paused game must not follow into the viewer
 			get_tree().change_scene_to_file(SCENES[k])

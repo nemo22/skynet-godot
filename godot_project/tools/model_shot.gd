@@ -5,7 +5,7 @@
 ## pose is this body in? does it fill the frame?) rather than measured.
 ## Headless:
 ##   godot --headless --path . res://scenes/map_dump.tscn -- \
-##       --modelshot=AVSOLDER,AVFEMALE --out=C:/tmp [--shotsize=320]
+##       --modelshot=AVSOLDER,AVFEMALE --out=OUT_DIR [--shotsize=320]
 ## (loaded by map_dump.gd when --modelshot= is given)
 extends RefCounted
 

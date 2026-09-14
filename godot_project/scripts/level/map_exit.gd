@@ -25,6 +25,3 @@ extends Area3D
 ## DOS state byte: bit 0 = armed.
 @export var state: int = 0
 @export var targets: Array[NodePath] = []
-
-func returns_to_previous() -> bool:
-	return target_map == 0

@@ -12,11 +12,32 @@ const MAX_LIFE: float = 2.5
 ## ballistic parts detonate like small grenades).
 const HURT_RANGE: float = 240.0
 const HURT_DAMAGE: float = 14.0
+const SCORCHED: Color = Color(0.32, 0.30, 0.34)     # scorched metal
+
+## The generic chunk: one unit box and one material for all of them, each
+## chunk sized by its own scale.
+static var _chunk_mesh: BoxMesh = null
+static var _chunk_mat: StandardMaterial3D = null
 
 var _vel: Vector3 = Vector3.ZERO
 var _life: float = MAX_LIFE
 var _spin: Vector3 = Vector3.ZERO
 var _mi: MeshInstance3D = null
+var _ray: PhysicsRayQueryParameters3D = null
+
+## The shared generic-chunk mesh and material.
+static func chunk_mesh() -> BoxMesh:
+	if _chunk_mesh == null:
+		_chunk_mesh = BoxMesh.new()
+		_chunk_mesh.size = Vector3.ONE
+	return _chunk_mesh
+
+static func chunk_material() -> StandardMaterial3D:
+	if _chunk_mat == null:
+		_chunk_mat = StandardMaterial3D.new()
+		_chunk_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_chunk_mat.albedo_color = SCORCHED
+	return _chunk_mat
 
 ## Launch a chunk from `at` with initial velocity `vel` (units/sec).
 ## `part` is the DOS wreck-part mesh (enemy table death list — engine,
@@ -31,17 +52,16 @@ func setup(at: Vector3, vel: Vector3, part: Mesh = null) -> void:
 	if part != null:
 		_mi.mesh = part
 	else:
-		var bm := BoxMesh.new()
 		var s := randf_range(28.0, 64.0)
-		bm.size = Vector3(s, s * randf_range(0.4, 1.0), s * randf_range(0.4, 1.0))
-		_mi.mesh = bm
-		var mat := StandardMaterial3D.new()
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		mat.albedo_color = Color(0.32, 0.30, 0.34)      # scorched metal
-		_mi.material_override = mat
+		_mi.mesh = chunk_mesh()
+		_mi.scale = Vector3(s, s * randf_range(0.4, 1.0), s * randf_range(0.4, 1.0))
+		_mi.material_override = chunk_material()
 	add_child(_mi)
+	_ray = PhysicsRayQueryParameters3D.new()
 
 func _physics_process(delta: float) -> void:
+	if _mi == null:
+		return
 	_life -= delta
 	_vel.y -= GRAVITY * delta
 	_mi.rotation += _spin * delta
@@ -49,8 +69,9 @@ func _physics_process(delta: float) -> void:
 	# Detonate on striking solid geometry along this step's path.
 	var space := get_world_3d().direct_space_state
 	if space != null:
-		var q := PhysicsRayQueryParameters3D.create(global_position, to)
-		var hit := space.intersect_ray(q)
+		_ray.from = global_position
+		_ray.to = to
+		var hit := space.intersect_ray(_ray)
 		if hit.has("position"):
 			_detonate(hit["position"])
 			return
@@ -61,9 +82,7 @@ func _physics_process(delta: float) -> void:
 func _detonate(at: Vector3) -> void:
 	var scene := get_tree().current_scene
 	if scene != null:
-		var ex := Explosion.new()
-		scene.add_child(ex)
-		ex.setup(at, randf_range(140.0, 240.0))
+		Explosion.spawn(scene, at, randf_range(140.0, 240.0))
 	Audio.play_sfx_3d("EXPLO1.RAW", at, -9.0)
 	var pl: Node = get_tree().get_first_node_in_group("player")
 	if pl is Node3D and pl.has_method("take_damage"):

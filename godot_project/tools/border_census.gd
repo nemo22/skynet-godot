@@ -26,6 +26,8 @@ static func run(list: String) -> void:
 		if bytes.is_empty():
 			continue
 		var map := MapFile.parse(bytes)
+		if map == null:
+			continue
 		# Markers by type, exactly as the level loader collects them.
 		var by_type: Dictionary = {}
 		for e in map.entities:

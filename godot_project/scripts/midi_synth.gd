@@ -10,6 +10,10 @@
 ## on first load" step for music. Pitch = pitch_scale on the base
 ## sample, so a note costs one player, no DSP.
 ##
+## Warm-up: `play` lists every instrument the song can ask for. Samples
+## the cache holds load a few per frame; the rest are synthesised on the
+## worker pool — so no note waits on a load or a ~100 ms synthesis.
+##
 ## Sequencing: events come from HmiFile.parse (flat 5-int records);
 ## `_process` advances the tick clock (division × tempo) and dispatches
 ## note on/off, controllers 7/11/10/121/123, program changes, pitch
@@ -19,7 +23,6 @@ extends Node
 const RATE: int = 22050
 const VOICES: int = 40
 const REC: int = 5
-const BASE_NOTE: int = 60                    # samples are pitched at C4
 const REL_DB_PER_S: float = 90.0             # fastest release slope
 const MIN_DB: float = -48.0
 
@@ -32,24 +35,36 @@ var _events: PackedInt32Array = PackedInt32Array()
 var _pos: int = 0
 var _tick: float = 0.0
 var _tps: float = 192.0                      # ticks per second
-var _division: int = 96
 var _length: int = 0
-var _voices: Array = []                      # [player, ch, note, on(bool), age, rel_s, vel_db, base_db]
+var _voices: Array = []                      # [player, ch, note, on(bool), age, rel_s, vel_db, base_db, inst]
 var _age: int = 0
 var _chan: Array = []                        # per channel {prog, vol, expr, bend}
 var _bank: Dictionary = {}                   # program → {stream, hz, rel}
 var _drums: Dictionary = {}                  # note → {stream, hz, rel}
+
+## Warm-up items: 0-127 = a program, DRUM_BASE + note = a drum note.
+const DRUM_BASE: int = 128
+## Main-thread time per frame for installing prepared samples.
+const WARM_BUDGET_USEC: int = 2000
+var _prep: PackedInt32Array = PackedInt32Array()   # items still to install
+var _jobs: Dictionary = {}                   # sample key → [task id, [AudioStreamWAV], item]
+
 func _ready() -> void:
 	for i in VOICES:
 		var p := AudioStreamPlayer.new()
 		p.bus = bus
 		add_child(p)
-		_voices.append([p, -1, -1, false, 0, 0.2, 0.0, 0.0])
+		_voices.append([p, -1, -1, false, 0, 0.2, 0.0, 0.0, {}])
 	_reset_channels()
 
 func _exit_tree() -> void:
 	# Drop the sample references before the servers shut down.
 	stop()
+	# Worker jobs write into arrays this node holds: let them finish.
+	for key in _jobs:
+		WorkerThreadPool.wait_for_task_completion(int(_jobs[key][0]))
+	_jobs.clear()
+	_prep = PackedInt32Array()
 	_bank.clear()
 	_drums.clear()
 
@@ -58,16 +73,10 @@ func _reset_channels() -> void:
 	for i in 16:
 		_chan.append({"prog": 0, "vol": 100, "expr": 127, "bend": 1.0})
 
-func set_bus(b: String) -> void:
-	bus = b
-	for v in _voices:
-		(v[0] as AudioStreamPlayer).bus = b
-
 ## Start a parsed song (HmiFile.parse output).
 func play(song: Dictionary, name: String = "") -> void:
 	stop()
 	_events = song.get("events", PackedInt32Array())
-	_division = int(song.get("division", 96))
 	_length = int(song.get("length", 0))
 	# HMI: a fixed timer rate (120 Hz), not PPQN × tempo.
 	_tps = float(song.get("rate", 120))
@@ -76,6 +85,8 @@ func play(song: Dictionary, name: String = "") -> void:
 	_reset_channels()
 	song_name = name
 	playing = _events.size() >= REC and _length > 0
+	if playing:
+		_warm_up()
 
 func stop() -> void:
 	playing = false
@@ -86,6 +97,8 @@ func stop() -> void:
 		v[1] = -1
 
 func _process(delta: float) -> void:
+	if not _prep.is_empty() or not _jobs.is_empty():
+		_warm_step()
 	_release_voices(delta)
 	if not playing:
 		return
@@ -154,7 +167,7 @@ static func _note_hz(note: int) -> float:
 
 func _apply_pitch(v: Array) -> void:
 	var p: AudioStreamPlayer = v[0]
-	var inst: Dictionary = v[8] if v.size() > 8 else {}
+	var inst: Dictionary = v[8]
 	if inst.is_empty():
 		return
 	var hz: float = _note_hz(v[2]) * float(_chan[v[1]]["bend"])
@@ -171,24 +184,29 @@ func _note_on(ch: int, note: int, vel: int) -> void:
 		inst = _instrument(int(_chan[ch]["prog"]))
 	if inst.is_empty() or inst.get("stream") == null:
 		return
-	# Retrigger the same note, else a free voice, else the oldest.
-	var pick: Array = []
-	for v in _voices:
+	# Retrigger the same note, else a free voice, else the oldest (by
+	# index: no scratch array per note).
+	var n: int = _voices.size()
+	var slot: int = -1
+	for i in n:
+		var v: Array = _voices[i]
 		if v[1] == ch and v[2] == note and v[3]:
-			pick = v
+			slot = i
 			break
-	if pick.is_empty():
-		for v in _voices:
-			if not (v[0] as AudioStreamPlayer).playing:
-				pick = v
+	if slot < 0:
+		for i in n:
+			if not (_voices[i][0] as AudioStreamPlayer).playing:
+				slot = i
 				break
-	if pick.is_empty():
+	if slot < 0:
 		var oldest: int = -1
-		for v in _voices:
-			if oldest < 0 or int(v[4]) < oldest:
-				oldest = int(v[4])
-				pick = v
+		for i in n:
+			var age: int = int(_voices[i][4])
+			if oldest < 0 or age < oldest:
+				oldest = age
+				slot = i
 	_age += 1
+	var pick: Array = _voices[slot]
 	var p: AudioStreamPlayer = pick[0]
 	pick[1] = ch
 	pick[2] = note
@@ -197,10 +215,7 @@ func _note_on(ch: int, note: int, vel: int) -> void:
 	pick[5] = float(inst.get("rel", 0.2))
 	pick[6] = linear_to_db(maxf(float(vel) / 127.0, 0.01)) + float(inst.get("gain", 0.0))
 	pick[7] = _channel_db(ch)
-	if pick.size() > 8:
-		pick[8] = inst
-	else:
-		pick.append(inst)
+	pick[8] = inst
 	p.stream = inst["stream"]
 	_apply_pitch(pick)
 	p.volume_db = pick[6] + pick[7] + gain_db
@@ -269,8 +284,11 @@ func _instrument(prog: int) -> Dictionary:
 	if _bank.has(prog):
 		return _bank[prog]
 	var spec: Dictionary = _family(prog)
-	var stream: AudioStreamWAV = Assets.fetch("music", "GM_%03d" % prog,
-		func() -> Resource: return _build_tone(spec)) as AudioStreamWAV
+	var key: String = _sample_key(prog)
+	# A note that beats the worker pool synthesises here, as before.
+	var built: AudioStreamWAV = _take_built(key)
+	var stream: AudioStreamWAV = Assets.fetch("music", key,
+		func() -> Resource: return built if built != null else _build_tone(spec)) as AudioStreamWAV
 	var inst := {"stream": stream, "hz": _loop_hz(), "rel": float(spec["rel"]), "gain": float(spec.get("gain", 0.0))}
 	_bank[prog] = inst
 	return inst
@@ -351,12 +369,145 @@ func _drum(note: int) -> Dictionary:
 	if _drums.has(note):
 		return _drums[note]
 	var spec: Dictionary = _drum_spec(note)
-	var key: String = "DRUM_%03d" % int(spec["id"])
+	var key: String = _sample_key(DRUM_BASE + note)
+	var built: AudioStreamWAV = _take_built(key)
 	var stream: AudioStreamWAV = Assets.fetch("music", key,
-		func() -> Resource: return _build_drum(spec)) as AudioStreamWAV
+		func() -> Resource: return built if built != null else _build_drum(spec)) as AudioStreamWAV
 	var inst := {"stream": stream, "hz": 1.0, "fixed": true, "rel": 0.05, "gain": float(spec.get("gain", 0.0))}
 	_drums[note] = inst
 	return inst
+
+# --- warm-up ---------------------------------------------------------------
+
+## The asset-cache key of an item's sample ("GM_030", "DRUM_036").
+static func _sample_key(item: int) -> String:
+	if item >= DRUM_BASE:
+		return "DRUM_%03d" % int(_drum_spec(item - DRUM_BASE)["id"])
+	return "GM_%03d" % item
+
+func _is_ready(item: int) -> bool:
+	return _drums.has(item - DRUM_BASE) if item >= DRUM_BASE else _bank.has(item)
+
+func _install(item: int) -> void:
+	if item >= DRUM_BASE:
+		_drum(item - DRUM_BASE)
+	else:
+		_instrument(item)
+
+## Every instrument `events` can ask for, in first-use order: the program
+## each melodic note plays on, the drum notes, and — because a looping
+## song carries each channel's last program into its next pass — every
+## program set on a channel that plays notes.
+static func _song_items(events: PackedInt32Array) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	var seen := PackedByteArray()
+	seen.resize(DRUM_BASE * 2)
+	seen.fill(0)
+	var prog := PackedInt32Array()
+	prog.resize(16)
+	prog.fill(0)                             # _reset_channels starts on program 0
+	var changes := PackedInt32Array()        # channel << 8 | program
+	var noted: int = 0                       # bit per melodic channel with notes
+	var o: int = 0
+	var last: int = events.size() - REC
+	while o <= last:
+		var kind: int = events[o + 1]
+		var ch: int = events[o + 2] & 0x0F
+		if kind == 0x90:
+			var item: int
+			if ch == 9:
+				item = DRUM_BASE + clampi(events[o + 3], 0, 127)
+			else:
+				item = clampi(prog[ch], 0, 127)
+				noted |= 1 << ch
+			if seen[item] == 0:
+				seen[item] = 1
+				out.append(item)
+		elif kind == 0xC0 and ch != 9:
+			prog[ch] = events[o + 3]
+			changes.append((ch << 8) | clampi(events[o + 3], 0, 127))
+		o += REC
+	for c in changes:
+		var item: int = c & 0xFF
+		if ((noted >> (c >> 8)) & 1) != 0 and seen[item] == 0:
+			seen[item] = 1
+			out.append(item)
+	return out
+
+## Queue the song's instruments: cached samples install in `_warm_step`,
+## missing ones start synthesising on the worker pool right away.
+func _warm_up() -> void:
+	_prep = PackedInt32Array()
+	for item in _song_items(_events):
+		if _is_ready(item):
+			continue
+		var key: String = _sample_key(item)
+		if not _jobs.has(key) and not _cached(key):
+			_jobs[key] = _start_job(item)
+		_prep.append(item)
+
+## The asset cache holds the sample already: installing it is a load.
+func _cached(key: String) -> bool:
+	return Assets.has_cached("music", key)
+
+## Synthesise an item's sample on the worker pool. The builders are
+## static and touch nothing but their own buffers and the new
+## AudioStreamWAV (whose setters lock the audio server themselves).
+func _start_job(item: int) -> Array:
+	var out: Array = [null]
+	var task: Callable
+	if item >= DRUM_BASE:
+		var dspec: Dictionary = _drum_spec(item - DRUM_BASE)
+		task = func() -> void: out[0] = _build_drum(dspec)
+	else:
+		var spec: Dictionary = _family(item)
+		task = func() -> void: out[0] = _build_tone(spec)
+	var id: int = WorkerThreadPool.add_task(task, false, "MidiSynth " + _sample_key(item))
+	return [id, out, item]
+
+## A worker's finished sample for `key`, or null while there is none.
+func _take_built(key: String) -> AudioStreamWAV:
+	if not _jobs.has(key):
+		return null
+	var job: Array = _jobs[key]
+	if not WorkerThreadPool.is_task_completed(int(job[0])):
+		return null
+	WorkerThreadPool.wait_for_task_completion(int(job[0]))
+	_jobs.erase(key)
+	return job[1][0] as AudioStreamWAV
+
+## Install queued items for a couple of milliseconds; items whose sample
+## is still being synthesised wait for a later frame.
+func _warm_step() -> void:
+	var until: int = Time.get_ticks_usec() + WARM_BUDGET_USEC
+	var i: int = 0
+	while i < _prep.size():
+		var item: int = _prep[i]
+		if not _is_ready(item):
+			var key: String = _sample_key(item)
+			if _jobs.has(key) and not WorkerThreadPool.is_task_completed(int(_jobs[key][0])):
+				i += 1
+				continue
+			_install(item)
+		_prep.remove_at(i)
+		if Time.get_ticks_usec() >= until:
+			return
+	if _prep.is_empty() and not _jobs.is_empty():
+		_reap_jobs()
+
+## Finished jobs nothing collected — a note got there first and
+## synthesised on the spot, or the song changed: free the pool task, and
+## keep the sample when its instrument is still missing.
+func _reap_jobs() -> void:
+	for key in _jobs.keys():
+		var job: Array = _jobs[key]
+		if not WorkerThreadPool.is_task_completed(int(job[0])):
+			continue
+		if _is_ready(int(job[2])):
+			WorkerThreadPool.wait_for_task_completion(int(job[0]))
+			_jobs.erase(key)
+		else:
+			_install(int(job[2]))            # _take_built collects it
 
 ## GM percussion map → {id (sample identity), kind, params}.
 static func _drum_spec(note: int) -> Dictionary:

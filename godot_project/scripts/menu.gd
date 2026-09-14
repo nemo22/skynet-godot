@@ -62,17 +62,11 @@ const OPT_DIFF_RECTS: Array = [
 ]
 
 # DETAIL.IMG is 198x102 — the original RENDER DETAIL screen: a
-# LOW / MED / HIGH row, a RESOLUTION row and EXIT. Rects measured off
-# the art by finding the buttons' bevel edges.
+# LOW / MED / HIGH row, a RESOLUTION row and EXIT.
 const DET_PANEL_SCALE: float = 3.0
-const DET_LEVEL_RECTS: Array = [
-	Rect2(48, 28, 32, 18), Rect2(82, 28, 33, 18), Rect2(117, 28, 33, 18),
-]
-const DET_RES_RECTS: Array = [Rect2(34, 63, 60, 18), Rect2(103, 63, 60, 18)]
-const DET_EXIT_RECT: Rect2 = Rect2(158, 86, 38, 14)
 
 # CONTROLS.IMG is 269x166 — the original CONTROL CONFIGURATION screen.
-# All 17 captions on the art are bindable (controls.gd ACTIONS).
+# All 17 captions on the art are bindable (controls.gd DEFAULTS).
 const CTL_PANEL_SCALE: float = 4.0
 const CTL_BOXES: Dictionary = {
 	# Measured off CONTROLS.IMG (269x166) by scanning for the dark bind
@@ -106,7 +100,6 @@ const CTL_EXIT_RECT: Rect2 = Rect2(224, 151, 44, 13)
 const NG_PANEL_SCALE: float = 4.0
 const NG_MULTI_RECT: Rect2 = Rect2(6, 10, 186, 16)
 const NG_ONE_RECT: Rect2 = Rect2(6, 35, 186, 16)
-const NG_TUTORIAL_RECT: Rect2 = Rect2(6, 60, 186, 16)
 const NG_FSHOCK_RECT: Rect2 = Rect2(6, 85, 186, 17)
 const NG_EXIT_RECT: Rect2 = Rect2(154, 117, 44, 14)
 
@@ -143,7 +136,7 @@ var _saved_art: Array = [null, null]         # SAVED.IMG / SAVED2.IMG
 var _bar_art: bool = false                   # the bar strip has its art
 
 ## In-game mode: pause_menu.gd hosts these screens over the running
-## level, the way DOS does on Esc (Marek's DOSBox shot, 2026-09-11) -
+## level, the way DOS does on Esc (a DOSBox shot, 2026-09-11) -
 ## MAIN2.IMG's RETURN / LOAD / SAVE / OPTIONS / QUIT bar over the darkened
 ## game instead of the title screen, SAVE.IMG's ten slots, and QUIT asks
 ## QUITMAIN.IMG's "QUIT TO MAIN MENU?". Set before the node enters the tree.
@@ -176,6 +169,14 @@ func _ready() -> void:
 	if in_game:
 		_build()                          # no music, maps or import in game
 		return
+	# A game can end with the mouse still captured (a won campaign drops
+	# straight back here), which left the title menu with no cursor.
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	# Back at the title, a session is over: god mode (F9, the console, the
+	# DEBUG TOOLS toggle) is static and would otherwise ride into the next
+	# game. DEBUG TOOLS can arm it again before a map loads, `--god` and
+	# the console set it on the player once one has.
+	PlayerScript.god_mode = false
 	var ss := get_node_or_null("/root/SceneSwitcher")
 	if ss != null and ss.has_method("set_hud_visible"):
 		ss.set_hud_visible(false)
@@ -217,6 +218,17 @@ func _maybe_import() -> void:
 			cli[a.substr(2, a.find("=") - 2)] = a.substr(a.find("=") + 1)
 	if cli.has("name"):
 		Net.save_name(String(cli["name"]))
+	# `--menu-shot=PATH [--shot-delay=s] [--quit-after-shot]`: capture the
+	# window once it has settled (layout checks from a script). Taken by
+	# the SceneSwitcher autoload, so it still fires when `--map=` below has
+	# already swapped this menu for the game. Without `--screen=` it always
+	# quits afterwards, as the agent aid it began as.
+	if cli.has("menu-shot"):
+		var ss := get_node_or_null("/root/SceneSwitcher")
+		if ss != null and ss.has_method("capture_after"):
+			ss.call("capture_after", String(cli["menu-shot"]).strip_edges(),
+				float(cli.get("shot-delay", 1.0 if cli.has("screen") else 1.5)),
+				cli.has("quit-after-shot") or not cli.has("screen"))
 	if cli.has("host"):
 		var lv: Dictionary = NetLevels.for_map(String(cli["host"]).strip_edges().to_upper())
 		var cfg := {"name": "%s's game" % Net.local_name, "map": String(lv["map"]),
@@ -229,8 +241,8 @@ func _maybe_import() -> void:
 			SkynetPaths.selected_map = String(cfg["map"])
 			get_tree().change_scene_to_file.call_deferred(GAME_SCENE)
 		return
-	# `--screen=netmenu|join|newgame --menu-shot=PATH`: open a menu screen
-	# and capture it (layout checks from a script).
+	# `--screen=netmenu|join|newgame`: open a menu screen (with
+	# `--menu-shot`, the one captured).
 	if cli.has("screen"):
 		var target: Control = {"netmenu": _screen_netmenu, "join": _screen_join,
 			"newgame": _screen_newgame, "netjoin": _screen_netjoin,
@@ -242,13 +254,6 @@ func _maybe_import() -> void:
 		_show_screen(target)
 		if String(cli["screen"]) == "quit":
 			_confirm_quit()
-		if cli.has("menu-shot"):
-			await get_tree().create_timer(float(cli.get("shot-delay", 1.0))).timeout
-			await RenderingServer.frame_post_draw
-			var img: Image = get_viewport().get_texture().get_image()
-			print("[menu] screenshot %s (%s)" % [cli["menu-shot"], error_string(img.save_png(String(cli["menu-shot"])))])
-			if cli.has("quit-after-shot"):
-				get_tree().quit()
 		return
 	if cli.has("join"):
 		_join_name = LineEdit.new()
@@ -257,21 +262,11 @@ func _maybe_import() -> void:
 		_join_addr.text = String(cli["join"])
 		_on_join_typed.call_deferred()
 		return
-	for a in args:
-		if a.begins_with("--menu-shot="):
-			# Agent aid: capture the menu after it settled, then quit.
-			var out: String = a.substr(12).strip_edges()
-			get_tree().create_timer(1.5).timeout.connect(func() -> void:
-				await RenderingServer.frame_post_draw
-				var img: Image = get_viewport().get_texture().get_image()
-				print("[menu] screenshot %s (%s)" % [out, error_string(img.save_png(out))])
-				get_tree().quit())
-			break
-		if a.begins_with("--map="):
-			SkynetPaths.selected_map = a.substr(6).strip_edges().to_upper()
-			# _ready is still adding children — switch scenes afterwards.
-			get_tree().change_scene_to_file.call_deferred(GAME_SCENE)
-			return
+	if cli.has("map"):
+		SkynetPaths.selected_map = String(cli["map"]).strip_edges().to_upper()
+		# _ready is still adding children — switch scenes afterwards.
+		get_tree().change_scene_to_file.call_deferred(GAME_SCENE)
+		return
 	if not Assets.enabled:
 		return
 	var forced: bool = "--import" in args
@@ -283,14 +278,16 @@ func _maybe_import() -> void:
 			get_tree().quit(0 if not p.is_empty() else 1)
 			return
 	# `--level-scene=MAP.210`: bake one level scene (the world in Godot
-	# format) for the look in force and quit. The editor dock uses this.
+	# format) and quit. The editor dock uses this.
 	for a in args:
 		if a.begins_with("--level-scene="):
 			var lp: String = Assets.level_scene(a.substr(14).strip_edges().to_upper())
 			print("[menu] level scene: %s" % (lp if not lp.is_empty() else "FAILED"))
 			get_tree().quit(0 if not lp.is_empty() else 1)
 			return
-	if not forced and DirAccess.dir_exists_absolute(Assets.root + "/mesh"):
+	# The stamp, not a folder: an import cut short leaves mesh/ behind and
+	# used to pass for a finished one.
+	if not forced and Assets.import_complete():
 		return
 	# No original data found (exported build without a bundled copy):
 	# ask for the game's directory and remember it.
@@ -429,7 +426,7 @@ func _build() -> void:
 
 	# Title-screen backdrop, kept behind every screen. In game DOS darkens
 	# the frozen view under its menu instead and leaves the panel at the
-	# bottom showing (Marek's DOSBox shot, 2026-09-11).
+	# bottom showing (a DOSBox shot, 2026-09-11).
 	if in_game:
 		var shade := ColorRect.new()
 		shade.color = Color(0.0, 0.0, 0.0, 0.45)
@@ -737,8 +734,6 @@ var _nm_arena: int = 0
 var _nm_area_label: Label = null
 var _nm_skill_btn: Button = null
 var _nm_replenish_btn: Button = null
-var _nm_bots_edit: LineEdit = null
-var _nm_port_edit: LineEdit = null
 var _bot_skill: int = 1
 var _replenish: bool = true
 var _join_list: VBoxContainer = null
@@ -857,7 +852,7 @@ func _build_netmenu_screen(tex: Variant) -> Control:
 
 	# DOS has NO arena list: the AREA box itself cycles through the
 	# arenas when you click it ("mapy sa prepínajú klikaním v AREA a tam
-	# sa rotujú, nie je nikde zoznam zobrazený", Marek 2026-09-11). The
+	# sa rotujú, nie je nikde zoznam zobrazený", playtest 2026-09-11). The
 	# port showed a scrolling list in the left box instead.
 	panel.add_child(_img_hotspot(NM_AREA_RECT, s, func() -> void:
 		var n: int = NetLevels.levels().size()
@@ -909,7 +904,7 @@ func _build_netmenu_screen(tex: Variant) -> Control:
 
 ## The left box of the DOS network screen holds a ROTATING 3D MODEL of
 ## the body you will play as, and clicking it changes the character ("to
-## nebol portrét postavy ale normálne 3d model ktorý rotoval", Marek
+## nebol portrét postavy ale normálne 3d model ktorý rotoval", playtest
 ## 2026-09-12) — there is no portrait art in the archives, the original
 ## drew the .3D itself.
 ##
@@ -917,7 +912,7 @@ func _build_netmenu_screen(tex: Variant) -> Control:
 ## 0x84dd4: 13 records of 0x6d bytes, indexed `(actor+0x1f) - 1`, each
 ## naming five models — body, head, dropped head, idle body, idle head).
 ## Its twelve named characters share exactly THREE bodies: 3x soldier,
-## 4x terminator, 6x female — "ľudia sú tam rôzni - vojak, žena" (Marek
+## 4x terminator, 6x female — "ľudia sú tam rôzni - vojak, žena" (playtest
 ## 2026-09-12). AVBUTCH.3D lies in the archive but no record names it, so
 ## it is not offered here either; records 13/14 are not characters at all
 ## but the net vehicles (NETHUMER, NET_HK).
@@ -942,7 +937,7 @@ const CLASS_AVATARS: Array = [
 ## -> 31.7 -> 72.8 u), 15-24 run (the longest stride at 79 u over the
 ## lowest shoulders — a forward lean), 25-28 take a hit, 29-34 die. DOS
 ## showed the figure running on the spot: "v dos hre bol ako keby v behu
-## a normálnej velkosti" (Marek 2026-09-12).
+## a normálnej velkosti" (playtest 2026-09-12).
 const RUN_FIRST: int = 15
 const RUN_LAST: int = 24
 const RUN_FPS: float = 12.0
@@ -1057,7 +1052,7 @@ func _show_class_model() -> void:
 	# eye — a camera on -Z photographed the soldier's back and webbing.
 	# Far enough out that the run cycle fits with room to spare (filling
 	# the box to the edges read as too big: "možno trošku ich zmenšiť",
-	# Marek 2026-09-12), and that spare height is where the name sits.
+	# playtest 2026-09-12), and that spare height is where the name sits.
 	var half: float = maxf(box.size.y, 1.0) * 0.5 * 1.3
 	var dist: float = half / tan(deg_to_rad(_class_cam.fov * 0.5))
 	_class_cam.position = Vector3(0.0, 0.0, dist)
@@ -1398,6 +1393,12 @@ func _on_load_slot(idx: int) -> void:
 		_show_toast("Slot %d is empty." % (idx + 1) if in_game
 			else "Slot %d is empty. Save in-game with F6." % (idx + 1))
 		return
+	# A damaged, foreign or newer-format file: say so here, rather than
+	# leave the menu for a game that cannot start from it.
+	if SaveGame.read(idx).is_empty():
+		_show_toast("Slot %d cannot be loaded: %s." % [idx + 1,
+			SaveGame.last_error if not SaveGame.last_error.is_empty() else "the file is gone"])
+		return
 	Audio.play_sfx("BUTTON1.RAW")
 	if in_game:
 		load_requested.emit(idx)          # pause_menu.gd closes, main loads
@@ -1614,7 +1615,7 @@ func _build_display_screen(_detail_tex: Variant) -> Control:
 	# DETAIL.IMG itself is no longer ON this screen. Its two rows of
 	# hotspots sat above the port's own dialog and the two together read as
 	# two screens in one ("tymto novym dialogom by som komplet nahradil ten
-	# stary render detail", Marek 2026-09-12). Nothing of the original's
+	# stary render detail", playtest 2026-09-12). Nothing of the original's
 	# look is lost: the dialog below is CUT FROM that very art (see
 	# _prepare_art_styles) and both of its rows are cells in it now.
 	_detail_marks.clear()
@@ -1712,7 +1713,7 @@ func _build_display_screen(_detail_tex: Variant) -> Control:
 
 	# Brightness — a multiplier on the DOS gamma, applied at once, and a
 	# SLIDER rather than two buttons ("tu gamu by som dal ako slider",
-	# Marek 2026-09-12). The track is the art's own value box, the filled
+	# playtest 2026-09-12). The track is the art's own value box, the filled
 	# part its green, the knob cut from the same cell's corner.
 	var bright := HBoxContainer.new()
 	bright.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -2025,7 +2026,7 @@ func _menu_button(text: String, cb: Callable) -> Button:
 ## every box a VALUE sits in is drawn. The port's own controls were flat
 ## rounded rectangles in colours of their own and read as another game's
 ## UI beside that art ("nadizajnovat viac v style tych okien ktore uz
-## skynet ma ... nech to nie je uplne ako past na oko", Marek
+## skynet ma ... nech to nie je uplne ako past na oko", playtest
 ## 2026-09-12), so they are now cut from the same cloth: the same mottled
 ## field, the same edge colours, square corners.
 const DOS_FIELD: Array = [
@@ -2142,7 +2143,7 @@ func _value_field(cell: VBoxContainer, text: Callable, on: Callable,
 ## The palette above already matched the original exactly, and it was
 ## still not enough: the DOS field is blotchy weathered metal, and a
 ## per-pixel mottle beside it reads as a different game ("to pozadie
-## nevies pouzit s tych existujucich dialogov?", Marek 2026-09-12). So
+## nevies pouzit s tych existujucich dialogov?", playtest 2026-09-12). So
 ## the panel and the boxes are now REBUILT FROM DETAIL.IMG's own pixels —
 ## its frame, its value box, and a clean patch of its metal — as
 ## nine-patches at the 3x the art itself is drawn at, so one art pixel
@@ -2150,7 +2151,6 @@ func _value_field(cell: VBoxContainer, text: Callable, on: Callable,
 const ART_FIELD: Rect2i = Rect2i(6, 14, 32, 40)      # clean weathered metal
 const ART_PANEL_BORDER: int = 4                      # art px of window frame
 const ART_CELL: Rect2i = Rect2i(34, 63, 60, 18)      # the "320 X 200" box
-const ART_CELL_FIELD: Rect2i = Rect2i(36, 65, 8, 10)
 const ART_CELL_BORDER: int = 2
 
 var _art_img: Image = null
@@ -2421,25 +2421,33 @@ func _on_controls_back() -> void:
 
 # --- input / actions --------------------------------------------------
 
-func _unhandled_input(event: InputEvent) -> void:
-	# While the CONTROLS dialog is waiting, the next key OR MOUSE BUTTON
-	# is the new bind — the mouse was not bindable at all before
-	# 2026-09-04, which left fire and throw stuck on the keyboard.
-	if _rebinding_action != "":
-		var pressed: bool = (event is InputEventKey and event.pressed and not event.echo) 			or (event is InputEventMouseButton and event.pressed)
-		if not pressed:
-			return
-		var esc: bool = event is InputEventKey 			and (event as InputEventKey).keycode == KEY_ESCAPE
-		if not esc:
-			var code: int = Controls.code_for(event)
-			if code != 0:
-				Controls.set_bind(_rebinding_action, code)
-		var rl: Label = _rebind_labels.get(_rebinding_action)
-		if rl != null:
-			rl.text = Controls.key_label(_rebinding_action)
-		_rebinding_action = ""
-		get_viewport().set_input_as_handled()
+## While the CONTROLS dialog is waiting, the next key OR MOUSE BUTTON is
+## the new bind — the mouse was not bindable at all before 2026-09-04,
+## which left fire and throw stuck on the keyboard. Caught here, ahead of
+## the GUI: the dialog's dimming rect and its hotspots stop mouse buttons,
+## so from _unhandled_input only the wheel ever arrived and FIRE, once on
+## a key, could only get back to the mouse through DEFAULT. Consumed, so
+## the click that binds presses nothing under the pointer.
+func _input(event: InputEvent) -> void:
+	if _rebinding_action == "":
 		return
+	var pressed: bool = (event is InputEventKey and event.pressed and not event.echo) \
+		or (event is InputEventMouseButton and event.pressed)
+	if not pressed:
+		return
+	var esc: bool = event is InputEventKey \
+		and (event as InputEventKey).keycode == KEY_ESCAPE
+	if not esc:
+		var code: int = Controls.code_for(event)
+		if code != 0:
+			Controls.set_bind(_rebinding_action, code)
+	var rl: Label = _rebind_labels.get(_rebinding_action)
+	if rl != null:
+		rl.text = Controls.key_label(_rebinding_action)
+	_rebinding_action = ""
+	get_viewport().set_input_as_handled()
+
+func _unhandled_input(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 	if event.keycode == KEY_ESCAPE:
@@ -2558,6 +2566,11 @@ func show_page(page: String) -> void:
 	_show_screen(target)
 
 func _launch(scene_path: String) -> void:
+	# Nobody plays a network game invulnerable: a hit is checked on the
+	# victim's own machine, so a god mode armed in DEBUG TOOLS would hold
+	# online too.
+	if Net.active:
+		PlayerScript.god_mode = false
 	var ss := get_node_or_null("/root/SceneSwitcher")
 	if ss != null and ss.has_method("set_hud_visible"):
 		ss.set_hud_visible(true)

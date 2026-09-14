@@ -36,6 +36,3 @@ extends Area3D
 ## handler only looks at bits 1-2), and ObjFlipLink forces it back on.
 @export var state: int = 0
 @export var targets: Array[NodePath] = []
-
-func is_gate() -> bool:
-	return act == 0xEF

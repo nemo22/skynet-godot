@@ -50,6 +50,13 @@ extends RefCounted
 ## Cap for sanity-check on tag count. TEXTURE.000 / TEXTURE.001 (Solid
 ## Colors) each store 128 records, so this must be at least 128.
 const MAX_RECORDS: int = 256
+## Decoded-pixel budgets. A crafted bank could point all 256 records, or a
+## sprite's 65 535 frame slots, at one 1024×1024 image. The real files peak
+## at ~254 000 pixels per bank (TEXTURE.302) and 27 frames / ~308 000
+## pixels per animation (TEXTURE.220).
+const MAX_FILE_PIXELS: int = 16 * 1024 * 1024
+const MAX_SPRITE_FRAMES: int = 256
+const MAX_FRAMES_PIXELS: int = 16 * 1024 * 1024
 
 class Record:
 	var width: int = 0
@@ -79,11 +86,17 @@ static func parse(bytes: PackedByteArray) -> TexFile:
 	var name_bytes := bytes.slice(2, 18)
 	t.name = name_bytes.get_string_from_ascii().strip_edges()
 
+	var pixels: int = 0
 	for r in tag:
 		var ro: int = 28 + r * 20
 		if ro + 20 > bytes.size():
 			break                              # outer record table truncated
+		if pixels > MAX_FILE_PIXELS:
+			t.records.append(Record.new())     # over budget: placeholders
+			continue
 		var rec := _parse_record(bytes, ro)
+		if rec != null:
+			pixels += rec.pixels.size()
 		# A failed record still occupies its slot — append an empty
 		# placeholder so later records keep their correct index. One bad
 		# record must not truncate the rest of the bank.
@@ -162,6 +175,8 @@ static func _parse_record(bytes: PackedByteArray, ro: int) -> Record:
 			return null
 
 		var frame_start: int = pix_off + f0_off
+		if frame_start + 4 > bytes.size():
+			return null                      # frame header past the end
 		var fw: int = _u16(bytes, frame_start)
 		var fh: int = _u16(bytes, frame_start + 2)
 		if fw == 0 or fh == 0 or fw > 1024 or fh > 1024:
@@ -223,7 +238,10 @@ static func parse_record_frames(bytes: PackedByteArray,
 		return []
 
 	var frames: Array = []
-	for k in depth:
+	# Budgets (see MAX_SPRITE_FRAMES): frame slots looked at, and pixels of
+	# every frame a decode was attempted for, successful or not.
+	var attempted: int = 0
+	for k in mini(depth, MAX_SPRITE_FRAMES):
 		var f_off: int = _u32(bytes, pix_off + k * 4)
 		var f_next: int
 		if k + 1 < depth:
@@ -245,6 +263,9 @@ static func parse_record_frames(bytes: PackedByteArray,
 		var data_size: int = (pix_off + f_next) - data_off
 		if data_off + data_size > bytes.size() or data_size <= 0:
 			continue
+		attempted += fw * fh
+		if attempted > MAX_FRAMES_PIXELS:
+			break
 		var rec_pixels: PackedByteArray
 		if data_size == fh * (fw + 2):
 			rec_pixels = PackedByteArray()
@@ -269,13 +290,17 @@ static func parse_record_frames(bytes: PackedByteArray,
 ## buffer, or an empty array on a source under-run.
 static func _decode_sparse_rows(src: PackedByteArray, off: int,
 		size: int, w: int, h: int) -> PackedByteArray:
+	# Built by appending whole runs (native slices) rather than writing a
+	# pixel at a time: `filled` is how much of the current row is already
+	# in `dst`, and a gap before the next run is transparent zeros.
 	var dst := PackedByteArray()
-	dst.resize(w * h)
+	var zeros := PackedByteArray()
+	zeros.resize(w)                        # zero-filled
 	var s: int = off
 	var end: int = off + size
 	for y in h:
 		var x: int = 0
-		var row: int = y * w
+		var filled: int = 0
 		while x < w:
 			if s + 2 > end:
 				return PackedByteArray()
@@ -283,13 +308,18 @@ static func _decode_sparse_rows(src: PackedByteArray, off: int,
 			var opaque: int = src[s + 1]
 			s += 2
 			x += trans
-			for k in opaque:
-				if s >= end:
-					return PackedByteArray()
-				if x >= 0 and x < w:
-					dst[row + x] = src[s]
-				s += 1
-				x += 1
+			if s + opaque > end:
+				return PackedByteArray()
+			if opaque > 0 and x < w:
+				var n: int = mini(opaque, w - x)   # pixels past W are dropped
+				if x > filled:
+					dst.append_array(zeros.slice(0, x - filled))
+				dst.append_array(src.slice(s, s + n))
+				filled = x + n
+			s += opaque
+			x += opaque
+		if filled < w:
+			dst.append_array(zeros.slice(0, w - filled))
 	return dst
 
 ## Convert a palette-indexed record to a Godot ImageTexture (RGBA8) using
@@ -317,30 +347,14 @@ static func to_image(rec: Record, palette: PackedColorArray,
 		lut[i * 4 + 1] = int(c.g * 255.0)
 		lut[i * 4 + 2] = int(c.b * 255.0)
 		lut[i * 4 + 3] = 0 if (transparent_index_0 and i == 0) else 255
-	var rgba := PackedByteArray()
-	rgba.resize(n * 4)
+	# One pixel = one 32-bit word: to_int32_array / to_byte_array copy the
+	# bytes as they are, so the words hold R, G, B, A in memory order on any
+	# byte order — one read and one write per pixel instead of four each.
+	var lut32: PackedInt32Array = lut.to_int32_array()
+	var px: PackedByteArray = rec.pixels
+	var rgba := PackedInt32Array()
+	rgba.resize(n)
 	for i in n:
-		var idx: int = rec.pixels[i]
-		var lo: int = idx * 4
-		var po: int = i * 4
-		rgba[po + 0] = lut[lo + 0]
-		rgba[po + 1] = lut[lo + 1]
-		rgba[po + 2] = lut[lo + 2]
-		rgba[po + 3] = lut[lo + 3]
+		rgba[i] = lut32[px[i]]
 	return Image.create_from_data(rec.width, rec.height, false,
-		Image.FORMAT_RGBA8, rgba)
-
-## Convenience: open a TEXTURE.NNN file by archive id and return a
-## specific record's ImageTexture. `gamedata_root` defaults to the
-## SkynetPaths autoload's path.
-static func load_record_texture(archive_id: int, record_id: int,
-		palette: PackedColorArray, gamedata_root: String = "") -> ImageTexture:
-	if gamedata_root.is_empty():
-		gamedata_root = SkynetPaths.gamedata_dir
-	var path: String = "%s/TEXTURE.%03d" % [gamedata_root, archive_id]
-	var bytes: PackedByteArray = SkynetPaths.read_bytes(path)
-	if bytes.is_empty(): return null
-	var t := parse(bytes)
-	if t == null or t.records.is_empty(): return null
-	var ri: int = clamp(record_id, 0, t.records.size() - 1)
-	return to_image_texture(t.records[ri], palette)
+		Image.FORMAT_RGBA8, rgba.to_byte_array())

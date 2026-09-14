@@ -55,9 +55,6 @@ const ANIM := &"move"
 ## node passes on to.
 @export var targets: Array[NodePath] = []
 
-func is_enabled_at_start() -> bool:
-	return (state & 1) != 0
-
 ## Run the travel forward — open the door, lower the lift.
 func open() -> void:
 	var ap := _player()
@@ -69,20 +66,6 @@ func close() -> void:
 	var ap := _player()
 	if ap != null and ap.has_animation(ANIM):
 		ap.play_backwards(ANIM)
-
-## What a DOS chain flip does to a mover: run toward the far end from
-## rest, run back once arrived, keep going when under way.
-func toggle() -> void:
-	var ap := _player()
-	if ap == null or not ap.has_animation(ANIM):
-		return
-	if ap.is_playing():
-		return
-	if ap.assigned_animation == String(ANIM) \
-			and ap.current_animation_position >= ap.current_animation_length - 0.001:
-		close()
-	else:
-		open()
 
 func _player() -> AnimationPlayer:
 	return get_node_or_null(^"AnimationPlayer") as AnimationPlayer

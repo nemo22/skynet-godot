@@ -39,7 +39,10 @@ var _map = null                      # MapFile.MapFile — the records mirror (F
 func _ready() -> void:
 	_ensure_index()
 	# One-shots armed in the MAP data fire once at level start (a door
-	# sound a map starts enabled, a radio line on entry).
+	# sound a map starts enabled, a radio line on entry). On a map entered
+	# again, or loaded from a save, main.gd has laid the saved state over
+	# the records (sync_from_records) BEFORE this branch enters the tree, so
+	# a cue that already fired has its bit down and does not replay.
 	for id in _by_id:
 		var n: Node = _by_id[id]
 		if n.has_method("fire") and (state_of(n) & 1) != 0:
@@ -84,11 +87,6 @@ func _ensure_index() -> void:
 func node(id: int) -> Node:
 	_ensure_index()
 	return _by_id.get(id)
-
-## id → node for every node in the branch.
-func nodes() -> Dictionary:
-	_ensure_index()
-	return _by_id
 
 static func id_of(n: Node) -> int:
 	if "id" in n:
@@ -220,12 +218,18 @@ func _is_actor(id: int) -> bool:
 	return e != null and (int(e.flags) & 0x40) != 0
 
 ## After a state overlay restore: the records are the truth, copy them
-## back onto the nodes.
+## back onto the nodes — the state bits, and the retirement of a cue that
+## already fired (its act byte 0xFF, see _retire): an objective whose
+## `spent` came back false counted a second time on the next chain flip.
 func sync_from_records() -> void:
 	if _map == null:
 		return
 	_ensure_index()
 	for id in _by_id:
 		var e = _map.entities_by_off.get(id)
-		if e != null:
-			set_state(_by_id[id], int(e.state_byte))
+		if e == null:
+			continue
+		var n: Node = _by_id[id]
+		set_state(n, int(e.state_byte))
+		if "spent" in n and int(e.link_act_type) == 0xFF:
+			n.set("spent", true)

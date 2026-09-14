@@ -4,55 +4,20 @@
 ## DOS spawns smoke via the ammo-type record's impact-spawn pointer
 ## (`DAT_00040728+0x2a`, skynet_gh.c:25954) — same call path as the
 ## explosion fireball but a different effect bank. The smoke source is
-## `TEXTURE.237` (`fire smoke`, confirmed present at
-## C:\games\SKYNET\godot_project\gamedata\TEXTURE.237), one of the
+## `TEXTURE.237` (`fire smoke`, confirmed present in
+## the game's GAMEDATA/TEXTURE.237), one of the
 ## "effects" family rendered with the same variant-3 billboard math.
 
 extends Node3D
 
-const TextureNNN := preload("res://scripts/loaders/texture_nnn.gd")
-const Palette := preload("res://scripts/loaders/palette.gd")
-const BSAReader := preload("res://scripts/loaders/bsa_reader.gd")
+const Explosion := preload("res://scripts/explosion.gd")
 
 const ANIM_FPS: float = 14.0
 const BANK: int = 237
 
-static var _frames: Array = []
-static var _palette_cache: PackedColorArray = PackedColorArray()
-
-static func _load_palette() -> PackedColorArray:
-	if _palette_cache.size() >= 256:
-		return _palette_cache
-	var imgs := BSAReader.new()
-	if not imgs.open(SkynetPaths.gamedata_path("MDMDIMGS.BSA"),
-			SkynetPaths.variant):
-		return PackedColorArray()
-	var pal_bytes: PackedByteArray = SkynetPaths.palette_bytes()
-	imgs.close()
-	if pal_bytes.is_empty():
-		return PackedColorArray()
-	_palette_cache = Palette.parse(pal_bytes)
-	return _palette_cache
-
-static func _load_frames() -> Array:
-	if not _frames.is_empty():
-		return _frames
-	var path: String = SkynetPaths.gamedata_path("TEXTURE.%03d" % BANK)
-	var bytes: PackedByteArray = SkynetPaths.read_bytes(path)
-	if bytes.is_empty():
-		return []
-	var palette: PackedColorArray = _load_palette()
-	if palette.size() < 256:
-		return []
-	var recs: Array = TextureNNN.parse_record_frames(bytes, 0)
-	var out: Array = []
-	for r in recs:
-		if r != null and r.width > 0:
-			var t := TextureNNN.to_image_texture(r, palette, true)
-			if t != null:
-				out.append(t)
-	_frames = out
-	return _frames
+## Every frame of the smoke bank, converted once (Explosion.bank_frames).
+static func frames() -> Array:
+	return Explosion.bank_frames(BANK, 0)
 
 var _sprite: Sprite3D = null
 var _frames_local: Array = []
@@ -61,7 +26,7 @@ var _idx: int = 0
 
 func setup(at: Vector3, size: float = 160.0) -> void:
 	global_position = at
-	_frames_local = _load_frames()
+	_frames_local = frames()
 	if _frames_local.is_empty():
 		queue_free()
 		return

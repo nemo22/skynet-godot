@@ -1,14 +1,17 @@
 ## Headless deathmatch smoke test: hosts MAP.605 with three bots on the
 ## real game scene, then checks the DM machinery — spawn sets, pickups
 ## placed from NETLEVEL.PRS, bot avatars that walk, shoot and score, the
-## host's own hits landing on a bot, a second Godot process joining as a
-## client (roster/welcome/leave) and pickup respawn.
+## host's own hits landing on a bot, forged client input (hits, poses,
+## pickups, level_ready, chat) fed to the server's handlers, a second Godot
+## process joining as a client (roster/welcome/leave) and pickup respawn.
 ##
 ##   godot --headless --path . res://scenes/net_smoke_test.tscn
 ##   (add `-- --no-client` to skip the second process)
 extends Node
 
 const MainScene := preload("res://scenes/main.tscn")
+const DmGameScript := preload("res://scripts/net/dm_game.gd")
+const NetDiscovery := preload("res://scripts/net/net_discovery.gd")
 
 var _fails: int = 0
 var _main: Node = null
@@ -18,6 +21,7 @@ var _deaths: Array = []
 var _joined: Array = []
 var _left: Array = []
 var _taken: int = 0
+var _client_pid: int = -1
 
 func _check(cond: bool, what: String) -> void:
 	if cond:
@@ -106,7 +110,7 @@ func _run() -> void:
 	_check(grounded == 3, "bots stay on the map (none fell through)")
 	# The bodies must ANIMATE, not slide about in one pose: "Postavicky len
 	# poskakuju a premiestnuju sa. Vobec tam nie je animacia behu, statia a
-	# podobne" (Marek 2026-09-12). Watch the bots' clip and frame for a
+	# podobne" (playtest 2026-09-12). Watch the bots' clip and frame for a
 	# second — bodies that are walking show several different frames.
 	var poses: Dictionary = {}
 	for _f in 60:
@@ -131,7 +135,13 @@ func _run() -> void:
 	var dm_node: Node = _main.get("_dm")
 	var det: int = int(player.call("motion_detector_slot"))
 	var was_class: int = Net.class_of(Net.local_id)   # put it back at the end
+	# A class picked mid-game waits for the next spawn — what the console
+	# and the NEXT LIFE message promise — and that respawn puts it on.
+	Net.set_class(Net.CLASS_TERMINATOR if was_class == Net.CLASS_HUMAN else Net.CLASS_HUMAN)
+	_check(Net.class_of(Net.local_id) == was_class, "a class picked mid-game waits for the next spawn")
 	Net.set_class(Net.CLASS_HUMAN)
+	Net._srv_respawn(Net.local_id)
+	_check(Net.class_of(Net.local_id) == Net.CLASS_HUMAN, "the respawn puts the picked class on")
 	if dm_node != null:
 		dm_node.call("_apply_local_class")
 	_check((player.call("owned_list") as Array).has(det),
@@ -146,19 +156,49 @@ func _run() -> void:
 	await get_tree().physics_frame
 	_check(_fired == before_fire,
 		"the detector has no trigger (%d fire events)" % (_fired - before_fire))
+	# And it has to MARK somebody standing in front of it inside its reach
+	# (2026-09-14: in play it showed nobody).
+	var scanner: Control = dm_node.get("_detector") if dm_node != null else null
+	var scanned: Node3D = null
+	for a in get_tree().get_nodes_in_group("dm_actor"):
+		if is_instance_valid(a) and bool(a.get("alive")) and Net.is_alive(int(a.get("net_id"))):
+			scanned = a
+			break
+	if scanner != null and scanned != null:
+		player.set_spawn(scanned.global_position + Vector3(600.0, 40.0, 0.0), 0.0, false)
+		await get_tree().physics_frame
+		var cam3: Camera3D = player.get_viewport().get_camera_3d()
+		var look: Vector3 = scanned.global_position + Vector3(0.0, 50.0, 0.0) - cam3.global_position
+		player.set_view(atan2(-look.x, -look.z), atan2(look.y, Vector2(look.x, look.z).length()))
+		await get_tree().process_frame
+		await get_tree().process_frame
+		var marked: Array = scanner.call("marks")
+		_check(scanner.visible and marked.size() >= 1,
+			"the motion detector marks a player in front of it (%d marks at %.0f u, visible %s, in hand %s, can_process %s, same player %s, weapon %s)"
+			% [marked.size(), cam3.global_position.distance_to(scanned.global_position), scanner.visible,
+				player.call("detector_active"), scanner.can_process(), scanner.get("player") == player,
+				player.get("weapon_name")])
+	else:
+		_check(false, "a live bot and the scanner overlay exist for the detector check")
 	# A TERMINATOR has the same reading built into its view instead, so it
 	# carries no scanner.
 	Net.set_class(Net.CLASS_TERMINATOR)
+	Net._srv_respawn(Net.local_id)
 	if dm_node != null:
 		dm_node.call("_apply_local_class")
 	_check(not (player.call("owned_list") as Array).has(det),
 		"the TERMINATOR carries no scanner (owned %s)" % str(player.call("owned_list")))
 	Net.set_class(was_class)                  # leave the player's own choice alone
+	Net._srv_respawn(Net.local_id)
 	if dm_node != null:
 		dm_node.call("_apply_local_class")
+	# Those respawns moved the player: let it settle on the floor before the
+	# eye-height checks below.
+	for _f in 60:
+		await get_tree().physics_frame
 
 	# Dying used to print YOU DIED and leave the player standing ("ostane
-	# stat", Marek 2026-09-12). Driving it straight rather than waiting for
+	# stat", playtest 2026-09-12). Driving it straight rather than waiting for
 	# a bot to manage the kill: the eye must go down, and come back.
 	var cam: Camera3D = player.get_viewport().get_camera_3d()
 	var eye0: float = cam.global_position.y if cam != null else 0.0
@@ -217,6 +257,7 @@ func _run() -> void:
 		player.set_spawn(pos + Vector3(0.0, 4.0, 0.0), 0.0, false)
 		ok = await _wait(func() -> bool: return bool(Net.pickups[key]["taken"]), 3.0)
 		_check(ok, "walking over a DM pickup takes it via the server")
+	await _forged_input_checks(dm, avatars)
 	# Second process joins as a client.
 	var args: PackedStringArray = OS.get_cmdline_user_args()
 	if not args.has("--no-client"):
@@ -228,9 +269,9 @@ func _run() -> void:
 		# could no longer happen. 60 s covers a cold cache; the test does
 		# not get slower in the good case, it only waits for the quit.
 		var t_client := Time.get_ticks_msec()
-		var pid: int = OS.create_process(exe, ["--headless", "--path", ProjectSettings.globalize_path("res://"),
+		_client_pid = OS.create_process(exe, ["--headless", "--path", ProjectSettings.globalize_path("res://"),
 			"--", "--join=127.0.0.1:27015", "--name=CLIENT", "--quit-after=60"], false)
-		_check(pid > 0, "client process started (pid %d)" % pid)
+		_check(_client_pid > 0, "client process started (pid %d)" % _client_pid)
 		ok = await _wait(func() -> bool: return _joined.size() > 0 and not Net.is_bot(_joined[-1]), 90.0)
 		_check(ok, "client joined the roster (%s)" % (Net.name_of(_joined[-1]) if not _joined.is_empty() else "-"))
 		if ok:
@@ -244,7 +285,121 @@ func _run() -> void:
 			_check(ok, "client left cleanly after --quit-after")
 	_finish()
 
+## What a hostile client could send, fed straight into the server's
+## handlers (`_srv_client_*`, which the `_c_*` RPCs call with the sender's
+## id; the host's own id stands in for the client). None of it may change
+## the game; the real rules — a bot's kill, one level_ready spawn, a seat
+## given up on respawn — must hold.
+func _forged_input_checks(dm: Node, avatars: Array) -> void:
+	# Pure helpers first.
+	var evil: String = "  [color=red]EV" + String.chr(0x202E) + "IL" + String.chr(7) + String.chr(10) + "  "
+	var clean: String = Net._clean_text(evil, Net.MAX_NAME_LEN)
+	_check(clean == "[color=red]EVIL", "names lose control and bidi characters ('%s')" % clean)
+	_check(DmGameScript._bb("[b]X[/b]") == "[lb]b]X[lb]/b]", "scoreboard text cannot carry BBCode")
+	_check(Net._is_lan_ip("192.168.1.20") and Net._is_lan_ip("10.1.2.3") and Net._is_lan_ip("172.20.0.5")
+		and Net._is_lan_ip("127.0.0.1") and Net._is_lan_ip("::ffff:169.254.3.4")
+		and not Net._is_lan_ip("8.8.8.8") and not Net._is_lan_ip("172.32.0.1") and not Net._is_lan_ip("fe80::1"),
+		"LAN discovery answers private, loopback and link-local IPv4 only")
+	var disc = NetDiscovery.new()
+	disc.accept_reply("192.168.1.9", JSON.stringify({"name": 42, "map": ["x"], "players": "lots",
+		"bots": null, "max": 1e300, "port": 99999}).to_utf8_buffer())
+	var sv: Dictionary = disc.servers.get("192.168.1.9:65535", {})
+	_check(String(sv.get("name", "")) == "?" and int(sv.get("players", -1)) == 0 and int(sv.get("max", -1)) == 999,
+		"a malformed LAN reply is listed with safe values, not a script error (%s)" % str(sv))
+
+	var bots: Array = []
+	for a in avatars:
+		if is_instance_valid(a) and Net.is_alive(int(a.get("net_id"))):
+			bots.append(int(a.get("net_id")))
+	if bots.size() < 2 or not Net.is_alive(1):
+		_check(false, "two live bots and a live host for the forged-input checks (%d bots)" % bots.size())
+		return
+	var tid: int = bots[0]
+	var v: Dictionary = Net.players[tid]
+	var hp0: float = float(v["hp"])
+	for bad in [NAN, INF, -50.0, 0.0]:
+		Net._srv_client_hit(1, tid, bad, 1)
+	Net._srv_client_hit(987654, tid, 10.0, 1)            # never admitted
+	_check(float(v["hp"]) == hp0, "forged hits (NaN, inf, negative, zero, unknown sender) leave bot hp %.0f alone (%.0f)"
+		% [hp0, float(v["hp"])])
+	var armor0: float = float(v["armor"])
+	v["hp"] = 5000.0
+	v["armor"] = 0.0
+	Net._srv_client_hit(1, tid, 1e9, 1)
+	var took: float = 5000.0 - float(v["hp"])
+	v["hp"] = hp0
+	v["armor"] = armor0
+	_check(is_equal_approx(took, Net.MAX_HIT_DAMAGE), "a 1e9 hit report is clamped to %.0f (took %.0f)"
+		% [Net.MAX_HIT_DAMAGE, took])
+
+	var pos0: Vector3 = Net.players[1]["pos"]
+	Net._srv_client_pose(1, Vector3(NAN, 0.0, 0.0), 0.0, 0.0, 0)
+	Net._srv_client_pose(1, Vector3(1e12, 0.0, 0.0), 0.0, 0.0, 0)
+	Net._srv_client_pose(1, pos0 + Vector3(10.0, 0.0, 0.0), INF, 0.0, 0)
+	_check(Net.players[1]["pos"] == pos0, "non-finite or absurd poses are not taken (%s)" % str(Net.players[1]["pos"]))
+
+	var far_key: int = -1
+	for k in Net.pickups:
+		if not bool(Net.pickups[k]["taken"]) \
+				and (Net.pickups[k]["pos"] as Vector3).distance_to(pos0) > Net.PICKUP_REACH * 2.0:
+			far_key = k
+			break
+	if far_key >= 0:
+		Net._srv_client_pickup(1, far_key)
+		_check(not bool(Net.pickups[far_key]["taken"]), "a pickup request from across the map is refused")
+
+	Net._srv_level_ready(tid)                            # the one spawn a peer gets
+	v = Net.players[tid]
+	v["hp"] = 42.0
+	Net._srv_level_ready(tid)
+	_check(float(v["hp"]) == 42.0, "a repeated level_ready does not heal (hp %.0f)" % float(v["hp"]))
+	v["hp"] = Net.max_hp_of(tid)
+
+	var lines: Array = []
+	var on_chat := func(_from: int, text: String) -> void: lines.append(text)
+	Net.chat_received.connect(on_chat)
+	for _i in 10:
+		Net._srv_client_chat(1, "X".repeat(500) + String.chr(0x202E))
+	Net.chat_received.disconnect(on_chat)
+	var burst: int = int(Net.RATE_LIMITS[Net.RL_CHAT][1])
+	var capped: bool = true
+	for l in lines:
+		capped = capped and String(l).length() <= Net.MAX_CHAT_LEN
+	_check(lines.size() == burst and capped, "a chat flood is cut to the %d-line burst, each capped (%d lines)"
+		% [burst, lines.size()])
+
+	if not Net.vehicles.is_empty():
+		var vkey: int = int(Net.vehicles.keys()[0])
+		if Net.vehicle_of(1) == 0 and int(Net.vehicles[vkey]["driver"]) == 0:
+			Net._srv_vehicle_enter(1, vkey)
+			var seated: bool = Net.vehicle_of(1) == vkey
+			Net._srv_respawn(1)
+			_check(seated and Net.vehicle_of(1) == 0 and int(Net.vehicles[vkey]["driver"]) == 0,
+				"a respawn gives the seat up (seated %s, driver now %d)" % [seated, int(Net.vehicles[vkey]["driver"])])
+
+	# Bots are NEGATIVE ids: their kills must count for them.
+	var killer: int = bots[0]
+	var victim: int = bots[1]
+	if Net.is_alive(killer) and Net.is_alive(victim):
+		var k0: int = int(Net.players[killer]["kills"])
+		var vk0: int = int(Net.players[victim]["kills"])
+		Net._srv_hit(victim, 100000.0, killer, 1)
+		_check(not Net.is_alive(victim) and int(Net.players[killer]["kills"]) == k0 + 1
+			and int(Net.players[victim]["kills"]) == vk0,
+			"a bot's kill is the bot's frag (%s %d → %d) and costs the victim none (%d → %d)"
+			% [Net.name_of(killer), k0, int(Net.players[killer]["kills"]), vk0, int(Net.players[victim]["kills"])])
+		var center: Label = dm.get("_center")
+		Net._srv_hit(1, 100000.0, killer, 1)
+		_check(not Net.is_alive(1) and center != null and center.text == "KILLED BY %s" % Net.name_of(killer),
+			"killed by a bot names the bot ('%s')" % (center.text if center != null else "-"))
+		var back: bool = await _wait(func() -> bool: return Net.is_alive(1), Net.RESPAWN_DELAY + 5.0)
+		_check(back, "and the host respawns after it")
+
 func _finish() -> void:
 	print("[net-e2e] %s — %d failure(s)" % ["OK" if _fails == 0 else "FAILED", _fails])
+	# A client that never joined arms its --quit-after only once a level
+	# is loaded, so it would otherwise run on headless forever.
+	if _client_pid > 0 and OS.is_process_running(_client_pid):
+		OS.kill(_client_pid)
 	Net.leave()
 	get_tree().quit(0 if _fails == 0 else 1)

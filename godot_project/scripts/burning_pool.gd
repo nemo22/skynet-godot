@@ -29,16 +29,14 @@ func setup(at: Vector3, radius: float, blast: float, thrower: Node) -> void:
 	_owner = thrower
 	# Fuel runs down to the floor: the bottle bursts against a wall or a
 	# railing and the pool used to hang there in the air, scorch discs
-	# and all (Marek, 2026-09-05). No floor within reach — no pool.
+	# and all (playtest, 2026-09-05). No floor within reach — no pool.
 	var floor_y: float = _floor_under(at)
 	if is_nan(floor_y):
 		_left = 0.0
 		global_position = at
 		return
 	global_position = Vector3(at.x, floor_y + 0.5, at.z)
-	var ex := Explosion.new()
-	add_child(ex)
-	ex.setup(at, _radius * 0.9, 356)
+	Explosion.spawn(self, at, _radius * 0.9, 356)
 
 ## Y of the floor under `at` (up to 40 u above it, 320 below), NAN when
 ## there is none.

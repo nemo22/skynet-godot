@@ -124,12 +124,13 @@ func _run() -> void:
 	_check(hovers > 0 and low == 0, "%d hovers all keep >= 200 u above the ground (%d low)" % [hovers, low])
 
 	# --- 1c. Cache location, weapon ownership, cheats, pause menu, console ---
-	# Next to the game data, or — in a development checkout — in the
-	# project's own res://converted (Marek's has no copy beside the data
-	# since the stale one there was deleted, 2026-09-11).
-	var dev: bool = Assets.root == "res://converted" 		and FileAccess.file_exists("res://converted/VERSION")
-	_check((Assets.root == SkynetPaths.converted_dir() or dev) and not Assets.root.begins_with("user://"),
-		"asset cache sits next to the game data (%s)" % Assets.root)
+	# A release keeps the cache next to the game data; a development
+	# checkout keeps it in the project, where the editor opens the map
+	# scenes from — no directory link (SkynetPaths.converted_dir_for).
+	_check(Assets.root == SkynetPaths.converted_dir()
+		and (OS.has_feature("template") or Assets.root == "res://converted")
+		and FileAccess.file_exists(Assets.root + "/VERSION"),
+		"asset cache sits where converted_dir_for puts it (%s)" % Assets.root)
 	_check(player.call("owned_list") == [0, 1, 2, 4, 7],
 		"campaign start arsenal = PIPE, UZI, ASSAULT RIFLE, SHOTGUN, LASER RIFLE (%s)" % str(player.call("owned_list")))
 	player.call("_select_weapon", 6)
@@ -698,7 +699,7 @@ func _check_ram_wall() -> void:
 		return
 	var at := Vector3(float(box.x), -float(box.y), -float(box.z))
 	# The START BOX is pressed, not walked into, and the girder has to ram
-	# the wall several times before it gives (Marek's DOS run, 2026-09-11).
+	# the wall several times before it gives (the DOS run, 2026-09-11).
 	var presses: int = 0
 	while presses < 12 and not lvl.action._spent.has(wall.file_off):
 		lvl.action.press_use()

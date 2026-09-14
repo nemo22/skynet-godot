@@ -36,28 +36,6 @@ const DEFAULTS: Dictionary = {
 	"automap":     KEY_TAB,
 }
 
-## Display order and labels — the CONTROLS.IMG captions, in the order the
-## boxes appear on it (left column top to bottom, then right column).
-const ACTIONS: Array = [
-	["forward",     "FORWARD"],
-	["back",        "REVERSE"],
-	["turn_left",   "TURN LEFT"],
-	["turn_right",  "TURN RIGHT"],
-	["left",        "SLIDE LEFT"],
-	["right",       "SLIDE RIGHT"],
-	["fire",        "FIRE"],
-	["throw",       "THROW/USE"],
-	["activate",    "ACTIVATE"],
-	["slide",       "SLIDE"],
-	["sprint",      "RUN"],
-	["up",          "JUMP"],
-	["down",        "CROUCH"],
-	["look_up",     "LOOK UP"],
-	["look_down",   "LOOK DOWN"],
-	["center_view", "CENTER VIEW"],
-	["automap",     "AUTOMAP"],
-]
-
 var binds: Dictionary = {}
 
 func _ready() -> void:

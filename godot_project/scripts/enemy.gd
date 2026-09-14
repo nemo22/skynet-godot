@@ -105,6 +105,37 @@ const STEP_OTHER: float = 20.0
 const MAX_DROP_TERMINATOR: float = 96.0
 const MAX_DROP_OTHER: float = 60.0
 const DEATH_SOUND_ID: int = 38            # dormant-trap detonation (0x26)
+## The fallback FSM's shot is DOS ammo type 15 (table 0x40728 →
+## AIData.AMMO[15]): LASER3.3D, the enemy bolt, 25 damage, fire sound 39.
+## Its damage comes from that record like every other enemy shot — there
+## is no per-type damage to set.
+const LEGACY_AMMO: int = 15
+const LEGACY_BOLT_SPEED: float = 800.0     # DOS fire-param speed field
+
+## Ray budget. A busy map (MAP.240, 55 actors) cast 15-20 000 rays a
+## second, most of them answering the same question as the tick before.
+## The ground probes ahead of a mover, the snap to the floor and a
+## hover's floor samples run every PROBE_TICKS physics ticks, each actor
+## on its own phase, and the answer stands in between: the probes look
+## 40 and 120 u ahead, farther than a ground actor travels in that time
+## (under 40 u even at 800 u/s), and the body ray is lengthened by the
+## ticks it skips.
+const PROBE_TICKS: int = 3
+## Line of sight is refreshed every LOS_TICKS ticks (15 Hz at 60): the
+## AIS script only reads it at EnemyAI.SCRIPT_HZ (12 Hz).
+const LOS_TICKS: int = 4
+## An actor this far from the camera and outside its view runs its whole
+## update every FAR_TICKS ticks on the summed delta — it walks as far,
+## turns as far and animates as far, in steps nobody can see. Nothing
+## fires from there: the longest DOS fire range is 1900 u.
+const FAR_DIST: float = 4000.0
+const FAR_TICKS: int = 4
+## How far outside the view an actor still counts as seen (its own size
+## is added): the camera can turn faster than FAR_TICKS.
+const FAR_VIEW_MARGIN: float = 400.0
+## Engine loops stop past their max_distance plus this, and start again
+## inside it.
+const ENGINE_GATE_MARGIN: float = 500.0
 
 # Legacy exports (fallback FSM and level_loader compatibility).
 @export var detect_range: float = 7000.0
@@ -114,11 +145,9 @@ const DEATH_SOUND_ID: int = 38            # dormant-trap detonation (0x26)
 @export var anim_fps: float = 12.0
 @export var max_health: float = 60.0
 @export var fire_interval: float = 1.9         # seconds between shots
-@export var shot_damage: float = 9.0
 @export var aim_spread: float = 0.055          # miss cone, fraction of range
 @export var big_model_size: float = 360.0      # AABB extent above which death flings debris
 @export var death_anim_frames: int = -1
-@export var death_anim_time: float = 0.5
 
 const DEATH_FRAME_BUDGET: int = 8
 const ENGINE_DB: float = -10.0
@@ -222,8 +251,31 @@ var _wander_t: float = 0.0
 var _blocked: bool = false
 var _seen: bool = false
 var _dormant_dist: float = 0.0                 # > 0: trap, explode when near
-var _rest_yaw: float = 0.0
 var _ticks: int = 0
+## This actor's phase in the staggered checks (a multiple of 3 and 4).
+var _stagger: int = randi() % 12
+## One ray query for every cast this actor makes (bodies only).
+var _ray := PhysicsRayQueryParameters3D.new()
+var _los: bool = false
+var _los_tick: int = -1000
+var _probe_tick: int = -1000
+var _probe_blocked: bool = false
+var _floor_tick: int = -1000
+var _floor_cache: float = 0.0
+## The floor the last snap stood on — the feet ride its plane between
+## snaps, so a slope does not leave them sunk or floating.
+var _ground_tick: int = -1000
+var _ground_ok: bool = false
+var _ground_pt: Vector3 = Vector3.ZERO
+var _ground_n: Vector3 = Vector3.UP
+var _far_acc: float = 0.0
+var _engine_far: bool = false
+var _sense_d: Dictionary = {}
+## The camera, sampled once per physics frame for every actor.
+static var _view_frame: int = -1
+static var _view_ok: bool = false
+static var _view_pos: Vector3 = Vector3.ZERO
+static var _view_planes: Array[Plane] = []
 
 ## Bind the DOS type data. Call before setup() (level_loader does).
 func configure(type_id: int) -> void:
@@ -282,6 +334,15 @@ func setup(frame_meshes: Array, aabb: AABB, stationary: bool = false,
 	_hit_shape.shape = box
 	_hit_shape.position = aabb.position + aabb.size * 0.5
 	_hit_area.add_child(_hit_shape)
+	# Hits come from ray and shape queries with collide_with_areas, and
+	# those reach an area that neither monitors nor is monitorable: Godot
+	# Physics culls the ray/shape broadphase over its static tree as well
+	# (cull_segment/cull_aabb with tree mask 0xFFFFFFFF), Jolt's query
+	# filter passes AREA_UNDETECTABLE like AREA_DETECTABLE. Nothing
+	# listens for overlaps on a hitbox, so it pays for no pairs.
+	_hit_area.monitoring = false
+	_hit_area.monitorable = false
+	_hit_area.collision_mask = 0
 	add_child(_hit_area)
 
 	if sound_name != "" and not _t.has("engine"):
@@ -301,7 +362,7 @@ func setup(frame_meshes: Array, aabb: AABB, stationary: bool = false,
 			_engine.volume_db = ENGINE_DB
 			_engine.max_db = -2.0
 			_engine.finished.connect(func() -> void:
-				if is_inside_tree() and _state != State.DEAD:
+				if is_inside_tree() and _state != State.DEAD and not _engine_far:
 					_engine.play())
 			add_child(_engine)
 	# The DOS actor starts with its script's first animation.
@@ -347,16 +408,20 @@ func make_path_vehicle() -> void:
 ## of the active-enemy list (skynet_gh.c:29810) and the draw loop
 ## (38213) — until its sprite's chain fires (0x12960b clears the flag).
 var _hidden: bool = false
-var _hidden_layers: Dictionary = {}          # collision object → its layer
+var _hidden_layers: Dictionary = {}          # collision object → [layer, mask]
 
 func hide_until_spawned() -> void:
 	_hidden = true
 	visible = false
 	remove_from_group("enemy")
 	process_mode = Node.PROCESS_MODE_DISABLED
+	# Layer AND mask: with only the layer gone the hidden body still
+	# paired with everything its mask named.
 	for c in find_children("*", "CollisionObject3D", true, false):
-		_hidden_layers[c] = (c as CollisionObject3D).collision_layer
-		(c as CollisionObject3D).collision_layer = 0
+		var co := c as CollisionObject3D
+		_hidden_layers[c] = [co.collision_layer, co.collision_mask]
+		co.collision_layer = 0
+		co.collision_mask = 0
 	if _engine != null:
 		_engine.stop()
 
@@ -368,16 +433,30 @@ func spawn_in() -> void:
 	process_mode = Node.PROCESS_MODE_INHERIT
 	for c in _hidden_layers:
 		if is_instance_valid(c):
-			(c as CollisionObject3D).collision_layer = _hidden_layers[c]
+			var saved: Array = _hidden_layers[c]
+			(c as CollisionObject3D).collision_layer = int(saved[0])
+			(c as CollisionObject3D).collision_mask = int(saved[1])
 	_hidden_layers.clear()
 	if not _passive:
 		add_to_group("enemy")
 		Stats.add_enemies(1)
-	if _engine != null and is_inside_tree():
+	if _engine != null and is_inside_tree() and not _engine_far:
 		_engine.play()
 
 func is_hidden() -> bool:
 	return _hidden
+
+## The hitbox's physics RID: this actor's own shots leave it out of
+## their ray instead of hitting it and flying on.
+func hitbox_rid() -> RID:
+	if _hit_area == null or not is_instance_valid(_hit_area):
+		return RID()
+	return _hit_area.get_rid()
+
+## Radius of everything drawn under this actor, from its origin-space
+## bounds (level_loader sizes the draw distance by it).
+func bounds_radius() -> float:
+	return _mesh_bounds(self, Transform3D()).size.length() * 0.5
 
 ## True once the actor is dying/dead.
 func is_dead() -> bool:
@@ -398,10 +477,10 @@ func _physics_process(delta: float) -> void:
 	if _state == State.DEAD:
 		return
 	_ticks += 1
-	# Engine loops muffle behind walls (Audio.occlusion_db — one ray every
-	# 20 ticks, staggered across the actors).
-	if _engine != null and _engine.playing and (_ticks + get_instance_id()) % 20 == 0:
-		_engine.volume_db = ENGINE_DB + Audio.occlusion_db(global_position + Vector3(0.0, 40.0, 0.0))
+	# Engine loops: in earshot only, muffled behind walls — checked every
+	# 20 ticks, staggered across the actors.
+	if _engine != null and (_ticks + get_instance_id()) % 20 == 0:
+		_gate_engine()
 	if _ticks < 2:
 		return                                 # colliders settle into the space first
 	if _on_path:
@@ -420,10 +499,74 @@ func _physics_process(delta: float) -> void:
 		if _player != null and global_position.distance_to(_player.global_position) < _dormant_dist:
 			_detonate_trap()
 		return
+	# Far away and out of view: the same update, FAR_TICKS at a time.
+	_far_acc += delta
+	if (_ticks + _stagger) % FAR_TICKS != 0 and _far_unseen():
+		return
+	var dt: float = _far_acc
+	_far_acc = 0.0
 	if _brain != null:
-		_tick_data(delta)
+		_tick_data(dt)
 	else:
-		_tick_legacy(delta)
+		_tick_legacy(dt)
+
+## True when this actor is beyond FAR_DIST from the camera and wholly
+## outside its view (with FAR_VIEW_MARGIN to spare). False without a
+## camera: then everything runs at the full rate.
+func _far_unseen() -> bool:
+	var frame: int = Engine.get_physics_frames()
+	if frame != _view_frame:
+		_view_frame = frame
+		var cam: Camera3D = get_viewport().get_camera_3d()
+		_view_ok = cam != null
+		if _view_ok:
+			_view_pos = cam.global_position
+			_view_planes = cam.get_frustum()
+	if not _view_ok:
+		return false
+	var p: Vector3 = global_position
+	if p.distance_squared_to(_view_pos) < FAR_DIST * FAR_DIST:
+		return false
+	var r: float = _body_size + FAR_VIEW_MARGIN
+	for pl in _view_planes:
+		if pl.distance_to(p) > r:          # frustum normals point outward
+			return true
+	return false
+
+## True on this actor's phase of an `every`-tick check (shifted by
+## `offset` so two checks do not land on one tick), or when the last one
+## is `every` ticks old — it just started moving, or runs at the far rate.
+func _due(last: int, every: int, offset: int = 0) -> bool:
+	return (_ticks + _stagger + offset) % every == 0 or _ticks - last >= every
+
+## One ray through this actor's reusable query (bodies only, not the
+## actor hitboxes). Empty when the space is gone.
+func _cast(from: Vector3, to: Vector3) -> Dictionary:
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return {}
+	_ray.from = from
+	_ray.to = to
+	return space.intersect_ray(_ray)
+
+## The engine loop plays while the camera is within its max_distance
+## (plus ENGINE_GATE_MARGIN before it stops): a player past it is silent
+## but still mixed, map-wide. In earshot it muffles behind walls.
+func _gate_engine() -> void:
+	var cam: Camera3D = get_viewport().get_camera_3d()
+	var d: float = cam.global_position.distance_to(global_position) if cam != null else 0.0
+	if d > _engine.max_distance + (0.0 if _engine_far else ENGINE_GATE_MARGIN):
+		_engine_far = true
+		if _engine.playing:
+			_engine.stop()
+		return
+	if _engine_far:
+		_engine_far = false
+		if _state != State.DEAD and _dormant_dist <= 0.0 and not _hidden \
+				and is_inside_tree():
+			_engine.play()
+	if _engine.playing:
+		_engine.volume_db = ENGINE_DB + Audio.occlusion_db(global_position + Vector3(0.0, 40.0, 0.0))
 
 # ---------------------------------------------------------------------
 # DOS data-driven path
@@ -470,18 +613,27 @@ func _tick_data(delta: float) -> void:
 		if gate:
 			_try_fire(self, fp, delta, _t)
 
-## What the DOS handler perceives this tick.
+## What the DOS handler perceives this tick. One dictionary per actor,
+## refilled every tick (the brain reads it and keeps nothing).
 func _sense() -> Dictionary:
+	var s: Dictionary = _sense_d
+	s["blocked"] = _blocked
 	if _player == null:
-		return {"see": false, "dist": 1.0e9, "bearing": 0, "angle": 0, "blocked": _blocked}
+		s["see"] = false
+		s["dist"] = 1.0e9
+		s["bearing"] = 0
+		s["angle"] = 0
+		return s
 	var to: Vector3 = _player.global_position - global_position
 	var flat := Vector3(to.x, 0.0, to.z)
 	var dist: float = flat.length()
 	var angle: int = _dos_angle(flat)
 	var facing: int = int(round(global_rotation.y / TAU * 2048.0)) & 0x7FF
-	var see: bool = dist < PERCEPTION_RANGE and _has_los()
-	return {"see": see, "dist": dist, "bearing": (angle - facing) & 0x7FF,
-		"angle": angle, "blocked": _blocked}
+	s["see"] = dist < PERCEPTION_RANGE and _has_los()
+	s["dist"] = dist
+	s["bearing"] = (angle - facing) & 0x7FF
+	s["angle"] = angle
+	return s
 
 ## Direction → DOS 11-bit yaw (matches the actor's rotation.y frame).
 static func _dos_angle(dir: Vector3) -> int:
@@ -528,9 +680,16 @@ func _move_data(delta: float, sense: Dictionary) -> void:
 	if moving and absf(speed) > 0.5:
 		var fwd: Vector3 = -global_transform.basis.z
 		var step: Vector3 = fwd * speed * delta
-		var ground_bound: bool = st != 9 and not _flying
-		if _path_blocked(step) or (ground_bound and (_too_steep(fwd)
-				or _drop_ahead(fwd) or _water_ahead(fwd))):
+		if _due(_probe_tick, PROBE_TICKS):
+			_probe_tick = _ticks
+			var ground_bound: bool = st != 9 and not _flying
+			# The actor keeps going on this answer until the next probe, so
+			# the body ray also covers the ticks in between.
+			var skip: float = absf(speed) * float(PROBE_TICKS - 1) \
+				/ float(Engine.physics_ticks_per_second)
+			_probe_blocked = _path_blocked(step, skip) or (ground_bound and (_too_steep(fwd)
+					or _drop_ahead(fwd) or _water_ahead(fwd)))
+		if _probe_blocked:
 			_blocked = true
 			if st == 9:
 				rotation.y += 1.2 * delta          # flyer: veer off the wall
@@ -548,10 +707,15 @@ func _move_data(delta: float, sense: Dictionary) -> void:
 		var fwd_n: Vector3 = -global_transform.basis.z
 		# Sample the whole path, not just its far end: one probe ahead
 		# missed a hillside rising in between and the craft flew into it
-		# ("nepriateľské hkčko v polke v kopci").
-		var floor_y: float = _surface_at(global_position)
-		for f in [0.34, 0.67, 1.0]:
-			floor_y = maxf(floor_y, _surface_at(global_position + fwd_n * (reach * f)))
+		# ("nepriateľské hkčko v polke v kopci"). Four 26 000-unit rays, so
+		# every PROBE_TICKS ticks: the craft covers under 40 u of a 400 u
+		# look-ahead in between.
+		if _due(_floor_tick, PROBE_TICKS, 1):
+			_floor_tick = _ticks
+			_floor_cache = _surface_at(global_position)
+			for f in [0.34, 0.67, 1.0]:
+				_floor_cache = maxf(_floor_cache, _surface_at(global_position + fwd_n * (reach * f)))
+		var floor_y: float = _floor_cache
 		var want_y: float = maxf(_player.global_position.y + 31.0, floor_y + min_alt)
 		var dy: float = want_y - global_position.y
 		# Below the floor of its band it is already in the hill: climb out
@@ -565,14 +729,18 @@ func _move_data(delta: float, sense: Dictionary) -> void:
 		# chasers (the scouts) have no altitude logic of their own: they
 		# chased horizontally at their marker height and slid into the
 		# hillsides. Checked every fourth tick — the correction is
-		# gradual and a ray per actor per frame is not worth it.
-		if _ticks % 4 == 0:
+		# gradual and a ray per actor per frame is not worth it — each
+		# actor on its own phase, climbing for the ticks since the last.
+		if _due(_floor_tick, 4, 1):
+			var since: int = clampi(_ticks - _floor_tick, 1, 16) if _floor_tick > 0 else 4
+			_floor_tick = _ticks
 			var fwd2: Vector3 = -global_transform.basis.z
 			var fl: float = maxf(_surface_at(global_position),
 				_surface_at(global_position + fwd2 * FLYER_LOOKAHEAD))
 			var need: float = fl + FLYER_MIN_ALT - global_position.y
 			if need > 0.0:
-				global_position.y += minf(need, FLYER_CLIMB_SPEED * delta * 4.0)
+				global_position.y += minf(need, FLYER_CLIMB_SPEED * float(since)
+					/ float(Engine.physics_ticks_per_second))
 	elif st == 6 and _flying and _is_kamikaze() and see:
 		# A flying mine homes in three dimensions: `near` parks it 25
 		# units from the player, but only on the flat, so without this
@@ -581,7 +749,18 @@ func _move_data(delta: float, sense: Dictionary) -> void:
 		var dy: float = want_y - global_position.y
 		global_position.y += clampf(dy, -speed * delta, speed * delta)
 	elif not _flying:
-		_snap_to_ground()
+		if _due(_ground_tick, PROBE_TICKS, 2):
+			_ground_tick = _ticks
+			_snap_to_ground()
+		elif _ground_ok:
+			_ride_ground_plane()
+
+## Between two snaps, keep the feet on the plane of the floor the last
+## snap found (a slope, a ramp); the next snap corrects a crest or a lift.
+func _ride_ground_plane() -> void:
+	var d: Vector3 = global_position - _ground_pt
+	var feet: float = _ground_pt.y - (_ground_n.x * d.x + _ground_n.z * d.z) / _ground_n.y
+	global_position.y = feet - _foot_offset
 
 ## Highest solid surface under the actor (terrain or a roof).
 func _surface_below() -> float:
@@ -590,14 +769,7 @@ func _surface_below() -> float:
 ## Highest solid surface under `at` (terrain or a roof); `at.y` when
 ## nothing is found.
 func _surface_at(at: Vector3) -> float:
-	var space := get_world_3d().direct_space_state
-	if space == null:
-		return at.y
-	var q := PhysicsRayQueryParameters3D.create(
-		at + Vector3(0.0, 6000.0, 0.0),
-		at + Vector3(0.0, -20000.0, 0.0))
-	q.collide_with_areas = false
-	var hit := space.intersect_ray(q)
+	var hit := _cast(at + Vector3(0.0, 6000.0, 0.0), at + Vector3(0.0, -20000.0, 0.0))
 	return (hit["position"] as Vector3).y if hit.has("position") else at.y
 
 ## True when the ground one step ahead is under the level's water and
@@ -620,10 +792,8 @@ func _drop_ahead(fwd: Vector3) -> bool:
 		return false
 	var ahead: Vector3 = global_position + fwd * 120.0
 	var max_drop: float = MAX_DROP_TERMINATOR if (_type_id >= 33 and _type_id <= 38) else MAX_DROP_OTHER
-	var q := PhysicsRayQueryParameters3D.create(ahead + Vector3(0.0, 60.0, 0.0),
+	var hit := _cast(ahead + Vector3(0.0, 60.0, 0.0),
 		ahead + Vector3(0.0, -max_drop - 60.0, 0.0))
-	q.collide_with_areas = false
-	var hit := space.intersect_ray(q)
 	return not hit.has("position")
 
 ## True when the ground 120 units ahead rises more steeply than the
@@ -635,19 +805,13 @@ func _too_steep(fwd: Vector3) -> bool:
 	var term: bool = _type_id >= 33 and _type_id <= 38
 	# A ledge right ahead (40 u) may rise at most one step.
 	var near: Vector3 = global_position + fwd * 40.0
-	var qn := PhysicsRayQueryParameters3D.create(near + Vector3(0.0, 400.0, 0.0),
-		near + Vector3(0.0, -400.0, 0.0))
-	qn.collide_with_areas = false
-	var hn := space.intersect_ray(qn)
+	var hn := _cast(near + Vector3(0.0, 400.0, 0.0), near + Vector3(0.0, -400.0, 0.0))
 	if hn.has("position"):
 		var step_up: float = (hn["position"] as Vector3).y - global_position.y
 		if step_up > (STEP_TERMINATOR if term else STEP_OTHER):
 			return true
 	var ahead: Vector3 = global_position + fwd * 120.0
-	var q := PhysicsRayQueryParameters3D.create(ahead + Vector3(0.0, 400.0, 0.0),
-		ahead + Vector3(0.0, -400.0, 0.0))
-	q.collide_with_areas = false
-	var hit := space.intersect_ray(q)
+	var hit := _cast(ahead + Vector3(0.0, 400.0, 0.0), ahead + Vector3(0.0, -400.0, 0.0))
 	if not hit.has("position"):
 		return false
 	var rise: float = (hit["position"] as Vector3).y - global_position.y
@@ -656,15 +820,14 @@ func _too_steep(fwd: Vector3) -> bool:
 	var limit: float = SLOPE_TERMINATOR if term else SLOPE_OTHER
 	return atan2(rise, 120.0) > limit
 
-## Solid geometry ahead along `step` (bodies only, not the player).
-func _path_blocked(step: Vector3) -> bool:
+## Solid geometry ahead along `step`, plus `extra` units (bodies only,
+## not the player).
+func _path_blocked(step: Vector3, extra: float = 0.0) -> bool:
 	var space := get_world_3d().direct_space_state
 	if space == null:
 		return false
 	var from: Vector3 = global_position + Vector3(0.0, 60.0, 0.0)
-	var q := PhysicsRayQueryParameters3D.create(from, from + step.normalized() * (step.length() + 40.0))
-	q.collide_with_areas = false
-	var hit := space.intersect_ray(q)
+	var hit := _cast(from, from + step.normalized() * (step.length() + extra + 40.0))
 	if not hit.has("collider"):
 		return false
 	return not (hit["collider"] as Object).has_method("take_damage")
@@ -693,7 +856,6 @@ func _cycle_full_strip(delta: float) -> void:
 ## level_loader whose type is a turret.
 func _build_segments() -> void:
 	_segs_built = true
-	_rest_yaw = rotation.y
 	var st: int = int(_t.get("st", 0))
 	if st == 2 or st == 8:
 		_segs.append(_make_seg(self, _t, _type_id))
@@ -874,21 +1036,14 @@ func _shoot(muzzle: Vector3, dir: Vector3, ammo: int, dos_speed: float) -> void:
 	if scene == null:
 		return
 	var tint: Color = _ammo_color(model)
-	var mf := MuzzleFlash.new()
-	scene.add_child(mf)
-	mf.setup(muzzle, tint, 44.0)
+	MuzzleFlash.spawn(scene, muzzle, tint, 44.0)
 	if fam == 0:
 		# Hitscan bullets: tracer + instant damage (DOS type 0/1/16).
-		var space := get_world_3d().direct_space_state
 		var endpoint: Vector3 = muzzle + dir * 20000.0
-		var q := PhysicsRayQueryParameters3D.create(muzzle, endpoint)
-		q.collide_with_areas = false
-		var hit := space.intersect_ray(q)
+		var hit := _cast(muzzle, endpoint)
 		if hit.has("position"):
 			endpoint = hit["position"]
-		var tr: MeshInstance3D = Tracer.new()
-		scene.add_child(tr)
-		tr.setup(muzzle, endpoint, tint)
+		Tracer.spawn(scene, muzzle, endpoint, tint)
 		if hit.has("collider"):
 			var n: Node = hit["collider"] as Node
 			while n != null and not n.has_method("take_damage"):
@@ -896,9 +1051,7 @@ func _shoot(muzzle: Vector3, dir: Vector3, ammo: int, dos_speed: float) -> void:
 			if n != null and n.is_in_group("player"):
 				n.take_damage(float(absi(dmg)))
 			elif bank > 0:
-				var puff := Explosion.new()
-				scene.add_child(puff)
-				puff.setup(endpoint, 40.0, bank)
+				Explosion.spawn(scene, endpoint, 40.0, bank)
 		return
 	var proj := Projectile.new()
 	scene.add_child(proj)
@@ -1083,26 +1236,28 @@ func _fire_at_player() -> void:
 	var aim := _player.global_position + Vector3(0.0, 60.0, 0.0)
 	var dir := (aim - origin).normalized()
 	var muzzle := origin + dir * (_body_size * 0.5 + 80.0)
-	_shoot(muzzle, dir, 15, 800.0)
+	_shoot(muzzle, dir, LEGACY_AMMO, LEGACY_BOLT_SPEED)
 
 # ---------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------
-## True when an unobstructed line runs to the player.
+## True when an unobstructed line runs to the player. Cast every
+## LOS_TICKS ticks on this actor's phase; the perception and every
+## shooter on the actor share the answer in between.
 func _has_los() -> bool:
 	if _player == null:
 		return false
+	if not _due(_los_tick, LOS_TICKS, 3):
+		return _los
+	_los_tick = _ticks
 	var space := get_world_3d().direct_space_state
 	if space == null:
+		_los = false
 		return false
-	var q := PhysicsRayQueryParameters3D.create(
-		global_position + Vector3(0.0, 60.0, 0.0),
+	var hit := _cast(global_position + Vector3(0.0, 60.0, 0.0),
 		_player.global_position + Vector3(0.0, 60.0, 0.0))
-	q.collide_with_areas = false
-	var hit := space.intersect_ray(q)
-	if not hit.has("collider"):
-		return true
-	return (hit["collider"] as Object).has_method("take_damage")
+	_los = not hit.has("collider") or (hit["collider"] as Object).has_method("take_damage")
+	return _los
 
 ## Receive damage from a player shot.
 ## `by_player` marks a hit that came from the player's own weapon — the
@@ -1195,9 +1350,7 @@ func _spawn_explosion(at: Vector3, radius: float) -> void:
 	var scene := get_tree().current_scene
 	if scene == null:
 		return
-	var ex := Explosion.new()
-	scene.add_child(ex)
-	ex.setup(at, radius)
+	Explosion.spawn(scene, at, radius)
 
 func _spawn_debris(at: Vector3, part: Mesh) -> void:
 	var scene := get_tree().current_scene
@@ -1274,20 +1427,30 @@ func _snap_to_ground(init: bool = false) -> bool:
 		# At placement a marker may sit well under the surface (the MAP.240
 		# spiders: 130 u) — reach further up on the first snap.
 		var pop := _floor_ray(space, global_position, feet_y + (240.0 if init else SINK_RECOVER), feet_y + up, true)
+		_ground_ok = false
 		if not pop.is_empty():
 			global_position.y = (pop["position"] as Vector3).y - _foot_offset
 			return true
 		return init
-	global_position.y = (hit["position"] as Vector3).y - _foot_offset
+	var gp: Vector3 = hit["position"]
+	global_position.y = gp.y - _foot_offset
+	# Remember the floor's plane for the ticks until the next snap. The
+	# DOS meshes collide double-sided, so a normal may come back facing
+	# down; the plane is the same either way.
+	var gn: Vector3 = hit["normal"]
+	if gn.y < 0.0:
+		gn = -gn
+	_ground_ok = gn.y > 0.5
+	_ground_pt = gp
+	_ground_n = gn
 	return true
 
 ## Vertical ray at `at`'s x/z from `y_top` down to `y_bottom`; with
 ## `floor_only` a hit must face upward (a floor's top, not a ceiling).
 func _floor_ray(space: PhysicsDirectSpaceState3D, at: Vector3, y_top: float, y_bottom: float, floor_only: bool = false) -> Dictionary:
-	var q := PhysicsRayQueryParameters3D.create(
-		Vector3(at.x, y_top, at.z), Vector3(at.x, y_bottom, at.z))
-	q.collide_with_areas = false
-	var hit := space.intersect_ray(q)
+	_ray.from = Vector3(at.x, y_top, at.z)
+	_ray.to = Vector3(at.x, y_bottom, at.z)
+	var hit := space.intersect_ray(_ray)
 	if hit.is_empty():
 		return {}
 	if floor_only and (hit["normal"] as Vector3).y < 0.5:

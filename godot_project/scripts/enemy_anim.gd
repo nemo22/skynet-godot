@@ -101,7 +101,7 @@ const TREX_LEG: Dictionary = {
 }
 
 ## Ground speed of a walker, in units per second, measured from its own
-## walk cycle by `tools/walk_probe.gd`.
+## walk cycle.
 ##
 ## A DOS walker (AI state 7, handler 0x13be00) does NOT travel at the
 ## `speed` in the enemy type table. Every animation frame the handler
@@ -110,7 +110,7 @@ const TREX_LEG: Dictionary = {
 ## rotates it by the actor's yaw and adds it to the position — root
 ## motion off the planted foot. The cycles are authored in place, so the
 ## planted foot slides backwards through the model by exactly the
-## distance the actor advances; the probe measures that.
+## distance the actor advances; that slide is what was measured.
 ##
 ## The table value is roughly twice as fast (endoskeleton 140 vs 59),
 ## which is what "terminátori sa nejak moc rýchlo hýbu" looks like: the

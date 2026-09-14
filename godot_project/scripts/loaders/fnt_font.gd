@@ -36,6 +36,12 @@ static func build(bytes: PackedByteArray, scale: int = 1) -> FontFile:
 		var e := 4 + i * 4
 		offsets.append(bytes.decode_u16(e))
 		var gw := bytes.decode_u16(e + 2)
+		# A row is one u16, so no glyph is wider than 16 (FONT0011's are
+		# exactly that). A wider one is corrupt — it sized the atlas by it
+		# (up to 65 535 × 16 columns) and shifted the row word by a
+		# negative count.
+		if gw > 16:
+			return null
 		widths.append(gw)
 		max_w = maxi(max_w, gw)
 

@@ -108,6 +108,12 @@ godot --headless --path godot_project --export-release "Linux"          build/li
 godot --headless --path godot_project --export-release "macOS"          build/macos/SkyNET.zip
 ```
 
+A development checkout keeps its asset cache in `godot_project/converted/`
+(`godot --headless --path godot_project -- --import`, or *Import* in the
+SkyNET Maps dock), so the editor can open the converted map scenes. The export
+plugin in `addons/skynet_maps/export_filter.gd` leaves that cache, local
+mods and the developer tooling out of every build.
+
 The project has three headless test suites that run the real game code:
 
 ```sh

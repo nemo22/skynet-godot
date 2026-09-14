@@ -54,7 +54,6 @@ const ROUNDS: int = 40
 const SETTLE_MAX: float = 6.0
 const BUCKET: float = 256.0
 const USE_REACH: float = 130.0      # ActionSystem.USE_REACH
-const TOUCH_REACH: float = 90.0     # ActionSystem.TELEPORT_TOUCH_RADIUS
 ## How far from an ARMED exit the use key still takes it — activate_teleport's
 ## TELEPORT_TOUCH_RADIUS + PROX_GATE_RADIUS (a gate chain arms it; touching
 ## is only one way to).

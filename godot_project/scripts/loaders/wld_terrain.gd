@@ -155,17 +155,18 @@ static func parse(bytes: PackedByteArray) -> WLD:
 	var grid_w: int = chunks_x * CHUNK_CELLS
 	var grid_h: int = chunks_y * CHUNK_CELLS
 	if grid_w != GRID_W or grid_h != GRID_H:
-		push_warning("[wld] unexpected grid %dx%d (expected 256x256)" % [grid_w, grid_h])
-
-	var w := WLD.new()
-	w.layers.resize(4)
-	for L in 4:
-		w.layers[L] = PackedByteArray()
-		w.layers[L].resize(LAYER_BYTES)
-		w.layers[L].fill(0)
+		# Everything downstream indexes a 256×256 grid (a 3- or 4-chunk
+		# side used to be copied past the end of the layers). Every WLD of
+		# SkyNET and Future Shock is 2×2 chunks.
+		push_error("[wld] unexpected grid %dx%d (expected 256x256)" % [grid_w, grid_h])
+		return null
 
 	var chunk_layer_size: int = CHUNK_CELLS * CHUNK_CELLS  # 16384
 
+	# Where each chunk's layer data starts, and how many of its 4 layers lie
+	# inside the file (the layers after a cut-off one stay zero).
+	var chunk_data := PackedInt64Array()
+	var chunk_layers := PackedInt32Array()
 	for cy in chunks_y:
 		for cx in chunks_x:
 			var table_idx: int = cy * chunks_x + cx
@@ -175,22 +176,34 @@ static func parse(bytes: PackedByteArray) -> WLD:
 				return null
 			var chunk_off: int = _u32(bytes, table_off)
 			var data_off: int = chunk_off + CHUNK_HEADER_SIZE
-
+			var present: int = 0
 			for L in 4:
 				var layer_start: int = data_off + L * chunk_layer_size
 				if layer_start + chunk_layer_size > bytes.size():
 					push_error("[wld] chunk data out of bounds (chunk %d,%d layer %d)" % [cx, cy, L])
 					break
-				var row_base: int = cy * CHUNK_CELLS
-				var col_base: int = cx * CHUNK_CELLS
-				var layer_ref: PackedByteArray = w.layers[L]
-				for row in CHUNK_CELLS:
-					var src_off: int = layer_start + row * CHUNK_CELLS
-					var dst_off: int = (row_base + row) * GRID_W + col_base
-					# Copy 128 bytes (one chunk row) into the flat output
-					for col in CHUNK_CELLS:
-						layer_ref[dst_off + col] = bytes[src_off + col]
-				w.layers[L] = layer_ref
+				present += 1
+			chunk_data.append(data_off)
+			chunk_layers.append(present)
+
+	# Assemble each flat layer from whole 128-byte chunk rows (native slices
+	# instead of 262 144 single-byte copies).
+	var zero_row := PackedByteArray()
+	zero_row.resize(CHUNK_CELLS)            # zero-filled
+	var w := WLD.new()
+	w.layers.resize(4)
+	for L in 4:
+		var layer := PackedByteArray()
+		for cy in chunks_y:
+			for row in CHUNK_CELLS:
+				for cx in chunks_x:
+					var ci: int = cy * chunks_x + cx
+					if L < chunk_layers[ci]:
+						var src_off: int = chunk_data[ci] + L * chunk_layer_size + row * CHUNK_CELLS
+						layer.append_array(bytes.slice(src_off, src_off + CHUNK_CELLS))
+					else:
+						layer.append_array(zero_row)
+		w.layers[L] = layer
 
 	# DOS post-load passes on the layer-2 material buffer so the
 	# in-memory buffer matches what the rasterizer reads.
@@ -281,8 +294,8 @@ static func corner_height(w: WLD, col: int, row: int) -> float:
 
 ## Terrain tiles that are water. Outdoor lakes are painted into the
 ## MATERIAL layer, not marked with a 103/104 water marker: the MAP.270 /
-## MAP.272 lake is ids 58/59/61 of TEXTURE.302 — measured with
-## `map_dump --mats=`, the only blue tiles any campaign heightmap uses
+## MAP.272 lake is ids 58/59/61 of TEXTURE.302 — measured over the
+## material layers, the only blue tiles any campaign heightmap uses
 ## (id 58 avg RGB 0.22/0.39/0.47 over 288 cells).
 const WATER_MATERIALS: Array = [58, 59, 61]
 
@@ -372,17 +385,43 @@ static func corner_blended_color(w: WLD, col: int, row: int,
 			var cr: int = row + dr
 			var cc: int = col + dc
 			if cr >= 0 and cr < GRID_H and cc >= 0 and cc < GRID_W:
-				var b2: int = sample_byte(w, 2, cc, cr)
-				var b0: int = sample_byte(w, 0, cc, cr)
-				var mat: int = b2 & 0x3F
-				if not avg_colors.is_empty() and mat < avg_colors.size() \
-						and avg_colors[mat] != null:
-					var h_shade: float = 0.7 + 0.3 * (float(b0 & 0x7F) / 127.0)
-					var ac: Color = avg_colors[mat]
-					total += Color(ac.r * h_shade, ac.g * h_shade, ac.b * h_shade)
-				else:
-					total += material_color(b2, b0)
+				total += _cell_color(w, cc, cr, avg_colors)
 				count += 1
+	if count == 0:
+		return Color(0.5, 0.5, 0.5)
+	return Color(total.r / count, total.g / count, total.b / count)
+
+## One cell's colour for the corner blend (height-shaded material colour).
+static func _cell_color(w: WLD, cc: int, cr: int, avg_colors: Array) -> Color:
+	var b2: int = sample_byte(w, 2, cc, cr)
+	var b0: int = sample_byte(w, 0, cc, cr)
+	var mat: int = b2 & 0x3F
+	if not avg_colors.is_empty() and mat < avg_colors.size() \
+			and avg_colors[mat] != null:
+		var h_shade: float = 0.7 + 0.3 * (float(b0 & 0x7F) / 127.0)
+		var ac: Color = avg_colors[mat]
+		return Color(ac.r * h_shade, ac.g * h_shade, ac.b * h_shade)
+	return material_color(b2, b0)
+
+## corner_blended_color from pre-computed cell colours: the same cells,
+## added in the same order, so the same float results.
+static func _corner_from_cells(cells: PackedColorArray, col: int, row: int) -> Color:
+	var total := Color(0.0, 0.0, 0.0)
+	var count: int = 0
+	if row >= 1:
+		if col >= 1:
+			total += cells[(row - 1) * GRID_W + col - 1]
+			count += 1
+		if col < GRID_W:
+			total += cells[(row - 1) * GRID_W + col]
+			count += 1
+	if row < GRID_H:
+		if col >= 1:
+			total += cells[row * GRID_W + col - 1]
+			count += 1
+		if col < GRID_W:
+			total += cells[row * GRID_W + col]
+			count += 1
 	if count == 0:
 		return Color(0.5, 0.5, 0.5)
 	return Color(total.r / count, total.g / count, total.b / count)
@@ -407,12 +446,20 @@ static func build_terrain_mesh(w: WLD, tile_textures: Array = [],
 	# Stored in a flat array: index = row * (GRID_W+1) + col.
 	# Each vertex is shared by up to 4 cells; averaging their material
 	# colours produces smooth transitions at material boundaries.
+	# The colours are baked into the mesh (ARRAY_COLOR) even when every tile
+	# is textured, so they cannot be skipped; each cell's colour is worked
+	# out once instead of once for each of its four corners.
+	var cell_colors := PackedColorArray()
+	cell_colors.resize(GRID_W * GRID_H)
+	for r in GRID_H:
+		for c in GRID_W:
+			cell_colors[r * GRID_W + c] = _cell_color(w, c, r, avg_colors)
 	var cw: int = GRID_W + 1
 	var corner_colors: Array = []
 	corner_colors.resize(cw * (GRID_H + 1))
 	for r in range(GRID_H + 1):
 		for c in range(GRID_W + 1):
-			corner_colors[r * cw + c] = corner_blended_color(w, c, r, avg_colors)
+			corner_colors[r * cw + c] = _corner_from_cells(cell_colors, c, r)
 
 	# One vertex bucket per material id → one ArrayMesh surface each, so
 	# every material binds its own tile. bucket = [pos, norm, uv, col],

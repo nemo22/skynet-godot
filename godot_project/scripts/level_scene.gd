@@ -39,10 +39,17 @@
 ##
 ## The scene is a build artefact: it carries the hash of the MAP file it
 ## was built from, so editing a map (the dock's export to mods/maps/)
-## invalidates it and the next load rebuilds it. To add detail BY HAND
-## that survives a rebuild, put it in a scene of your own:
-## mods/maps/MAP.210.detail.tscn is instantiated on top of any level
-## whose name it matches.
+## invalidates it and the next load rebuilds it. That provenance is also
+## written to a plain-text sidecar (MAP.210.level.txt) which is checked
+## BEFORE the scene is touched — a Godot scene can run code as it loads,
+## so a stale or foreign one must never get that far — and the scene
+## itself is loaded only when the asset cache's trust manifest says this
+## installation wrote it (asset_cache.gd).
+##
+## To add detail BY HAND that survives a rebuild, put it in a scene of
+## your own: mods/maps/MAP.210.detail.tscn is instantiated on top of any
+## level whose name it matches, after overlay_problem() has made sure it
+## is plain data (see "Hand-made overlays" below).
 
 extends RefCounted
 
@@ -57,36 +64,91 @@ const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
 ## 12: the submarine alarm and its kind of loop carry across a whole
 ## level (level_behaviour.LOUD_LOOPS), which is a property of the baked
 ## SoundLoop nodes — the maps already in the cache have to be built again.
-const BAKE_VERSION: int = 12
+## 13 (2026-09-14): visibility ranges on the baked nodes, and the
+## provenance sidecar next to every scene.
+const BAKE_VERSION: int = 13
 
 # ---------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------
-## Where this map's level scene lives.
+## Where this map's level scene lives ("" without a cache, or for a map
+## name that is not a plain file name).
 static func scene_path(map_name: String) -> String:
 	if Assets.root.is_empty():
 		return ""
-	return "%s/maps/%s.level.scn" % [Assets.root, map_name.to_upper()]
+	var m: String = _map_file_name(map_name)
+	return "" if m.is_empty() else "%s/maps/%s.level.scn" % [Assets.root, m]
 
 ## A hand-made overlay for this map, instantiated on top of the baked
 ## level and never touched by the conversion.
 static func overlay_path(map_name: String) -> String:
-	return "res://mods/maps/%s.detail.tscn" % map_name.to_upper()
+	var m: String = _map_file_name(map_name)
+	return "" if m.is_empty() else "%s/maps/%s.detail.tscn" % [SkynetPaths.mods_dir(), m]
+
+## The provenance sidecar of a baked scene: plain "key=value" lines
+## (bake_version, source_hash, map), read without the resource loader.
+static func sidecar_path(scene: String) -> String:
+	return scene.get_basename() + ".txt"
+
+## `map_name` upper-cased, or "" (with an error) when it could reach
+## outside the maps folder.
+static func _map_file_name(map_name: String) -> String:
+	var m: String = Assets.safe_key(map_name)
+	if m.is_empty():
+		push_error("[level] refused map name %s" % map_name)
+	return m
+
+static func _read_sidecar(scene: String) -> Dictionary:
+	var out: Dictionary = {}
+	var sp := sidecar_path(scene)
+	if not FileAccess.file_exists(sp):
+		return out
+	for line in FileAccess.get_file_as_string(sp).split("\n", false):
+		var kv := line.strip_edges().split("=", true, 1)
+		if kv.size() == 2 and kv[1].strip_edges().is_valid_int():
+			out[kv[0].strip_edges()] = kv[1].strip_edges().to_int()
+	return out
+
+## Is the baked scene at `scene` from this bake and written by this
+## installation? (Whether it matches the MAP is take()'s question — it
+## has the bytes.)
+static func is_current(scene: String) -> bool:
+	return not scene.is_empty() and FileAccess.file_exists(scene) \
+		and int(_read_sidecar(scene).get("bake_version", -1)) == BAKE_VERSION \
+		and Assets.is_trusted(scene)
 
 # ---------------------------------------------------------------------
 # Loading
 # ---------------------------------------------------------------------
+## (Loaded on the main thread. A threaded load during the fade was tried
+## on 2026-09-14: its materials came up with broken RIDs — they were built
+## on worker threads while the same cached meshes were in use — so the
+## level scene loads here, synchronously, as before.)
+
 ## The baked parts of `map_name`, or an empty dictionary when there is no
 ## scene for it (or it was built from a different MAP, or by an older
-## bake). Keys: terrain / static / occluders / behaviour — all detached
-## Node3Ds ready to be added to the level.
+## bake, or not by this installation). Keys: terrain / static / occluders
+## / behaviour — all detached Node3Ds ready to be added to the level.
 static func take(map_name: String, map_bytes: PackedByteArray) -> Dictionary:
 	var p := scene_path(map_name)
-	if p.is_empty() or not ResourceLoader.exists(p):
+	if p.is_empty() or not FileAccess.file_exists(p):
 		return {}
+	# Provenance first, from the sidecar: nothing of the scene is loaded
+	# until it is known to be current and ours.
+	var meta := _read_sidecar(p)
+	if int(meta.get("bake_version", -1)) != BAKE_VERSION \
+			or not meta.has("source_hash") or int(meta["source_hash"]) != hash(map_bytes):
+		print("[level] %s: the baked scene is stale — rebuilding" % map_name)
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(sidecar_path(p)))
+		Assets.trust_forget(p)
+		return {}
+	if not Assets.is_trusted(p):
+		print("[level] %s: the baked scene was not written by this installation — rebuilding" % map_name)
+		return {}
+	var _t0: int = Time.get_ticks_usec()
 	# Straight off disk: a rebake writes the same path, and a stale copy
 	# left in the resource cache would keep being handed back.
-	var _t0: int = Time.get_ticks_usec()
 	var packed := ResourceLoader.load(p, "PackedScene",
 		ResourceLoader.CACHE_MODE_IGNORE) as PackedScene
 	var _t1: int = Time.get_ticks_usec()
@@ -101,10 +163,11 @@ static func take(map_name: String, map_bytes: PackedByteArray) -> Dictionary:
 		return {}
 	if int(root.get("bake_version")) != BAKE_VERSION \
 			or int(root.get("source_hash")) != hash(map_bytes):
+		# The sidecar disagreed with the scene it sits beside.
 		print("[level] %s: the baked scene is stale — rebuilding" % map_name)
 		root.free()
-		if not Assets.read_only:
-			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+		Assets.trust_forget(p)
 		return {}
 	var out: Dictionary = {}
 	for key in ["Terrain", "Static", "Occluders", "Behaviour"]:
@@ -113,6 +176,8 @@ static func take(map_name: String, map_bytes: PackedByteArray) -> Dictionary:
 			continue
 		root.remove_child(n)
 		_disown(n)
+		# The look settings may have changed since the bake.
+		Render.restyle_tree(n)
 		out[key.to_lower()] = n
 	root.free()
 	return out
@@ -124,12 +189,19 @@ static func _disown(n: Node) -> void:
 	for c in n.get_children():
 		_disown(c)
 
-## The hand-made overlay for `map_name`, or null.
+## The hand-made overlay for `map_name`, or null. One that is not plain
+## data (overlay_problem) is refused with a message and skipped.
 static func overlay(map_name: String) -> Node3D:
 	var p := overlay_path(map_name)
-	if not ResourceLoader.exists(p):
+	if p.is_empty() or not FileAccess.file_exists(p):
 		return null
-	var packed := ResourceLoader.load(p) as PackedScene
+	var problem := overlay_problem(p)
+	if not problem.is_empty():
+		push_warning("[level] %s: overlay %s refused — %s" % [map_name, p, problem])
+		return null
+	# CACHE_MODE_IGNORE: load exactly the file that was just checked.
+	var packed := ResourceLoader.load(p, "PackedScene",
+		ResourceLoader.CACHE_MODE_IGNORE) as PackedScene
 	if packed == null:
 		return null
 	var n: Node = packed.instantiate()
@@ -141,6 +213,355 @@ static func overlay(map_name: String) -> Node3D:
 	return null
 
 # ---------------------------------------------------------------------
+# Hand-made overlays — checked before they load
+# ---------------------------------------------------------------------
+## A mod is data, not code. An overlay may build geometry, collision,
+## lights and markers out of meshes, materials, textures and shapes —
+## nothing that can run code as it loads or later: no script, no
+## animation (a method track calls functions), no nested scene, no
+## Object()/Resource() value, no signal connection, and no file outside
+## the asset cache (only .res files this installation wrote) and the mods
+## folder (only .tres resources, checked the same way).
+const OVERLAY_NODE_TYPES: PackedStringArray = [
+	"Node3D", "Marker3D", "MeshInstance3D", "MultiMeshInstance3D",
+	"StaticBody3D", "CollisionShape3D", "CollisionPolygon3D",
+	"OmniLight3D", "SpotLight3D", "DirectionalLight3D", "Sprite3D", "Label3D",
+	"Decal", "OccluderInstance3D", "ReflectionProbe",
+	"CSGCombiner3D", "CSGBox3D", "CSGCylinder3D", "CSGSphere3D", "CSGTorus3D",
+	"CSGPolygon3D", "CSGMesh3D",
+]
+const OVERLAY_RESOURCE_TYPES: PackedStringArray = [
+	"ArrayMesh", "BoxMesh", "CapsuleMesh", "CylinderMesh", "PlaneMesh", "QuadMesh",
+	"PrismMesh", "SphereMesh", "TorusMesh", "TextMesh", "PointMesh", "MultiMesh",
+	"StandardMaterial3D", "ORMMaterial3D",
+	"Texture2D", "ImageTexture", "PortableCompressedTexture2D", "AtlasTexture",
+	"GradientTexture1D", "GradientTexture2D", "Gradient", "Image",
+	"BoxShape3D", "SphereShape3D", "CapsuleShape3D", "CylinderShape3D",
+	"ConvexPolygonShape3D", "ConcavePolygonShape3D", "HeightMapShape3D",
+	"WorldBoundaryShape3D", "SeparationRayShape3D", "PhysicsMaterial",
+	"ArrayOccluder3D", "BoxOccluder3D", "QuadOccluder3D", "SphereOccluder3D",
+	"PolygonOccluder3D",
+]
+## Value constructors that create or load arbitrary objects.
+const OVERLAY_FORBIDDEN_CTORS: PackedStringArray = ["Object", "Resource", "Callable", "Signal"]
+const OVERLAY_MAX_BYTES: int = 8 * 1024 * 1024
+
+## Why the text scene (or, nested, the .tres) at `path` may not be loaded
+## as part of an overlay — "" when it may.
+static func overlay_problem(path: String, depth: int = 0) -> String:
+	if depth > 4:
+		return "resources nested too deep"
+	var ext: String = "tscn" if depth == 0 else "tres"
+	if path.get_extension().to_lower() != ext:
+		return "only a text .%s is accepted" % ext
+	if Assets.has_redirect(path):
+		return "a .import/.remap file beside it redirects the loader"
+	var size: int = FileAccess.get_size(path) if FileAccess.file_exists(path) else -1
+	if size <= 0 or size > OVERLAY_MAX_BYTES:
+		return "missing, empty or larger than %d MB" % (OVERLAY_MAX_BYTES >> 20)
+	var want: String = "gd_scene" if depth == 0 else "gd_resource"
+	var first: bool = true
+	for it in _scan_text_resource(FileAccess.get_file_as_string(path)):
+		match String(it[0]):
+			"error":
+				return String(it[1])
+			"prop":
+				if first:
+					return "not a %s file" % want
+				if String(it[1]) == "script":
+					return "it sets a script"
+			"ctor":
+				if String(it[1]) in OVERLAY_FORBIDDEN_CTORS:
+					return "it constructs a value with %s()" % it[1]
+			"tag":
+				var tag: String = it[1]
+				var f: Dictionary = it[2]
+				if first:
+					first = false
+					if tag != want:
+						return "not a %s file" % want
+					if depth > 0 and not _type_in(f, OVERLAY_RESOURCE_TYPES):
+						return "a resource of type %s" % str(f.get("type"))
+					continue
+				match tag:
+					"ext_resource":
+						if not _type_in(f, OVERLAY_RESOURCE_TYPES):
+							return "an external resource of type %s" % str(f.get("type"))
+						var why := _overlay_ext_problem(f, path, depth)
+						if not why.is_empty():
+							return why
+					"sub_resource":
+						if not _type_in(f, OVERLAY_RESOURCE_TYPES):
+							return "a sub-resource of type %s" % str(f.get("type"))
+					"node":
+						if f.has("instance") or f.has("instance_placeholder"):
+							return "it instances another scene"
+						if not _type_in(f, OVERLAY_NODE_TYPES):
+							return "a node of type %s" % str(f.get("type"))
+					"resource":
+						if depth == 0:
+							return "a [resource] section in a scene"
+					_:
+						return "a [%s] section" % tag
+	return "empty" if first else ""
+
+static func _type_in(fields: Dictionary, allowed: PackedStringArray) -> bool:
+	var t: Variant = fields.get("type")
+	return t is String and String(t) in allowed
+
+## Where an [ext_resource] can make the loader go — its path (relative to
+## the file that names it) and the path its UID is registered under — and
+## whether an overlay may go there.
+static func _overlay_ext_problem(f: Dictionary, owner_path: String, depth: int) -> String:
+	if not (f.get("path") is String):
+		return "an external resource without a plain path"
+	var p: String = f["path"]
+	if not p.contains("://") and p.is_relative_path():
+		p = owner_path.get_base_dir().path_join(p)
+	var targets := PackedStringArray([p])
+	if f.has("uid"):
+		if not (f["uid"] is String):
+			return "an external resource with an unreadable uid"
+		var id: int = ResourceUID.text_to_id(String(f["uid"]))
+		if id != ResourceUID.INVALID_ID and ResourceUID.has_id(id):
+			targets.append(ResourceUID.get_id_path(id))
+	for t in targets:
+		var ext: String = t.get_extension().to_lower()
+		if Assets.is_cache_path(t):
+			if ext != "res" or not Assets.is_trusted(t):
+				return "%s is not a cache file this installation wrote" % t
+		elif _inside(t, SkynetPaths.mods_dir()):
+			if ext != "tres":
+				return "%s is not a .tres resource" % t
+			var why := overlay_problem(t, depth + 1)
+			if not why.is_empty():
+				return "%s: %s" % [t.get_file(), why]
+		else:
+			return "%s is outside the asset cache and the mods folder" % t
+	return ""
+
+static func _inside(path: String, dir: String) -> bool:
+	var base: String = _norm(dir)
+	return not base.is_empty() and _norm(path).begins_with(base + "/")
+
+static func _norm(p: String) -> String:
+	var g := ProjectSettings.globalize_path(p).replace("\\", "/").simplify_path()
+	if OS.has_feature("windows") or OS.has_feature("macos"):
+		g = g.to_lower()
+	return g.trim_suffix("/")
+
+## A small reader for Godot's text resource format: just enough to see
+## what a file asks the loader to create, never building anything. It
+## follows the engine's own tokenizer (core/variant/variant_parser.cpp)
+## where that matters — a property name gathers every non-blank character
+## up to "=", so "scr ipt =" and "\"script\" =" both set `script`; ";"
+## starts a comment between properties; strings span lines; a
+## constructor is an identifier before "(".
+## Items: ["tag", name, {field: plain string or null}], ["prop", name],
+## ["ctor", identifier], and a final ["error", why] when it cannot follow.
+static func _scan_text_resource(t: String) -> Array:
+	var out: Array = []
+	var n: int = t.length()
+	var i: int = 0
+	var what: String = ""
+	# Before the first section and after these, the engine reads the next
+	# section header straight away, skipping ANY text up to the next "["
+	# (quotes and ";" included) — so only blanks may stand there.
+	var gap: bool = true
+	while i < n:
+		var c: int = t.unicode_at(i)
+		if gap:
+			var open: int = t.find("[", i)
+			var stop: int = n if open < 0 else open
+			if not t.substr(i, stop - i).strip_edges().is_empty():
+				out.append(["error", "text between sections"])
+				return out
+			if open < 0:
+				return out
+			c = 91
+			i = open
+		if c == 59:                                  # ; comment
+			var nl: int = t.find("\n", i)
+			i = n if nl < 0 else nl + 1
+		elif c == 91 and what.is_empty():            # [ a section
+			var tag: Array = _scan_tag(t, i + 1, out)
+			if tag.is_empty():
+				out.append(["error", "a malformed [section]"])
+				return out
+			out.append(["tag", tag[0], tag[1]])
+			i = int(tag[2])
+			gap = String(tag[0]) in ["gd_scene", "gd_resource", "ext_resource", "connection", "editable"]
+		elif c <= 32:
+			i += 1
+		elif c == 34:                                # a quoted property name
+			var tok: Array = _token(t, i)
+			if tok[0] != "str" or String(tok[1]).contains("\\"):
+				out.append(["error", "an unreadable property name"])
+				return out
+			what = tok[1]
+			i = int(tok[2])
+		elif c == 61:                                # = then one value
+			out.append(["prop", what])
+			what = ""
+			i = _scan_value(t, _token(t, i + 1), out)
+			if i < 0:
+				out.append(["error", "a value this check cannot follow"])
+				return out
+		else:
+			what += char(c)
+			i += 1
+	return out
+
+## [name key=value …]: the name, the fields, the index after "]" — or []
+## when malformed. A field is kept as its string when it is a plain string
+## literal, null otherwise (and every value is scanned for constructors).
+static func _scan_tag(t: String, i: int, out: Array) -> Array:
+	var tok: Array = _token(t, i)
+	if tok[0] != "id":
+		return []
+	var name: String = tok[1]
+	i = int(tok[2])
+	var fields: Dictionary = {}
+	var naming: bool = true
+	while true:
+		tok = _token(t, i)
+		if tok[0] == "punct" and tok[1] == "]":
+			return [name, fields, int(tok[2])]
+		if naming and tok[0] == "punct" and (tok[1] == "." or tok[1] == ":"):
+			name += String(tok[1])
+			tok = _token(t, int(tok[2]))
+		else:
+			naming = false
+		if tok[0] != "id":
+			return []
+		if naming:
+			name += String(tok[1])
+			i = int(tok[2])
+			continue
+		var key: String = tok[1]
+		var eq: Array = _token(t, int(tok[2]))
+		if eq[0] != "punct" or eq[1] != "=":
+			return []
+		var val: Array = _token(t, int(eq[2]))
+		var plain: Variant = null
+		if val[0] == "str" and not String(val[1]).contains("\\"):
+			plain = String(val[1])
+		fields[key] = plain
+		i = _scan_value(t, val, out)
+		if i < 0:
+			return []
+	return []
+
+## Plain packed-array contents: numbers, commas, blanks (no string, no
+## nested call), skipped in one step instead of token by token.
+static var _plain_re: RegEx = RegEx.create_from_string("[^\\s0-9A-Za-z_.,+\\-]")
+
+## One value starting at token `tok`; returns the index after it, or -1.
+static func _scan_value(t: String, tok: Array, out: Array) -> int:
+	match String(tok[0]):
+		"str", "num":
+			return int(tok[2])
+		"id":
+			var id: String = tok[1]
+			if id in ["true", "false", "null", "nan", "inf", "inf_neg"]:
+				return int(tok[2])
+			var nxt: Array = _token(t, int(tok[2]))
+			if (id == "Array" or id == "Dictionary") and nxt[0] == "punct" and nxt[1] == "[":
+				var e: int = _scan_group(t, int(nxt[2]), "]", out)
+				if e < 0:
+					return -1
+				nxt = _token(t, e)
+			if nxt[0] != "punct" or nxt[1] != "(":
+				return -1
+			out.append(["ctor", id])
+			if id.begins_with("Packed") and id != "PackedStringArray":
+				var close: int = t.find(")", int(nxt[2]))
+				if close >= 0 and _plain_re.search(t, int(nxt[2]), close) == null:
+					return close + 1
+			return _scan_group(t, int(nxt[2]), ")", out)
+		"punct":
+			if tok[1] == "[":
+				return _scan_group(t, int(tok[2]), "]", out)
+			if tok[1] == "{":
+				return _scan_group(t, int(tok[2]), "}", out)
+	return -1
+
+## Tokens up to the `close` ending this group, nested groups and the
+## constructors inside included; the index after `close`, or -1.
+static func _scan_group(t: String, i: int, close: String, out: Array) -> int:
+	while i >= 0:
+		var tok: Array = _token(t, i)
+		match String(tok[0]):
+			"eof", "err":
+				return -1
+			"punct":
+				var p: String = tok[1]
+				if p == close:
+					return int(tok[2])
+				elif p == "(":
+					i = _scan_group(t, int(tok[2]), ")", out)
+				elif p == "[":
+					i = _scan_group(t, int(tok[2]), "]", out)
+				elif p == "{":
+					i = _scan_group(t, int(tok[2]), "}", out)
+				elif p == ")" or p == "]" or p == "}":
+					return -1
+				else:
+					i = int(tok[2])
+			"id":
+				var nxt: Array = _token(t, int(tok[2]))
+				if nxt[0] == "punct" and nxt[1] == "(":
+					out.append(["ctor", tok[1]])
+				i = int(tok[2])
+			_:
+				i = int(tok[2])
+	return -1
+
+## The token at `i` (blanks skipped): [kind, text, index after it] with
+## kind "punct", "str" (raw text between the quotes; &"…" and ^"…" too),
+## "num" (numbers and #colours), "id", "eof" or "err".
+static func _token(t: String, i: int) -> Array:
+	var n: int = t.length()
+	while i < n and t.unicode_at(i) <= 32:
+		i += 1
+	if i >= n:
+		return ["eof", "", n]
+	var c: int = t.unicode_at(i)
+	match c:
+		123, 125, 91, 93, 40, 41, 58, 44, 46, 61:    # { } [ ] ( ) : , . =
+			return ["punct", char(c), i + 1]
+		38, 94:                                      # & ^ before a string
+			if i + 1 < n and t.unicode_at(i + 1) == 34:
+				return _token(t, i + 1)
+			return ["err", "", i]
+		34:                                          # "
+			var j: int = i + 1
+			while j < n:
+				var d: int = t.unicode_at(j)
+				if d == 92:                          # backslash escapes the next one
+					j += 2
+					continue
+				if d == 34:
+					return ["str", t.substr(i + 1, j - i - 1), j + 1]
+				j += 1
+			return ["err", "", n]
+	if c == 35 or c == 43 or c == 45 or (c >= 48 and c <= 57):   # # + - digit
+		var j: int = i + 1
+		while j < n and (_ident_char(t.unicode_at(j)) or t.unicode_at(j) == 46 \
+				or ((t.unicode_at(j) == 43 or t.unicode_at(j) == 45) and t.unicode_at(j - 1) in [69, 101])):
+			j += 1
+		return ["num", t.substr(i, j - i), j]
+	if c == 95 or (c >= 65 and c <= 90) or (c >= 97 and c <= 122):
+		var j: int = i + 1
+		while j < n and _ident_char(t.unicode_at(j)):
+			j += 1
+		return ["id", t.substr(i, j - i), j]
+	return ["err", "", i]
+
+static func _ident_char(c: int) -> bool:
+	return c == 95 or (c >= 48 and c <= 57) or (c >= 65 and c <= 90) or (c >= 97 and c <= 122)
+
+# ---------------------------------------------------------------------
 # Baking
 # ---------------------------------------------------------------------
 ## Pack the static half of a freshly built level and save it. The nodes
@@ -148,12 +569,8 @@ static func overlay(map_name: String) -> Node3D:
 ## and handed straight back, so the level that triggered the bake is the
 ## one that gets played.
 static func save_from(level, map_name: String) -> String:
-	if not Assets.enabled or Assets.read_only:
+	if not Assets.enabled:
 		return ""
-	return String(Assets.with_project_link(
-		func() -> String: return _save_now(level, map_name)))
-
-static func _save_now(level, map_name: String) -> String:
 	var p := scene_path(map_name)
 	if p.is_empty():
 		return ""
@@ -223,8 +640,19 @@ static func _save_now(level, map_name: String) -> String:
 	var out: String = ""
 	if err == OK:
 		DirAccess.make_dir_recursive_absolute(p.get_base_dir())
+		# The sidecar goes first and comes back last: a save that dies half
+		# way leaves a scene with no provenance, which is rebuilt.
+		var side := sidecar_path(p)
+		if FileAccess.file_exists(side):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(side))
 		err = ResourceSaver.save(ps, p, ResourceSaver.FLAG_COMPRESS)
 		if err == OK:
+			Assets.trust_record(p)
+			var w := FileAccess.open(side, FileAccess.WRITE)
+			if w != null:
+				w.store_string("bake_version=%d\nsource_hash=%d\nmap=%s\n"
+					% [BAKE_VERSION, hash(level.map_bytes), map_name.to_upper()])
+				w.close()
 			out = p
 			print("[level] %s: baked %d static meshes and %d behaviour nodes into %s"
 				% [map_name, root.static_count, root.behaviour_count, p.get_file()])

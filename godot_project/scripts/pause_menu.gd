@@ -1,4 +1,4 @@
-## In-game menu on Esc - the DOS one (Marek's DOSBox shot, 2026-09-11):
+## In-game menu on Esc - the DOS one (a DOSBox shot, 2026-09-11):
 ## MAIN2.IMG's RETURN / LOAD / SAVE / OPTIONS / QUIT bar over the
 ## darkened, frozen level, and the DOS art screens the title uses
 ## (LOAD.IMG, SAVE.IMG, OPTIONS.IMG -> CONTROLS.IMG / DETAIL.IMG,
@@ -13,6 +13,7 @@ extends CanvasLayer
 signal closed
 
 const MenuScreens := preload("res://scripts/menu.gd")
+const PauseState := preload("res://scripts/pause_state.gd")
 
 var game: Node = null                  # main.gd
 var is_open: bool = false
@@ -52,7 +53,7 @@ func _ready() -> void:
 		close()
 		if game != null and game.has_method("_return_to_menu"):
 			game._return_to_menu())
-	_menu.cheats_requested.connect(_show.bind("cheats"))
+	_menu.cheats_requested.connect(_on_cheats_requested)
 	_menu.console_requested.connect(func() -> void:
 		close()
 		if game != null and game.has_method("open_console"):
@@ -67,13 +68,15 @@ func open() -> void:
 		return
 	is_open = true
 	visible = true
-	# A network match keeps running underneath (nobody else pauses).
+	# A network match keeps running underneath: PauseState leaves the tree
+	# alone there, and main locks the controls instead.
+	PauseState.push(&"menu")
+	_refresh_game_input()
 	if Net.active:
-		if game != null and is_instance_valid(game.get("player")):
-			game.get("player").set("input_locked", true)
-	else:
-		get_tree().paused = true
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		# OPTIONS' CHEATS button (menu.gd) goes: no cheats in a shared match.
+		for b in _menu.find_children("*", "Button", true, false):
+			if (b as Button).text == "CHEATS":
+				(b as Button).visible = false
 	_show("main")
 
 func close() -> void:
@@ -81,13 +84,24 @@ func close() -> void:
 		return
 	is_open = false
 	visible = false
-	if Net.active:
-		var dm = game.get("_dm") if game != null else null
-		if dm != null and is_instance_valid(game.get("player")) and not bool(dm.get("_dead_local")):
-			game.get("player").set("input_locked", false)
-	else:
-		get_tree().paused = false
+	PauseState.pop(&"menu")
+	_refresh_game_input()
 	closed.emit()
+
+## Network game: the player's controls follow every overlay (main.gd).
+func _refresh_game_input() -> void:
+	if Net.active and game != null and game.has_method("_refresh_net_input_lock"):
+		game.call("_refresh_net_input_lock")
+
+## OPTIONS → CHEATS. Not in a network game: the cheats change a shared
+## match (main.run_command refuses them there too).
+func _on_cheats_requested() -> void:
+	if Net.active:
+		Audio.play_sfx("BUTTON1.RAW")
+		if _menu.has_method("_show_toast"):
+			_menu.call("_show_toast", "No cheats in a network game.")
+		return
+	_show("cheats")
 
 ## Esc on the CHEATS page steps back to OPTIONS; everywhere else the DOS
 ## screens handle it themselves (menu.gd _unhandled_input: back one
@@ -194,7 +208,8 @@ func _refresh_cheats() -> void:
 		var base: String = String(b.text).split("  [")[0]
 		b.text = "%s  [%s]" % [base, "ON" if on else "OFF"]
 
+## BBCode tags out, escaped brackets ("[lb]", see main._bb) back in.
 static func _strip_bb(s: String) -> String:
 	var r := RegEx.new()
 	r.compile("\\[/?[a-z#=0-9 ]*\\]")
-	return r.sub(s, "", true)
+	return r.sub(s.replace("[lb]", "\u0001"), "", true).replace("\u0001", "[")

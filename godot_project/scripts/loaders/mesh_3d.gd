@@ -52,6 +52,16 @@ extends RefCounted
 ## cells; we use 256-unit cells (matching the DOS >> 8 cell index).
 const MESH_VERT_SCALE: float = 1.0 / 256.0
 
+## Budgets for one file: frames × vertices decoded, and frames × triangle
+## corners a frame build emits. The largest real models stay in the tens
+## of thousands (ENDORFL.3D 84 frames × 134 vertices, T600RFL.3D 84 × 546
+## corners); a crafted table of 4 096 frames all naming one file-sized
+## vertex block asked for billions.
+const MAX_FRAME_VERTICES: int = 2000000
+const MAX_FRAME_CORNERS: int = 4000000
+## Most frames a model may have (frame table or packed blocks; real: 84).
+const MAX_FRAMES: int = 4096
+
 class Face:
 	var vert_count: int = 0
 	var type: int = 0
@@ -151,7 +161,7 @@ static func parse(bytes: PackedByteArray, mesh_name: String = "") -> Mesh3D:
 	# contiguous-block heuristic: frames packed from vertex_off0 to
 	# faces_off back to back.
 	var frame_offsets := PackedInt32Array()
-	var have_table: bool = frame_count_field > 0 and frame_count_field <= 4096 \
+	var have_table: bool = frame_count_field > 0 and frame_count_field <= MAX_FRAMES \
 			and frame_table_off >= 64 \
 			and frame_table_off + frame_count_field * 16 <= size
 	if have_table:
@@ -170,24 +180,31 @@ static func parse(bytes: PackedByteArray, mesh_name: String = "") -> Mesh3D:
 		if faces_off <= vertex_off0: return null
 		var vbytes: int = faces_off - vertex_off0
 		if vbytes < frame_stride or vbytes % frame_stride != 0: return null
-		for fi in (vbytes / frame_stride):
+		for fi in mini(vbytes / frame_stride, MAX_FRAMES):
 			frame_offsets.append(vertex_off0 + fi * frame_stride)
 
 	# --- vertices (all frames) ---
 	var min_v := Vector3(INF, INF, INF)
 	var max_v := Vector3(-INF, -INF, -INF)
+	var seen_blocks: Dictionary = {}
 	for fi in frame_offsets.size():
 		var base: int = frame_offsets[fi]
 		if base < 48 or base + frame_stride > size:
 			if fi == 0: return null
 			break          # drop trailing bad frames, keep what parsed
+		# A vertex block named twice, or a table past the budget, is corrupt
+		# in the same way (no real frame table repeats a block).
+		if seen_blocks.has(base) or (fi + 1) * vert_count > MAX_FRAME_VERTICES:
+			if fi == 0: return null
+			break
+		seen_blocks[base] = true
 		var verts := PackedVector3Array()
 		verts.resize(vert_count)
 		for i in vert_count:
 			var off := base + i * 12
-			var x: float = _s32(bytes, off) * MESH_VERT_SCALE
-			var y: float = _s32(bytes, off + 4) * MESH_VERT_SCALE
-			var z: float = _s32(bytes, off + 8) * MESH_VERT_SCALE
+			var x: float = bytes.decode_s32(off) * MESH_VERT_SCALE
+			var y: float = bytes.decode_s32(off + 4) * MESH_VERT_SCALE
+			var z: float = bytes.decode_s32(off + 8) * MESH_VERT_SCALE
 			# DOS world is Y-down right-handed; Godot is Y-up right-handed.
 			# Negate Y and Z (= Rx 180°, det +1). Entity placement negates
 			# Y and Z identically, so mesh and world share one consistent
@@ -250,6 +267,17 @@ static func parse(bytes: PackedByteArray, mesh_name: String = "") -> Mesh3D:
 				m.faces.append(f)
 
 		off += stride                        # advance regardless of skip
+
+	# Every frame build emits (vc - 2) * 3 corners per face: keep only as
+	# many frames as the corner budget allows (always at least one).
+	var corners: int = 0
+	for f in m.faces:
+		corners += (f.vert_count - 2) * 3
+	if corners > 0 and m.frames.size() * corners > MAX_FRAME_CORNERS:
+		var keep: int = maxi(1, MAX_FRAME_CORNERS / corners)
+		if keep < m.frames.size():
+			m.frames.resize(keep)
+			m.frame_count = keep
 	return m
 
 ## Build a textured ArrayMesh with one surface per unique face.type.
@@ -257,8 +285,11 @@ static func parse(bytes: PackedByteArray, mesh_name: String = "") -> Mesh3D:
 ## Dictionary {"texture": ImageTexture, "size": Vector2i} (size = actual
 ## texture pixel dimensions, used for UV normalisation). Either field may
 ## be missing/null — face will fall back to a per-type colour material.
+## `shared` carries each face type's texture info and material from one
+## call to the next, so the frames of one model share their materials
+## (build_frame_meshes); leave it out for a one-off mesh.
 static func build_textured_array_mesh(m: Mesh3D, provider: Callable,
-		frame: int = 0) -> ArrayMesh:
+		frame: int = 0, shared: Dictionary = {}) -> ArrayMesh:
 	if m == null or m.vertices.is_empty() or m.faces.is_empty():
 		return null
 
@@ -277,7 +308,11 @@ static func build_textured_array_mesh(m: Mesh3D, provider: Callable,
 	for type_id in groups.keys():
 		var arch: int = type_id >> 7
 		var rec: int  = type_id & 0x7F
-		var info: Dictionary = provider.call(arch, rec)
+		var info: Dictionary
+		if shared.has(type_id):
+			info = shared[type_id][0]
+		else:
+			info = provider.call(arch, rec)
 		var tex: Texture2D = info.get("texture", null)
 		var tex_size: Vector2i = info.get("size", Vector2i(64, 64))
 		if tex_size.x <= 0: tex_size.x = 64
@@ -337,11 +372,18 @@ static func build_textured_array_mesh(m: Mesh3D, provider: Callable,
 
 			# Fan (0, k+1, k): reversed so the DOS-visible (CCW) side is
 			# Godot's clockwise front face; back faces are culled like DOS.
+			# (Three plain appends: an [0, k + 1, k] literal allocated an
+			# Array per triangle, per frame.)
 			for k in range(1, f.vert_count - 1):
-				for vi in [0, k + 1, k]:
-					positions.append(verts[f.idx[vi]])
-					normals.append(n)
-					uvs.append(face_uv[vi])
+				positions.append(verts[f.idx[0]])
+				positions.append(verts[f.idx[k + 1]])
+				positions.append(verts[f.idx[k]])
+				normals.append(n)
+				normals.append(n)
+				normals.append(n)
+				uvs.append(face_uv[0])
+				uvs.append(face_uv[k + 1])
+				uvs.append(face_uv[k])
 
 		if positions.is_empty(): continue
 
@@ -351,17 +393,22 @@ static func build_textured_array_mesh(m: Mesh3D, provider: Callable,
 		arrays[Mesh.ARRAY_NORMAL] = normals
 		arrays[Mesh.ARRAY_TEX_UV] = uvs
 
-		var mat := StandardMaterial3D.new()
-		mat.cull_mode = BaseMaterial3D.CULL_BACK
-		mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-		# Unshaded: DOS models carry no lighting; interiors swap this to
-		# per-vertex shading at load time (main.gd _shade_recursive).
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		if tex:
-			mat.albedo_texture = tex
+		var mat: StandardMaterial3D
+		if shared.has(type_id):
+			mat = shared[type_id][1]
 		else:
-			mat.albedo_color = Color.from_hsv(float(type_id & 0xFF) / 255.0, 0.5, 0.85)
-		Render.style(mat, "model")
+			mat = StandardMaterial3D.new()
+			mat.cull_mode = BaseMaterial3D.CULL_BACK
+			mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+			# Unshaded: DOS models carry no lighting; interiors swap this to
+			# per-vertex shading at load time (main.gd _shade_recursive).
+			mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			if tex:
+				mat.albedo_texture = tex
+			else:
+				mat.albedo_color = Color.from_hsv(float(type_id & 0xFF) / 255.0, 0.5, 0.85)
+			Render.style(mat, "model")
+			shared[type_id] = [info, mat]
 
 		var surf_idx: int = am.get_surface_count()
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
@@ -371,80 +418,15 @@ static func build_textured_array_mesh(m: Mesh3D, provider: Callable,
 ## Build one textured ArrayMesh per animation frame. For a static mesh
 ## this returns a single-element array. Used for animated enemies — the
 ## caller swaps MeshInstance3D.mesh through the frames over time.
+## Every frame uses the same materials (one per face type): an 84-frame
+## enemy used to save 84 identical copies of each.
 static func build_frame_meshes(m: Mesh3D, provider: Callable) -> Array:
 	var out: Array = []
 	if m == null or m.frames.is_empty():
 		return out
+	var shared: Dictionary = {}
 	for fi in m.frames.size():
-		var am := build_textured_array_mesh(m, provider, fi)
+		var am := build_textured_array_mesh(m, provider, fi, shared)
 		if am != null:
 			out.append(am)
 	return out
-
-## Build an ArrayMesh from parsed faces. Triangulates fans (vertex 0
-## anchors every triangle of a face). Each face gets a separate surface
-## so we can assign per-face textures later — but for now we collapse
-## all faces into a single surface with vertex colors derived from
-## face.type for diagnostic purposes.
-##
-## If `material` is provided, applies it as the single surface material.
-static func build_array_mesh(m: Mesh3D, material: Material = null) -> ArrayMesh:
-	if m == null or m.vertices.is_empty() or m.faces.is_empty():
-		return null
-
-	# Group faces by texture id so we can split surfaces by texture later.
-	# For now, single surface with per-vertex colors based on face type.
-	var positions := PackedVector3Array()
-	var normals := PackedVector3Array()
-	var uvs := PackedVector2Array()
-	var colors := PackedColorArray()
-
-	for f in m.faces:
-		# Accumulate cumulative UVs.
-		var u_acc: int = 0
-		var v_acc: int = 0
-		var face_uv := PackedVector2Array()
-		face_uv.resize(f.vert_count)
-		for k in f.vert_count:
-			u_acc += f.du[k]
-			v_acc += f.dv[k]
-			# Daggerfall textureDivisor=16. UV in [0,1]: u_acc / (W*16).
-			# Without knowing texture W/H here, store unscaled — final
-			# scaling can be done in shader or post-process. As a
-			# placeholder use a generic 64-pixel divisor.
-			face_uv[k] = Vector2(u_acc, v_acc) / 1024.0
-
-		# Compute a per-face normal from the first 3 verts.
-		var a := m.vertices[f.idx[0]]
-		var b := m.vertices[f.idx[1]]
-		var c := m.vertices[f.idx[2]]
-		var n := (b - a).cross(c - a).normalized()
-
-		# Per-face color derived from texture type so different surfaces
-		# show different shades during debugging.
-		var hue := float(f.type & 0xFF) / 255.0
-		var col := Color.from_hsv(hue, 0.5, 0.85)
-
-		# Triangulate as a fan: (0, k+1, k) — DOS CCW front -> Godot CW front.
-		for k in range(1, f.vert_count - 1):
-			for vi in [0, k + 1, k]:
-				positions.append(m.vertices[f.idx[vi]])
-				normals.append(n)
-				uvs.append(face_uv[vi])
-				colors.append(col)
-
-	if positions.is_empty():
-		return null
-
-	var arrays: Array = []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = positions
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_TEX_UV] = uvs
-	arrays[Mesh.ARRAY_COLOR]  = colors
-
-	var am := ArrayMesh.new()
-	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	if material:
-		am.surface_set_material(0, material)
-	return am

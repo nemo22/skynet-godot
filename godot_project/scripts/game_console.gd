@@ -5,12 +5,20 @@
 ##
 ## Every line goes to `handler.run_command(line) -> String`; the
 ## reply is printed below it. The game is paused while the console is
-## down (single player, like Quake). Up/Down walk the history, Tab
-## completes a command (twice lists the candidates), PgUp/PgDn/wheel
+## down (single player, like Quake; a network game keeps running and only
+## the controls stop — scripts/pause_state.gd). Up/Down walk the history,
+## Tab completes a command (twice lists the candidates), PgUp/PgDn/wheel
 ## scroll the log and hold the position until End or the bottom, Esc or
 ## `~` close it. Everything the engine prints is echoed, whether the
-## console is down or not (Marek, 2026-09-05: "ako to má Quake").
+## console is down or not (playtest, 2026-09-05: "ako to má Quake").
+##
+## The log is filled once a frame and only while the console is down: a
+## level load prints hundreds of lines, and a RichTextLabel shaping each
+## of them as it came (hidden or not) cost a stutter after every load.
+## Opening the console catches up from the Log ring.
 extends CanvasLayer
+
+const PauseState := preload("res://scripts/pause_state.gd")
 
 signal closed
 
@@ -25,10 +33,14 @@ var _log: RichTextLabel = null
 var _line: LineEdit = null
 var _history: Array[String] = []
 var _hist_pos: int = 0
-var _log_seq: int = 0            # Log.total already echoed into the panel
+var _log_seq: int = 0            # Log.total already taken into the panel
 var _following: bool = true      # glued to the bottom (until scrolled up)
 var _tab_matches: Array = []     # completion candidates of the last Tab
 var _tab_prefix: String = ""
+## Lines said but not in the label yet, and the last MAX_LINES said — what
+## the label is rebuilt from when a flush would overflow it.
+var _backlog: PackedStringArray = PackedStringArray()
+var _kept: PackedStringArray = PackedStringArray()
 ## Engine output (Log autoload) is echoed while the console is down;
 ## `log off` in the console silences it.
 var echo_engine: bool = true
@@ -70,35 +82,44 @@ func _ready() -> void:
 	get_viewport().size_changed.connect(_layout)
 	_layout()
 	say("[color=#88dd99]SkyNET console[/color] — type [b]help[/b]; Tab completes; PgUp/PgDn scroll; Esc or ~ closes. Engine output is echoed here ([b]log off[/b] to hide).")
-	_flush_engine_log()
-	Log.line.connect(_on_engine_line)
 
-## Engine log lines go into the panel as they come, open or not, so the
-## console is never behind when it drops down.
-func _on_engine_line(_text: String, _error: bool) -> void:
-	_flush_engine_log()
+## Once a frame while down: the engine's new lines and anything said.
+func _process(_delta: float) -> void:
+	if is_open and (Log.total != _log_seq or not _backlog.is_empty()):
+		_flush()
 
-## Echo every Log line not yet shown. Log.lines is a ring: the number of
-## lines pushed in total says where in the ring to start.
-func _flush_engine_log() -> void:
-	var all: Array = Log.lines
+## Take every Log line not yet taken. Log keeps a ring of its last lines;
+## what fell out of it while the console was up is reported as a count.
+func _take_engine_log() -> void:
 	var missing: int = Log.total - _log_seq
 	if missing <= 0:
 		return
-	var start: int = all.size() - missing
-	if start < 0:
-		say("[color=#6f8a7a]… %d lines scrolled out of the engine buffer[/color]" % -start)
-		start = 0
-	for i in range(start, all.size()):
-		var e: Array = all[i]
-		if not echo_engine:
-			continue
-		var t: String = String(e[0]).replace("[", "[lb]")
-		if bool(e[1]):
-			say("[color=#ff8a70]%s[/color]" % t)
-		else:
-			say("[color=#9fb4a8]%s[/color]" % t)
+	var fresh: Array = Log.since(_log_seq)
 	_log_seq = Log.total
+	if not echo_engine:
+		return
+	if missing > fresh.size():
+		say("[color=#6f8a7a]… %d lines scrolled out of the engine buffer[/color]" % (missing - fresh.size()))
+	for e in fresh:
+		var t: String = String(e[0]).replace("[", "[lb]")
+		say(("[color=#ff8a70]%s[/color]" if bool(e[1]) else "[color=#9fb4a8]%s[/color]") % t)
+
+## Put the backlog into the label in one append. A batch that would push
+## the label far past MAX_LINES rebuilds it from the kept lines instead of
+## removing paragraphs one by one.
+func _flush() -> void:
+	_take_engine_log()
+	if _backlog.is_empty():
+		return
+	var batch: PackedStringArray = _backlog
+	_backlog = PackedStringArray()
+	if _log.get_paragraph_count() + batch.size() > MAX_LINES + 64:
+		_log.clear()
+		batch = _kept.slice(maxi(_kept.size() - MAX_LINES, 0))
+	_log.append_text("\n".join(batch) + "\n")
+	var extra: int = _log.get_paragraph_count() - MAX_LINES
+	for _i in maxi(extra, 0):
+		_log.remove_paragraph(0)
 
 ## The log keeps its place once you scroll up; End or reaching the
 ## bottom glues it to the newest line again.
@@ -153,7 +174,7 @@ func _complete() -> void:
 			k += 1
 		prefix = prefix.substr(0, k)
 	if _tab_matches == matches and _tab_prefix == prefix:
-		say("[color=#ffd27a]] %s[/color]" % word)
+		say("[color=#ffd27a]] %s[/color]" % word.replace("[", "[lb]"))
 		say("  " + "  ".join(matches))
 	_tab_matches = matches
 	_tab_prefix = prefix
@@ -171,9 +192,8 @@ func open(preset: String = "") -> void:
 		return
 	is_open = true
 	visible = true
-	get_tree().paused = true
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-	_flush_engine_log()
+	PauseState.push(&"console")
+	_flush()
 	_scroll_to_end()
 	_line.text = preset
 	_line.grab_focus()
@@ -185,20 +205,19 @@ func close() -> void:
 	is_open = false
 	visible = false
 	_line.release_focus()
-	get_tree().paused = false
+	PauseState.pop(&"console")
 	closed.emit()
 
-func toggle() -> void:
-	if is_open:
-		close()
-	else:
-		open()
-
-## Append a (BBCode) line to the log.
+## Append a (BBCode) line to the log — on the next frame the console is
+## down. Text from outside (names, map data, typed input) must come with
+## its "[" already escaped as "[lb]".
 func say(text: String) -> void:
-	_log.append_text(text + "\n")
-	if _log.get_line_count() > MAX_LINES:
-		_log.remove_paragraph(0)
+	_backlog.append(text)
+	_kept.append(text)
+	if _kept.size() > MAX_LINES * 2:
+		_kept = _kept.slice(_kept.size() - MAX_LINES)
+	if _backlog.size() > MAX_LINES * 2:
+		_backlog = _backlog.slice(_backlog.size() - MAX_LINES)
 
 static func is_toggle_key(event: InputEvent) -> bool:
 	if not (event is InputEventKey and event.pressed and not event.echo):
@@ -249,7 +268,7 @@ func _on_submit(text: String) -> void:
 	if _history.is_empty() or _history[_history.size() - 1] != cmd:
 		_history.append(cmd)
 	_hist_pos = _history.size()
-	say("[color=#ffd27a]] %s[/color]" % cmd)
+	say("[color=#ffd27a]] %s[/color]" % cmd.replace("[", "[lb]"))
 	_scroll_to_end()
 	if cmd == "log off" or cmd == "log on":
 		echo_engine = cmd == "log on"
@@ -257,6 +276,9 @@ func _on_submit(text: String) -> void:
 		say("engine output %s" % ("on" if echo_engine else "off"))
 		return
 	if cmd == "clear":
+		_backlog.clear()
+		_kept.clear()
+		_log_seq = Log.total
 		_log.clear()
 		return
 	run(cmd)

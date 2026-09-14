@@ -93,31 +93,64 @@ func _load(name: String, loop: bool) -> AudioStreamWAV:
 		_cache[key] = s
 	return s
 
+## Decode options for AudioStreamWAV.load_from_buffer: straight PCM, no
+## trimming, normalising, resampling or bit-depth change, so the samples
+## come out exactly as they went in. Its 8-bit path reads unsigned bytes
+## as (b - 128) / 128 and writes them back * 128 as signed — the same
+## (b - 128) the hand-written loop stored, done in C++.
+const WAV_DECODE: Dictionary = {
+	"compress/mode": 0, "edit/trim": false, "edit/normalize": false,
+	"force/8_bit": false, "force/mono": false, "force/max_rate": false,
+	"edit/loop_mode": 1,                   # disabled (no smpl-chunk loops)
+}
+
 func _decode(name: String, loop: bool) -> AudioStreamWAV:
 	var bytes: PackedByteArray = _bsa.read(name)
 	if bytes.is_empty():
 		return null
 	var s: AudioStreamWAV
 	if name.to_upper().ends_with(".WAV"):
-		s = _parse_wav(bytes)
+		# A .WAV never loops here (the loop flag only ever applied to .RAW).
+		s = AudioStreamWAV.load_from_buffer(bytes, WAV_DECODE)
+		if s == null:
+			s = _parse_wav(bytes)                # a header the engine refuses
 	else:
-		# DOS .RAW: unsigned 8-bit mono — Godot wants signed.
-		s = AudioStreamWAV.new()
-		s.format = AudioStreamWAV.FORMAT_8_BITS
-		s.mix_rate = RAW_RATE
-		s.stereo = false
-		var signed := PackedByteArray()
-		signed.resize(bytes.size())
-		for i in bytes.size():
-			signed[i] = (bytes[i] - 128) & 0xFF
-		s.data = signed
+		# DOS .RAW: unsigned 8-bit mono at 11025 Hz, given the RIFF header
+		# it lacks. A loop runs over the whole clip (8-bit mono: one byte
+		# is one frame).
+		var opts: Dictionary = WAV_DECODE.duplicate()
 		if loop:
-			s.loop_mode = AudioStreamWAV.LOOP_FORWARD
-			s.loop_begin = 0
-			s.loop_end = signed.size()        # 8-bit mono: 1 byte == 1 frame
+			opts["edit/loop_mode"] = 2             # forward
+			opts["edit/loop_begin"] = 0
+			opts["edit/loop_end"] = bytes.size()
+		s = AudioStreamWAV.load_from_buffer(_riff_pcm8(bytes, RAW_RATE), opts)
 	return s
 
-## Minimal RIFF/WAVE (PCM) parser.
+## `pcm` (unsigned 8-bit mono) wrapped in a minimal RIFF/WAVE header.
+static func _riff_pcm8(pcm: PackedByteArray, rate: int) -> PackedByteArray:
+	var pad: int = pcm.size() & 1                  # chunks are word-aligned
+	var out := PackedByteArray()
+	out.resize(44)
+	out.encode_u32(0, 0x46464952)                  # "RIFF"
+	out.encode_u32(4, 36 + pcm.size() + pad)
+	out.encode_u32(8, 0x45564157)                  # "WAVE"
+	out.encode_u32(12, 0x20746D66)                 # "fmt "
+	out.encode_u32(16, 16)
+	out.encode_u16(20, 1)                          # PCM
+	out.encode_u16(22, 1)                          # mono
+	out.encode_u32(24, rate)
+	out.encode_u32(28, rate)                       # bytes per second
+	out.encode_u16(32, 1)                          # block align
+	out.encode_u16(34, 8)                          # bits per sample
+	out.encode_u32(36, 0x61746164)                 # "data"
+	out.encode_u32(40, pcm.size())
+	out.append_array(pcm)
+	if pad == 1:
+		out.append(0)
+	return out
+
+## Minimal RIFF/WAVE (PCM) parser — the fallback for a file that
+## AudioStreamWAV.load_from_buffer will not take.
 func _parse_wav(b: PackedByteArray) -> AudioStreamWAV:
 	if b.size() < 44:
 		return null
@@ -177,19 +210,53 @@ func play_sfx(name: String, volume_db: float = 0.0) -> void:
 ## Play a one-shot sound at a world position — panned and attenuated by
 ## its location relative to the camera/listener. Use for doors, weapons,
 ## explosions, impacts and any other sound that has a place in the world.
+##
+## A sound past SFX_MAX_DISTANCE would be silent: it gets no voice and no
+## occlusion ray (a walker's footsteps on the far side of the map used to
+## take both). With all six voices busy the new sound takes the voice
+## that is quietest where the listener stands — or is dropped when it
+## would be quieter still — so a footstep cannot cut off the player's
+## own explosion.
 func play_sfx_3d(name: String, world_pos: Vector3, volume_db: float = -6.0) -> void:
+	var cam: Camera3D = _listener()
+	var dist: float = cam.global_position.distance_to(world_pos) if cam != null else 0.0
+	if dist > SFX_MAX_DISTANCE:
+		return
 	var s := _load(name, false)
 	if s == null:
 		return
-	var pick: AudioStreamPlayer3D = _voices3d[0]
+	var pick: AudioStreamPlayer3D = null
 	for p in _voices3d:
 		if not p.playing:
 			pick = p
 			break
+	var db: float = volume_db + occlusion_db(world_pos)
+	if pick == null:
+		var quietest: float = INF
+		for p in _voices3d:
+			var d: float = cam.global_position.distance_to(p.global_position) if cam != null else 0.0
+			var heard: float = _heard_db(p.volume_db, d, p.max_db)
+			if heard < quietest:
+				quietest = heard
+				pick = p
+		if pick == null or _heard_db(db, dist, 0.0) < quietest:
+			return
 	pick.stream = s
 	pick.global_position = world_pos
-	pick.volume_db = volume_db + occlusion_db(world_pos)
+	pick.volume_db = db
 	pick.play()
+
+## The level a 3D voice reaches the listener at: its volume less the
+## inverse-square roll-off from SFX_UNIT_SIZE (the model every voice here
+## uses), capped at its max_db. Only compared, never applied.
+static func _heard_db(volume_db: float, dist: float, max_db: float) -> float:
+	var falloff: float = 40.0 * log(maxf(dist, 1.0) / SFX_UNIT_SIZE) / log(10.0)
+	return minf(volume_db - falloff, max_db)
+
+## The camera the 3D voices are heard from, or null.
+func _listener() -> Camera3D:
+	var vp := get_viewport()
+	return vp.get_camera_3d() if vp != null else null
 
 ## Positional attenuation shared by every 3D voice (one-shots, enemy
 ## engines and alerts, ambient loops): inverse-square from unit_size,
@@ -309,6 +376,17 @@ func stop_music() -> void:
 	if _synth != null:
 		_synth.stop()
 
+## Build every instrument sample the game's tracks use (Assets.import_all),
+## so no song synthesises one when it first plays.
+func prewarm_music() -> void:
+	if _synth == null:
+		return
+	var tracks: Array = Array(MAPTYPE_TRACKS)
+	tracks.append(TITLE_TRACK)
+	for t in tracks:
+		for item in MidiSynth._song_items(song(String(t)).get("events", PackedInt32Array())):
+			_synth._install(item)
+
 func music_name() -> String:
 	return String(_synth.song_name) if _synth != null and _synth.playing else ""
 
@@ -373,7 +451,13 @@ func play_id(id: int, volume_db: float = 0.0) -> void:
 		play_sfx(n, volume_db)
 
 ## Looping positional sound parented to `parent` (ambient fires and
-## barrels from the 0x4cc00 table, 0xEE nodes). Returns the player.
+## barrels from the 0x4cc00 table, 0xEE nodes, vehicle engines). Returns
+## the player.
+##
+## It plays only while the listener is inside its max_distance: a loop
+## past that is silent but still mixed, and a map carries dozens of
+## fires. _process starts and stops them a few times a second; a loop
+## somebody else stops stays stopped.
 func attach_loop_3d(id: int, parent: Node, volume_db: float = -10.0) -> AudioStreamPlayer3D:
 	var n := sound_name(id)
 	if n.is_empty() or parent == null:
@@ -386,9 +470,57 @@ func attach_loop_3d(id: int, parent: Node, volume_db: float = -10.0) -> AudioStr
 	setup_3d(p, 300.0, 5000.0)
 	p.max_db = 0.0
 	p.volume_db = volume_db
-	p.autoplay = true
 	parent.add_child(p)
+	_loops.append(p)
+	_gated[p.get_instance_id()] = true           # not started yet
+	if p.is_inside_tree():
+		var cam: Camera3D = _listener()
+		_gate_loop(p, cam.global_position if cam != null else p.global_position)
 	return p
+
+## Distance-gated loops (attach_loop_3d) and which of them the gate has
+## stopped (or not started yet): instance id → true.
+var _loops: Array = []
+var _gated: Dictionary = {}
+var _loop_t: float = 0.0
+const LOOP_GATE_INTERVAL: float = 0.3
+const LOOP_GATE_MARGIN: float = 500.0
+
+func _process(delta: float) -> void:
+	_loop_t -= delta
+	if _loop_t > 0.0 or _loops.is_empty():
+		return
+	_loop_t = LOOP_GATE_INTERVAL
+	var cam: Camera3D = _listener()
+	var i: int = _loops.size() - 1
+	while i >= 0:
+		var p = _loops[i]
+		if not is_instance_valid(p):
+			_loops.remove_at(i)
+		elif (p as Node).is_inside_tree():
+			_gate_loop(p, cam.global_position if cam != null else (p as Node3D).global_position)
+		i -= 1
+	# Forget the ids of players that are gone.
+	if _gated.size() > _loops.size():
+		var live: Dictionary = {}
+		for p in _loops:
+			live[(p as Object).get_instance_id()] = true
+		for k in _gated.keys():
+			if not live.has(k):
+				_gated.erase(k)
+
+## Start `p` inside its max_distance of `listener`, stop it past it (plus
+## LOOP_GATE_MARGIN), and only ever restart what the gate itself stopped.
+func _gate_loop(p: AudioStreamPlayer3D, listener: Vector3) -> void:
+	var d: float = listener.distance_to(p.global_position)
+	var id: int = p.get_instance_id()
+	if p.playing:
+		if d > p.max_distance + LOOP_GATE_MARGIN:
+			p.stop()
+			_gated[id] = true
+	elif _gated.has(id) and d <= p.max_distance:
+		_gated.erase(id)
+		p.play()
 
 ## The cached looping / one-shot stream of a DOS sound id, for the level
 ## bake (scripts/level_behaviour.gd): straight from the asset cache

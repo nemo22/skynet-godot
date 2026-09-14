@@ -50,13 +50,24 @@ var _aim_yaw: float = 0.0
 var _aim_pitch: float = 0.0
 var _rng := RandomNumberGenerator.new()
 var _pickup_t: float = 0.0
+## One ray query for every cast (footing, sight, shots): a new query and
+## a new exclude array per bot per physics frame were pure garbage.
+var _ray := PhysicsRayQueryParameters3D.new()
 
 func setup(av: CharacterBody3D, g: Node, sk: int) -> void:
 	avatar = av
 	game = g
 	skill = clampi(sk, 0, SKILL.size() - 1)
+	_ray.exclude = [avatar.get_rid()]
 	_rng.randomize()
 	_pick_weapon()
+
+## Cast from `from` to `to` past this bot's own body.
+func _cast(from: Vector3, to: Vector3, areas: bool) -> Dictionary:
+	_ray.from = from
+	_ray.to = to
+	_ray.collide_with_areas = areas
+	return avatar.get_world_3d().direct_space_state.intersect_ray(_ray)
 
 func _pick_weapon() -> void:
 	avatar.weapon_idx = int(WEAPON_CHOICES[_rng.randi() % WEAPON_CHOICES.size()])
@@ -129,13 +140,9 @@ func _actor_eye(n: Node3D) -> Vector3:
 	return n.global_position + Vector3(0.0, 75.0, 0.0)
 
 func _can_see(from: Vector3, n: Node3D) -> bool:
-	var space := avatar.get_world_3d().direct_space_state
-	if space == null:
+	if avatar.get_world_3d().direct_space_state == null:
 		return false
-	var q := PhysicsRayQueryParameters3D.create(from, _actor_eye(n))
-	q.collide_with_areas = false
-	q.exclude = [avatar.get_rid()]
-	var hit := space.intersect_ray(q)
+	var hit := _cast(from, _actor_eye(n), false)
 	if not hit.has("collider"):
 		return true
 	var c: Object = hit["collider"]
@@ -189,12 +196,8 @@ func _move(delta: float) -> void:
 	# Obstacles: a knee-height ray ahead; blocked → jump, then veer.
 	if want.length() > 0.1:
 		want = want.normalized()
-		var space := avatar.get_world_3d().direct_space_state
 		var from: Vector3 = p + Vector3(0.0, 30.0, 0.0)
-		var q := PhysicsRayQueryParameters3D.create(from, from + want * 110.0)
-		q.collide_with_areas = false
-		q.exclude = [avatar.get_rid()]
-		var hit := space.intersect_ray(q)
+		var hit := _cast(from, from + want * 110.0, false)
 		var blocked: bool = hit.has("collider") and not (hit["collider"] as Object).is_in_group("dm_actor")
 		if blocked and avatar.is_on_floor():
 			avatar.velocity.y = JUMP_SPEED
@@ -315,11 +318,7 @@ func _aim_and_fire(delta: float) -> void:
 	var from: Vector3 = avatar.eye() + dir * 40.0
 	Net.bot_fire(avatar.net_id, avatar.weapon_idx, from, dir)
 	# The actual hit: same ray the player uses.
-	var space := avatar.get_world_3d().direct_space_state
-	var q := PhysicsRayQueryParameters3D.create(from, from + dir * 60000.0)
-	q.collide_with_areas = true
-	q.exclude = [avatar.get_rid()]
-	var hit := space.intersect_ray(q)
+	var hit := _cast(from, from + dir * 60000.0, true)
 	if not hit.has("collider"):
 		return
 	var n: Node = hit["collider"] as Node
