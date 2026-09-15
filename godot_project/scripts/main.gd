@@ -802,6 +802,14 @@ func _begin_level(name: String) -> void:
 	await get_tree().process_frame
 	if gen != _level_gen:
 		return
+	# MISSION SCENES (Settings.mission_scenes / --mission-scene): the whole
+	# mission comes up as one scene and this map is one zone of it. Falls
+	# back to the per-map path below when the mission has no baked scene or
+	# this map is not one of its zones (a phase variant, a hand-over).
+	if _want_mission_scene(name):
+		var in_scene: bool = await _begin_mission_level(name, gen)
+		if in_scene:
+			return
 
 	var loader := LevelLoader.new()
 	var level := loader.load_level(name)
@@ -817,52 +825,7 @@ func _begin_level(name: String) -> void:
 			level.terrain.create_trimesh_collision()   # walkable ground
 			_enable_backfaces(level.terrain)
 	if level.entities:
-		# Bake the colliders BEFORE the subtree enters the physics space so
-		# their flags (backface_collision) are registered from the first
-		# step — the deck terminator's first snap otherwise only found
-		# the roof.
-		for c in level.entities.get_children():
-			# Every entity mesh gets a trimesh StaticBody child — for
-			# movers (doors/gates/lifts) it is a child of the moving
-			# node, so the collision follows the action-system motion.
-			if c is MeshInstance3D:
-				# Static geometry arrives with its collision already on
-				# it — one shared shape per mesh, out of the converted
-				# cache (scripts/level_scene.gd).
-				if _has_collision(c):
-					continue
-				# A door that can never open (a flat DOOR leaf with no action,
-				# LevelLoader._sealed_door) stays without a collider here too:
-				# the loader leaves it out so the route behind stays open, and
-				# this pass gave it one back — MAP.210's DOOR01 across the
-				# cargo box kept the truck shut (playtest 2026-09-15).
-				if not c.has_method("file_off"):
-					var mesh_name: String = String(c.get_meta("mesh_name", ""))
-					if mesh_name.is_empty() and c.mesh != null:
-						mesh_name = c.mesh.resource_path.get_file().get_basename()
-					if LevelLoader._sealed_door(mesh_name, c.mesh):
-						continue
-				# Doors, gates and lifts collide as their AABB box, like
-				# every DOS object: the BIGDOOR leaf is a braced frame
-				# whose trimesh has holes a player capsule slips through
-				# (closed!) and thin edges to wedge on.
-				var solid_mover: bool = (level.action != null and c.has_method("file_off")
-					and level.action.is_solid_mover(c.file_off()) and LevelBehaviour.is_door_like(c.mesh))
-				if solid_mover or _is_small_prop(c, level):
-					_make_box_collision(c)          # DOS-style solid box
-				else:
-					# (The shared, cached shape — backface_collision already
-					# on — is the normal case; a mesh with no cache name gets
-					# its own.)
-					var shape_key: String = _shape_key(c)
-					if shape_key.is_empty() or not LevelScene.add_collision(c, shape_key):
-						c.create_trimesh_collision()    # walls, buildings, bridges
-						_enable_backfaces(c)
-				# A moving StaticBody does not push the player — a closing
-				# gate would leave them wedged inside the leaf. Movers get
-				# an AnimatableBody3D (sync_to_physics) instead.
-				if level.action != null and c.has_method("file_off") 						and level.action.is_mover_off(c.file_off()):
-					_make_animatable(c)
+		_bake_entity_collision(level)
 		add_child(level.entities)
 		_unblock_furniture(level)
 		if _cli.has("spawn-probe"):
@@ -881,27 +844,10 @@ func _begin_level(name: String) -> void:
 	# the cues. Signals first — a cue armed in the MAP data fires in its
 	# _ready, the moment it enters the tree.
 	if level.behaviour != null:
-		level.behaviour.objective_complete.connect(_on_objective_complete)
-		level.behaviour.hint_message.connect(_on_hint_message)
-		level.behaviour.mission_failed.connect(_on_mission_failed)
+		_connect_behaviour(level)
 		add_child(level.behaviour)
 	if level.action != null:
-		level.action.teleport_requested.connect(_on_teleport_requested)
-		level.action.drop_requested.connect(_on_drop_requested)
-		level.action.water_level_requested.connect(_on_water_level)
-		level.action.space = get_world_3d().direct_space_state
-		level.action.player_body = player
-		level.action.objectives_left = _objectives_left
-		if not player.pickup_message.is_connected(_set_status):
-			player.pickup_message.connect(_set_status)
-		if not player.use_pressed.is_connected(_on_use_pressed):
-			player.use_pressed.connect(_on_use_pressed)
-		if not player.activate_key.is_connected(_on_activate_key):
-			player.activate_key.connect(_on_activate_key)
-		if not player.secondary_changed.is_connected(_on_secondary_changed):
-			player.secondary_changed.connect(_on_secondary_changed)
-		if not player.hurt.is_connected(_on_hurt):
-			player.hurt.connect(_on_hurt)
+		_connect_action(level)
 	if Net.active:
 		# Deathmatch: no map enemies (the 31/32 markers on the arenas are
 		# the DOS jeep/HK vehicle spots) and no map pickups — the server
@@ -950,7 +896,99 @@ func _begin_level(name: String) -> void:
 		% [name, _map_idx + 1, _maps.size(),
 		   "outdoor" if level.is_outdoor else "indoor",
 		   level.entity_count, level.enemy_count])
+	_level_ready_tail(level, name)
 
+## Every entity mesh gets its collision before the subtree enters the
+## physics space, so the flags (backface_collision) are registered from
+## the first step — the deck terminator's first snap otherwise only found
+## the roof.
+func _bake_entity_collision(level: LevelLoader.Level) -> void:
+	if level.entities == null:
+		return
+	for c in level.entities.get_children():
+		# Every entity mesh gets a trimesh StaticBody child — for movers
+		# (doors/gates/lifts) it is a child of the moving node, so the
+		# collision follows the action-system motion.
+		if not (c is MeshInstance3D):
+			continue
+		# Static geometry arrives with its collision already on it — one
+		# shared shape per mesh, out of the converted cache
+		# (scripts/level_scene.gd).
+		if _has_collision(c):
+			continue
+		# A door that can never open (a flat DOOR leaf with no action,
+		# LevelLoader._sealed_door) stays without a collider here too:
+		# the loader leaves it out so the route behind stays open, and
+		# this pass gave it one back — MAP.210's DOOR01 across the
+		# cargo box kept the truck shut (playtest 2026-09-15).
+		if not c.has_method("file_off"):
+			var mesh_name: String = String(c.get_meta("mesh_name", ""))
+			if mesh_name.is_empty() and c.mesh != null:
+				mesh_name = c.mesh.resource_path.get_file().get_basename()
+			if LevelLoader._sealed_door(mesh_name, c.mesh):
+				continue
+		# Doors, gates and lifts collide as their AABB box, like every DOS
+		# object: the BIGDOOR leaf is a braced frame whose trimesh has
+		# holes a player capsule slips through (closed!) and thin edges to
+		# wedge on.
+		var solid_mover: bool = (level.action != null and c.has_method("file_off")
+			and level.action.is_solid_mover(c.file_off()) and LevelBehaviour.is_door_like(c.mesh))
+		if solid_mover or _is_small_prop(c, level):
+			_make_box_collision(c)          # DOS-style solid box
+		else:
+			# (The shared, cached shape — backface_collision already on —
+			# is the normal case; a mesh with no cache name gets its own.)
+			var shape_key: String = _shape_key(c)
+			if shape_key.is_empty() or not LevelScene.add_collision(c, shape_key):
+				c.create_trimesh_collision()    # walls, buildings, bridges
+				_enable_backfaces(c)
+		# A moving StaticBody does not push the player — a closing gate
+		# would leave them wedged inside the leaf. Movers get an
+		# AnimatableBody3D (sync_to_physics) instead.
+		if level.action != null and c.has_method("file_off") \
+				and level.action.is_mover_off(c.file_off()):
+			_make_animatable(c)
+
+## The mission-script signals of a level's Behaviour branch. Each level
+## brings a branch of its own, so this connects once per level — and once
+## per ZONE with a mission scene up, where several branches are alive at
+## the same time and all of them report to the one mission.
+func _connect_behaviour(level: LevelLoader.Level) -> void:
+	if level.behaviour == null:
+		return
+	if not level.behaviour.objective_complete.is_connected(_on_objective_complete):
+		level.behaviour.objective_complete.connect(_on_objective_complete)
+		level.behaviour.hint_message.connect(_on_hint_message)
+		level.behaviour.mission_failed.connect(_on_mission_failed)
+
+## The action system's signals and the references it needs, and the
+## player's own signals (connected once, whatever the level).
+func _connect_action(level: LevelLoader.Level) -> void:
+	if level.action == null:
+		return
+	if not level.action.teleport_requested.is_connected(_on_teleport_requested):
+		level.action.teleport_requested.connect(_on_teleport_requested)
+		level.action.drop_requested.connect(_on_drop_requested)
+		level.action.water_level_requested.connect(_on_water_level)
+	level.action.space = get_world_3d().direct_space_state
+	level.action.player_body = player
+	level.action.objectives_left = _objectives_left
+	if not player.pickup_message.is_connected(_set_status):
+		player.pickup_message.connect(_set_status)
+	if not player.use_pressed.is_connected(_on_use_pressed):
+		player.use_pressed.connect(_on_use_pressed)
+	if not player.activate_key.is_connected(_on_activate_key):
+		player.activate_key.connect(_on_activate_key)
+	if not player.secondary_changed.is_connected(_on_secondary_changed):
+		player.secondary_changed.connect(_on_secondary_changed)
+	if not player.hurt.is_connected(_on_hurt):
+		player.hurt.connect(_on_hurt)
+
+## What a level that has just come up needs told, whichever runtime
+## brought it up: the hostile count, the mission it belongs to, the
+## player's vehicle and border boxes, the radiation sources, the water and
+## the scenery. A mission scene runs this for every zone walked into.
+func _level_ready_tail(level: LevelLoader.Level, name: String) -> void:
 	# Hostile count for the HUD/tests — only the mission's main map
 	# tracks it; the interiors reached through exits are side areas of
 	# the same mission. Missions end at the evacuation zone, never here.
@@ -963,7 +1001,7 @@ func _begin_level(name: String) -> void:
 		# console, an old save): the start map is the mission's own.
 		_mission_start_map = _mission_start_for(name)
 	if _is_campaign_main(name):
-		_mission_hostiles = get_tree().get_nodes_in_group("enemy").size()
+		_mission_hostiles = _level_enemies(level).size()
 	if _dm == null and not Net.active:
 		_count_mission_enemies(level, name)
 	# Vehicle missions (Skynet.exe mission table 0x34846, +8 = player
@@ -983,6 +1021,19 @@ func _begin_level(name: String) -> void:
 	_set_hud_mode(player.vehicle if is_instance_valid(player) else 0)
 	if _dm != null:
 		_dm.on_level_ready(level)
+
+## The actors of ONE level. With a mission scene up every zone's robots
+## are in the tree at once and the "enemy" group holds them all, so what
+## belongs to this level is what stands under its own branch.
+func _level_enemies(level: LevelLoader.Level) -> Array:
+	var out: Array = []
+	var branch: Node3D = level.enemies if level != null else null
+	var scoped: bool = _mission != null and branch != null and is_instance_valid(branch)
+	for e in get_tree().get_nodes_in_group("enemy"):
+		if scoped and not branch.is_ancestor_of(e):
+			continue
+		out.append(e)
+	return out
 
 ## zone-local → world: the level's border boxes are built from the marker
 ## records, so they are in the zone's own x/z; the player tests them
@@ -1007,7 +1058,7 @@ static func _world_border_boxes(level: LevelLoader.Level) -> Array:
 ## spawn point lets out are counted by enemy.gd when they appear.
 func _count_mission_enemies(level: LevelLoader.Level, name: String) -> void:
 	var n: int = 0
-	for e in get_tree().get_nodes_in_group("enemy"):
+	for e in _level_enemies(level):
 		var id: String = "%s|%s" % [name, e.name]
 		if e.has_meta("marker_off") and level.map != null:
 			var rec = level.map.entities_by_off.get(int(e.get_meta("marker_off")))
@@ -1029,13 +1080,22 @@ func _count_mission_enemies(level: LevelLoader.Level, name: String) -> void:
 ## that space and the zone origin goes on once, before the physics
 ## queries and the player.
 func _frame_camera(level: LevelLoader.Level) -> void:
-	var spawn: Vector3
-	var look_target: Vector3
 	# Arriving through a map exit: marker set N = position marker N,
 	# facing marker N+1 (PlrSetPosMarker FUN_00121f72, skynet_gh.c:
-	# 25074-25087). HP/ammo carry across — only a fresh mission resets.
+	# 25074-25087). The register is spent whatever the level turns out to
+	# carry — a map without that marker still starts at its own start.
 	var set_id: int = _pending_marker_set
 	_pending_marker_set = -1
+	place_at_marker(level, set_id)
+
+## Put the player into `level` at marker set `set_id` (-1 = the map's own
+## start marker). Shared with the mission-scene runtime, where a doorway
+## moves the player between two zones that are both already standing and
+## there is no level load to hang the placement on.
+func place_at_marker(level: LevelLoader.Level, set_id: int) -> void:
+	var spawn: Vector3
+	var look_target: Vector3
+	# HP/ammo carry across a marker-set arrival — only a fresh mission resets.
 	var keep_state: bool = set_id >= 0
 	if set_id >= 0 and level.markers.has(set_id):
 		spawn = (level.markers[set_id] as Array)[0]
@@ -1236,9 +1296,39 @@ const DYN_AMBIENT_OUTDOOR_COLOR: Color = Color(1.0, 1.0, 1.0)
 ## lit the terrain with them (the lamp SPRITE simply has bright pixels),
 ## so outdoors only the flat ambient is set.
 func _light_level(level: LevelLoader.Level) -> void:
+	if not _light_env(level):
+		return
+	var cache: Dictionary = {}
+	_shade_recursive(level.entities, cache, Settings.dynamic_lights)
+	_shade_recursive(level.enemies, cache, Settings.dynamic_lights)
+	if Settings.dynamic_lights and level.terrain != null:
+		# The ground takes light too, or every lamp would hang over a
+		# black street.
+		_shade_recursive(level.terrain, cache, true)
+	# Indoor sprites are shaded as before; outdoors DOS draws them at full
+	# light and the dim ambient would only blacken the pickups.
+	if level.sprites != null and not level.is_outdoor:
+		for s in level.sprites.get_children():
+			# ... except the fires, which DOS draws at full light.
+			if s is SpriteBase3D and not s.has_meta("fullbright"):
+				(s as SpriteBase3D).shaded = true
+	print("[level] %s: %d map lights, %d shaded materials"
+		% ["outdoor (dynamic lights)" if level.is_outdoor else "interior",
+			_place_map_lights(level), cache.size()])
+
+## The AMBIENT half on its own: the environment and the key light for this
+## level, with nothing built. False when there is no more to do — no world
+## environment at all, or an outdoor map without DYNAMIC LIGHTS, which DOS
+## draws flat.
+##
+## Split out for the mission-scene runtime: activating a zone that has been
+## entered before must set the environment again but must NOT shade its
+## materials or place its lamps a second time (_place_map_lights builds a
+## node per record every time it runs).
+func _light_env(level: LevelLoader.Level) -> bool:
 	var we: WorldEnvironment = get_node_or_null("WorldEnvironment")
 	if we == null or we.environment == null:
-		return
+		return false
 	var env: Environment = we.environment
 	# DYNAMIC LIGHTS is the player's setting, not the original's. With it the
 	# surfaces are shaded per pixel over an ambient that leaves them as the
@@ -1255,30 +1345,14 @@ func _light_level(level: LevelLoader.Level) -> void:
 		if sun != null:
 			sun.visible = not dyn
 		if not dyn:
-			return
+			return false
 	else:
 		env.ambient_light_sky_contribution = 1.0
 		env.ambient_light_color = INDOOR_AMBIENT
 		env.ambient_light_energy = 1.0
 		if sun != null:
 			sun.visible = false
-	var cache: Dictionary = {}
-	_shade_recursive(level.entities, cache, dyn)
-	_shade_recursive(level.enemies, cache, dyn)
-	if dyn and level.terrain != null:
-		# The ground takes light too, or every lamp would hang over a
-		# black street.
-		_shade_recursive(level.terrain, cache, true)
-	# Indoor sprites are shaded as before; outdoors DOS draws them at full
-	# light and the dim ambient would only blacken the pickups.
-	if level.sprites != null and not level.is_outdoor:
-		for s in level.sprites.get_children():
-			# ... except the fires, which DOS draws at full light.
-			if s is SpriteBase3D and not s.has_meta("fullbright"):
-				(s as SpriteBase3D).shaded = true
-	print("[level] %s: %d map lights, %d shaded materials"
-		% ["outdoor (dynamic lights)" if level.is_outdoor else "interior",
-			_place_map_lights(level), cache.size()])
+	return true
 
 ## Indoor sprites rest on the floor the physics world actually has under
 ## them. The DOS record's Y sits a little above the floor and the port lifted the billboard's foot by a constant; the
@@ -2202,6 +2276,9 @@ func _ensure_mission_script(map_name: String) -> void:
 	if key == _mission_key:
 		return
 	_mission_key = key
+	# A new mission may try its own baked scene again, whatever made the
+	# last one hand itself back to the per-map runtime.
+	_mission_scene_off = -1
 	_mission_objectives = []
 	_mission_hints = []
 	_objectives_left = 0
@@ -2403,6 +2480,20 @@ func _on_teleport_requested(target_map: int, marker_set: int) -> void:
 		return
 	print("[skynet] exit %s → %s (marker set %d)" % [cur, target, marker_set])
 	_prev_map_name = cur
+	# Inside a mission scene the target is usually already standing: the
+	# doorway moves the player instead of loading the map (the return
+	# register above picked the zone for an exit whose target is 0).
+	if _mission != null:
+		if _zones.has(target):
+			_enter_zone(target, marker_set)
+			return
+		# A phase variant of the world (MAP.216) or a hand-over into
+		# another mission: step out of the scene and let the per-map
+		# runtime carry the mission from here. Step 5 of the plan is what
+		# keeps the world for a phase.
+		print("[mission] %s is no zone of mission %d — leaving the mission scene"
+			% [target, _mission_scene_key])
+		_mission_scene_off = _mission_scene_key
 	_pending_marker_set = marker_set
 	_transition(target)
 
@@ -2478,6 +2569,330 @@ func _end_level_change() -> void:
 	if not Net.active and is_instance_valid(player):
 		player.set("input_locked", _campath != null)
 
+
+## --- Mission scenes (step 4, docs/m2_mission_scene_plan.md) -----------
+## A campaign mission is one baked scene (converted/missions/MISSION.NNN.scn,
+## scripts/mission_scene.gd): the outdoor world at the origin and every
+## interior it reaches standing beside it on a +X grid. With the flag on,
+## a DOS map exit stops being a level change — the player is MOVED to the
+## target zone, which is already built and still holds whatever was done
+## in it. The per-map runtime above stays the default and is what every
+## other map, Future Shock, a network game and the phase variants still
+## use.
+
+## The mission scene under Main, and its zones by map name:
+##   "MAP.218" → {node: Zone_MAP_218, level: LevelLoader.Level or null}
+## A zone's Level is built the first time the player walks into it —
+## mission 4 reaches sixteen interiors and building them all at the door
+## would be a minute of nothing.
+var _mission: Node3D = null
+var _zones: Dictionary = {}
+var _active_zone: String = ""
+var _mission_scene_key: int = -1
+## The mission whose scene we have stepped out of for good this session:
+## a phase variant (MAP.216) is not a zone, so taking that exit hands the
+## mission back to the per-map runtime and it keeps it to the end.
+var _mission_scene_off: int = -1
+
+## Is the mission-scene runtime allowed at all right now? A deathmatch,
+## Future Shock and the map browser keep the per-map path whatever the
+## setting says.
+func _mission_scenes_on() -> bool:
+	return (Settings.mission_scenes or _cli.has("mission-scene")) \
+		and not Net.active and _dm == null and SkynetPaths.game != "shock"
+
+## Should `name` come up inside its mission's scene?
+func _want_mission_scene(name: String) -> bool:
+	if not _mission_scenes_on():
+		return false
+	var key: int = _mission_key_for(name)
+	if key < 0 or key == _mission_scene_off:
+		return false
+	return not _mission_start_for_key(key).is_empty()
+
+## Bring the mission scene up with `name` as the active zone. False when
+## it cannot be had — no baked scene, or `name` is not one of its zones —
+## and _begin_level then loads the map on its own as before.
+func _begin_mission_level(name: String, gen: int) -> bool:
+	var key: int = _mission_key_for(name)
+	var t0: int = Time.get_ticks_msec()
+	var packed: PackedScene = Assets.mission_scene(key)
+	if packed == null:
+		print("[mission] %d has no baked scene — the per-map runtime keeps it" % key)
+		_mission_scene_off = key
+		return false
+	var root: Node3D = packed.instantiate() as Node3D
+	var t_inst: int = Time.get_ticks_msec()
+	if root == null:
+		_mission_scene_off = key
+		return false
+	var zones: Dictionary = {}
+	var zones_node: Node = root.get_node_or_null("Zones")
+	if zones_node != null:
+		for c in zones_node.get_children():
+			if c is Node3D and not String(c.get("map_name")).is_empty():
+				zones[String(c.get("map_name"))] = {"node": c, "level": null}
+	if not zones.has(name):
+		# A phase variant of the world (MAP.216 is MAP.210 re-authored) or a
+		# map the census never reached: the mission carries on the old way.
+		print("[mission] %d: %s is no zone of the scene — the per-map runtime takes the mission"
+			% [key, name])
+		root.free()
+		_mission_scene_off = key
+		return false
+	add_child(root)
+	# The bake's own sky and key light are for opening the scene in the
+	# editor; the game lights the active zone itself (_light_level).
+	var prev: Node = root.get_node_or_null("EditorPreview")
+	if prev != null:
+		root.remove_child(prev)
+		prev.queue_free()
+	# Every zone comes out of the bake visible, and a mission holds up to
+	# seventeen of them: they go dark until the player is in one. Their
+	# static bodies stay in the physics world — they are a whole GAP away,
+	# where nothing can reach them.
+	for zname in zones:
+		((zones[zname] as Dictionary)["node"] as Node3D).visible = false
+	_mission = root
+	_zones = zones
+	_mission_scene_key = key
+	_active_zone = ""
+	var ok: bool = await _activate_zone(name, "", gen)
+	if not ok:
+		push_warning("[mission] %d: zone %s would not build — falling back" % [key, name])
+		_teardown_mission()
+		_mission_scene_off = key
+		return false
+	print("[mission] %d up in %d ms (%d ms instancing the scene, %d zones, active %s)"
+		% [key, Time.get_ticks_msec() - t0, t_inst - t0, zones.size(), name])
+	return true
+
+## The scene and every zone in it go; whatever the player changed in the
+## zones is kept as the per-map overlay, so a mission that hands itself
+## back to the old runtime (a phase exit) carries its state over.
+func _teardown_mission() -> void:
+	if _mission == null:
+		return
+	_snapshot_zones()
+	# A zone's sky dome is the one thing of it that hangs under Main (it
+	# follows the camera), so it does not go with the scene.
+	for zname in _zones:
+		var lvl = (_zones[zname] as Dictionary).get("level")
+		if lvl != null and lvl.sky != null and is_instance_valid(lvl.sky):
+			lvl.sky.queue_free()
+	if is_instance_valid(_mission):
+		_mission.queue_free()
+	_mission = null
+	_zones = {}
+	_active_zone = ""
+	_mission_scene_key = -1
+
+## Every built zone but the active one into the per-map overlay (the
+## active one is _save_map_state's, which also keeps its water).
+func _snapshot_zones() -> void:
+	for zname in _zones:
+		var z: Dictionary = _zones[zname]
+		var lvl = z.get("level")
+		if lvl == null or String(zname) == _active_zone:
+			continue
+		_map_state[String(zname)] = _level_snapshot(lvl)
+
+## Build the runtime level of a zone out of the level scene the mission
+## scene already stands under it. Everything goes under the ZONE node,
+## which carries the zone's origin — the sky is the exception, it is
+## pinned to the camera.
+func _build_zone(zname: String, z: Dictionary) -> LevelLoader.Level:
+	var node: Node3D = z["node"]
+	var t0: int = Time.get_ticks_msec()
+	var baked_root: Node = node.get_node_or_null("Level")
+	var loader := LevelLoader.new()
+	var level: LevelLoader.Level = loader.load_zone_from(zname, node.position, baked_root)
+	if level == null:
+		push_error("[mission] zone %s failed to build" % zname)
+		return null
+	# Nothing is left in the level-scene instance but its editor preview.
+	if baked_root != null and is_instance_valid(baked_root):
+		node.remove_child(baked_root)
+		baked_root.queue_free()
+	if level.terrain != null:
+		node.add_child(level.terrain)
+		if not _has_collision(level.terrain):
+			level.terrain.create_trimesh_collision()   # walkable ground
+			_enable_backfaces(level.terrain)
+	if level.entities != null:
+		_bake_entity_collision(level)
+		node.add_child(level.entities)
+		_unblock_furniture(level)
+	# A loaded save's overlay for this zone, before the Behaviour branch
+	# enters the tree and its armed cues fire. Within one mission scene
+	# there is nothing to restore — the zone never went away — so the
+	# variant import (_import_variant_state) has no part here.
+	if _map_state.has(zname):
+		_apply_map_state(level, zname)
+	if level.behaviour != null:
+		_connect_behaviour(level)
+		node.add_child(level.behaviour)
+	_connect_action(level)
+	if level.enemies != null:
+		node.add_child(level.enemies)
+	if level.sprites != null:
+		node.add_child(level.sprites)
+	# The zone's own scenery rides with it, so it is hidden with the zone.
+	if level.occluders != null and is_instance_valid(level.occluders):
+		node.add_child(level.occluders)
+		level.occluders = null
+	if level.overlay != null and is_instance_valid(level.overlay):
+		node.add_child(level.overlay)
+		level.overlay = null
+	if level.sky != null:
+		add_child(level.sky)                # follows the camera, not the zone
+		level.sky.position = player.global_position
+	z["level"] = level
+	print("[mission] zone %s built in %d ms (%s, %d meshes, %d enemies) at %s"
+		% [zname, Time.get_ticks_msec() - t0,
+		   "outdoor" if level.is_outdoor else "indoor",
+		   level.entity_count, level.enemy_count, str(node.position)])
+	return level
+
+## Make `zname` the zone the game is played in: the one the player came
+## from goes quiet, this one wakes up, and every per-level setup runs
+## against it. `_pending_marker_set` says where in it the player lands.
+func _activate_zone(zname: String, from: String, gen: int) -> bool:
+	var z: Dictionary = _zones.get(zname, {})
+	if z.is_empty():
+		return false
+	if not from.is_empty() and from != zname:
+		_deactivate_zone(from)
+	# The water surface of the zone being left — or of this one, when a
+	# doorway leads back into the map it is in. It hangs under Main rather
+	# than under the zone (the zone going dark would not take it), and
+	# _setup_water builds the next one at the end of this.
+	if _water != null and is_instance_valid(_water):
+		_water.queue_free()
+	_water = null
+	_water_target = INF
+	if is_instance_valid(player):
+		player.water_level = INF
+	var fresh: bool = z.get("level") == null
+	if fresh and _build_zone(zname, z) == null:
+		return false
+	var level: LevelLoader.Level = z["level"]
+	var node: Node3D = z["node"]
+	_current_level = level
+	_active_zone = zname
+	var idx: int = _maps.find(zname)
+	if idx >= 0:
+		_map_idx = idx
+	node.visible = true
+	if level.enemies != null and is_instance_valid(level.enemies):
+		level.enemies.process_mode = Node.PROCESS_MODE_INHERIT
+	if level.sky != null and is_instance_valid(level.sky):
+		level.sky.visible = true
+	_set_sky_fill(level, zname)
+	# A zone that has been lit already keeps its lamps and its shaded
+	# materials — only the ambient is set again (_place_map_lights would
+	# build a second lamp for every record).
+	if fresh:
+		_light_level(level)
+	else:
+		_light_env(level)
+	# Let the colliders of a zone that has just been built register before
+	# the spawn-clearance query runs.
+	await get_tree().physics_frame
+	if gen != _level_gen:
+		return false
+	if fresh:
+		_settle_sprites(level)
+	place_at_marker(level, _pending_marker_set)
+	_pending_marker_set = -1
+	# Gates/doorways the arrival already stands in must be left before
+	# they can fire again — a return exit drops the player right beside
+	# the doorway they came through.
+	if level.action != null and is_instance_valid(player):
+		level.action.arm_proximity(player.global_position, _eye_position())
+	if level.is_outdoor:
+		Audio.play_ambient("AMB_WIND.RAW")
+	else:
+		Audio.stop_ambient()
+	# The maptype marker picks the track; Audio.play_music keeps playing
+	# when the track does not change, so crossing a doorway inside one
+	# maptype does not restart the score.
+	Audio.play_music_for_maptype(_maptype(level))
+	_set_status("")
+	_level_ready_tail(level, zname)
+	return true
+
+## The zone the player is leaving: its robots stop thinking, its action
+## system stops being ticked (main._physics_process only ticks the active
+## level), its geometry and its occluders go out of the view, and the
+## shots in flight over it are gone.
+##
+## Its exits are re-armed: the DOS one-map-change latch is released by the
+## map load that follows an exit, and here there is no load.
+##
+## (The 3-D loops of a sleeping zone need nothing: the zones stand at
+## least a GAP of 16384 units apart, well past the 5000-unit reach
+## Audio.setup_3d gives a loop, so its distance gate holds them silent.)
+func _deactivate_zone(zname: String) -> void:
+	var z: Dictionary = _zones.get(zname, {})
+	if z.is_empty():
+		return
+	var level = z.get("level")
+	if level != null:
+		if level.action != null:
+			level.action.teleport_refused()
+		if level.enemies != null and is_instance_valid(level.enemies):
+			level.enemies.process_mode = Node.PROCESS_MODE_DISABLED
+		if level.sky != null and is_instance_valid(level.sky):
+			level.sky.visible = false
+	var node: Node3D = z["node"]
+	if node != null and is_instance_valid(node):
+		node.visible = false
+	# In-flight shots and grenades belong to the zone they were fired in.
+	for p in get_tree().get_nodes_in_group("projectile"):
+		p.queue_free()
+
+## A doorway inside the mission scene: fade, move, fade back. The shape of
+## _change_level without a level change — one at a time (`_level_busy`),
+## and a mission whose last objective fell during it ends afterwards.
+func _enter_zone(target: String, marker_set: int) -> void:
+	if _mission == null or _level_busy:
+		return
+	_level_busy = true
+	_level_gen += 1
+	var gen: int = _level_gen
+	if not Net.active and is_instance_valid(player):
+		player.set("input_locked", true)
+	await _fade_to(1.0, 0.25)
+	var from: String = _active_zone
+	_pending_marker_set = marker_set
+	var ok: bool = await _activate_zone(target, from, gen)
+	if gen != _level_gen:
+		return                              # another change took over
+	_end_level_change()
+	if not ok:
+		push_warning("[mission] cannot enter zone %s" % target)
+	_fade_to(0.0, 0.35)
+	_finish_mission_if_done(2.5)
+
+## What the console's `zone` / `zones` print.
+func _zone_report(all: bool) -> String:
+	if _mission == null:
+		return "no mission scene up (the per-map runtime is playing %s)" % _level_name()
+	if not all:
+		var z: Dictionary = _zones.get(_active_zone, {})
+		var at: Vector3 = (z["node"] as Node3D).position if not z.is_empty() else Vector3.ZERO
+		return "zone %s of mission %d at %s (%d zones)" \
+			% [_active_zone, _mission_scene_key, at, _zones.size()]
+	var lines: Array = ["mission %d, %d zones:" % [_mission_scene_key, _zones.size()]]
+	for zname in _zones:
+		var z: Dictionary = _zones[zname]
+		var lvl = z.get("level")
+		lines.append("  %s %s at %s%s" % [
+			"*" if String(zname) == _active_zone else " ", zname,
+			str((z["node"] as Node3D).position),
+			"" if lvl != null else "  (not built yet)"])
+	return "\n".join(lines)
 ## --- Save / load (docs §N.4) -----------------------------------------------
 ## A save is the DOS session state: the current map, the previous-map
 ## register, every map's Mst overlay and the player. Maps reload from
@@ -2498,13 +2913,24 @@ func save_to_slot(slot: int) -> bool:
 		_set_status("CANNOT SAVE NOW.")
 		return false
 	_save_map_state()
+	# A mission scene is saved as the DOS session it stands for: the ACTIVE
+	# ZONE is the map, every built zone contributes its overlay, and the
+	# player's position goes back into the zone's own (DOS) coordinates —
+	# the file then reads the same whichever runtime loads it, and the zone
+	# origins of a rebaked mission cannot strand the player in mid-air.
+	# (Where the rest of the mission had got to — the return register aside
+	# — is step 6 of docs/m2_mission_scene_plan.md.)
+	_snapshot_zones()
+	var psnap: Dictionary = player.save_state()
+	if _current_level.origin != Vector3.ZERO and psnap.has("pos"):
+		psnap["pos"] = (psnap["pos"] as Vector3) - _current_level.origin
 	var data := {
 		"version": SaveGame.VERSION,
 		"time": Time.get_datetime_string_from_system(false, true),
 		"map": _level_name(),
 		"prev_map": _prev_map_name,
 		"map_state": _map_state,
-		"player": player.save_state(),
+		"player": psnap,
 		"objectives": {"key": _mission_key, "left": _objectives_left,
 			"cursor": _objective_cursor.duplicate()},
 		# 2026-09-14 — both optional on load (see _install_save).
@@ -2588,6 +3014,12 @@ func _apply_pending_player() -> void:
 		return
 	var snap: Dictionary = _pending_player
 	_pending_player = {}
+	# zone-local → world: a save keeps the player in the map's own
+	# coordinates (save_to_slot), so a zone standing off the origin puts
+	# them back where the DOS position means.
+	if _current_level != null and _current_level.origin != Vector3.ZERO and snap.has("pos"):
+		snap = snap.duplicate()
+		snap["pos"] = (snap["pos"] as Vector3) + _current_level.origin
 	if is_instance_valid(player):
 		player.restore_state(snap)
 		if _current_level != null and _current_level.action != null:
@@ -2629,6 +3061,13 @@ func _save_map_state() -> void:
 	var lvl := _current_level
 	if lvl == null:
 		return
+	_map_state[_level_name()] = _level_snapshot(lvl, true)
+
+## The overlay of one level, whether or not it is the one being played. A
+## mission scene keeps several of them alive at once and snapshots them all
+## when it comes down (_snapshot_zones); `with_water` belongs to the ACTIVE
+## one, which is the only level whose surface is in the world.
+func _level_snapshot(lvl: LevelLoader.Level, with_water: bool = false) -> Dictionary:
 	var dead: Dictionary = {}
 	for off in lvl.enemy_marker_offs:
 		dead[off] = true
@@ -2657,10 +3096,10 @@ func _save_map_state() -> void:
 	# Where a chain has moved the water (acts 0xd6-0xda), and where the
 	# surface has got to on its way — the marker alone put MAP.254's
 	# drained sewer back under water (2026-09-14; absent = the marker).
-	if _water != null and is_instance_valid(_water) and _water_target != INF:
+	if with_water and _water != null and is_instance_valid(_water) and _water_target != INF:
 		snap["water"] = _water_target
 		snap["water_y"] = _water.position.y
-	_map_state[_level_name()] = snap
+	return snap
 
 ## Identity of an entity across map variants: kind + name/type + exact
 ## DOS position (shared objects keep their coordinates when a map is
@@ -3514,8 +3953,13 @@ func _clear_level() -> void:
 	if _automap != null and is_instance_valid(_automap):
 		_automap.call("close_map")
 	_mission_done = true
-	if _current_level == null: return
+	if _current_level == null:
+		_teardown_mission()
+		return
 	_save_map_state()
+	# A mission scene holds every zone's branches under itself, so its own
+	# tear-down takes them all; the frees below then find nothing left.
+	_teardown_mission()
 	# In-flight shots and grenades belong to the map being torn down.
 	for p in get_tree().get_nodes_in_group("projectile"):
 		p.queue_free()
@@ -3657,6 +4101,7 @@ const COMMAND_NAMES: Array = [
 	"rebake", "save", "secondary", "shoot", "showspawns",
 	"slugs", "speed", "superuzi", "surgery", "throw", "tp", "tpveh", "use", "version",
 	"weapon", "where", "who", "whoami", "win", "look", "bodyat", "collfaces", "aim",
+	"zone", "zones",
 ]
 
 const HELP_TEXT := """[b]commands[/b]
@@ -3665,7 +4110,8 @@ const HELP_TEXT := """[b]commands[/b]
   health [n] · armor [0-100] · speed [x] · nextlevel · win · enemies
   use (action key) · objectives (what the mission still wants)
   music [0-100|off|t200|title] · save [slot] · load [slot] · menu · quit
-  where (position, view and what the level costs) · bake [all]"""
+  where (position, view and what the level costs) · bake [all]
+  zone · zones (the mission scene's zones, when one is up)"""
 
 const CHEATS_TEXT := """[b]DOS cheat codes[/b] (CHEAT.PRS, typed after Alt+\\ in the original)
   superuzi · arnold (all weapons) · slugs (ammo) · surgery (health+armor)
@@ -4035,6 +4481,13 @@ func run_command(line: String) -> String:
 			if cmd == "options" and _pause != null:
 				_pause.call("_show", "options")
 			return "menu open"
+		"zone":
+			# Which zone of a mission scene the game is in. `tp` stays a
+			# WORLD teleport — a zone's own coordinates are the DOS ones,
+			# and the zone origin is what stands between them.
+			return _zone_report(false)
+		"zones":
+			return _zone_report(true)
 		"use":
 			# The action key, from a script: --console="tp …;use".
 			if p == null:

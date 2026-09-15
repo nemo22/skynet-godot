@@ -305,11 +305,26 @@ static func _phase(what: String) -> void:
 func load_level(map_name: String) -> Level:
 	return load_zone(map_name, Vector3.ZERO)
 
+## Build the level of a zone whose BAKED half is already in the tree.
+##
+## A mission scene instantiates the level scene of every zone itself and
+## stands it at the zone's origin (scripts/mission_scene.gd), so the
+## terrain and the static geometry are there before the loader runs:
+## `baked_root` is that instance, and its branches are lifted out of it
+## instead of a second copy being loaded. The caller parents everything
+## under the node that already stands at `origin`, which is why the
+## branches are NOT moved here (see _stand_at_origin).
+func load_zone_from(map_name: String, origin: Vector3, baked_root: Node) -> Level:
+	return load_zone(map_name, origin, baked_root)
+
 ## Load a level as a ZONE standing at `origin`. Everything built from the
 ## MAP records keeps its DOS (zone-local) coordinates; the branch nodes
 ## get `origin` as their transform, so their children's global positions
 ## are world ones. At Vector3.ZERO this is load_level to the bit.
-func load_zone(map_name: String, origin: Vector3) -> Level:
+##
+## `baked_root` (load_zone_from) says the caller parents the branches
+## under a node that carries `origin` already.
+func load_zone(map_name: String, origin: Vector3, baked_root: Node = null) -> Level:
 	var level := Level.new()
 	level.origin = origin
 	_trace = []
@@ -409,7 +424,13 @@ func load_zone(map_name: String, origin: Vector3) -> Level:
 	# edited map falls straight back to building from the data.
 	var baked: Dictionary = {}
 	if use_baked:
-		baked = LevelScene.take(map_name, map_bytes)
+		# A zone's copy is already instantiated by the mission scene; when
+		# it turns out to be stale the ordinary path still gets a chance to
+		# rebuild the file before the records have to do the work.
+		if baked_root != null:
+			baked = LevelScene.take_from(baked_root, map_bytes)
+		if baked.is_empty():
+			baked = LevelScene.take(map_name, map_bytes)
 	var baked_static: Node = null
 	if not baked.is_empty():
 		level.baked = true
@@ -867,8 +888,11 @@ func load_zone(map_name: String, origin: Vector3) -> Level:
 					limit_draw_distance(a, r * 1.5 + 200.0, true)
 
 	# zone-local ↔ world: last of all, so the bake above and every record
-	# position in it stay in DOS space.
-	_stand_at_origin(level)
+	# position in it stay in DOS space. A mission scene's zone is parented
+	# to a node that stands at the origin already — moving the branches too
+	# would put it there twice (load_zone_from).
+	if baked_root == null:
+		_stand_at_origin(level)
 
 	_phase("sky+rest")
 	if _trace_on:

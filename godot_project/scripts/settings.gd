@@ -111,6 +111,14 @@ var brightness_dos: float = 1.0
 var hires_weapons: bool = false
 var texture_filter: bool = false
 var dynamic_lights: bool = false
+## MISSION SCENES (docs/m2_mission_scene_plan.md): a campaign mission is
+## played inside one baked scene that holds every map it reaches, so a
+## doorway MOVES the player instead of unloading the world and loading the
+## next file. Off while the per-map runtime is still the shipped one; the
+## `--mission-scene` switch forces it on for a single run. Deathmatch,
+## Future Shock, loose maps and any mission without a baked scene keep the
+## per-map path whatever this says.
+var mission_scenes: bool = false
 ## The running game applies these at once (main.gd listens), not on the
 ## next map.
 signal hires_weapons_changed(on: bool)
@@ -134,6 +142,13 @@ func set_texture_filter(on: bool) -> void:
 	Render.restyle_all()
 	texture_filter_changed.emit(on)
 
+## Takes effect on the next mission (the runtime is chosen when a level
+## starts) — nothing is torn down under the player.
+func set_mission_scenes(on: bool) -> void:
+	mission_scenes = on
+	save()
+	print("[settings] mission scenes %s" % ("ON" if on else "OFF"))
+
 func _ready() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(CFG_PATH) == OK:
@@ -150,6 +165,7 @@ func _ready() -> void:
 		hires_weapons = bool(cfg.get_value("video", "hires_weapons", false))
 		texture_filter = bool(cfg.get_value("video", "texture_filter", false))
 		dynamic_lights = bool(cfg.get_value("video", "dynamic_lights", false))
+		mission_scenes = bool(cfg.get_value("game", "mission_scenes", false))
 	get_tree().root.size_changed.connect(apply_resolution)
 	get_window().content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
 	apply_window()
@@ -168,6 +184,7 @@ func save() -> void:
 	cfg.set_value("video", "hires_weapons", hires_weapons)
 	cfg.set_value("video", "texture_filter", texture_filter)
 	cfg.set_value("video", "dynamic_lights", dynamic_lights)
+	cfg.set_value("game", "mission_scenes", mission_scenes)
 	cfg.save(CFG_PATH)
 
 ## The multiplier on the DOS gamma.

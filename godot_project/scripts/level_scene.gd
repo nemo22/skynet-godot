@@ -169,6 +169,29 @@ static func take(map_name: String, map_bytes: PackedByteArray) -> Dictionary:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
 		Assets.trust_forget(p)
 		return {}
+	var out: Dictionary = _lift_branches(root)
+	root.free()
+	return out
+
+## The same lift out of a level scene SOMEBODY ELSE has already
+## instantiated. A mission scene holds one instance per zone
+## (scripts/mission_scene.gd) and the zone runtime builds its level from
+## that instance rather than loading the same file a second time; the
+## caller owns `root` and frees what is left of it.
+##
+## An empty answer means the instance is not this bake's or not this MAP's
+## — the caller then falls back to take() (which rebuilds the file) or to
+## the records.
+static func take_from(root: Node, map_bytes: PackedByteArray) -> Dictionary:
+	if root == null or not is_instance_valid(root):
+		return {}
+	if int(root.get("bake_version")) != BAKE_VERSION \
+			or int(root.get("source_hash")) != hash(map_bytes):
+		return {}
+	return _lift_branches(root)
+
+## Detach the four baked branches from an instantiated level scene.
+static func _lift_branches(root: Node) -> Dictionary:
 	var out: Dictionary = {}
 	for key in ["Terrain", "Static", "Occluders", "Behaviour"]:
 		var n: Node = root.get_node_or_null(NodePath(key))
@@ -179,7 +202,6 @@ static func take(map_name: String, map_bytes: PackedByteArray) -> Dictionary:
 		# The look settings may have changed since the bake.
 		Render.restyle_tree(n)
 		out[key.to_lower()] = n
-	root.free()
 	return out
 
 ## Clear the `owner` chain of a subtree lifted out of an instantiated
