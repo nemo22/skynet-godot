@@ -66,6 +66,24 @@ var _status_label: Label = null
 var _health_label: Label = null
 var _weapon_label: Label = null
 var _ammo_label: Label = null
+## The DOS compass (FUN_001323a2): COMPASS.IMG, a 185x14 ribbon of ticks
+## and the letters N E S W 37 px apart — 148 px to a full turn, and the
+## last 37 px repeat the first so the window never runs off the end —
+## seen through a 37 px window at PANEL0 (96,3). Every frame the ribbon
+## is blitted at x + scroll, scroll = (angle x -148 + 1024) >> 11 for the
+## 11-bit clockwise bearing from north, angle = view yaw + the map's
+## marker-7 offset ((degrees << 11) / 360, 0x12df3f): the ribbon slides
+## left as the player turns right, N under the middle of the window when
+## he faces north. The port drew its ammo count in that window until
+## 2026-09-15 ("vypadol kompas z HUDu").
+const COMPASS_WINDOW_PX: float = 37.0
+const COMPASS_RIBBON_PX: float = 185.0
+const COMPASS_TURN_PX: float = 148.0
+var _compass: Control = null
+var _compass_tex: Texture2D = null
+var _compass_north: int = 0            # marker 7, in 11-bit units
+var _compass_angle: int = -1
+var _compass_level: WeakRef = null
 var _hud_panel: TextureRect = null     # PANEL0.IMG bottom HUD bar
 var _health_fill: ColorRect = null   # HEALTH gauge fill
 var _rad_fill: Control = null        # RADIATION gauge fill
@@ -705,6 +723,7 @@ static func _suffix(name: String) -> int:
 func _load_current() -> void:
 	if _map_idx < 0 or _map_idx >= _maps.size():
 		_clear_level()
+		_mission_done = false               # (raised for a change that is not coming)
 		_set_status("No map at index %d" % _map_idx)
 		return
 	var name := _maps[_map_idx]
@@ -767,6 +786,21 @@ func _unblock_furniture(level: LevelLoader.Level) -> void:
 	if n > 0:
 		print("[level] %d small props made walk-through" % n)
 
+## The shared collision-shape cache key of an entity mesh: the MAP mesh
+## name — the ActionTarget's "mesh_name" meta, or the name of the cached
+## mesh resource it shows (converted/mesh/<NAME>.res). "" when neither is
+## known: a plain mesh that shares its name with a sibling (the sealed
+## truck doors) is renamed "@MeshInstance3D@N" by the tree, a key the
+## cache refuses with an error per door — and a node name like that says
+## nothing about the mesh, so such a mesh builds its own shape.
+static func _shape_key(mi: MeshInstance3D) -> String:
+	var key: String = String(mi.get_meta("mesh_name", ""))
+	if key.is_empty() and mi.mesh != null:
+		var rp: String = mi.mesh.resource_path
+		if rp.get_extension() == "res" and rp.get_base_dir().get_file() == "mesh":
+			key = rp.get_file().get_basename()
+	return Assets.safe_key(key) if not key.is_empty() else ""
+
 ## Only _change_level calls this (one level change at a time).
 func _begin_level(name: String) -> void:
 	var gen: int = _level_gen
@@ -806,6 +840,17 @@ func _begin_level(name: String) -> void:
 				# cache (scripts/level_scene.gd).
 				if _has_collision(c):
 					continue
+				# A door that can never open (a flat DOOR leaf with no action,
+				# LevelLoader._sealed_door) stays without a collider here too:
+				# the loader leaves it out so the route behind stays open, and
+				# this pass gave it one back — MAP.210's DOOR01 across the
+				# cargo box kept the truck shut (playtest 2026-09-15).
+				if not c.has_method("file_off"):
+					var mesh_name: String = String(c.get_meta("mesh_name", ""))
+					if mesh_name.is_empty() and c.mesh != null:
+						mesh_name = c.mesh.resource_path.get_file().get_basename()
+					if LevelLoader._sealed_door(mesh_name, c.mesh):
+						continue
 				# Doors, gates and lifts collide as their AABB box, like
 				# every DOS object: the BIGDOOR leaf is a braced frame
 				# whose trimesh has holes a player capsule slips through
@@ -814,12 +859,14 @@ func _begin_level(name: String) -> void:
 					and level.action.is_solid_mover(c.file_off()) and LevelBehaviour.is_door_like(c.mesh))
 				if solid_mover or _is_small_prop(c, level):
 					_make_box_collision(c)          # DOS-style solid box
-				elif not LevelScene.add_collision(c, String(c.get_meta("mesh_name", c.name)).to_upper()):
+				else:
 					# (The shared, cached shape — backface_collision already
-					# on — is the normal case; a mesh the cache refuses gets
+					# on — is the normal case; a mesh with no cache name gets
 					# its own.)
-					c.create_trimesh_collision()    # walls, buildings, bridges
-					_enable_backfaces(c)
+					var shape_key: String = _shape_key(c)
+					if shape_key.is_empty() or not LevelScene.add_collision(c, shape_key):
+						c.create_trimesh_collision()    # walls, buildings, bridges
+						_enable_backfaces(c)
 				# A moving StaticBody does not push the player — a closing
 				# gate would leave them wedged inside the leaf. Movers get
 				# an AnimatableBody3D (sync_to_physics) instead.
@@ -895,7 +942,7 @@ func _begin_level(name: String) -> void:
 	# can fire again — return exits drop the player right beside the
 	# gate they came through.
 	if level.action != null and is_instance_valid(player):
-		level.action.arm_proximity(player.global_position)
+		level.action.arm_proximity(player.global_position, _eye_position())
 	# (The automation switches — _cli_after_level — run once _change_level
 	# has finished: a scripted `use` that takes an exit is a level change
 	# of its own.)
@@ -920,7 +967,7 @@ func _begin_level(name: String) -> void:
 	_mission_hostiles = 0
 	if _campaign_maps.has(name):
 		_mission_start_map = name
-	elif _mission_of(_mission_start_map) != _mission_of(name):
+	elif _mission_of(_mission_start_map) != _mission_key_for(name):
 		# Entered a mission somewhere other than its start map (--map, the
 		# console, an old save): the start map is the mission's own.
 		_mission_start_map = _mission_start_for(name)
@@ -1158,11 +1205,16 @@ const LIGHT_RANGE_PER_UNIT: float = 10.0    # variant-2 sub+8 → world units
 const LIGHT_ENERGY_DIV: float = 14.0        # variant-2 intensity → energy
 const INDOOR_AMBIENT: Color = Color(0.62, 0.62, 0.68)
 const OUTDOOR_AMBIENT: Color = Color(0.55, 0.55, 0.65)
-## With DYNAMIC LIGHTS on, the flat ambient comes down: a lamp pool or a
-## muzzle flash cannot be told from a fully lit wall. BRIGHTNESS still
-## rides on top, so the player keeps the last word either way.
-const DYN_AMBIENT_OUTDOOR: float = 0.7
-const DYN_AMBIENT_INDOOR: float = 0.55
+## With DYNAMIC LIGHTS on the world is shaded per pixel, and the ambient is
+## what keeps it looking like the DOS art: an unlit surface outdoors takes
+## a neutral white ambient of 1.0 (the texture as drawn), indoors the same
+## ambient as with the setting off. The lights only ADD — muzzle flashes,
+## explosions, rounds, lamps. There is no sun then: a directional light
+## over maps whose light is painted into the textures lit every face turned
+## towards it, hangar interiors and walls behind buildings included, since
+## its shadows reach only ~100 u (playtest 2026-09-15: "nasvetľujú sa plochy
+## v tieni").
+const DYN_AMBIENT_OUTDOOR_COLOR: Color = Color(1.0, 1.0, 1.0)
 
 ## One OmniLight3D per enabled variant-2 light entity of an interior,
 ## plus the interior treatment (cached unshaded materials swapped for
@@ -1175,25 +1227,26 @@ func _light_level(level: LevelLoader.Level) -> void:
 	if we == null or we.environment == null:
 		return
 	var env: Environment = we.environment
-	# DYNAMIC LIGHTS is the player's setting, not the original's, and two
-	# things follow from it. The ambient comes down (see the constants) so
-	# that a lamp pool or a muzzle flash reads at all. And OUTDOOR maps
-	# get their lamps built for the first time: MAP.210 carries 32 and
-	# MAP.220 fifty street lamps that the DOS renderer never lit the
-	# ground with — until now this function simply returned outdoors.
+	# DYNAMIC LIGHTS is the player's setting, not the original's. With it the
+	# surfaces are shaded per pixel over an ambient that leaves them as the
+	# DOS art has them (see DYN_AMBIENT_OUTDOOR_COLOR), the lights add on
+	# top, and OUTDOOR maps get their lamps built: MAP.210 carries 32 and
+	# MAP.220 fifty street lamps that the DOS renderer never lit the ground
+	# with.
 	var dyn: bool = Settings.dynamic_lights
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_sky_contribution = 0.0 if dyn else 1.0
 	if level.is_outdoor:
-		env.ambient_light_color = OUTDOOR_AMBIENT
-		env.ambient_light_energy = DYN_AMBIENT_OUTDOOR if dyn else 1.25
+		env.ambient_light_color = DYN_AMBIENT_OUTDOOR_COLOR if dyn else OUTDOOR_AMBIENT
+		env.ambient_light_energy = 1.0 if dyn else 1.25
 		if sun != null:
-			sun.visible = true
+			sun.visible = not dyn
 		if not dyn:
 			return
 	else:
 		env.ambient_light_sky_contribution = 1.0
 		env.ambient_light_color = INDOOR_AMBIENT
-		env.ambient_light_energy = DYN_AMBIENT_INDOOR if dyn else 1.0
+		env.ambient_light_energy = 1.0
 		if sun != null:
 			sun.visible = false
 	var cache: Dictionary = {}
@@ -1292,10 +1345,10 @@ static func _shade_recursive(n: Node, cache: Dictionary, per_pixel: bool = false
 						dup.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL \
 							if per_pixel else BaseMaterial3D.SHADING_MODE_PER_VERTEX
 						if per_pixel:
-							# The DOS art paints its own highlights, so keep
-							# these rough and nearly matt.
-							dup.roughness = 0.9
-							dup.metallic_specular = 0.2
+							# The DOS art paints its own highlights: no
+							# specular at all, only the light's diffuse.
+							dup.roughness = 1.0
+							dup.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
 						dup.set_meta(LIT_COPY_META, true)
 						cache[key] = dup
 					mi.set_surface_override_material(si, dup)
@@ -1690,7 +1743,15 @@ var _hud_second_count: int = HUD_UNSET
 func _physics_process(delta: float) -> void:
 	if _current_level != null and _current_level.action != null \
 			and is_instance_valid(player):
-		_current_level.action.tick(delta, player.global_position)
+		_current_level.action.tick(delta, player.global_position, _eye_position())
+
+## Where the DOS proximity handlers measure from: the camera (0x1379c4 and
+## 0x137e2e subtract [0xd47b4], the view position) — 75 u over the feet on
+## foot, the seat or the cockpit in a vehicle.
+func _eye_position() -> Vector3:
+	if camera != null and is_instance_valid(camera) and camera.is_inside_tree():
+		return camera.global_position
+	return player.global_position + Vector3(0.0, EYE_HEIGHT, 0.0)
 
 func _process(delta: float) -> void:
 	_walk_step(delta)
@@ -1750,7 +1811,7 @@ func _process(delta: float) -> void:
 				_health_fill.color = Color(0.9, 0.3, 0.22) if low else Color(0.3, 0.85, 0.4)
 		if _health_fill != null and _health_fill.anchor_right != frac:
 			_health_fill.anchor_right = frac
-		var armor_frac: float = clampf(player.armor, 0.0, 1.0)
+		var armor_frac: float = float(player.armor_gauge())
 		if _armor_fill != null and _armor_fill.anchor_right != armor_frac:
 			_armor_fill.anchor_right = armor_frac
 		# Radiation: dose from the marker-4 sources, charged per second.
@@ -1793,6 +1854,7 @@ func _process(delta: float) -> void:
 			_set_hud_mode(player.vehicle)
 		if _hud_mode != 0:
 			_update_vehicle_hud()
+		_update_compass()
 		var am: int = int(player.ammo)
 		if am != _hud_ammo:
 			# A device with nothing to fire (the MP motion detector) shows no
@@ -1853,7 +1915,7 @@ func _on_use_pressed(pos: Vector3) -> void:
 	if _current_level != null and _current_level.action != null:
 		var a = _current_level.action
 		a.press_use()                       # (also for scripted presses)
-		if not a.activate_teleport(pos):
+		if not a.activate_teleport(pos, _eye_position()):
 			a.use_nearby(pos)
 
 ## --- Radiation (DOS RadInit 0x13b149 / dose 0x13b1e0) ----------------
@@ -2129,10 +2191,29 @@ static func _mission_of(map_name: String) -> int:
 	var sfx: int = _suffix(map_name)
 	return (sfx / 10) * 10 if sfx >= _mission_base() else -1
 
+## The mission `map_name` is played in. Usually its own (_mission_of), but
+## a map whose own number starts no campaign mission is a side area of the
+## mission being played: the shared interiors MAP.340+ that missions 3, 4
+## and 5 walk into (MAP.230/234/235 → 340 341 472 473 479 581 592 598,
+## MAP.240/250 → 349 350 472 582 598) and mission 4's MAP.292/293 behind
+## MAP.241. Each of those used to start a "mission" of its own — the
+## counter went to 0 on the way in and back to full on the way out, with
+## the objectives already done retired for good, so the mission could not
+## end. DOS resets the counter only when a mission starts. A save being
+## loaded names its mission; a loose map with nothing running keeps its own.
+func _mission_key_for(map_name: String) -> int:
+	var own: int = _mission_of(map_name)
+	if own < 0 or not _mission_start_for_key(own).is_empty():
+		return own
+	var loading: int = int(_pending_objectives.get("key", -1))
+	if loading >= 0 and not _mission_start_for_key(loading).is_empty():
+		return loading
+	return _mission_key if _mission_key >= 0 else own
+
 ## Load the mission script when the mission changes; keep the counter
 ## while moving between the maps of one mission.
 func _ensure_mission_script(map_name: String) -> void:
-	var key: int = _mission_of(map_name)
+	var key: int = _mission_key_for(map_name)
 	# Deathmatch and the loose non-campaign maps have no script.
 	if key < 0 or _dm != null or Net.active:
 		return
@@ -2402,7 +2483,15 @@ func _change_level(map_name: String, fade_out: bool, briefing: bool, saved: Dict
 	_finish_mission_if_done(2.5)
 	return true
 
+## Every way out of _change_level passes here. _clear_level raised
+## _mission_done for the change (no mission may end on a level half torn
+## down or half built); _begin_level lowers it once the level is up — but
+## a level that failed to load, or a briefing shown instead, never got
+## there, and the flag stayed up: saves said CANNOT SAVE NOW and no
+## mission could end again. Nothing between _begin_level's end and here
+## can legitimately raise it.
 func _end_level_change() -> void:
+	_mission_done = false
 	_level_busy = false
 	if not Net.active and is_instance_valid(player):
 		player.set("input_locked", _campath != null)
@@ -2492,13 +2581,18 @@ func _install_save(data: Dictionary) -> void:
 	# the mission being played sent a mission-1 save on to mission 3.
 	var map_name: String = String(data.get("map", ""))
 	var start: String = String(data.get("mission_start_map", ""))
-	if not _campaign_maps.has(start) or _mission_of(start) != _mission_of(map_name):
+	if not _campaign_maps.has(start) or _mission_of(start) != _mission_key_for(map_name):
 		start = _mission_start_for(map_name)
 	_mission_start_map = start
 
-## The campaign map mission `map_name` starts on ("" outside the campaign).
+## The campaign map the mission `map_name` is played in starts on ("" outside
+## the campaign).
 func _mission_start_for(map_name: String) -> String:
-	var key: int = _mission_of(map_name)
+	return _mission_start_for_key(_mission_key_for(map_name))
+
+## The campaign map mission `key` starts on, "" when no campaign mission has
+## that key.
+func _mission_start_for_key(key: int) -> String:
 	if key < 0:
 		return ""
 	for m in _campaign_maps:
@@ -2515,7 +2609,7 @@ func _apply_pending_player() -> void:
 	if is_instance_valid(player):
 		player.restore_state(snap)
 		if _current_level != null and _current_level.action != null:
-			_current_level.action.arm_proximity(player.global_position)
+			_current_level.action.arm_proximity(player.global_position, _eye_position())
 
 ## Fade the screen to `alpha` over `dur` seconds (0 = at once). A newer
 ## fade replaces one still running — the fade-in after a load is not
@@ -2612,15 +2706,69 @@ static func _map_signature(m: LevelLoader.MapFile.MapFile) -> Dictionary:
 		sig[e.file_off] = _entity_key(m, e)
 	return sig
 
+## The chain `e` starts, as the MAP data has it: identity, act and state
+## byte of every entity down the links, to the actor the walk stops at
+## (ObjFlipLink), the end, a loop or a link to nothing ("?").
+static func _chain_signature(m: LevelLoader.MapFile.MapFile, e) -> String:
+	var parts: PackedStringArray = PackedStringArray()
+	var seen: Dictionary = {}
+	var cur = e
+	while cur != null and not seen.has(cur.file_off) and parts.size() < 64:
+		seen[cur.file_off] = true
+		parts.append("%s/%02x/%02x" % [_entity_key(m, cur), cur.link_act_type, cur.state_byte])
+		if (cur.flags & 0x40) != 0 or cur.link_next <= 0:
+			break
+		cur = m.entities_by_off.get(cur.link_next)
+		if cur == null:
+			parts.append("?")
+	return ">".join(parts)
+
+## May the state of `s` (variant map `sm`, as parsed) stand for `d` (this
+## map, as parsed), the entity with the same identity key? Only when both
+## behave alike: the same act and state byte, and for an entity that fires
+## a chain by itself (ActionSystem.starts_chain) the same chain all the way
+## down. The variants re-author exactly these: MAP.210/216's jeep is hint
+## [G1] where MAP.217's is [M3], and MAP.217's 210BASE3 is an armed 0xF2
+## trigger where MAP.210's is scenery.
+static func _same_behaviour(sm: LevelLoader.MapFile.MapFile, s, dm: LevelLoader.MapFile.MapFile, d) -> bool:
+	if s.link_act_type != d.link_act_type or s.state_byte != d.state_byte:
+		return false
+	if not LevelLoader.ActionSystem.starts_chain(s):
+		return true
+	return _chain_signature(sm, s) == _chain_signature(dm, d)
+
+## `map_name` parsed fresh, the way LevelLoader reads it (the archive entry,
+## or an edited map in mods/maps/), or null.
+static func _parse_map(map_name: String) -> LevelLoader.MapFile.MapFile:
+	var bytes := PackedByteArray()
+	var bsa := BSAReader.new()
+	if bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant):
+		bytes = bsa.read(map_name)
+		bsa.close()
+	var mod: String = SkynetPaths.mods_dir() + ("/maps/%s" % map_name.to_upper())
+	if FileAccess.file_exists(mod):
+		var mb := SkynetPaths.read_bytes(mod)
+		if not mb.is_empty():
+			bytes = mb
+	return LevelLoader.MapFile.parse(bytes) if not bytes.is_empty() else null
+
 ## First visit to a map that is a VARIANT of one already played (the
 ## base after the truck ride = MAP.216, after the lasers = MAP.217):
 ## DOS keeps its Mst overlay per map number, so the base would come
 ## back with every switch reset — the player asked for the state to
 ## carry over. Find the best-matching visited map (same grid, ≥ 60 % of
 ## this map's meshes present at the same coordinates) and translate its
-## snapshot by entity identity: dead enemies, taken pickups, switch and
-## mover states, damage. Objects the variant adds (reinforcements) are
-## untouched, objects it drops are skipped.
+## snapshot by entity identity: dead enemies, taken pickups, and — for the
+## entities that behave the same on both maps (_same_behaviour) — switch
+## and mover states, damage, destruction. Objects the variant adds
+## (reinforcements) or re-authors keep this map's own state, objects it
+## drops are skipped.
+##
+## Never an act byte or a link. A retired cue (act 0xFF) belongs to the
+## map it fired on: 2026-09-14 imported them, the jeep's [G1] hint fired on
+## MAP.210 retired MAP.217's [M3] objective on the same entity, and mission
+## 1 could not end ("let's roll" and nothing, playtest 2026-09-15). On a
+## variant the cue is fresh, as DOS has every map number's own overlay.
 func _import_variant_state(level: LevelLoader.Level, name: String) -> Dictionary:
 	# Outdoor maps only: interiors built from the same room kit (the two
 	# truck boxes MAP.211/212 share 72 % of their pieces) are different
@@ -2673,27 +2821,81 @@ func _import_variant_state(level: LevelLoader.Level, name: String) -> Dictionary
 	for off in src.get("taken", {}):
 		if best_remap.has(off):
 			out["taken"][best_remap[off]] = true
+	# What the variant changed on the entities that behave alike. The HP
+	# table starts as this map's own: restore_state replaces it whole, and
+	# the old import left every object only this map has without hit points
+	# (it could no longer be damaged). The acts and links as the MAP data
+	# has them come from the variant's file — the snapshot holds only what
+	# play made of them.
+	var src_map: LevelLoader.MapFile.MapFile = _parse_map(best)
 	var act_src: Dictionary = src.get("action", {})
 	var act: Dictionary = {}
-	for part in ["states", "movers", "destr", "hp", "spent", "acts"]:
-		var d: Dictionary = {}
-		for off in act_src.get(part, {}):
-			if best_remap.has(off):
-				d[best_remap[off]] = act_src[part][off]
-		act[part] = d
-	# A link's value is an offset too: cut (0) stays cut, a target the
-	# variant lacks is left as this map has it.
-	var links: Dictionary = {}
-	var link_src: Dictionary = act_src.get("links", {})
-	for off in link_src:
-		var to: int = int(link_src[off])
-		if best_remap.has(off) and (to <= 0 or best_remap.has(to)):
-			links[best_remap[off]] = to if to <= 0 else int(best_remap[to])
-	act["links"] = links
+	if level.action != null:
+		act = {"states": {}, "movers": {}, "destr": {}, "spent": {},
+			"hp": level.action.save_state().get("hp", {})}
+	var carried: int = 0
+	var kept: int = 0
+	if src_map != null and not act.is_empty():
+		for off in best_remap:
+			var s = src_map.entities_by_off.get(off)
+			var dst: int = int(best_remap[off])
+			var d = level.map.entities_by_off.get(dst)
+			if s == null or d == null or _entity_key(src_map, s) != _entity_key(level.map, d):
+				continue                     # (the variant's file changed since)
+			if not _same_behaviour(src_map, s, level.map, d):
+				kept += 1
+				continue
+			carried += 1
+			for part in ["states", "movers", "destr", "hp", "spent"]:
+				var from: Dictionary = act_src.get(part, {})
+				if from.has(off):
+					act[part][dst] = from[off]
+	elif not act.is_empty():
+		push_warning("[skynet] %s: cannot read variant %s — its switches and damage stay behind" % [name, best])
 	out["action"] = act
-	print("[skynet] %s: first visit — importing state from variant %s (%d%% of meshes shared, %d dead, %d taken)"
-		% [name, best, int(best_ratio * 100.0), out["dead"].size(), out["taken"].size()])
+	print("[skynet] %s: first visit — importing state from variant %s (%d%% of meshes shared, %d dead, %d taken, %d entities carried, %d re-authored kept fresh)"
+		% [name, best, int(best_ratio * 100.0), out["dead"].size(), out["taken"].size(), carried, kept])
 	return out
+
+## Save repair for v0.3.0 (the 2026-09-14 variant import). Such a snapshot
+## can hold an objective retired on ANOTHER map: MAP.210's jeep hint fired,
+## the import wrote its 0xFF onto MAP.217's [M3] jeep, and a save made
+## after that keeps it on every load. The rule: a restored 0xFF on an
+## entity whose act in the MAP data is an objective (0x26 + n) is dropped
+## when section [M<n+1>] of the running mission's script has entries and
+## none of them has been shown (cursor 0). An objective that really fired
+## while the counter ran moved that cursor (_on_objective_complete), so a
+## section still at 0 has never counted anything and the retirement is
+## foreign. Exact for mission 1, where each of [M1] [M2] [M3] has one entry
+## and one entity (MAP.215's two, MAP.217's jeep): [M3] at 0 = the jeep
+## never counted. A section with no entries never moves its cursor, so it
+## is left alone; so is a mission already won. Dropped retirements leave
+## the snapshot, so the next save is clean.
+func _unretire_uncounted_objectives(level: LevelLoader.Level, name: String, snap: Dictionary) -> void:
+	var action: Dictionary = snap.get("action", {})
+	var acts: Dictionary = action.get("acts", {})
+	if acts.is_empty() or level.map == null or _mission_key < 0 \
+			or _mission_key != _mission_key_for(name) or _mission_ended_key == _mission_key:
+		return
+	var foreign: Array = []
+	for off in acts:
+		if int(acts[off]) != 0xFF:
+			continue
+		var e = level.map.entities_by_off.get(int(off))   # as parsed: nothing restored yet
+		if e == null or e.marker_type >= 0:
+			continue
+		var idx: int = e.link_act_type - LevelLoader.ActionSystem.ACT_OBJECTIVE_FIRST
+		if idx < 0 or e.link_act_type >= LevelLoader.ActionSystem.ACT_FAIL:
+			continue
+		if idx >= _mission_texts.size() or (_mission_texts[idx] as Array).is_empty():
+			continue
+		if int(_objective_cursor[idx]) > 0:
+			continue
+		foreign.append(off)
+	for off in foreign:
+		acts.erase(off)
+		print("[skynet] %s: objective @%05x [M%d] was retired but never counted — live again (v0.3.0 save repair)"
+			% [name, int(off), level.map.entities_by_off[int(off)].link_act_type - 0x25])
 
 ## Re-apply a saved snapshot to a freshly loaded map (DOS MstLoad).
 func _apply_map_state(level: LevelLoader.Level, name: String) -> void:
@@ -2703,6 +2905,8 @@ func _apply_map_state(level: LevelLoader.Level, name: String) -> void:
 		if snap.is_empty():
 			return
 		_map_state[name] = snap
+	else:
+		_unretire_uncounted_objectives(level, name, snap)
 	var dead: Dictionary = snap.get("dead", {})
 	if level.enemies:
 		for c in level.enemies.get_children():
@@ -4230,10 +4434,21 @@ func _build_status_ui() -> void:
 	# Read-outs placed in the panel's recessed boxes.
 	_health_label = _hud_box_label()             # numeric health (left box)
 	_panel_rect(panel, 3, 20, 39, 17).add_child(_health_label)
+	# DOS draws the primary weapon's ICON in the (50,20) box with its count
+	# right-aligned at x 128 (FUN_00132154); the port names the weapon
+	# there instead and puts the count where DOS does.
 	_weapon_label = _hud_box_label()             # active weapon name
-	_panel_rect(panel, 50, 20, 83, 17).add_child(_weapon_label)
+	_weapon_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_panel_rect(panel, 52, 20, 60, 17).add_child(_weapon_label)
 	_ammo_label = _hud_box_label()               # ammo count
-	_panel_rect(panel, 96, 3, 37, 14).add_child(_ammo_label)
+	_ammo_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_panel_rect(panel, 100, 20, 30, 17).add_child(_ammo_label)
+	# The compass window (see COMPASS_*).
+	_compass_tex = _load_panel_texture("COMPASS.IMG", false, Settings.hires_weapons)
+	_compass = _panel_rect(panel, 96, 3, 37, 14)
+	_compass.clip_contents = true
+	_compass.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_compass.draw.connect(_draw_compass)
 	# The wide recessed box on the right of PANEL0 was left empty. The
 	# thrown item lives there now — until 2026-09-04 there was no way to
 	# see which grenade the throw key would use.
@@ -4261,6 +4476,45 @@ func _build_status_ui() -> void:
 	_layout_hud()
 	# (There used to be an on-screen MENU button pinned top-right. Esc
 	# opens the same menu and the button sat over the view.)
+
+## The ribbon through the window, at the DOS scroll for _compass_angle
+## (the hi-res ribbon is the same art at 2x; it is drawn at the window's
+## own scale either way).
+func _draw_compass() -> void:
+	if _compass == null or _compass_tex == null or _compass_angle < 0:
+		return
+	var s: float = _compass.size.x / COMPASS_WINDOW_PX      # window px per DOS px
+	var scroll: int = (-148 * _compass_angle + 1024) >> 11
+	_compass.draw_texture_rect(_compass_tex,
+		Rect2(float(scroll) * s, 0.0, COMPASS_RIBBON_PX * s, _compass.size.y), false)
+
+## The clockwise bearing the compass shows, 0..2047: the view's yaw
+## (DOS [0x38c94]/[0x38c9c] — the camera, so the jeep's turret) plus the
+## map's marker-7 offset.
+func _update_compass() -> void:
+	if _compass == null or camera == null or not is_instance_valid(camera):
+		return
+	var lvl_ref = _compass_level.get_ref() if _compass_level != null else null
+	if lvl_ref != _current_level:
+		_compass_level = weakref(_current_level) if _current_level != null else null
+		_compass_north = _compass_offset(_current_level)
+	var fwd: Vector3 = -camera.global_transform.basis.z
+	# North is -z (DOS +z); turning right (clockwise from above) adds.
+	var bearing: float = fposmod(atan2(fwd.x, -fwd.z), TAU)
+	var a: int = (int(bearing * 2048.0 / TAU) + _compass_north) & 0x7FF
+	if a != _compass_angle:
+		_compass_angle = a
+		_compass.queue_redraw()
+
+## Marker type 7: the compass offset in degrees at sub+2 (0x12df04),
+## clamped 0..359 and turned into 11-bit units.
+static func _compass_offset(level: LevelLoader.Level) -> int:
+	if level == null or level.map == null:
+		return 0
+	for e in level.map.entities:
+		if (e.flags & 3) == 3 and e.marker_type == 7:
+			return (clampi(int(e.exit_map), 0, 359) << 11) / 360
+	return 0
 
 ## How much of the window bottom the HUD covers — 0 while it is hidden.
 func hud_height() -> float:
@@ -4398,7 +4652,7 @@ func _update_vehicle_hud() -> void:
 	if _veh_labels.has("energy"):
 		_veh_labels["energy"].text = "%d" % player.pool_count(10)
 	if _veh_labels.has("armor"):
-		_veh_labels["armor"].text = "%d" % int(round(player.armor * 100.0))
+		_veh_labels["armor"].text = "%d" % int(round(float(player.armor_gauge()) * 100.0))
 	if _veh_labels.has("damage"):
 		var frac: float = 1.0 - clampf(player.health / maxf(player.max_health, 1.0), 0.0, 1.0)
 		_veh_labels["damage"].text = "%d" % int(round(frac * 100.0))

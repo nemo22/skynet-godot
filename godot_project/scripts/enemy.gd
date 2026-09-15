@@ -937,7 +937,7 @@ func _tick_machine(m: Dictionary, delta: float, sense: Dictionary) -> void:
 	var tip: Vector3 = node.global_transform * tips[fi]
 	if tip.distance_to(_player.global_position + Vector3(0.0, 40.0, 0.0)) <= MACHINE_MARGIN:
 		m["cd"] = MACHINE_HIT_INTERVAL
-		_player.take_damage(MACHINE_HIT_DAMAGE)
+		_player.take_damage(MACHINE_HIT_DAMAGE, false)   # contact: no DIFFICULTY (0x12282f)
 		Audio.play_sfx_3d("HIT2.RAW", tip, -4.0)
 
 func _has_segment_node(n: Node3D) -> bool:
@@ -1049,7 +1049,11 @@ func _shoot(muzzle: Vector3, dir: Vector3, ammo: int, dos_speed: float) -> void:
 			while n != null and not n.has_method("take_damage"):
 				n = n.get_parent()
 			if n != null and n.is_in_group("player"):
-				n.take_damage(float(absi(dmg)))
+				# A direct hit: the ammo record's damage, in DOS points.
+				if n.has_method("take_dos_damage"):
+					n.take_dos_damage(float(absi(dmg)))
+				else:
+					n.take_damage(float(absi(dmg)))
 			elif bank > 0:
 				Explosion.spawn(scene, endpoint, 40.0, bank)
 		return
@@ -1282,6 +1286,29 @@ func take_damage(amount: float, by_player: bool = true) -> void:
 	elif _state == State.IDLE and _brain == null:
 		_set_chase()
 
+## DOS ObjHit (0x139019) on this machine: the jeep's ram (0x135a7e, the
+## car's speed >> 9) and a dying robot's blast (DEATH_BLAST_*). ObjHit
+## subtracts the value as it comes — no DIFFICULTY factor, which DOS
+## applies only where a projectile lands — and alerts the actor like any
+## hit. True when the hit destroyed it (a ramming car drives on), false
+## when it still stands or has no hit points to lose (the car bounces off).
+func obj_hit(amount: float) -> bool:
+	if indestructible or _hidden or _state == State.DEAD:
+		return false
+	_health -= maxf(amount, 0.0)
+	if _dormant_dist > 0.0:
+		if _health <= 0.0:
+			_detonate_trap()
+			return true
+		return false
+	_seen = true
+	if _health <= 0.0:
+		_die()
+		return true
+	if _state == State.IDLE and _brain == null:
+		_set_chase()
+	return false
+
 ## True for an actor that has no way to shoot: no fire params of its
 ## own and no armed segment bolted on. Cached — the segments are built
 ## once.
@@ -1331,7 +1358,62 @@ func _die() -> void:
 	if not _fling_parts(centre) and _body_size >= big_model_size:
 		for _i in 4 + (randi() % 4):
 			_spawn_debris(centre, null)
+	if not Net.active and is_inside_tree():
+		# The timer outlives this node: the blast is the script's, not ours.
+		get_tree().create_timer(DEATH_BLAST_DELAY, false).timeout.connect(
+			Callable(get_script(), "_death_blast").bind(get_tree(), global_position))
 	queue_free()
+
+## DOS EnemyKill (0x129a28) sets off the actor's own explosion — blast
+## value 75 for every robot (0x129661) — which strikes DEATH_BLAST_DELAY
+## later (timer 0x90, 0x123e71). At distance d from the actor to the
+## player's DOS point (fly_camera.dos_point) it deals 115 - d, in DOS's
+## fixed-point steps, when that comes to DEATH_BLAST_MIN or more and
+## nothing solid stands between — unscaled by DIFFICULTY (0x12457f ..
+## 0x124634) — and robots in reach take the same through ObjHit. So only
+## what is within ~78 u gets hurt: the pipe's victim, and the jeep that
+## rammed a robot to pieces and rolls on over the wreck at 7/8 speed. The
+## port never dealt it ("zraňovalo to aj hráča", playtest 2026-09-15).
+const DEATH_BLAST: int = 75
+const DEATH_BLAST_PAD: int = 40
+const DEATH_BLAST_MIN: int = 37
+const DEATH_BLAST_DELAY: float = 0.375
+
+## The blast's damage at distance `d` (0 or less: none).
+static func death_blast_damage(d: float) -> int:
+	var k: int = floori(float(DEATH_BLAST + DEATH_BLAST_PAD - d) * 256.0 / float(DEATH_BLAST))
+	var dmg: int = (k * DEATH_BLAST) >> 8
+	return dmg if dmg >= DEATH_BLAST_MIN else 0
+
+static func _death_blast(tree: SceneTree, at: Vector3) -> void:
+	if tree == null:
+		return
+	var pl := tree.get_first_node_in_group("player") as Node3D
+	if pl == null or not pl.is_inside_tree():
+		return
+	var space: PhysicsDirectSpaceState3D = pl.get_world_3d().direct_space_state
+	if space == null:
+		return
+	var pp: Vector3 = pl.call("dos_point") if pl.has_method("dos_point") else pl.global_position
+	var dmg: int = death_blast_damage(at.distance_to(pp))
+	if dmg > 0 and _blast_clear(space, at, pp, pl):
+		pl.call("take_dos_damage", float(dmg), false)
+	for e in tree.get_nodes_in_group("enemy"):
+		if not (e is Node3D) or not is_instance_valid(e) or not e.has_method("obj_hit"):
+			continue
+		var ep: Vector3 = (e as Node3D).global_position
+		var ed: int = death_blast_damage(at.distance_to(ep))
+		if ed > 0 and _blast_clear(space, at, ep, null):
+			e.call("obj_hit", float(ed))
+
+## Nothing solid between the blast and `to` (bodies only; `ignore` is the
+## body at the far end).
+static func _blast_clear(space: PhysicsDirectSpaceState3D, from: Vector3, to: Vector3, ignore: Node) -> bool:
+	var q := PhysicsRayQueryParameters3D.create(from, to)
+	q.collide_with_areas = false
+	if ignore is CollisionObject3D:
+		q.exclude = [(ignore as CollisionObject3D).get_rid()]
+	return space.intersect_ray(q).is_empty()
 
 ## Fling the DOS wreck parts. Returns false when the type has none.
 func _fling_parts(centre: Vector3) -> bool:

@@ -46,15 +46,15 @@ func style(mat: BaseMaterial3D, kind: String) -> void:
 	if kind != "sky" and kind != "sprite" and dynamic:
 		# DYNAMIC LIGHTS: a muzzle flash or an explosion can only show on
 		# a surface that takes light, and DOS drew the world unshaded, so
-		# the switch has to turn the shading on with the lights. Rough and
-		# barely specular — the DOS art has its own highlights painted in.
+		# the switch has to turn the shading on with the lights. No specular
+		# at all — the DOS art has its own highlights painted in.
 		# (The sky is its own light, and a billboard has no surface to
 		# catch one: those stay flat whatever the setting says.)
 		shading = BaseMaterial3D.SHADING_MODE_PER_PIXEL
-		if not is_equal_approx(mat.roughness, 0.9):
-			mat.roughness = 0.9
-		if not is_equal_approx(mat.metallic_specular, 0.2):
-			mat.metallic_specular = 0.2
+		if mat.specular_mode != BaseMaterial3D.SPECULAR_DISABLED:
+			mat.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
+		if not is_equal_approx(mat.roughness, 1.0):
+			mat.roughness = 1.0
 	if mat.shading_mode != shading:
 		mat.shading_mode = shading
 

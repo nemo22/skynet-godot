@@ -1,5 +1,9 @@
-## Aiming crosshair at the screen centre (in the jeep the camera is the
-## turret, so the aim is always there).
+## Aiming crosshair at the view's centre (in the jeep the camera is the
+## turret, so the aim is always there). That centre is DOS's: the middle
+## of the 3D view ABOVE the HUD bar, (160, 80) of the 320x200 screen, not
+## the middle of the window — the player's camera projects round it
+## (fly_camera.aim_screen_point / _update_projection) and every shot is
+## aimed through it (playtest 2026-09-15).
 ##
 ## On foot: a small green cross — the DOS one is a few pixels, and the
 ## port's first was three times that ("zameriavaci kriz je prilis velky",
@@ -22,6 +26,7 @@ var _veh: int = -1
 var _reticle: Texture2D = null
 var _reticle_tried: bool = false
 var _reticle_unit: float = 200.0       # screen lines the reticle's art is drawn for
+var _pt: Vector2 = Vector2(-1.0, -1.0) # where the reticle was last drawn
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -36,6 +41,17 @@ func _process(_delta: float) -> void:
 	if v != _veh:
 		_veh = v
 		queue_redraw()
+	var pt: Vector2 = _aim_point()
+	if pt != _pt:
+		_pt = pt
+		queue_redraw()
+
+## The projection centre in this control's pixels (it fills the viewport);
+## the window's middle when there is no player to ask.
+func _aim_point() -> Vector2:
+	if _player != null and is_instance_valid(_player) and _player.has_method("aim_screen_point"):
+		return _player.call("aim_screen_point")
+	return size * 0.5
 
 ## CROSHAIR.IMG as a white mask, loaded once.
 func _vehicle_reticle() -> Texture2D:
@@ -60,7 +76,7 @@ func _vehicle_reticle() -> Texture2D:
 	return _reticle
 
 func _draw() -> void:
-	var c: Vector2 = size * 0.5
+	var c: Vector2 = _aim_point()
 	if _veh > 0:
 		var tex := _vehicle_reticle()
 		if tex != null:

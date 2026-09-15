@@ -17,6 +17,7 @@
 extends Node3D
 
 const Explosion  := preload("res://scripts/explosion.gd")
+const Projectile := preload("res://scripts/projectile.gd")
 const BurningPool := preload("res://scripts/burning_pool.gd")
 
 ## Playtest 2026-09-03: the DOS grenade flew "more in a straight
@@ -173,28 +174,21 @@ func _detonate(at: Vector3) -> void:
 			var da := (a as Node3D).global_position.distance_to(at)
 			if da < _splash:
 				a.net_damage(_damage * (1.0 - da / _splash), _owner)
+	# One DOS radial blast (Projectile.dos_blast) over everything in reach.
 	for h in get_tree().get_nodes_in_group("hittable"):
 		if h is Node3D and h.has_method("take_damage"):
-			var dh := (h as Node3D).global_position.distance_to(at)
-			if dh < _splash:
-				h.take_damage(_damage * (1.0 - dh / _splash))
+			var bh: float = Projectile.dos_blast(_damage, (h as Node3D).global_position.distance_to(at))
+			if bh > 0.0:
+				h.take_damage(bh)
 	for e in get_tree().get_nodes_in_group("enemy"):
 		if e is Node3D and e.has_method("take_damage"):
 			# To the hitbox, not the origin (Enemy.blast_distance): a
 			# grenade bursting on an HK's nose is 300 u from its centre.
 			var d: float = e.blast_distance(at) if e.has_method("blast_distance") 				else (e as Node3D).global_position.distance_to(at)
-			if d < _splash:
-				e.take_damage(_damage * (1.0 - d / _splash))
-	var pl := get_tree().get_first_node_in_group("player")
-	if pl is Node3D and pl.has_method("take_damage"):
-		var d := (pl as Node3D).global_position.distance_to(at)
-		if d < _splash:
-			if pl == _owner:
-				pl.take_damage(_damage * 0.55 * (1.0 - d / _splash))
-			elif pl.has_method("net_damage"):
-				pl.net_damage(_damage * 0.55 * (1.0 - d / _splash), _owner)
-			else:
-				pl.take_damage(_damage * 0.55 * (1.0 - d / _splash))
+			var bd: float = Projectile.dos_blast(_damage, d)
+			if bd > 0.0:
+				e.take_damage(bd)
+	Projectile.blast_player(at, _damage, _splash, _owner, get_tree())
 	var scene := get_tree().current_scene
 	if scene != null:
 		Explosion.spawn(scene, at, 280.0, IMPACT_BANK)

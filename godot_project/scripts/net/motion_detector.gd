@@ -97,7 +97,11 @@ func _draw() -> void:
 	var k: float = sz.y / 200.0            # one DOS pixel
 	var ascent: float = f.get_ascent(FONT_CELL)
 	var lit: bool = (Engine.get_process_frames() & 7) < 4
+	# The flash window sits under the crosshair, which is above the middle
+	# of the window (the DOS view centre, over the panel).
 	var mid := sz * 0.5
+	if player != null and player.has_method("aim_screen_point"):
+		mid = player.call("aim_screen_point")
 	for m in marks():
 		var sp: Vector2 = m["pos"]
 		if bool(m["dead"]):

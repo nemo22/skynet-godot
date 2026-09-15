@@ -166,7 +166,7 @@ func _solve_map() -> void:
 	for x in _exits(a, name):
 		_put(x["at"])
 		await _frames(3)
-		if a.activate_teleport(p.global_position):
+		if a.activate_teleport(p.global_position, main._eye_position()):
 			_visited[x["vkey"]] = true
 			_route.append("%s: EXIT → %s set %d from %s" % [name, x["target"], x["set"], x["at"].snapped(Vector3.ONE)])
 			print("[solve] exit @%05x → %s set %d (from %s)" % [x["off"], x["target"], x["set"], x["at"].snapped(Vector3.ONE)])

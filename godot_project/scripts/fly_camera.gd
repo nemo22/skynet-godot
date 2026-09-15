@@ -159,6 +159,38 @@ var _weapons: Array = [
 	# code (0x132b00) marks the other players; see net/motion_detector.gd.
 	{"name": "MOTION DETECTOR",  "kind": "detector", "dmg": 0.0,  "rate": 2,  "pool": -1, "cost": 0,   "snd": "", "sel": -1, "dry": -1, "cfa": "WEAPON13.CFA", "animspd": 8, "vx": 168},
 ]
+## Where each slot's shot leaves and where it flies (read from Skynet.exe
+## 0x4361c): [record +0x30 x right, +0x34 y DOWN, +0x38 z ahead — all from
+## the eye, in the view's frame; DOS adds 20 to z (FUN_00125caf, 0x125d45)
+## — and +0x5c bit 1, set when the shot flies AT the point under the
+## crosshair (0x125dc3; without it, straight along the view)]. The guns
+## that fire from the eye itself carry (0,0,0). Vehicle slots are
+## records 20/22 (their pairs 21/23 hold the other barrel, the same x
+## negated), 24, 25; the detector is record 13.
+const MUZZLE: Array = [
+	[Vector3(-10.0, 10.0, 30.0), false],   # 0  PIPE (the swing reaches from the eye)
+	[Vector3.ZERO, true],                  # 1  UZI
+	[Vector3.ZERO, true],                  # 2  ASSAULT RIFLE
+	[Vector3.ZERO, true],                  # 3  MACHINE GUN
+	[Vector3.ZERO, true],                  # 4  SHOTGUN
+	[Vector3(3.0, 5.0, 0.0), false],       # 5  GRENADE LAUNCHER
+	[Vector3(18.0, 1.0, 18.0), true],      # 6  ROCKET LAUNCHER
+	[Vector3(16.0, 14.0, 20.0), true],     # 7  LASER RIFLE
+	[Vector3(16.0, 14.0, 20.0), true],     # 8  LASER CANNON
+	[Vector3(8.0, 10.0, 40.0), true],      # 9  PLASMA PISTOL
+	[Vector3(14.0, 13.0, 20.0), true],     # 10 PLASMA RIFLE
+	[Vector3(16.0, 11.0, 20.0), true],     # 11 PLASMA CANNON
+	[Vector3.ZERO, true],                  # 12 SUPER UZI
+	[Vector3(-20.0, 60.0, 80.0), true],    # 13 JEEP PLASMA (records 20/21)
+	[Vector3(-10.0, 55.0, 80.0), true],    # 14 JEEP ROCKETS (22/23)
+	[Vector3(-15.0, -30.0, 115.0), true],  # 15 HK LASER (24)
+	[Vector3(0.0, -30.0, 115.0), true],    # 16 HK ROCKETS (25)
+	[Vector3(-10.0, 10.0, 30.0), false],   # 17 MOTION DETECTOR (13)
+]
+## The thrown items, records 14-19: all leave the left hand, none aimed.
+const THROW_MUZZLE: Vector3 = Vector3(-20.0, 25.0, 0.0)
+## DOS's own addition to every muzzle's z.
+const MUZZLE_AHEAD: float = 20.0
 ## Index of the detector in `_weapons` above.
 const MOTION_DETECTOR: int = 17
 ## Weapon slots per vehicle (indices into `_weapons`): the gun on the
@@ -414,6 +446,7 @@ func set_vehicle(v: int) -> void:
 		_foot_owned = _owned.duplicate()
 		_foot_weapon = _weapon_idx
 	vehicle = v
+	veh_hull = VEH_HULL_POINTS               # a fresh ride, a whole hull
 	_veh_speed = 0.0
 	_wheel = 0.0
 	_tilt_pitch = 0.0
@@ -822,6 +855,13 @@ func _border_clamp(prev: Vector3) -> void:
 			found = true
 			break
 	if not found:
+		# Only a way back INTO the fence is a refuge. When the position
+		# before the move is outside every box too — a spawn, a loaded
+		# save or a stuck reset put the player there — restoring it would
+		# undo every move from then on and freeze him for good; the move
+		# stands, and the fence holds from the moment he is inside a box.
+		if not _inside_border(Vector2(prev.x, prev.z)):
+			return
 		global_position = prev
 		velocity = Vector3.ZERO
 		_veh_speed = 0.0
@@ -834,6 +874,13 @@ func _border_clamp(prev: Vector3) -> void:
 	elif not _border_hinted:
 		_border_hinted = true
 		border_hint.emit()
+
+## Is the x/z point `p` inside one of the fence boxes?
+func _inside_border(p: Vector2) -> bool:
+	for b in border_boxes:
+		if (b as Rect2).has_point(p):
+			return true
+	return false
 
 ## Jeep (DOS mode 4): a car, not a hovercraft — the mouse and A/D turn
 ## a steering WHEEL, the heading only changes while the wheels roll
@@ -853,84 +900,153 @@ var _aim_pitch: float = 0.0
 const JEEP_AIM_YAW: float = 1.1
 const JEEP_AIM_PITCH_DOWN: float = -0.45
 const JEEP_AIM_PITCH_UP: float = 0.6
-## Ramming (DOS 0x135a7e): a robot the car's path meets takes ObjHit of
-## speed >> 9 in DOS units — v/2 at v u/s — every frame they touch (the
-## port doses it at DOS's ~25 frames a second) and the car rolls on at
-## 7/8 of its speed; one with no hit points left throws it back. The
-## driver takes nothing: the port's guess of 2026-09-03 hurt him too.
+## Ramming (DOS v1.00 0x135a7e, run once per move from 0x135588). The
+## car's state is saved before the move; after it, the first object the
+## hull touches gets ObjHit (0x139019) with speed_field >> 9 — the field
+## is u/s x 256, so v/2 at v u/s, and a reversing car deals nothing
+## (ObjHit clamps a negative hit to 0). No DIFFICULTY factor: that lives
+## in the projectile impact path, not in ObjHit. ObjHit's carry decides:
+##   destroyed (clc)            -> the car drives on at 7/8 speed, sound 30
+##   survived or no HP (stc)    -> the saved state comes back (position
+##                                 and heading) and the speed is NEGATED,
+##                                 sound 30 — the car bounces off.
+## So a raptor (200 HP) takes two rams at 300 u/s, a T-800 (500) four,
+## and every one that fails throws the car back under fire. The port
+## used to dose v/2 every 1/25 s while the probe overlapped and always
+## rolled on — any robot, however big, burst at the first touch
+## (playtest 2026-09-15). The ram itself does the driver no harm in v1.00;
+## what hurts him is the robot's death blast (Enemy.DEATH_BLAST_*) as the
+## car rolls on over the wreck.
 const RAM_MIN_SPEED: float = 2.0
-const RAM_RADIUS: float = 120.0
-const RAM_TICK: float = 1.0 / 25.0
-var _ram_cd: Dictionary = {}       # enemy instance id -> _ram_clock of the next dose
-var _ram_clock: float = 0.0        # seconds driven, the clock _ram_cd counts in
-## The ram probe, built on first use and kept: a fresh query and sphere
+## The hull the ram test uses: HUMMER.3D is 106 x 75 x 227, plus a few
+## units, lifted off the ground so flat floors never count as a touch.
+const RAM_HALF: Vector3 = Vector3(57.0, 30.0, 118.0)
+const RAM_LIFT: float = 50.0
+const RAM_MAX_RESULTS: int = 16
+## A second hit on the same thing waits this long. DOS has no such wait,
+## but its restore-and-negate means a real second ram needs a run-up;
+## without one, holding the throttle against a robot re-hits it every
+## few frames at one frame's worth of speed.
+const RAM_REARM: float = 0.3
+var _ram_next: Dictionary = {}     # target instance id -> _ram_clock when it may be hit again
+var _ram_clock: float = 0.0        # seconds driven, the clock _ram_next counts in
+## The ram probe, built on first use and kept: a fresh query and shape
 ## every physics tick while driving created and freed a physics shape 60
 ## times a second.
 var _ram_query: PhysicsShapeQueryParameters3D = null
-const RAM_CD_PRUNE: int = 16       # expired doses are swept past this many
+const RAM_CD_PRUNE: int = 16       # expired waits are swept past this many
 
 ## Direction the guns fire: where the camera looks. In the jeep the
 ## camera IS the turret - the mouse turns it, the keys drive the car -
 ## so the car's frame swings across the view as you aim and the
-## crosshair stays in the middle (the DOS screenshots, 2026-09-11;
+## crosshair stays on the aim point (the DOS screenshots, 2026-09-11;
 ## the port had moved a crosshair over a view fixed to the car).
+## The camera's axis projects exactly onto the crosshair: the projection
+## centre IS the crosshair point (see _update_projection), so this is the
+## ray through it. (Camera3D.project_ray_normal is not used for it: it
+## builds the ray from symmetric viewport half-extents, which a shifted
+## frustum does not have.)
 func aim_dir() -> Vector3:
 	return -_cam.global_transform.basis.z
 
-## Drive into a robot: it takes the hit and the car rolls on (see RAM_*).
-func _ram_check(fwd: Vector3) -> void:
-	# A dose is due again once the clock reaches its stamp — the same
-	# instant the old per-tick countdown ran out, without walking a key
-	# array every tick. Stale stamps are only swept when they pile up.
+## Drive into something (see RAM_*). `pre_pos` / `pre_yaw` are the car's
+## state before this move — what DOS copies to 0x237b4 and puts back on a
+## bounce. True when the ram undid the move, so the caller's own wall
+## bounce must not negate the speed a second time.
+func _ram_check(pre_pos: Vector3, pre_yaw: float) -> bool:
+	# A wait ends once the clock reaches its stamp; stale stamps are only
+	# swept when they pile up.
 	_ram_clock += get_physics_process_delta_time()
-	if _ram_cd.size() > RAM_CD_PRUNE:
-		for k in _ram_cd.keys():
-			if _ram_clock >= float(_ram_cd[k]):
-				_ram_cd.erase(k)
+	if _ram_next.size() > RAM_CD_PRUNE:
+		for k in _ram_next.keys():
+			if _ram_clock >= float(_ram_next[k]):
+				_ram_next.erase(k)
 	if absf(_veh_speed) < RAM_MIN_SPEED:
-		return
+		return false
 	var space := get_world_3d().direct_space_state
+	if space == null:
+		return false
+	var now: Dictionary = _ram_targets(space, global_position, _yaw)
+	if now.is_empty():
+		return false
+	# Only a touch THIS move made is a ram. Something already inside the
+	# hull before it (a robot that walked into a standing car) is left
+	# alone: restoring a position that touches it too would pin the car
+	# there for good.
+	var before: Dictionary = _ram_targets(space, pre_pos, pre_yaw)
+	for id in now:
+		if before.has(id):
+			continue
+		var n: Node = now[id]
+		if _ram_clock < float(_ram_next.get(id, -1.0)):
+			# Hit a moment ago: the car is stopped, not dosed again.
+			_ram_undo(pre_pos, pre_yaw, false)
+			return true
+		_ram_next[id] = _ram_clock + RAM_REARM
+		var dmg: float = maxf(floorf(_veh_speed * 0.5), 0.0)
+		var destroyed: bool = false
+		if n.is_in_group("enemy"):
+			destroyed = n.has_method("obj_hit") and bool(n.call("obj_hit", dmg))
+		elif n.has_method("is_damageable") and bool(n.call("is_damageable")):
+			# A breakable map entity through the action system's ObjHit —
+			# the car-wash door on MAP.260 (CWDOOR, 60 HP) falls to one ram
+			# above 120 u/s, and that is how the jeep leaves the town.
+			n.call("take_damage", dmg)
+			destroyed = not bool(n.call("is_damageable"))
+		Audio.play_id(30, -3.0)
+		print("[ram] %s: %d at %.0f u/s -> %s" % [String(n.get_meta("mesh_name", n.name)),
+			int(dmg), _veh_speed, "destroyed, drive on" if destroyed else "bounced"])
+		if destroyed:
+			_veh_speed *= 0.875
+			return false
+		_ram_undo(pre_pos, pre_yaw, true)
+		return true
+	return false
+
+## Ram targets the car's hull box overlaps with the car at `at` facing
+## `yaw`: instance id -> the robot (group "enemy") or map entity (group
+## "hittable") that owns the collider.
+func _ram_targets(space: PhysicsDirectSpaceState3D, at: Vector3, yaw: float) -> Dictionary:
 	if _ram_query == null:
-		var sh := SphereShape3D.new()
-		sh.radius = RAM_RADIUS
+		var sh := BoxShape3D.new()
+		sh.size = RAM_HALF * 2.0
 		_ram_query = PhysicsShapeQueryParameters3D.new()
 		_ram_query.shape = sh
-		_ram_query.collide_with_areas = true
+		_ram_query.collide_with_areas = true      # robot hitboxes are areas
 		_ram_query.collide_with_bodies = true
 		_ram_query.exclude = [get_rid()]
-	var q := _ram_query
-	q.transform = Transform3D(Basis(), global_position + fwd * (90.0 * signf(_veh_speed)) + Vector3(0.0, 50.0, 0.0))
-	for hit in space.intersect_shape(q, 8):
+	_ram_query.transform = Transform3D(Basis(Vector3.UP, yaw), at + Vector3(0.0, RAM_LIFT, 0.0))
+	var out: Dictionary = {}
+	for hit in space.intersect_shape(_ram_query, RAM_MAX_RESULTS):
 		var n: Node = hit.get("collider") as Node
 		while n != null and not (n.has_method("take_damage")
 				and (n.is_in_group("enemy") or n.is_in_group("hittable"))):
 			n = n.get_parent()
-		if n == null:
+		if n == null or out.has(n.get_instance_id()):
 			continue
-		var id: int = n.get_instance_id()
-		if _ram_cd.has(id) and _ram_clock < float(_ram_cd[id]):
-			continue
-		_ram_cd[id] = _ram_clock + RAM_TICK
-		# DOS passes whatever the ram meets to ObjHit: a return of zero
-		# means the thing has no hit points — a building — and the caller
-		# negates the speed. A robot or a breakable map entity takes the
-		# hit and the car rolls on. The car-wash door on MAP.260 (CWDOOR,
-		# 60 HP) is how the jeep leaves the town.
-		var solid: bool = false
-		if n.is_in_group("enemy"):
-			var hp = n.get("_health")
-			solid = hp == null or float(hp) <= 0.0
-		else:
-			solid = not (n.has_method("is_damageable") and bool(n.call("is_damageable")))
-		if solid:
-			_veh_speed = -_veh_speed           # nothing left to hit: bounce
-			return
-		n.call("take_damage", absf(_veh_speed) * 0.5)
-		_veh_speed *= 0.875
-		Audio.play_id(30, -3.0)
-		return
+		if n.has_method("is_dead") and bool(n.call("is_dead")):
+			continue                                # a wreck on its way out
+		out[n.get_instance_id()] = n
+	return out
+
+## Put the car back where the move started. `bounce` negates the speed
+## (DOS 0x1355c5: neg of both speed fields) and centres the wheel
+## (0x1355d1); without it the car just stops.
+func _ram_undo(pre_pos: Vector3, pre_yaw: float, bounce: bool) -> void:
+	global_position = pre_pos
+	_yaw = pre_yaw
+	rotation.y = pre_yaw
+	_veh_speed = -_veh_speed if bounce else 0.0
+	if bounce:
+		_wheel = 0.0
+	velocity.x = 0.0
+	velocity.z = 0.0
 
 func _drive(delta: float, fwd_in: float, str_in: float) -> void:
+	# The state a ram bounce restores — taken before the wheel turns the
+	# heading, as DOS saves it before 0x135201 steers.
+	var pre_pos: Vector3 = global_position
+	var pre_yaw: float = _yaw
 	var grounded: bool = is_on_floor()
 	# Keys hold the wheel; without input it returns to centre (the mouse
 	# nudges it in _unhandled_input). Lock to lock in 0.305 s, as DOS.
@@ -979,10 +1095,10 @@ func _drive(delta: float, fwd_in: float, str_in: float) -> void:
 		velocity.y -= gravity * delta
 	var before := global_position
 	move_and_slide()
-	_ram_check(fwd)
+	var rammed: bool = _ram_check(pre_pos, pre_yaw)
 	# A wall throws the car back at the speed it came in with and the
 	# wheel snaps straight — carcoll2 (DOS 0x135a7e negates the speed).
-	if absf(_veh_speed) > 50.0 and is_on_wall() \
+	if not rammed and absf(_veh_speed) > 50.0 and is_on_wall() \
 			and global_position.distance_to(before) < absf(_veh_speed) * delta * 0.2:
 		Audio.play_id(30, -4.0)
 		_veh_speed = -_veh_speed
@@ -1176,7 +1292,7 @@ func _breathe(delta: float) -> void:
 		Audio.play_id(SND_BUBBLES, -12.0)
 	if air > 0.0:
 		return
-	take_damage(DROWN_DPS * delta, false)
+	take_dos_damage(DROWN_DPS * delta, false)
 	if _bubble_t < 1.0:
 		Audio.play_id(SND_DROWN, -3.0)
 
@@ -1343,34 +1459,65 @@ func _fly(_delta: float, fwd_in: float, str_in: float) -> void:
 	if dir.length_squared() > 0.0:
 		global_position += dir.normalized() * speed * _delta
 
-## Where the gun's muzzle is in the world. On foot that is the viewmodel
-## in the bottom-right corner; the jeep's plasma gun is a ROOF turret and
-## the HK's is nose-mounted, both well ahead of the cockpit glass.
-func _muzzle_point(fwd: Vector3) -> Vector3:
+## Where a shot leaves, as DOS computes it (FUN_00125caf, 0x125d45-0x125da0):
+## the record's offset `off` (x right, y DOWN, z ahead — MUZZLE) with
+## MUZZLE_AHEAD added to z, plus the distance the player covers this frame
+## (0x38c08 x dt: the walking / flying speed; the jeep keeps its speed
+## elsewhere), turned by the view matrix and added to the eye. `side`
+## flips x — a vehicle's barrels take turns.
+func _muzzle_point(off: Vector3, side: float = 1.0) -> Vector3:
 	var b: Basis = _cam.global_transform.basis
-	if vehicle == VEH_JEEP:
-		return _cam.global_position + fwd * 150.0 + b.y * 34.0
-	if vehicle != VEH_FOOT:
-		return _cam.global_position + fwd * 260.0 + b.y * 12.0
-	return _cam.global_position + fwd * 60.0 + b.x * 15.0 - b.y * 12.0
+	var lead: float = 0.0
+	if vehicle != VEH_JEEP:
+		lead = maxf(velocity.dot(-b.z), 0.0) * get_physics_process_delta_time()
+	# DOS y is down and z ahead; the camera's own y is up and z behind.
+	return _cam.global_position + b.x * (off.x * side) - b.y * off.y \
+		- b.z * (MUZZLE_AHEAD + off.z + lead)
+
+## MUZZLE entry for weapon slot `idx`: the offset, and the aim bit.
+func _muzzle_offset(idx: int) -> Vector3:
+	return MUZZLE[idx][0] if idx >= 0 and idx < MUZZLE.size() else Vector3.ZERO
+
+func _muzzle_aimed(idx: int) -> bool:
+	return bool(MUZZLE[idx][1]) if idx >= 0 and idx < MUZZLE.size() else true
+
+## Which barrel a vehicle gun fires next: weapon slot -> +1 / -1. DOS
+## negates the record's +0x30 after every shot in a vehicle (0x125e5e).
+var _barrel_side: Dictionary = {}
 
 ## How far down the aim ray to look for the thing the crosshair is on.
 const AIM_REACH: float = 20000.0
+## A picked point less than this far ahead of the muzzle (or behind it —
+## the crosshair on a wall the muzzle already reaches past) is not aimed at.
+const AIM_MIN_AHEAD: float = 1.0
 
-## What the crosshair is actually on — the first thing the aim ray meets,
-## or a point far down it. The shot is aimed at this, so a muzzle off to
-## one side still puts the round where the crosshair is.
-func _aim_target(fwd: Vector3) -> Vector3:
-	var from: Vector3 = _cam.global_position
-	var far: Vector3 = from + fwd * AIM_REACH
+## The direction a shot from `muzzle` flies. DOS picks the pixel under the
+## crosshair every frame and keeps its 3D point (0x14413); a weapon with
+## the aim bit flies from its muzzle AT that point, so an offset barrel
+## still lands on the crosshair. With nothing under the crosshair (sky),
+## or without the aim bit, the shot flies along the view (0x1448d).
+func _shot_dir(muzzle: Vector3, fwd: Vector3, aimed: bool) -> Vector3:
+	if not aimed:
+		return fwd
 	var space := get_world_3d().direct_space_state
 	if space == null:
-		return far
-	var q := PhysicsRayQueryParameters3D.create(from, far)
+		return fwd
+	var from: Vector3 = _cam.global_position
+	var q := PhysicsRayQueryParameters3D.create(from, from + fwd * AIM_REACH)
 	q.collide_with_areas = true
 	q.exclude = [get_rid()]
 	var hit := space.intersect_ray(q)
-	return hit["position"] if hit.has("position") else far
+	if not hit.has("position"):
+		return fwd
+	var to: Vector3 = (hit["position"] as Vector3) - muzzle
+	if to.dot(fwd) < AIM_MIN_AHEAD:
+		return fwd
+	return to.normalized()
+
+## Where the flare and the shotgun smoke go for a gun whose DOS shot
+## leaves from the eye: by the gun art in the lower right (MUZZLE's
+## convention — right, down, ahead less MUZZLE_AHEAD).
+const FLASH_AT_GUN: Vector3 = Vector3(15.0, 12.0, 40.0)
 
 ## Tracer + muzzle-flash colour per weapon family. Picked once at fire
 ## time so a single dictionary in the weapons table doesn't have to
@@ -1447,21 +1594,22 @@ func _shoot(idx: int = -1) -> void:
 		_vm_t = 0.0
 
 	var fwd: Vector3 = aim_dir()
-	# Where the shot comes FROM, and which way it actually flies.
-	#
-	# A shot that starts in the middle of your face reads as crooked: you
-	# see a string of bolts climbing out of the bottom of the screen
-	# instead of leaving the gun. The visual origin is the gun where it
-	# really is — the bottom right of the screen on foot, the ROOF TURRET
-	# in the jeep, which is where the DOS game fired from ("v hre to islo
-	# z hora z veze", 2026-09-04) — and the shot is aimed at whatever the
-	# crosshair is on, so it still converges exactly where you point.
-	# `fwd` stays the aim direction: the hitscan ray is cast from the eye
-	# and must not inherit the muzzle's parallax.
-	var muzzle: Vector3 = _muzzle_point(fwd)
-	var shot: Vector3 = (_aim_target(fwd) - muzzle).normalized()
-	if shot.length_squared() < 0.5:
-		shot = fwd
+	# Where the shot comes FROM and which way it flies — DOS's own numbers
+	# (MUZZLE, FUN_00125caf). The port used one guessed muzzle for every
+	# gun, 60 ahead / 15 right / 12 down, and aimed it at a crosshair drawn
+	# in the middle of the window, below the view's real centre: the gun
+	# art pointed above the crosshair and the bolts and tracers ran below
+	# it (playtest 2026-09-15). Now the crosshair is on the projection
+	# centre, the bullet guns fire from the eye (their DOS offset is 0,0,0)
+	# and the offset guns fly at the point under the crosshair. `fwd` stays
+	# the aim direction: the hitscan ray is cast from the eye along it.
+	var off: Vector3 = _muzzle_offset(idx)
+	var side: float = float(_barrel_side.get(idx, 1.0))
+	var muzzle: Vector3 = _muzzle_point(off, side)
+	# From the eye's own axis the picked point lies straight along the view.
+	var shot: Vector3 = fwd if off == Vector3.ZERO else _shot_dir(muzzle, fwd, _muzzle_aimed(idx))
+	if vehicle != VEH_FOOT:
+		_barrel_side[idx] = -side               # the other barrel next time
 	var dmg: float = float(w["dmg"])
 	# Deathmatch: everybody else draws this shot.
 	if Net.active:
@@ -1482,17 +1630,19 @@ func _shoot(idx: int = -1) -> void:
 
 	var tint: Color = _KIND_COLOR.get(kind, Color.WHITE)
 
-	# Muzzle flash for every projectile shot (DOS spawns one via
-	# FUN_00126080, skynet_gh.c:28238). The TEXTURE.219 sprite is tinted
-	# to family colour so plasma flares blue, lasers red, bullets warm
-	# white.
-	# TEXTURE.219 is a 17x17 px sprite. DOS draws it as a small flare at
-	# the gun's muzzle; from 90 u a 36 u sprite filled a third of the
-	# screen, so it sits further out and smaller (a 2026-09-02 report).
+	# Muzzle flash for every projectile shot: the TEXTURE.219 sprite tinted
+	# to the family colour so plasma flares blue, lasers red, bullets warm
+	# white. (FUN_00126080, which the fire routine calls, only turns the
+	# record's +0x20 into a vector at 0x38f5b — the flare is the port's.)
+	# TEXTURE.219 is a 17x17 px sprite; from 90 u a 36 u sprite filled a
+	# third of the screen, so it sits further out and smaller (a 2026-09-02
+	# report). A gun that fires from the eye would put it right on the
+	# crosshair, so for those it stays at the gun in the corner.
 	# Pooled, like the tracer and the impact puff below: a node per shot
 	# was a new sprite (and light) at the weapon's fire rate.
 	var fx_parent: Node = get_tree().current_scene
-	MuzzleFlash.spawn(fx_parent, muzzle + shot * 70.0, tint, 26.0 if kind == "shotgun" else 18.0)
+	var at_gun: Vector3 = muzzle if off != Vector3.ZERO else _muzzle_point(FLASH_AT_GUN)
+	MuzzleFlash.spawn(fx_parent, at_gun + shot * 70.0, tint, 26.0 if kind == "shotgun" else 18.0)
 
 	# Ballistic / straight projectiles take a separate path.
 	if kind == "grenade":
@@ -1534,11 +1684,11 @@ func _shoot(idx: int = -1) -> void:
 		beam_to = beam_from + (endpoint - beam_from).normalized() * reach
 		if reach > 120.0:
 			Tracer.spawn(fx_parent, beam_from, beam_to, Color(1.0, 0.86, 0.55, 0.5), 2.0)
-	# Shotgun: a puff of smoke lingering at the muzzle.
+	# Shotgun: a puff of smoke lingering at the gun.
 	if kind == "shotgun":
 		var sm := SmokePuff.new()
 		fx_parent.add_child(sm)
-		sm.setup(muzzle + fwd * 30.0, 180.0)
+		sm.setup(at_gun + fwd * 30.0, 180.0)
 	if hit.has("collider"):
 		var n: Node = hit["collider"] as Node
 		while n != null and not n.has_method("take_damage"):
@@ -1608,8 +1758,8 @@ func _throw_secondary() -> void:
 	_pools[pool] = int(_pools[pool]) - 1
 	_sync_hud()
 	_fire_cd = 0.6
-	var fwd: Vector3 = -_cam.global_transform.basis.z
-	var muzzle: Vector3 = _cam.global_position + fwd * 60.0
+	var fwd: Vector3 = aim_dir()
+	var muzzle: Vector3 = _muzzle_point(THROW_MUZZLE)   # the left hand
 	var arc: Vector3 = (fwd + Vector3.UP * 0.35).normalized()
 	if Net.active:
 		Net.send_fire(5, muzzle, arc)            # drawn as a launcher shot
@@ -1692,11 +1842,48 @@ func _try_activate() -> void:
 		return
 	use_pressed.emit(global_position)
 
-## Take damage from an enemy shot. On death the player just dies — the
-## level controller shows a game-over screen and calls respawn().
-## `scaled` applies the DIFFICULTY multiplier (Settings.dmg_to_player).
-## DOS scales weapon damage in the projectile-impact path only, so
-## radiation and other environmental damage pass false.
+## Where the DOS engine has the player when it measures a distance to him
+## (a robot's death blast, 0x12457f): the eye on foot and in the HK, the
+## middle of the car in the jeep, 70 u over the wheels (0x1359e1).
+const JEEP_CENTRE_HEIGHT: float = 70.0
+
+func dos_point() -> Vector3:
+	if vehicle == VEH_JEEP or _cam == null:
+		return global_position + Vector3(0.0, JEEP_CENTRE_HEIGHT if vehicle == VEH_JEEP else 75.0, 0.0)
+	return _cam.global_position
+
+## The DOS soldier has 1000 damage points (0x121e48: max 0x3e800 in 8.8),
+## and every damage value in the DOS tables — an ammo record's 10..100, a
+## blast's strength, the 85 a second of drowning — is subtracted from
+## THAT (0x122652: loss = D x 256 with no armour). The port's bar is
+## max_health; a DOS value is worth max_health / 1000 of it. Until
+## 2026-09-15 the raw table values came off the 100-point bar: every
+## enemy shot hurt ten times as much as in the original (a 10-damage
+## bullet took 10 % instead of 1 %).
+const DOS_HEALTH_POINTS: float = 1000.0
+## Armour (0x12268a): a hit of D points costs 82/65536 of the armour bar
+## per point — full armour is used up by 800 points — and the armour that
+## is left after the hit keeps that fraction of it off the soldier.
+const ARMOR_COST_PER_POINT: float = 82.0 / 65536.0
+## In a vehicle (0x130c4a) the soldier is not hurt at all: the hull takes
+## every hit, 1:1, from its own pool (0x130caa; 1000 for the jeep, and the
+## flag that picks 1500 is not decoded — both take 1000 here), and the
+## ARMOR bar shows the hull (0x13231d). At zero the ride is over.
+const VEH_HULL_POINTS: float = 1000.0
+var veh_hull: float = VEH_HULL_POINTS
+
+## Damage in DOS points (see DOS_HEALTH_POINTS): what the DOS tables and
+## formulas say, straight. `scaled` = a direct weapon hit (DIFFICULTY
+## applies, 0x1230d6); blasts, contact, falls, drowning pass false.
+func take_dos_damage(points: float, scaled: bool = true) -> void:
+	take_damage(points * max_health / DOS_HEALTH_POINTS, scaled)
+
+## Take `amount` of the port's own bar (max_health). On death the player
+## just dies — the level controller shows a game-over screen and calls
+## respawn(). `scaled` applies the DIFFICULTY multiplier
+## (Settings.dmg_to_player); DOS scales weapon damage in the
+## projectile-impact path only, so radiation and other environmental
+## damage pass false.
 func take_damage(amount: float, scaled: bool = true) -> void:
 	if health <= 0.0:
 		return
@@ -1716,12 +1903,20 @@ func take_damage(amount: float, scaled: bool = true) -> void:
 			return
 		Net.hit(Net.local_id, amount, Net.local_id, _weapon_idx)
 		return
+	var points: float = amount * DOS_HEALTH_POINTS / max_health
 	if vehicle != VEH_FOOT:
-		amount *= 0.6                            # the hull takes part of it
+		veh_hull = maxf(veh_hull - points, 0.0)
+		hurt.emit(amount)
+		Audio.play_sfx("HIT2.RAW", -3.0)
+		if veh_hull <= 0.0:
+			health = 0.0
+			Audio.play_sfx("EXPLO2.RAW", -2.0)
+			_capture(false)
+		return
 	if armor > 0.0:
-		var soak: float = minf(amount * 0.5, armor * max_health)
-		armor = maxf(armor - soak / max_health, 0.0)
-		amount -= soak
+		armor = maxf(armor - ARMOR_COST_PER_POINT * points, 0.0)
+		amount *= 1.0 - armor
+	# DOS takes at least 1/256 of a point; the port's bar is float.
 	health -= amount
 	hurt.emit(amount)
 	Audio.play_sfx("HIT2.RAW", -3.0)
@@ -1729,6 +1924,13 @@ func take_damage(amount: float, scaled: bool = true) -> void:
 		health = 0.0
 		Audio.play_sfx("EXPLO2.RAW", -2.0)
 		_capture(false)                          # release the mouse
+
+## What the HUD's ARMOR bar shows: the armour on foot, the hull in a
+## vehicle (DOS 0x13231d), both 0..1.
+func armor_gauge() -> float:
+	if vehicle != VEH_FOOT:
+		return clampf(veh_hull / VEH_HULL_POINTS, 0.0, 1.0)
+	return clampf(armor, 0.0, 1.0)
 
 ## Network game: environmental damage (take_damage with `scaled` false)
 ## waiting to be reported, and how long it has waited. At most one report
@@ -1944,6 +2146,7 @@ const NO_FRAMES: Array = []
 
 ## Advance the viewmodel animation and keep it pinned bottom-centre.
 func _process(delta: float) -> void:
+	_update_projection()
 	_step_death_view(delta)
 	if _viewmodel == null:
 		return
@@ -2011,6 +2214,46 @@ func _hud_height(vp: Vector2) -> float:
 	if sc != null and sc.has_method("hud_height"):
 		return float(sc.call("hud_height"))
 	return clampf(vp.x / 8.0, 64.0, 160.0)
+
+## --- the view's centre ------------------------------------------------
+## DOS renders the world into a 320x160 view above the 40-line panel and
+## projects it round the middle of THAT view, (160, 80) — 40 % down the
+## screen (FUN_0014f6d0) — and the reticle is drawn exactly there. The
+## port's camera fills the whole window with the HUD bar laid over its
+## bottom, so its centre sat at 50 %, under the art: the viewmodels,
+## drawn for a centre at 40 %, pointed above the crosshair (playtest
+## 2026-09-15). The camera's frustum is shifted instead — same vertical
+## field (the `fov` of the scene), same aspect, same window — so its axis
+## lands in the middle of the part of the window the HUD leaves free.
+## Checked every frame (a resize, or the HUD bar shown or hidden, moves
+## it); the camera is only touched when something changed.
+var _proj_key: Array = []
+
+func _update_projection() -> void:
+	if _cam == null or not is_inside_tree():
+		return
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	if vp.y < 1.0:
+		return
+	var hud_h: float = clampf(_hud_height(vp), 0.0, vp.y * 0.5)
+	var key: Array = [vp, hud_h, _cam.fov, _cam.near]
+	if key == _proj_key and _cam.projection == Camera3D.PROJECTION_FRUSTUM:
+		return
+	_proj_key = key
+	# A frustum camera's `size` is the height of its near plane, and the
+	# offset moves that plane in the same units: half the HUD in pixels,
+	# as a fraction of the window height, times the plane's height. The
+	# plane moves DOWN, so the axis sits above the window's middle.
+	var plane_h: float = 2.0 * _cam.near * tan(deg_to_rad(_cam.fov) * 0.5)
+	_cam.projection = Camera3D.PROJECTION_FRUSTUM
+	_cam.size = plane_h
+	_cam.frustum_offset = Vector2(0.0, -(hud_h * 0.5) / vp.y * plane_h)
+
+## Where the crosshair goes, in viewport pixels: the projection centre —
+## the middle of the window above the HUD bar (crosshair.gd draws there).
+func aim_screen_point() -> Vector2:
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	return Vector2(vp.x * 0.5, (vp.y - clampf(_hud_height(vp), 0.0, vp.y * 0.5)) * 0.5)
 
 ## Pin the viewmodel sprite to the bottom-centre of the screen, scaled to
 ## the viewport like the DOS 320×200 screen.

@@ -23,6 +23,8 @@
 ##   0xEF                 — use-key gate, 60 units (0x137e2e: runs only
 ##                          in the frame ACTIVATE goes down).
 ##   0xF1/0xF2            — proximity-gated chain trigger (0x1379c4).
+##                          Both handlers measure in 3D from the EYE — the
+##                          camera position [0xd47b4] (see tick).
 ##   0xF0                 — interior teleport (0x137881): target map at
 ##                          sub+2, spawn-marker set at sub+4; one-shot.
 ##
@@ -195,9 +197,9 @@ const SLIDE_SPEED_SCALE: float = 2.2     # 0x5f slide speed = p4 * this (units/s
 const PROX_GATE_RADIUS: float = 60.0     # 0xEF (Skynet.exe 0x137e2e)
 ## Use key reach for wall buttons / levers the crosshair is not on.
 const USE_REACH: float = 130.0
-## The DOS 60-unit gate test is against the player's body, so the player
-## capsule radius is added — MAP data places gates 32..79 units from the
-## doorway sprite they guard, which a centre-point test would walk past.
+## Added to the DOS 60-unit gate radius: the DOS player stands where the
+## port's capsule cannot (a gate mesh's origin is inside its collider), and
+## MAP data places gates 32..79 units from the doorway sprite they guard.
 const PLAYER_RADIUS: float = 26.0
 ## A 0xF0 doorway sprite is also armed by the player touching it directly
 ## (handler 0x137881: "player touch arms state bit 0"); interior return
@@ -420,6 +422,18 @@ func _light_step(e: MapFile.Entity, fx_tick: bool) -> void:
 		e.light_intensity = maxi(int(float(e.light_intensity) * (1.0 + f)), 0)
 		_clear_enable(e)
 		_light_apply(e)
+
+## Can `e` flip the chain it links to by itself — a proximity or use-key
+## trigger, a countdown relay, a prop whose hit or death fires its link
+## (state bits 1-2), a marker path whose end fires what it points at?
+## main.gd's variant import carries such an entity's state only when
+## everything down its chain is the same on both maps.
+static func starts_chain(e: MapFile.Entity) -> bool:
+	var act: int = e.link_act_type
+	if e.marker_type >= 0:
+		return e.link_next > 0
+	return act == ACT_PROX_GATE or act == ACT_PROX_CHAIN_A or act == ACT_PROX_CHAIN_B \
+		or act == ACT_RELAY or (e.state_byte & 6) != 0
 
 static func gate_runs(e: MapFile.Entity) -> bool:
 	if e.link_act_type != ACT_PROX_GATE:
@@ -700,9 +714,19 @@ func _do_action(e: MapFile.Entity) -> void:
 ## physics step: DOS ticked at a fixed rate, and the movers carry the
 ## collision bodies the player stands on. Motion scales by `delta`, and
 ## the triggers only need to see the player once a step.
-func tick(delta: float, player_pos: Vector3) -> void:
+##
+## `player_pos` is the body (feet): doorways and the path vehicles' grid
+## window go by it. `eye_pos` is where the DOS proximity handlers measure
+## from — 0x1379c4 (0xF1/0xF2) and 0x137e2e (0xEF) both subtract the
+## camera position [0xd47b4] from the entity and take the 3D length
+## (v1.00 disassembly, 2026-09-15). The port measured from the feet, 75 u
+## lower, so MAP.260's mission-end BUTTONX (0xF2, radius 1024) could be
+## driven past (playtest 2026-09-15). Callers that put a test point
+## right at a trigger may leave it out: it defaults to `player_pos`.
+func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> void:
 	if _map == null:
 		return
+	var eye: Vector3 = player_pos if eye_pos == Vector3.INF else eye_pos
 	# Lights ------------------------------------------------------
 	if not _light_ents.is_empty():
 		_light_fx_clock += delta
@@ -743,7 +767,7 @@ func tick(delta: float, player_pos: Vector3) -> void:
 		if _spent.has(e.file_off):
 			continue
 		var epos: Vector3 = _prox_pos[pi]
-		var inside: bool = _within(epos, player_pos, _prox_radius(e))
+		var inside: bool = _within(epos, eye, _prox_radius(e))
 		var latched: bool = _prox_latched.get(e.file_off, false)
 		# 0xF1/0xF2 are ONE-SHOT. Their handler (0x1379c4) ends by calling
 		# 0x139644 with dl = 0xFE, bl = 0 — `state &= 0xFE`, i.e. the
@@ -859,8 +883,14 @@ func tick(delta: float, player_pos: Vector3) -> void:
 		_armed.clear()
 
 ## Use key: fire an armed exit the player stands in. Returns true when
-## a map change was requested (one per level instance).
-func activate_teleport(player_pos: Vector3) -> bool:
+## a map change was requested (one per level instance). `eye`: where the
+## 0xEF gate below measures from — the camera, as DOS 0x137e2e does; the
+## feet when not given (tests). MAP.210's cargo box is sealed and boarded
+## with the key at its rear wall: the gate inside is 91-97 u from the feet
+## there, over the 86 u reach, but 23-42 u from the eye (playtest
+## 2026-09-15: "nedá sa ísť do nákladného auta").
+func activate_teleport(player_pos: Vector3, eye: Vector3 = Vector3.INF) -> bool:
+	var from_eye: Vector3 = eye if eye.is_finite() else player_pos
 	if _teleport_fired:
 		return false
 	for ti in _teleports.size():
@@ -881,7 +911,7 @@ func activate_teleport(player_pos: Vector3) -> bool:
 		if g.link_act_type != ACT_PROX_GATE or _spent.has(g.file_off):
 			continue
 		var gpos: Vector3 = _prox_pos[gi]
-		if not _within(gpos, player_pos, _prox_radius(g)):
+		if not _within(gpos, from_eye, _prox_radius(g)):
 			continue
 		if not _reachable(player_pos, gpos):
 			continue
@@ -942,11 +972,13 @@ func use_nearby(player_pos: Vector3) -> bool:
 ## player beside the gate it came through (MAP.210 marker 27 is 64 units
 ## from the bunker gate; MAP.211's start sits inside its DOOR gate) waits
 ## for the player to step out and back in instead of bouncing straight
-## back.
-func arm_proximity(player_pos: Vector3) -> void:
+## back. The triggers measure from `eye_pos` as tick() does (default: the
+## body position), the doorways from the body.
+func arm_proximity(player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> void:
+	var eye: Vector3 = player_pos if eye_pos == Vector3.INF else eye_pos
 	for pi in _prox.size():
 		var e: MapFile.Entity = _prox[pi]
-		if _within(_prox_pos[pi], player_pos, _prox_radius(e)):
+		if _within(_prox_pos[pi], eye, _prox_radius(e)):
 			_prox_latched[e.file_off] = true
 	for ti in _teleports.size():
 		var e: MapFile.Entity = _teleports[ti]
@@ -1074,9 +1106,10 @@ func _spawn_in(off: int) -> void:
 		print("[action] spawn @%05x: %s appears" % [off, n.name])
 		n.spawn_in()
 
-## DOS measures the TRUE 3D distance (FUN_0014d775) in the 0xEF, 0xF1
-## and 0xF2 handlers. The port measured it horizontally with a ±512
-## vertical window, so the ring of gates round the jeep on MAP.250 fired
+## DOS measures the TRUE 3D distance (FUN_0014d775) from the eye in the
+## 0xEF, 0xF1 and 0xF2 handlers (see tick). The port measured it
+## horizontally with a ±512 vertical window, so the ring of gates round
+## the jeep on MAP.250 fired
 ## mission 5's [M1] from 143 units under the quay — the mission ended in
 ## the water and the flooded sewers (MAP.254) could be skipped entirely.
 static func _within(epos: Vector3, player_pos: Vector3, radius: float) -> bool:
@@ -1101,7 +1134,8 @@ static func _within_touch(epos: Vector3, player_pos: Vector3, radius: float) -> 
 func save_state() -> Dictionary:
 	var states: Dictionary = {}
 	# Act bytes and links play has changed ("acts" / "links", 2026-09-14;
-	# a snapshot without them restores as before).
+	# a snapshot without them restores as before). They belong to this map
+	# number only: main.gd never carries them to a variant map.
 	var acts: Dictionary = {}
 	var links: Dictionary = {}
 	if _map != null:
@@ -1155,6 +1189,17 @@ func restore_state(snap: Dictionary) -> void:
 		behaviour.sync_from_records()
 	_hp = (snap.get("hp", {}) as Dictionary).duplicate()
 	_spent = (snap.get("spent", {}) as Dictionary).duplicate()
+	# A plain HP object that was destroyed left the world (_destroy: mesh
+	# and collision gone, as DOS unlinks it). The overlay brought its
+	# `spent` back but left it standing, inert. Staged wrecks keep their
+	# last mesh (below).
+	for off in _spent:
+		if _destr.has(off):
+			continue
+		var gone = _nodes.get(off)
+		if gone != null and is_instance_valid(gone):
+			(gone as Node3D).visible = false
+			_disable_collision(gone)
 	# Robots an 0xF3 chain already let out come back out (the dead ones
 	# the map overlay removes on its own). They were counted for the
 	# STATISTICS page when they first appeared.

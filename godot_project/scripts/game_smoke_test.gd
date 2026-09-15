@@ -12,6 +12,7 @@ extends Node
 const MainScene := preload("res://scenes/main.tscn")
 const LevelLoader := preload("res://scripts/level_loader.gd")
 const SaveGame := preload("res://scripts/save_game.gd")
+const Enemy := preload("res://scripts/enemy.gd")
 
 var _fails: int = 0
 var _main: Node = null
@@ -413,11 +414,11 @@ func _run() -> void:
 	player.global_position = saved_pos + Vector3(4000.0, 0.0, 0.0)
 	player.set("_pools", {0: 1, 1: 1, 2: 1, 3: 1, 4: 1, 12: 1})
 	player.set("health", 100.0)
-	var old_lvl = _main.get("_current_level")
+	var old_id: int = (_main.get("_current_level") as Object).get_instance_id()
 	_main.call("load_from_slot", 9)
 	ok = await _wait(func() -> bool:
 		var cur = _main.get("_current_level")
-		return cur != null and cur != old_lvl and _level_is("210") and _settled() \
+		return cur != null and cur.get_instance_id() != old_id and _level_is("210") and _settled() \
 			and (_main.get("_pending_player") as Dictionary).is_empty(), 180.0)
 	_check(ok, "load_from_slot(9) reloads MAP.210")
 	if ok:
@@ -574,6 +575,9 @@ func _run() -> void:
 		await get_tree().physics_frame
 	_check(_main.get("_game_over") == null, "no end screen fires by itself after the round trip")
 
+	# --- 7b. Mission 1's jeep across the base variants, through main.gd ---
+	await _check_variant_objective()
+
 	# --- 8. MAP.215 silo: use at the CORC3229 gate opens the four
 	# silo cover doors (0xEF ignores bit 0); the missile button raises
 	# HADES and fires objective 0x27; evac at a marker-4 zone ends the
@@ -652,11 +656,150 @@ func _run() -> void:
 	await _check_water()
 	_finish()
 
+## Mission 1's last objective through main.gd's own level changes and
+## saves (playtest 2026-09-15: "let's roll" at the jeep, and the next
+## mission never loaded). MAP.210 and MAP.216 carry the jeep HUMMERTK
+## @075cb as hint [G1], MAP.217 carries the same entity as [M3]. Firing the
+## hint on MAP.210 retired MAP.217's objective through the variant import
+## (210 → 216 → 217, first visits), so it never counted. Also: a counted
+## objective stays counted across a save and load, and a v0.3.0 save that
+## carries the foreign retirement gets the objective back live.
+func _check_variant_objective() -> void:
+	var jeep_off: int = 0x75cb
+	# Both variants visited for the first time from here, whatever came before.
+	var st: Dictionary = _main.get("_map_state")
+	st.erase("MAP.216")
+	st.erase("MAP.217")
+	_main.call("_on_teleport_requested", 210, 0)
+	var ok: bool = await _wait(func() -> bool: return _level_is("210") and _settled(), 180.0)
+	_check(ok, "MAP.210 loads for the variant objective check")
+	if not ok:
+		return
+	var lvl = _main.get("_current_level")
+	var jeep = lvl.map.entities_by_off.get(jeep_off)
+	_check(jeep != null and jeep.link_act_type == 0x1C, "MAP.210's jeep is hint [G1] (act 0x1c)")
+	if jeep == null:
+		return
+	var left0: int = int(_main.get("_objectives_left"))
+	_check(left0 >= 2 and int((_main.get("_objective_cursor") as Array)[2]) == 0,
+		"mission 1 has its [M3] still to do (%d left)" % left0)
+	var at := Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z))
+	lvl.action.press_use()                   # the eight gates answer the use key
+	lvl.action.tick(0.016, at)
+	_check(jeep.link_act_type == 0xFF and int(_main.get("_objectives_left")) == left0,
+		"the gates fire MAP.210's jeep hint: retired, nothing counted")
+
+	_main.call("_on_teleport_requested", 216, 12)
+	ok = await _wait(func() -> bool: return _level_is("216") and _settled(), 180.0)
+	_check(ok, "MAP.210 → MAP.216 (first visit, variant import)")
+	if not ok:
+		return
+	lvl = _main.get("_current_level")
+	var j216 = lvl.map.entities_by_off.get(jeep_off)
+	_check(j216 != null and j216.link_act_type == 0x1C,
+		"MAP.216's jeep hint is its own: no act byte crosses from MAP.210")
+
+	_main.call("_on_teleport_requested", 217, 14)
+	ok = await _wait(func() -> bool: return _level_is("217") and _settled(), 180.0)
+	_check(ok, "MAP.216 → MAP.217 (first visit, variant import)")
+	if not ok:
+		return
+	lvl = _main.get("_current_level")
+	var j217 = lvl.map.entities_by_off.get(jeep_off)
+	var cue: Node = lvl.behaviour.node(jeep_off) if lvl.behaviour != null else null
+	_check(j217 != null and j217.link_act_type == 0x28 and cue != null and not bool(cue.get("spent")),
+		"MAP.217's jeep arrives as a live [M3] objective")
+	var trig = lvl.map.entities_by_off.get(0x80c5)
+	_check(trig != null and trig.link_act_type == 0xF2 and (trig.state_byte & 1) != 0,
+		"MAP.217's 210BASE3 keeps its armed 0xF2 bit (scenery with state 00 on the variants)")
+	if j217 == null or cue == null:
+		return
+	at = Vector3(float(j217.x), -float(j217.y), -float(j217.z))
+	lvl.action.press_use()
+	lvl.action.tick(0.016, at)
+	var left1: int = int(_main.get("_objectives_left"))
+	_check(left1 == left0 - 1 and int((_main.get("_objective_cursor") as Array)[2]) == 1,
+		"the jeep counts [M3] on MAP.217 (%d → %d left)" % [left0, left1])
+
+	# The mission-key rule: interiors and non-mission sub-maps stay mission 1's.
+	_check(int(_main.call("_mission_key_for", "MAP.340")) == 210
+		and int(_main.call("_mission_key_for", "MAP.292")) == 210
+		and int(_main.call("_mission_key_for", "MAP.217")) == 210
+		and int(_main.call("_mission_key_for", "MAP.230")) == 230,
+		"interiors without a mission of their own belong to the mission being played")
+
+	# Save / load: counted stays counted.
+	_check(bool(_main.call("save_to_slot", 9)), "save on MAP.217 after [M3] counted")
+	var old_id: int = (_main.get("_current_level") as Object).get_instance_id()
+	_main.call("load_from_slot", 9)
+	ok = await _wait(func() -> bool:
+		var cur = _main.get("_current_level")
+		return cur != null and cur.get_instance_id() != old_id and _level_is("217") and _settled() \
+			and (_main.get("_pending_player") as Dictionary).is_empty(), 180.0)
+	_check(ok, "the MAP.217 save loads")
+	if not ok:
+		return
+	lvl = _main.get("_current_level")
+	cue = lvl.behaviour.node(jeep_off)
+	_check(bool(cue.get("spent")) and lvl.map.entities_by_off[jeep_off].link_act_type == 0xFF
+		and int(_main.get("_objectives_left")) == left1,
+		"a counted objective stays counted after the load (%d left)" % int(_main.get("_objectives_left")))
+	_check(not bool(_main.get("_mission_done")), "the loaded level can end its mission (_mission_done down)")
+	lvl.action.press_use()
+	lvl.action.tick(0.016, at)
+	_check(int(_main.get("_objectives_left")) == left1, "and the jeep cannot count it a second time")
+
+	# A v0.3.0 save: the imported retirement sits in MAP.217's overlay while
+	# [M3] was never shown. The load must give the objective back.
+	var data: Dictionary = SaveGame.read(9)
+	var acts: Dictionary = data.get("map_state", {}).get("MAP.217", {}).get("action", {}).get("acts", {})
+	_check(int(acts.get(jeep_off, -1)) == 0xFF, "the save holds the jeep's retirement")
+	var objs: Dictionary = data["objectives"]
+	objs["left"] = left0
+	(objs["cursor"] as Array)[2] = 0
+	old_id = (_main.get("_current_level") as Object).get_instance_id()
+	_main.call("load_from_slot", 9, data)
+	ok = await _wait(func() -> bool:
+		var cur = _main.get("_current_level")
+		return cur != null and cur.get_instance_id() != old_id and _level_is("217") and _settled() \
+			and (_main.get("_pending_player") as Dictionary).is_empty(), 180.0)
+	_check(ok, "the doctored v0.3.0-style save loads")
+	if not ok:
+		return
+	lvl = _main.get("_current_level")
+	cue = lvl.behaviour.node(jeep_off)
+	_check(not bool(cue.get("spent")) and lvl.map.entities_by_off[jeep_off].link_act_type == 0x28
+		and int(_main.get("_objectives_left")) == left0,
+		"an objective retired but never counted comes back live (%d left)" % int(_main.get("_objectives_left")))
+	lvl.action.press_use()
+	lvl.action.tick(0.016, at)
+	_check(int(_main.get("_objectives_left")) == left1, "and the jeep counts it once (%d left)" % int(_main.get("_objectives_left")))
+	# Give [M3] back: the silo check after this counts MAP.215's two
+	# objectives and must not finish mission 1 on the way.
+	_main.set("_objectives_left", left0)
+	(_main.get("_objective_cursor") as Array)[2] = 0
+	lvl.action.objectives_left = left0
+	st = _main.get("_map_state")
+	st.erase("MAP.216")
+	st.erase("MAP.217")
+
+	# The shape cache key of an entity mesh: its MAP mesh, never a node name.
+	var probe := MeshInstance3D.new()
+	probe.name = "@MeshInstance3D@7"
+	probe.mesh = Assets.mesh("BIGDOOR.3D")
+	var k1: String = String(_main.call("_shape_key", probe))
+	probe.mesh = BoxMesh.new()
+	var k2: String = String(_main.call("_shape_key", probe))
+	probe.free()
+	_check(k1 == "BIGDOOR" and k2 == "", "shape cache keys come from the mesh (%s / '%s')" % [k1, k2])
+
 ## Mission 1 ends at the jeep on MAP.217, where EIGHT 0xEF gates all
 ## point at the same HUMMERTK. Walking up trips several of them in one
 ## frame; ObjFlipLink toggles, so an even number used to cancel out and
 ## act 0x28 never fired — mission 1 could not be finished (2026-09-04).
 func _check_jeep_objective() -> void:
+	# A fresh MAP.217: step 7b left its jeep counted and retired.
+	(_main.get("_map_state") as Dictionary).erase("MAP.217")
 	if _main.get("_game_over") != null:
 		_main.call("_advance_to", "MAP.217")
 	else:
@@ -680,6 +823,104 @@ func _check_jeep_objective() -> void:
 	lvl.action.tick(0.016, Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z)))
 	_check(objs.has(0x28 - 0x26),
 		"eight gates tripping at once still fire objective 0x28 (%s)" % str(objs))
+	await _check_jeep_ram()
+
+## The jeep's ram (DOS v1.00 0x135a7e): one ObjHit of speed/2 per contact,
+## no difficulty factor; a robot that survives throws the car back to
+## where the move started with its speed negated, a destroyed one lets it
+## roll on at 7/8. A raptor (200 HP) took any ram at all as its death
+## until 2026-09-15. Its death blast (EnemyKill) reaches ~78 u.
+func _check_jeep_ram() -> void:
+	_check(Enemy.death_blast_damage(0.0) == 114 and Enemy.death_blast_damage(77.0) == 37
+		and Enemy.death_blast_damage(78.0) == 0 and Enemy.death_blast_damage(500.0) == 0,
+		"a robot's death blast: 114 at its centre, 37 at 77 u, nothing from 78 u (%d/%d/%d)"
+		% [Enemy.death_blast_damage(0.0), Enemy.death_blast_damage(77.0), Enemy.death_blast_damage(78.0)])
+	var player: CharacterBody3D = _main.get("player")
+	var target: Node3D = null
+	for e in get_tree().get_nodes_in_group("enemy"):
+		if is_instance_valid(e) and (e as Node3D).visible and not bool(e.get("indestructible")) \
+				and not bool(e.get("_hidden")) and not bool(e.call("is_dead")) and e.has_method("obj_hit"):
+			if target == null or String(e.name).contains("raptor"):
+				target = e
+			if String(e.name).contains("raptor"):
+				break
+	_check(target != null, "MAP.217 has a robot to ram")
+	if target == null:
+		return
+	# The DOS scale (0x122652): 1000 points of soldier, armour costs
+	# 82/65536 of its bar per point and keeps its own fraction off him.
+	var armor_keep: float = float(player.get("armor"))
+	player.set("god_mode", false)
+	player.set("health", 100.0)
+	player.set("armor", 0.0)
+	player.call("take_dos_damage", 100.0, false)
+	_check(is_equal_approx(float(player.get("health")), 90.0),
+		"100 DOS points take a tenth of the bar with no armour (%.2f)" % float(player.get("health")))
+	player.set("armor", 1.0)
+	player.call("take_dos_damage", 100.0, false)
+	_check(absf(float(player.get("armor")) - 0.875) < 0.001 and absf(float(player.get("health")) - 88.75) < 0.01,
+		"full armour drops to 0.875 on a 100-point hit and keeps 87.5 %% of it off (armour %.3f, health %.2f)"
+		% [float(player.get("armor")), float(player.get("health"))])
+	player.set("health", 100.0)
+	player.set("armor", armor_keep)
+	player.set("god_mode", true)
+	player.call("set_vehicle", 1)
+	target.set("_health", 200.0)                  # a raptor's hit points
+	var fwd := Vector3(0.0, 0.0, -1.0)
+	var yaw: float = 0.0                          # facing -z
+	var feet: Vector3 = target.global_position + Vector3(0.0, float(target.get("_foot_offset")), 0.0)
+	var pre: Vector3 = feet - fwd * 700.0
+	var contact: Vector3 = feet - fwd * 100.0
+	player.set("_yaw", yaw)
+	player.rotation.y = yaw
+	player.global_position = contact
+	player.set("_veh_speed", 300.0)
+	player.set("_wheel", 0.7)
+	var undone: bool = bool(player.call("_ram_check", pre, yaw))
+	_check(undone and is_equal_approx(float(target.get("_health")), 50.0)
+		and is_equal_approx(float(player.get("_veh_speed")), -300.0)
+		and player.global_position.is_equal_approx(pre) and float(player.get("_wheel")) == 0.0,
+		"a ram at 300 u/s deals 150 and the car bounces back, wheel centred (hp %.0f, speed %.0f)"
+		% [float(target.get("_health")), float(player.get("_veh_speed"))])
+	# Straight back into it: the same robot is not dosed again at once.
+	player.global_position = contact
+	player.set("_veh_speed", 300.0)
+	player.call("_ram_check", pre, yaw)
+	_check(is_equal_approx(float(target.get("_health")), 50.0) and float(player.get("_veh_speed")) == 0.0,
+		"the next touch a moment later only stops the car (hp %.0f)" % float(target.get("_health")))
+	player.set("_ram_clock", float(player.get("_ram_clock")) + 1.0)
+	player.global_position = contact
+	player.set("_veh_speed", 400.0)
+	undone = bool(player.call("_ram_check", pre, yaw))
+	_check(not undone and bool(target.call("is_dead")) and is_equal_approx(float(player.get("_veh_speed")), 350.0),
+		"the second ram destroys it and the car rolls on at 7/8 (speed %.0f)" % float(player.get("_veh_speed")))
+	# The wreck's blast, 0.375 s on, catches the car rolling over it.
+	var wreck: Vector3 = target.global_position
+	player.set("_veh_speed", 0.0)
+	player.set("noclip", true)
+	player.global_position = wreck + Vector3(30.0, -70.0, 0.0)   # car centre 30 u off
+	player.set("god_mode", false)
+	player.set("health", 500.0)
+	var armor0: float = float(player.get("armor"))
+	player.set("armor", 0.0)
+	var hits: Array = []
+	var on_hurt := func(amount: float) -> void: hits.append(snappedf(amount, 0.1))
+	player.connect("hurt", on_hurt)
+	for f in 40:
+		await get_tree().physics_frame
+	player.disconnect("hurt", on_hurt)
+	# d = 30: 115 - 30 in DOS steps = 84 points of the 1000-point soldier,
+	# 8.4 of the port's bar — and in the jeep it is the hull that takes it.
+	# (The robots around take their shots at the car meanwhile: the hull
+	# takes those too, the driver none of them.)
+	var hull: float = float(player.get("veh_hull"))
+	_check(hits.has(8.4) and hull <= 1000.0 - 84.0 and is_equal_approx(float(player.get("health")), 500.0),
+		"the wreck's blast hits the jeep that ran it over: hull 1000 → %.0f, driver untouched (hits %s)" % [hull, str(hits)])
+	player.set("armor", armor0)
+	player.set("health", 100.0)
+	player.set("god_mode", true)
+	player.set("noclip", false)
+	player.call("set_vehicle", 0)
 
 ## MAP.248: the START BOX runs the IBEM64 girder into 248WALL. The wall
 ## is a 0x19 destructible with no HP of its own — the chain has to break

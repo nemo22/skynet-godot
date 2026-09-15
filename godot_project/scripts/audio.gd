@@ -57,10 +57,7 @@ func _ready() -> void:
 	_synth.name = "MidiSynth"
 	_synth.bus = "Music"
 	add_child(_synth)
-	_bsa = preload("res://scripts/loaders/bsa_reader.gd").new()
-	if not _bsa.open(SkynetPaths.gamedata_path(SFX_BSA), SkynetPaths.variant):
-		push_warning("[audio] cannot open %s — sound disabled" % SFX_BSA)
-		_bsa = null
+	_archive()
 	for i in SFX_VOICES:
 		var p := AudioStreamPlayer.new()
 		add_child(p)
@@ -79,13 +76,40 @@ func _ready() -> void:
 	_ambient = AudioStreamPlayer.new()
 	add_child(_ambient)
 
+## The data directory the open sound archive came from.
+var _bsa_dir: String = ""
+
+## The sound archive, opened from the data directory in force NOW — or
+## null when it has none. Until 2026-09-15 it was opened once, in _ready:
+## on a first start with no data found yet, that ran before the DATA
+## SETUP screen had asked for the folder, failed on an empty path, and the
+## whole session went without a single sound effect while the music
+## (loaded on demand) played — "nemá zvuky" from a player's first run.
+func _archive():
+	var dir: String = SkynetPaths.gamedata_dir
+	if _bsa != null and dir == _bsa_dir:
+		return _bsa
+	if _bsa != null:
+		_bsa.close()
+	_bsa = null
+	_cache.clear()
+	_bsa_dir = dir
+	if dir.is_empty():
+		return null                              # the setup screen is on its way
+	var b = preload("res://scripts/loaders/bsa_reader.gd").new()
+	if not b.open(SkynetPaths.gamedata_path(SFX_BSA), SkynetPaths.variant):
+		push_warning("[audio] cannot open %s in %s — no sound effects" % [SFX_BSA, dir])
+		return null
+	_bsa = b
+	return _bsa
+
 ## Decode a .RAW / .WAV clip into an AudioStreamWAV (cached in memory
 ## and, through the asset cache, on disk).
 func _load(name: String, loop: bool) -> AudioStreamWAV:
 	var key := name.to_upper() + ("#L" if loop else "")
 	if _cache.has(key):
 		return _cache[key]
-	if _bsa == null:
+	if _archive() == null:
 		return null
 	var s: AudioStreamWAV = Assets.sound(name, loop,
 		func() -> Resource: return _decode(name, loop))
@@ -105,6 +129,8 @@ const WAV_DECODE: Dictionary = {
 }
 
 func _decode(name: String, loop: bool) -> AudioStreamWAV:
+	if _bsa == null:
+		return null
 	var bytes: PackedByteArray = _bsa.read(name)
 	if bytes.is_empty():
 		return null
@@ -535,7 +561,7 @@ func oneshot_stream_for(id: int) -> AudioStreamWAV:
 
 func _bake_stream(id: int, loop: bool) -> AudioStreamWAV:
 	var n := sound_name(id)
-	if n.is_empty() or _bsa == null:
+	if n.is_empty() or _archive() == null:
 		return null
 	return Assets.sound(n, loop, func() -> Resource: return _decode(n, loop))
 

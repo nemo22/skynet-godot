@@ -376,13 +376,59 @@ func _is_target(n: Node) -> bool:
 	return n.is_in_group("enemy")
 
 ## Attributed damage for deathmatch actors, plain for everything else.
+## The player takes a direct hit in DOS points (the ammo record's value,
+## 0x1230d6 — DIFFICULTY applies there).
 func _deal(n: Node, dmg: float) -> void:
 	if _hits == "none":
 		return
 	if n.has_method("net_damage"):
 		n.net_damage(dmg, _owner)
+	elif n.has_method("take_dos_damage"):
+		n.take_dos_damage(dmg)
 	else:
 		n.take_damage(dmg)
+
+## DOS radial blast (FUN_00124386): strength `s` is the radius as well
+## (clamped 5..500), the damage at distance `d` is s x (r - d + 40) / r —
+## s + 40 - d for anything up to 500 — and nothing lands under half the
+## strength (so a rocket, 400, reaches 240 u). No DIFFICULTY factor.
+static func dos_blast(s: float, d: float) -> float:
+	var r: float = clampf(s, 5.0, 500.0)
+	var dmg: float = s * (r - d + 40.0) / r
+	return dmg if dmg >= s * 0.5 else 0.0
+
+## The blast (0x138a4a) also needs a clear line to the player: nothing
+## solid between `from` and `to` (bodies only; `ignore` is the player).
+static func blast_clear(space: PhysicsDirectSpaceState3D, from: Vector3, to: Vector3, ignore: Node) -> bool:
+	if space == null:
+		return true
+	var q := PhysicsRayQueryParameters3D.create(from, to)
+	q.collide_with_areas = false
+	if ignore is CollisionObject3D:
+		q.exclude = [(ignore as CollisionObject3D).get_rid()]
+	return space.intersect_ray(q).is_empty()
+
+## The blast on the player, DOS style: from his DOS point, through the
+## line-of-sight test, in DOS points. Deathmatch keeps its own reporting.
+static func blast_player(at: Vector3, s: float, splash: float, owner: Node, tree: SceneTree) -> void:
+	var pl := tree.get_first_node_in_group("player")
+	if not (pl is Node3D) or not pl.has_method("take_damage"):
+		return
+	if Net.active and pl.has_method("net_damage"):
+		var dn := (pl as Node3D).global_position.distance_to(at)
+		if dn < splash:
+			pl.net_damage(s * 0.55 * (1.0 - dn / splash), owner)
+		return
+	var pp: Vector3 = pl.call("dos_point") if pl.has_method("dos_point") else (pl as Node3D).global_position
+	var pts: float = dos_blast(s, pp.distance_to(at))
+	if pts <= 0.0:
+		return
+	if not blast_clear((pl as Node3D).get_world_3d().direct_space_state, at, pp, pl):
+		return
+	if pl.has_method("take_dos_damage"):
+		pl.take_dos_damage(pts, false)
+	else:
+		pl.take_damage(pts, false)
 
 ## Impact: splash damage (when the type has a blast radius), the impact
 ## effect and sound, then free. A fizzled shot (lifetime over) just
@@ -400,25 +446,20 @@ func _finish(at: Vector3, impact: bool) -> void:
 			for e in get_tree().get_nodes_in_group("enemy"):
 				if e is Node3D and e.has_method("take_damage") and e != _owner:
 					var d: float = e.blast_distance(at) if e.has_method("blast_distance") 						else (e as Node3D).global_position.distance_to(at)
-					if d < _splash:
-						e.take_damage(_damage * (1.0 - d / _splash))
+					# One DOS radial blast (dos_blast) over everything in reach.
+					var bd: float = dos_blast(_damage, d)
+					if bd > 0.0:
+						e.take_damage(bd)
 		# Destructible map objects (cars, generators …) take blast damage
 		# from anyone's explosion — DOS ObjHit runs for every object in
 		# the radius.
 		for h in get_tree().get_nodes_in_group("hittable"):
 			if h is Node3D and h.has_method("take_damage"):
-				var dh := (h as Node3D).global_position.distance_to(at)
-				if dh < _splash:
-					h.take_damage(_damage * (1.0 - dh / _splash))
-		var pl := get_tree().get_first_node_in_group("player")
-		if pl is Node3D and pl.has_method("take_damage"):
-			var d := (pl as Node3D).global_position.distance_to(at)
-			if d < _splash:
-				if pl == _owner:
-					pl.take_damage(_damage * 0.55 * (1.0 - d / _splash))   # own rocket
-				elif _hits != "enemy" or pl.has_method("net_damage") and Net.active:
-					pl.net_damage(_damage * 0.55 * (1.0 - d / _splash), _owner) if pl.has_method("net_damage") \
-						else pl.take_damage(_damage * 0.55 * (1.0 - d / _splash))
+				var bh: float = dos_blast(_damage, (h as Node3D).global_position.distance_to(at))
+				if bh > 0.0:
+					h.take_damage(bh)
+		# The player, own rocket or not — DOS makes no difference.
+		blast_player(at, _damage, _splash, _owner, get_tree())
 	if impact:
 		if not _impact_sound.is_empty():
 			Audio.play_sfx_3d(_impact_sound, at, -2.0)

@@ -512,6 +512,23 @@ func _run_behaviour_checks() -> void:
 		_check(door != null and door.hp == 60
 			and l260.action.is_damageable_off(door.file_off),
 			"the car-wash door has 60 HP and takes damage")
+		# The mission end: BUTTONX @14fb6 (0xF2, radius 1024) measures from
+		# the EYE, as DOS 0x1379c4 does — the port measured from the body,
+		# 75 u lower, and the jeep could drive past it (playtest 2026-09-15).
+		# Body 1034.5 u away, eye 1015.2 u.
+		var bx = l260.map.entities_by_off.get(0x14fb6)
+		_check(bx != null and bx.link_act_type == 0xF2 and (bx.state_byte & 1) != 0,
+			"MAP.260 has the armed mission-end BUTTONX (0xF2)")
+		if bx != null and l260.behaviour != null:
+			var m1: Array = []
+			l260.behaviour.objective_complete.connect(func(i: int) -> void: m1.append(i))
+			var feet: Vector3 = Vector3(float(bx.x), -float(bx.y), -float(bx.z)) + Vector3(990.0, -300.0, 0.0)
+			l260.action.tick(0.016, feet)
+			_check((bx.state_byte & 1) != 0 and m1.is_empty(),
+				"BUTTONX waits while the point measured from is 1034 u off")
+			l260.action.tick(0.016, feet, feet + Vector3(0.0, 75.0, 0.0))
+			_check((bx.state_byte & 1) == 0 and m1 == [0],
+				"from the eye, 1015 u off, it fires and its chain counts [M1] (%s)" % str(m1))
 
 	# MAP.254 (the flooded sewers): acts 0xd6-0xda move the water level.
 	# 254HOLE1 drains it by 140, CATWLK16 floods it by 170 ("Oops.") and
