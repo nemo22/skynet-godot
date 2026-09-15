@@ -54,6 +54,7 @@ func _ready() -> void:
 		_run_map210_checks(level210)
 		_run_behaviour_checks()
 		_run_transition_checks(level210)
+	_run_zone_origin_checks()
 	_run_ai_checks()
 	_run_map_scene_checks()
 	_run_map_writer_checks()
@@ -638,6 +639,133 @@ func _run_transition_checks(level210: LevelLoader.Level) -> void:
 		l210d.action.tick(0.016, epos2)
 		l210d.action.activate_teleport(epos2)
 		_check(seen2.size() == 1, "a fired doorway never fires again in the same level")
+
+## M2 step 1/2 — a level loaded as a ZONE, away from the world origin.
+##
+## A mission scene stands several DOS maps side by side, each in its own
+## +X slot (docs/m2_mission_scene_plan.md). The records stay in DOS
+## coordinates whatever the slot; the level's branch nodes carry the
+## offset, and every world position handed to the action system has it
+## taken off again. So the same script must play out identically at the
+## origin and 200 000 units away — and a position given in the zone's own
+## local coordinates must reach nothing at all.
+const ZONE_ORIGIN := Vector3(200000.0, 0.0, 0.0)
+## MAP.210's jeep, DOS (58096, -1207, 54000) → zone-local Godot.
+const ZONE_PROBE_LOCAL := Vector3(58096.0, 1207.0, -54000.0)
+
+func _run_zone_origin_checks() -> void:
+	var lz: LevelLoader.Level = LevelLoader.new().load_zone("MAP.210", ZONE_ORIGIN)
+	_check(lz != null and lz.origin == ZONE_ORIGIN
+		and lz.action != null and lz.action.zone_origin == ZONE_ORIGIN,
+		"MAP.210 loads as a zone standing at %s" % str(ZONE_ORIGIN))
+	if lz == null:
+		return
+	var branches: Array = [lz.terrain, lz.entities, lz.enemies, lz.sprites, lz.behaviour]
+	var off_branches: int = 0
+	for b in branches:
+		if b is Node3D and (b as Node3D).position.is_equal_approx(ZONE_ORIGIN):
+			off_branches += 1
+	_check(off_branches == branches.size(),
+		"all %d branches stand at the zone origin (%d do)" % [branches.size(), off_branches])
+
+	# A known mesh keeps its DOS transform inside the zone and lands at
+	# the DOS position plus the origin in the world.
+	var probe: Node3D = _child_at(lz.entities, ZONE_PROBE_LOCAL)
+	_check(probe != null, "the jeep mesh keeps its DOS position %s inside the zone"
+		% str(ZONE_PROBE_LOCAL))
+	if probe != null:
+		add_child(lz.entities)
+		var want: Vector3 = ZONE_PROBE_LOCAL + ZONE_ORIGIN
+		_check(probe.global_position.is_equal_approx(want),
+			"…and stands at %s in the world (%s)" % [str(want), str(probe.global_position)])
+		remove_child(lz.entities)
+
+	# The doorway/use path, driven from the world: nothing answers a
+	# zone-local point, and the world point behaves as at the origin
+	# (the same sequence as the transition checks run on a lone map).
+	if not lz.action._teleports.is_empty():
+		var seen: Array = []
+		lz.action.teleport_requested.connect(
+			func(m: int, s: int) -> void: seen.append([m, s]))
+		var ex = lz.action._teleports[0]
+		var elocal := Vector3(float(ex.x), -float(ex.y), -float(ex.z))
+		lz.action.arm_proximity(elocal)
+		lz.action.tick(0.016, elocal)
+		_check(seen.is_empty() and not lz.action.activate_teleport(elocal),
+			"a zone-local point is %.0f k units from the doorway and reaches nothing"
+			% (ZONE_ORIGIN.length() / 1000.0))
+		lz.action.arm_proximity(elocal + ZONE_ORIGIN)
+		lz.action.tick(0.016, elocal + ZONE_ORIGIN)
+		_check((ex.state_byte & 1) == 0,
+			"spawning on the doorway does not arm it by itself, in a zone either")
+		lz.action.activate_teleport(elocal + ZONE_ORIGIN)
+		_check(seen.size() == 1,
+			"use at the doorway's WORLD position fires the exit (%s)" % str(seen))
+
+	# The proximity gate → objective chain, played out at the origin and
+	# in the zone: same script, same outcome.
+	var at_zero: Dictionary = _zone_gate_setup(Vector3.ZERO)
+	var at_slot: Dictionary = _zone_gate_setup(ZONE_ORIGIN)
+	_check(not at_zero.is_empty() and not at_slot.is_empty(),
+		"MAP.217's objective gate is found both at the origin and in a zone")
+	if at_zero.is_empty() or at_slot.is_empty():
+		return
+	var zl: LevelLoader.Level = at_slot["level"]
+	zl.action.press_use()
+	zl.action.tick(0.016, at_slot["local"])
+	_check((at_slot["seen"] as Array).is_empty(),
+		"the use key at the gate's zone-local point fires nothing (%s)"
+		% str(at_slot["seen"]))
+	for run in [at_zero, at_slot]:
+		(run["level"] as LevelLoader.Level).action.press_use()
+		(run["level"] as LevelLoader.Level).action.tick(0.016, run["at"])
+	_check(at_zero["seen"] == [2] and at_slot["seen"] == [2],
+		"the gate fires the objective at the origin (%s) and in the zone (%s)"
+		% [str(at_zero["seen"]), str(at_slot["seen"])])
+	var t0 = at_zero["target"]
+	var t1 = at_slot["target"]
+	_check(t0.link_act_type == 0xFF and t1.link_act_type == 0xFF
+		and (t0.state_byte & 1) == 0 and (t1.state_byte & 1) == 0,
+		"both objective records retire the same way (act %02x / %02x)"
+		% [t0.link_act_type, t1.link_act_type])
+
+## The direct child of `root` whose own (zone-local) position is `at`.
+func _child_at(root: Node, at: Vector3) -> Node3D:
+	if root == null:
+		return null
+	for c in root.get_children():
+		if c is Node3D and (c as Node3D).position.is_equal_approx(at):
+			return c as Node3D
+	return null
+
+## MAP.217 in a zone at `origin`: the level, the 0xEF gate that chains to
+## the objective mesh, that record, the list its signal fills, and the
+## gate's position in both spaces. Empty when the map has no such pair.
+func _zone_gate_setup(origin: Vector3) -> Dictionary:
+	var lvl: LevelLoader.Level = LevelLoader.new().load_zone("MAP.217", origin)
+	if lvl == null or lvl.behaviour == null:
+		return {}
+	var seen: Array = []
+	lvl.behaviour.objective_complete.connect(func(i: int) -> void: seen.append(i))
+	var target = null
+	for e in lvl.map.entities:
+		if (e.flags & 3) == 1 and e.marker_type < 0 and e.link_act_type == 0x28:
+			target = e
+	if target == null:
+		return {}
+	for g in lvl.action._prox:
+		if g.link_act_type != 0xEF:
+			continue
+		var cur = g
+		for hop in 8:
+			if cur == null or cur.link_next < 1:
+				break
+			cur = lvl.map.entities_by_off.get(cur.link_next)
+			if cur == target:
+				var local := Vector3(float(g.x), -float(g.y), -float(g.z))
+				return {"level": lvl, "gate": g, "target": target, "seen": seen,
+					"local": local, "at": local + origin}
+	return {}
 
 ## Phase 3 — DOS enemy AI data + the AIS interpreter, headless.
 func _run_ai_checks() -> void:

@@ -164,7 +164,11 @@ func on_level_ready(lvl) -> void:
 			var to: Vector3 = face - pos
 			if Vector2(to.x, to.z).length() > 0.1:
 				yaw = atan2(-to.x, -to.z)
-			spawns.append({"pos": main._find_clear_spawn(pos), "yaw": yaw})
+			# zone-local → world: the markers are in the map's own space and
+			# _find_clear_spawn queries the physics world (an arena always
+			# loads at the origin, so this is identity today).
+			spawns.append({
+				"pos": main._find_clear_spawn(pos + lvl.origin), "yaw": yaw})
 	print("[dm] %d spawn sets" % spawns.size())
 	if Net.is_server():
 		Net.spawn_points = spawns
@@ -193,10 +197,14 @@ func on_level_ready(lvl) -> void:
 	Net.report_level_ready()
 
 ## Floor height under a marker (terrain outdoors; the marker Y indoors).
+## zone-local → world: `pos` is a marker, i.e. in the map's own space —
+## which is what the heightmap wants — and what comes back is a world
+## position for the pickup nodes.
 func _ground(pos: Vector3) -> Vector3:
+	var o: Vector3 = level.origin if level != null else Vector3.ZERO
 	if level != null and level.is_outdoor and level.wld != null:
-		return Vector3(pos.x, WldTerrain.height_at_world(level.wld, pos.x, -pos.z), pos.z)
-	return pos
+		return Vector3(pos.x, WldTerrain.height_at_world(level.wld, pos.x, -pos.z), pos.z) + o
+	return pos + o
 
 # ---------------------------------------------------------------------
 # Avatars

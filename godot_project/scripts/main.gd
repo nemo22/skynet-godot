@@ -973,7 +973,7 @@ func _begin_level(name: String) -> void:
 		player.set_vehicle(_vehicle_for_map(name))
 	# The map's border boxes and the hint at their edge (MAP.260).
 	if is_instance_valid(player):
-		player.border_boxes = level.border_boxes
+		player.border_boxes = _world_border_boxes(level)
 		if not player.border_hint.is_connected(_on_border_hint):
 			player.border_hint.connect(_on_border_hint)
 	_apply_pending_player()
@@ -983,6 +983,20 @@ func _begin_level(name: String) -> void:
 	_set_hud_mode(player.vehicle if is_instance_valid(player) else 0)
 	if _dm != null:
 		_dm.on_level_ready(level)
+
+## zone-local → world: the level's border boxes are built from the marker
+## records, so they are in the zone's own x/z; the player tests them
+## against his global position. Translating them here (rather than in the
+## loader) keeps `Level.border_boxes` in DOS coordinates, where the census
+## tools and the smoke tests read them.
+static func _world_border_boxes(level: LevelLoader.Level) -> Array:
+	if level == null or level.origin == Vector3.ZERO:
+		return level.border_boxes if level != null else []
+	var shift := Vector2(level.origin.x, level.origin.z)
+	var out: Array = []
+	for b in level.border_boxes:
+		out.append(Rect2((b as Rect2).position + shift, (b as Rect2).size))
+	return out
 
 ## STATISTICS "ENEMIES DESTROYED": the mission's enemies, each counted
 ## once. This used to add the whole "enemy" group on every map entry and
@@ -1009,6 +1023,11 @@ func _count_mission_enemies(level: LevelLoader.Level, name: String) -> void:
 ## Place the camera at the DOS player-start marker (marker_type 0), facing
 ## the direction marker (marker_type 1) — read by LevelLoader. Falls back
 ## to the entity centroid for maps with no start marker.
+##
+## zone-local ↔ world: the markers and the centroid are zone-local and the
+## heightmap is sampled in map coordinates, so the whole choice is made in
+## that space and the zone origin goes on once, before the physics
+## queries and the player.
 func _frame_camera(level: LevelLoader.Level) -> void:
 	var spawn: Vector3
 	var look_target: Vector3
@@ -1043,6 +1062,9 @@ func _frame_camera(level: LevelLoader.Level) -> void:
 		if spawn.y < ground + 4.0:
 			print("[skynet] spawn %.0f u under the terrain — lifted to the surface" % (ground - spawn.y))
 			spawn.y = ground + 4.0
+	# zone-local → world: everything below queries the physics world.
+	spawn += level.origin
+	look_target += level.origin
 	spawn = _lift_to_floor(spawn)
 
 	# Spawn the player feet at the marker; gravity settles them onto the
@@ -1901,8 +1923,10 @@ func _collect_radiation(level: LevelLoader.Level) -> void:
 		var strength: float = float(e.exit_map)   # u16 at sub+2
 		if strength <= 0.0:
 			continue
+		# zone-local → world: the dose is measured against the player's
+		# global position every frame (_radiation_dose).
 		_rad_sources.append({
-			"pos": Vector3(float(e.x), -float(e.y), -float(e.z)),
+			"pos": Vector3(float(e.x), -float(e.y), -float(e.z)) + level.origin,
 			"strength": strength})
 	if not _rad_sources.is_empty():
 		print("[skynet] %d radiation sources" % _rad_sources.size())
@@ -1992,7 +2016,8 @@ func _setup_scenery(level: LevelLoader.Level) -> void:
 ## them until 2026-09-04.
 const WATER_MARKERS: Array = [103, 104]
 const WATER_DROP: float = 16.0        # DOS: level = marker Y - 0x10
-const WATER_SPAN: float = 65536.0     # the whole map grid
+const WATER_SPAN: float = 65536.0     # a whole 64×64 map grid
+const WATER_CELL: float = 1024.0      # one MAP grid cell, in world units
 var _water: MeshInstance3D = null
 var _water_tint: ColorRect = null
 ## Where the surface is gliding to, and how fast: DOS moves it at 0x1000
@@ -2001,7 +2026,9 @@ var _water_tint: ColorRect = null
 var _water_target: float = INF
 var _water_speed: float = 16.0
 
-## The surface Y, or INF when the map is dry.
+## The surface Y, or INF when the map is dry. zone-local → world: the
+## level is compared with global positions (the player's head, the
+## actors'), so it carries the zone's own Y.
 static func _water_level(level: LevelLoader.Level) -> float:
 	if level == null or level.map == null:
 		return INF
@@ -2011,7 +2038,7 @@ static func _water_level(level: LevelLoader.Level) -> float:
 			# Godot the surface sits 16 units ABOVE the marker. The port had
 			# it 32 u too low on every map, which is why the submarine looked
 			# drier than the original (FUN_00120f85, checked 2026-09-12).
-			return -float(e.y) + WATER_DROP
+			return -float(e.y) + WATER_DROP + level.origin.y
 	return INF
 
 func _setup_water(level: LevelLoader.Level) -> void:
@@ -2021,6 +2048,9 @@ func _setup_water(level: LevelLoader.Level) -> void:
 		player.water_level = y
 	EnemyRef.water_y = y                  # ground actors stay out of it
 	EnemyRef.terrain_wld = level.wld      # …and out of the painted lakes
+	# zone-local ↔ world: the actors probe the heightmap with their global
+	# position, which has to come back into map coordinates first.
+	EnemyRef.terrain_origin = level.origin
 	_water_target = y
 	_water_speed = 16.0
 	if level != null and level.map != null:
@@ -2041,15 +2071,24 @@ func _setup_water(level: LevelLoader.Level) -> void:
 		if is_instance_valid(player):
 			player.water_level = y
 		EnemyRef.water_y = y
-	# One flat surface over the whole 65536-unit map grid. It is drawn
-	# transparent and two-sided, so the world above still occludes it and
-	# it is there when you look up from below.
+	# One flat surface over THIS map's grid (its cell count × 1024), not
+	# over a fixed 65536: a mission scene stands its maps side by side, and
+	# a surface wider than the map it belongs to would lie over its
+	# neighbours. It is drawn transparent and two-sided, so the world above
+	# still occludes it and it is there when you look up from below.
+	var span_x: float = WATER_SPAN
+	var span_z: float = WATER_SPAN
+	if level.map != null and level.map.grid_width > 0 and level.map.grid_height > 0:
+		span_x = float(level.map.grid_width) * WATER_CELL
+		span_z = float(level.map.grid_height) * WATER_CELL
 	var mi := MeshInstance3D.new()
 	mi.name = "Water"
 	var pm := PlaneMesh.new()
-	pm.size = Vector2(WATER_SPAN, WATER_SPAN)
+	pm.size = Vector2(span_x, span_z)
 	mi.mesh = pm
-	mi.position = Vector3(WATER_SPAN * 0.5, y, -WATER_SPAN * 0.5)
+	# zone-local → world: the grid starts at the zone's own corner.
+	mi.position = Vector3(span_x * 0.5, y, -span_z * 0.5) \
+		+ Vector3(level.origin.x, 0.0, level.origin.z)
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var m := StandardMaterial3D.new()
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA

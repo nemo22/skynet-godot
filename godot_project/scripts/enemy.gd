@@ -75,6 +75,10 @@ static var water_y: float = INF
 ## The level's heightmap, for the lakes that are painted into the
 ## terrain material instead of being marked (MAP.270).
 static var terrain_wld: WldTerrain.WLD = null
+## Where that heightmap's zone stands (LevelLoader.Level.origin). The
+## actors know their global position; the heightmap is in the map's own
+## coordinates, so the offset comes off before it is read.
+static var terrain_origin: Vector3 = Vector3.ZERO
 const WATER_EDGE: float = 8.0
 ## Machine segments (state 10) hurt by contact: how far past the
 ## claw the swipe still lands, how hard, and how often.
@@ -778,7 +782,9 @@ func _surface_at(at: Vector3) -> float:
 ## the actor is not already in it: dry land stays dry land.
 func _water_ahead(fwd: Vector3) -> bool:
 	var ahead: Vector3 = global_position + fwd * 120.0
-	if WldTerrain.is_water_at(terrain_wld, ahead.x, -ahead.z):
+	# world → zone-local: the heightmap is read in map coordinates.
+	if WldTerrain.is_water_at(terrain_wld, ahead.x - terrain_origin.x,
+			-(ahead.z - terrain_origin.z)):
 		return true                        # a painted lake (MAP.270)
 	if water_y == INF:
 		return false

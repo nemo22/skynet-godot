@@ -63,6 +63,9 @@ const DIRS: Array = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0
 	Vector2i(1, 1), Vector2i(1, -1), Vector2i(-1, 1), Vector2i(-1, -1)]
 
 var main = null                     # scripts/main.gd (untyped: its privates are read)
+## Where the level being solved stands (LevelLoader.Level.origin) — what
+## _epos adds to take a record into the world the solver walks.
+var _zone: Vector3 = Vector3.ZERO
 var _space: PhysicsDirectSpaceState3D = null
 var _q: PhysicsShapeQueryParameters3D = null
 var _shape_y: float = 44.0
@@ -175,7 +178,9 @@ func _solve_map() -> void:
 			return                      # main loads the map, level_ready() goes on
 		var ex = a._map.entities_by_off.get(x["off"])
 		var armed: bool = ex != null and (ex.state_byte & 1) != 0
-		var line_ok: bool = ex != null and a._reachable(p.global_position, _epos(ex))
+		# world → zone-local: _reachable measures in the records' space.
+		var line_ok: bool = ex != null \
+			and a._reachable(p.global_position - _zone, _epos(ex) - _zone)
 		var by: String = ""
 		if ex != null and not line_ok:
 			# The same ray ActionSystem._reachable casts: player → sprite + 40.
@@ -190,6 +195,7 @@ func _solve_map() -> void:
 
 ## Everything the flood needs about this level.
 func _setup(lvl) -> void:
+	_zone = lvl.origin                  # zone-local ↔ world, for _epos
 	_space = main.get_world_3d().direct_space_state
 	var cs: CollisionShape3D = main.player.get_node_or_null("CollisionShape3D")
 	var body: CapsuleShape3D = cs.shape as CapsuleShape3D if cs != null else null
@@ -936,8 +942,11 @@ func _write_view(name: String, a) -> void:
 
 # --- Small helpers ---------------------------------------------------------
 
-static func _epos(e) -> Vector3:
-	return Vector3(float(e.x), -float(e.y), -float(e.z))
+## An entity's WORLD position. The record is zone-local; the solver works
+## in the world the physics queries and the player live in, so the zone
+## origin (_setup) goes on here, once, for every caller.
+func _epos(e) -> Vector3:
+	return Vector3(float(e.x), -float(e.y), -float(e.z)) + _zone
 
 func _ename(a, e) -> String:
 	if e == null:

@@ -222,6 +222,12 @@ const ENEMY_SEGMENTS: Dictionary = {
 }
 
 class Level:
+	## Where this zone stands in the world. A mission scene holds several
+	## DOS maps side by side (docs/m2_mission_scene_plan.md), so everything
+	## the records give is ZONE-LOCAL and the branch nodes below carry this
+	## offset: world = zone-local + origin. Zero for a lone map, and then
+	## the two spaces are the same thing.
+	var origin: Vector3 = Vector3.ZERO
 	var map: MapFile.MapFile
 	var wld: WldTerrain.WLD
 	var terrain: MeshInstance3D
@@ -295,8 +301,17 @@ static func _phase(what: String) -> void:
 	_trace.append([what, now - _trace_t0])
 	_trace_t0 = now
 
+## Load a level at the world origin — the lone-map runtime.
 func load_level(map_name: String) -> Level:
+	return load_zone(map_name, Vector3.ZERO)
+
+## Load a level as a ZONE standing at `origin`. Everything built from the
+## MAP records keeps its DOS (zone-local) coordinates; the branch nodes
+## get `origin` as their transform, so their children's global positions
+## are world ones. At Vector3.ZERO this is load_level to the bit.
+func load_zone(map_name: String, origin: Vector3) -> Level:
 	var level := Level.new()
+	level.origin = origin
 	_trace = []
 	_trace_t0 = Time.get_ticks_usec()
 
@@ -342,6 +357,10 @@ func load_level(map_name: String) -> Level:
 
 	# Action/link system — chains, movers, destructibles, teleports.
 	level.action = ActionSystem.new()
+	# zone-local ↔ world: the records it keeps are zone-local, so it needs
+	# the offset to read the player's world position and to hand positions
+	# back to the physics world and the audio.
+	level.action.zone_origin = origin
 	level.action.setup(level.map)
 	# TRANSFRM.PRS (destructible damage stages) lives in MDMDBRIF.BSA.
 	var transfrm: Dictionary = {}
@@ -847,6 +866,10 @@ func load_level(map_name: String) -> Level:
 					# a swung arm): half as much again, and some.
 					limit_draw_distance(a, r * 1.5 + 200.0, true)
 
+	# zone-local ↔ world: last of all, so the bake above and every record
+	# position in it stay in DOS space.
+	_stand_at_origin(level)
+
 	_phase("sky+rest")
 	if _trace_on:
 		var parts: Array = []
@@ -854,6 +877,19 @@ func load_level(map_name: String) -> Level:
 			parts.append("%s %.0f ms" % [t[0], float(t[1]) / 1000.0])
 		print("[load-trace] %s: %s" % [map_name, " | ".join(parts)])
 	return level
+
+## Move the level's top branches to `level.origin`. Their children keep
+## the zone-local positions the records gave them and follow the parent,
+## which is what makes a second map loadable beside the first. The sky is
+## left alone: it is pinned to the camera every frame (main.gd).
+static func _stand_at_origin(level: Level) -> void:
+	if level == null or level.origin == Vector3.ZERO:
+		return
+	for branch in [level.terrain, level.entities, level.enemies,
+			level.sprites, level.behaviour, level.occluders, level.overlay]:
+		if branch != null and is_instance_valid(branch) and branch is Node3D:
+			(branch as Node3D).position += level.origin
+	print("[level] zone stands at %s" % str(level.origin))
 
 ## Resolve an enemy marker's animation frames by enemy-type ID (marker
 ## sub+10), via the ENEMY_MESH table. Meshes come from MDMDENMS.BSA
@@ -1270,6 +1306,11 @@ static func spawn_drop(level: Level, pos: Vector3, drop_type: int) -> Sprite3D:
 
 ## One pickup sprite `si` placed on the ground at `pos` — the tail of
 ## spawn_drop, also reachable from the console (`drop <sprite index>`).
+##
+## zone-local ↔ world: `pos` is ZONE-LOCAL. The sprite becomes a child of
+## level.sprites, which carries the zone origin, and the heightmap below
+## is sampled in map coordinates — both want the DOS space, not the
+## world one. ActionSystem.drop_requested emits zone-local for this.
 static func spawn_item(level: Level, pos: Vector3, si: int) -> Sprite3D:
 	if level == null or level.sprites == null:
 		return null

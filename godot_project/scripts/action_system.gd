@@ -211,6 +211,13 @@ const TELEPORT_TOUCH_RADIUS: float = 90.0
 const PROX_VERTICAL_WINDOW: float = 512.0
 const DESTRUCT_DAMAGE_PER_STAGE: float = 16.0  # handler 0x120433 stage step
 
+## Where this level's zone stands in the world (LevelLoader.Level.origin).
+## Every record here holds DOS coordinates, i.e. ZONE-LOCAL Godot ones —
+## so a world position coming in (the player, the camera) has this taken
+## off it, and a position handed out to the physics world, the audio or
+## the effects has it added. Zero for a lone map, where the two spaces
+## are the same thing and nothing below changes.
+var zone_origin: Vector3 = Vector3.ZERO
 var _map: MapFile.MapFile = null
 var _nodes: Dictionary = {}       # file_off → Node3D (visual, optional)
 var _movers: Dictionary = {}      # file_off → mover runtime state
@@ -556,6 +563,10 @@ func on_player_hit(file_off: int, damage: float) -> bool:
 ## same bit1 ("act on hit") gate without applying damage, which covers
 ## shoot-or-use switches while leaving HP-gated objects (generators,
 ## bit2) to real damage.
+##
+## zone-local ↔ world: `player_pos` is a WORLD position. Nothing here
+## measures with it yet — the caller has already picked the entity — so
+## there is nothing to translate; it stays world for whatever does.
 func on_player_activate(file_off: int, player_pos: Vector3 = Vector3.INF) -> bool:
 	var e: MapFile.Entity = _map.entities_by_off.get(file_off) \
 		if _map != null else null
@@ -724,10 +735,14 @@ func _do_action(e: MapFile.Entity) -> void:
 ## lower, so MAP.260's mission-end BUTTONX (0xF2, radius 1024) could be
 ## driven past (playtest 2026-09-15). Callers that put a test point
 ## right at a trigger may leave it out: it defaults to `player_pos`.
+##
+## zone-local ↔ world: both come in as WORLD positions and are taken into
+## the records' zone-local space here, once, for the whole sweep.
 func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> void:
 	if _map == null:
 		return
-	var eye: Vector3 = player_pos if eye_pos == Vector3.INF else eye_pos
+	var here: Vector3 = player_pos - zone_origin
+	var eye: Vector3 = here if eye_pos == Vector3.INF else eye_pos - zone_origin
 	# Lights ------------------------------------------------------
 	if not _light_ents.is_empty():
 		_light_fx_clock += delta
@@ -842,7 +857,7 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 		_spawn_in(off)
 	# Vehicles on a marker path (AI state 11) ----------------------
 	for off in _path_vehicles:
-		_step_path_vehicle(_path_vehicles[off], delta, player_pos)
+		_step_path_vehicle(_path_vehicles[off], delta, here)
 	# Water level (0xd6-0xda) -------------------------------------
 	for e in _water_nodes:
 		if not _fires(e):
@@ -854,7 +869,9 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 		if partner != 0:
 			e.link_act_type = partner        # next time it goes the other way
 		if delta_u == 0:
-			water_level_requested.emit(-float(e.y), true)
+			# zone-local ↔ world: an absolute surface height, and what it
+			# sets is compared with world positions.
+			water_level_requested.emit(-float(e.y) + zone_origin.y, true)
 		else:
 			water_level_requested.emit(-float(delta_u), false)
 		print("[action] water act @%05x (DOS delta %d)" % [e.file_off, delta_u])
@@ -866,7 +883,7 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 	for ti in _teleports.size():
 		var e: MapFile.Entity = _teleports[ti]
 		var epos: Vector3 = _teleport_pos[ti]
-		var touching: bool = _within_touch(epos, player_pos, TELEPORT_TOUCH_RADIUS)
+		var touching: bool = _within_touch(epos, here, TELEPORT_TOUCH_RADIUS)
 		if touching and not _touch_latched.get(e.file_off, false):
 			e.state_byte |= 1
 		if _armed.has(e.file_off):
@@ -890,8 +907,12 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 ## with the key at its rear wall: the gate inside is 91-97 u from the feet
 ## there, over the 86 u reach, but 23-42 u from the eye (playtest
 ## 2026-09-15: "nedá sa ísť do nákladného auta").
+##
+## zone-local ↔ world: both arrive as WORLD positions and are taken into
+## the records' zone-local space here.
 func activate_teleport(player_pos: Vector3, eye: Vector3 = Vector3.INF) -> bool:
-	var from_eye: Vector3 = eye if eye.is_finite() else player_pos
+	var here: Vector3 = player_pos - zone_origin
+	var from_eye: Vector3 = (eye - zone_origin) if eye.is_finite() else here
 	if _teleport_fired:
 		return false
 	for ti in _teleports.size():
@@ -899,9 +920,9 @@ func activate_teleport(player_pos: Vector3, eye: Vector3 = Vector3.INF) -> bool:
 		if (e.state_byte & 1) == 0:
 			continue
 		var epos: Vector3 = _teleport_pos[ti]
-		if not _within_touch(epos, player_pos, TELEPORT_TOUCH_RADIUS + PROX_GATE_RADIUS):
+		if not _within_touch(epos, here, TELEPORT_TOUCH_RADIUS + PROX_GATE_RADIUS):
 			continue
-		if not _reachable(player_pos, epos):
+		if not _reachable(here, epos):
 			continue                         # a closed door leaf is in the way
 		return _fire_teleport(e)
 	# Standing in an ENABLED exit gate whose chain has not flipped (the
@@ -914,7 +935,7 @@ func activate_teleport(player_pos: Vector3, eye: Vector3 = Vector3.INF) -> bool:
 		var gpos: Vector3 = _prox_pos[gi]
 		if not _within(gpos, from_eye, _prox_radius(g)):
 			continue
-		if not _reachable(player_pos, gpos):
+		if not _reachable(here, gpos):
 			continue
 		var t: MapFile.Entity = _chain_teleport(g)
 		if t != null:
@@ -924,9 +945,14 @@ func activate_teleport(player_pos: Vector3, eye: Vector3 = Vector3.INF) -> bool:
 ## Nothing solid between the player and `target` (a doorway sprite sits
 ## on the floor, so aim a little above it). True when no physics space
 ## is available (headless unit tests).
-func _reachable(from: Vector3, target: Vector3) -> bool:
+##
+## zone-local ↔ world: both ends are zone-local, and the physics space is
+## the world's — the rays are cast with the zone origin added back on.
+func _reachable(from_local: Vector3, target_local: Vector3) -> bool:
 	if space == null:
 		return true
+	var from: Vector3 = from_local + zone_origin
+	var target: Vector3 = target_local + zone_origin
 	# `from` is the player's FEET (use_pressed sends global_position). One
 	# ray from the floor ran through MAP.252's torpedo-room shell 22 u from
 	# the player, so the exit into it never fired (found by --solve,
@@ -949,7 +975,12 @@ func _reachable(from: Vector3, target: Vector3) -> bool:
 ## nearest wall button / lever the player stands at. DOS fires these by
 ## proximity (0xEF/0xF1/0xF2); the port keeps them on the key but does
 ## not demand precise aim at a small panel.
+##
+## zone-local ↔ world: `player_pos` is a WORLD position; the records it is
+## measured against are zone-local, so the comparison runs in that space
+## and the world position goes on unchanged to on_player_activate.
 func use_nearby(player_pos: Vector3) -> bool:
+	var here: Vector3 = player_pos - zone_origin
 	var best: MapFile.Entity = null
 	var best_d: float = USE_REACH
 	for e in _prox + _use_msgs:
@@ -958,9 +989,9 @@ func use_nearby(player_pos: Vector3) -> bool:
 		if (e.flags & 3) != 1 and not _use_msgs.has(e):
 			continue
 		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
-		if not _within(epos, player_pos, USE_REACH):
+		if not _within(epos, here, USE_REACH):
 			continue
-		var d: float = epos.distance_to(player_pos)
+		var d: float = epos.distance_to(here)
 		if d < best_d:
 			best_d = d
 			best = e
@@ -975,15 +1006,19 @@ func use_nearby(player_pos: Vector3) -> bool:
 ## for the player to step out and back in instead of bouncing straight
 ## back. The triggers measure from `eye_pos` as tick() does (default: the
 ## body position), the doorways from the body.
+##
+## zone-local ↔ world: both arrive as WORLD positions and are taken into
+## the records' zone-local space here.
 func arm_proximity(player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> void:
-	var eye: Vector3 = player_pos if eye_pos == Vector3.INF else eye_pos
+	var here: Vector3 = player_pos - zone_origin
+	var eye: Vector3 = here if eye_pos == Vector3.INF else eye_pos - zone_origin
 	for pi in _prox.size():
 		var e: MapFile.Entity = _prox[pi]
 		if _within(_prox_pos[pi], eye, _prox_radius(e)):
 			_prox_latched[e.file_off] = true
 	for ti in _teleports.size():
 		var e: MapFile.Entity = _teleports[ti]
-		if _within_touch(_teleport_pos[ti], player_pos, TELEPORT_TOUCH_RADIUS):
+		if _within_touch(_teleport_pos[ti], here, TELEPORT_TOUCH_RADIUS):
 			_touch_latched[e.file_off] = true
 
 func _prox_radius(e: MapFile.Entity) -> float:
@@ -1030,15 +1065,19 @@ static func _dos_pos(e: MapFile.Entity) -> Vector3:
 ## own speed, and at the end of it flip whatever the last marker points
 ## at (the HK's CHUNK3 carries mission 3's [M2]). The vehicle walks a
 ## straight 3D line from marker to marker — no terrain, no collision.
+##
+## zone-local ↔ world: `player_pos` is ZONE-LOCAL (tick translated it),
+## like the actor's own position and the markers it drives to.
 func _step_path_vehicle(v: Dictionary, delta: float, player_pos: Vector3) -> void:
 	var node: Node3D = v["node"]
 	if node == null or not is_instance_valid(node):
 		return
 	if node.has_method("is_dead") and node.is_dead():
 		return
-	# The actors hang under the level's Enemies node, which has no
-	# transform of its own, so the local position IS the world one — and
-	# it still reads correctly outside the tree (the smoke tests).
+	# The actors hang under the level's Enemies node, whose only transform
+	# is the zone origin, so their local position IS the zone-local one
+	# the markers are in — and it still reads correctly outside the tree
+	# (the smoke tests).
 	if absi(floori(node.position.x / PATH_TICK_CELL) - floori(player_pos.x / PATH_TICK_CELL)) > PATH_TICK_CELLS \
 			or absi(floori(node.position.z / PATH_TICK_CELL) - floori(player_pos.z / PATH_TICK_CELL)) > PATH_TICK_CELLS:
 		return                                   # outside the DOS 5×5 window
@@ -1385,9 +1424,13 @@ func _break_down(e: MapFile.Entity) -> void:
 ## plain blast (effect 358) sized by the i16 parameter, no drop. Staged
 ## destructibles (0x18/0x19 wrecks) keep their final mesh; everything
 ## else leaves the world.
+##
+## zone-local ↔ world: the record's own position is zone-local and the
+## node's global transform is already world; both are carried as WORLD
+## here, because the audio, the effects and the blast all live there.
 func _destroy(e: MapFile.Entity) -> void:
 	var node: Node3D = _nodes.get(e.file_off)
-	var origin := Vector3(float(e.x), -float(e.y), -float(e.z))
+	var origin := Vector3(float(e.x), -float(e.y), -float(e.z)) + zone_origin
 	var centre: Vector3 = origin
 	var radius: float = 120.0
 	var alive: bool = node != null and is_instance_valid(node)
@@ -1429,7 +1472,11 @@ func _destroy(e: MapFile.Entity) -> void:
 		node.visible = false
 		_disable_collision(node)
 	if drop >= 0:
-		drop_requested.emit(Vector3(centre.x, origin.y, centre.z), drop)
+		# zone-local ↔ world: the drop becomes a child of level.sprites and
+		# is put on the map's own heightmap (LevelLoader.spawn_item), so it
+		# is asked for in ZONE-LOCAL coordinates.
+		drop_requested.emit(
+			Vector3(centre.x, origin.y, centre.z) - zone_origin, drop)
 
 ## Explosion at a destructible's centre; the final stage also throws the
 ## object's own blast (`strength`, the i16 at its link record +1 — the
