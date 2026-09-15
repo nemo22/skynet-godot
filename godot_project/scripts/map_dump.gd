@@ -22,6 +22,8 @@ func _ready() -> void:
 		preload("res://tools/border_census.gd").run(String(cli["borders"]))
 	if cli.has("variants"):
 		preload("res://tools/variant_census.gd").run(String(cli["variants"]))
+	if cli.has("mission"):
+		preload("res://tools/mission_census.gd").run(String(cli["mission"]), out_dir)
 	if cli.has("modelshot"):
 		await preload("res://tools/model_shot.gd").run(String(cli["modelshot"]),
 			out_dir, int(cli.get("shotsize", 320)))
