@@ -843,7 +843,7 @@ func _physics_process(delta: float) -> void:
 ## land inside one of the boxes, or the move is UNDONE and the speed
 ## zeroed. That is the invisible wall on MAP.260, which keeps the jeep in
 ## the town and on the inner highway lane. Within 64 units of an edge the
-## engine prints hint slot 8 = [G9] ("The highway is the other way.")
+## engine prints hint slot 8 = [G9] (the map's own line about the highway)
 ## once, re-armed when the player leaves the band.
 const BORDER_HINT_MARGIN: float = 64.0
 var border_boxes: Array = []          # Rect2 in world x/z; empty = no fence
