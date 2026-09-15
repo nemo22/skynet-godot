@@ -25,6 +25,8 @@ const LevelScene  := preload("res://scripts/level_scene.gd")
 const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
 const CamPath     := preload("res://scripts/cam_path.gd")
 const PauseState  := preload("res://scripts/pause_state.gd")
+const HudPanel    := preload("res://scripts/hud_panel.gd")
+const HudModern   := preload("res://scripts/hud_modern.gd")
 const EffectWarmup := preload("res://scripts/effect_warmup.gd")
 
 ## Map to load on startup (falls back to first map if missing).
@@ -63,30 +65,16 @@ var _maps: Array[String] = []
 var _map_idx: int = 0
 var _current_level: LevelLoader.Level = null
 var _status_label: Label = null
-var _health_label: Label = null
-var _weapon_label: Label = null
-var _ammo_label: Label = null
-## The DOS compass (FUN_001323a2): COMPASS.IMG, a 185x14 ribbon of ticks
-## and the letters N E S W 37 px apart — 148 px to a full turn, and the
-## last 37 px repeat the first so the window never runs off the end —
-## seen through a 37 px window at PANEL0 (96,3). Every frame the ribbon
-## is blitted at x + scroll, scroll = (angle x -148 + 1024) >> 11 for the
-## 11-bit clockwise bearing from north, angle = view yaw + the map's
-## marker-7 offset ((degrees << 11) / 360, 0x12df3f): the ribbon slides
-## left as the player turns right, N under the middle of the window when
-## he faces north. The port drew its ammo count in that window until
-## 2026-09-15 ("vypadol kompas z HUDu").
-const COMPASS_WINDOW_PX: float = 37.0
-const COMPASS_RIBBON_PX: float = 185.0
-const COMPASS_TURN_PX: float = 148.0
-var _compass: Control = null
-var _compass_tex: Texture2D = null
+## The HUD bar: the DOS panel (scripts/hud_panel.gd, PANEL0 and all DOS
+## draws on it) or, with HI-RES ART on, the modern status bar
+## (scripts/hud_modern.gd). Both take the same refresh() every frame.
+var _hud: Control = null
+var _hud_is_dos: bool = true
+## The compass bearing (both HUDs): the 11-bit clockwise bearing from the
+## map's north, view yaw + the marker-7 offset (DOS FUN_001323a2,
+## (degrees << 11) / 360 at 0x12df3f).
 var _compass_north: int = 0            # marker 7, in 11-bit units
-var _compass_angle: int = -1
 var _compass_level: WeakRef = null
-var _hud_panel: TextureRect = null     # PANEL0.IMG bottom HUD bar
-var _health_fill: ColorRect = null   # HEALTH gauge fill
-var _rad_fill: Control = null        # RADIATION gauge fill
 var _hud_layer: CanvasLayer = null     # the whole gameplay HUD
 ## AUTOMAP (Tab): the paused 3D map view, and the set of entity nodes the
 ## player has actually seen — DOS marks flag 0x80 on everything it drew
@@ -94,10 +82,13 @@ var _hud_layer: CanvasLayer = null     # the whole gameplay HUD
 var _automap: Node3D = null
 var _seen_meshes: Dictionary = {}
 var _seen_poll: float = 0.0
-var _armor_fill: Control = null      # ARMOR gauge fill
-var _second_label: Label = null        # the thrown item and how many
 var _hud_font: FontFile = null         # FONT0003.FNT — HUD read-outs
-var _status_font: FontFile = null      # FONT0005.FNT — status messages
+## The message line's font: FONT0004 at the panel's scale under the DOS
+## HUD (FUN_0012f453: (4,3), palette 0xB3 over a 0x7F shadow), FONT0005
+## with the modern one. `_msg_scale` is the scale it was built at (0 =
+## FONT0005).
+var _status_font: FontFile = null
+var _msg_scale: int = -1
 var _game_over: CanvasLayer = null
 var _mission_hostiles: int = 0
 var _mission_done: bool = false
@@ -1580,12 +1571,11 @@ func _on_detail_changed(_level: int = 0) -> void:
 	if _current_level != null and _current_level.is_outdoor and we != null and we.environment != null:
 		_apply_fog_distances(we.environment)
 
-## HI-RES ART: the HUD bar and the gun in your hands swap sets.
+## HI-RES ART: the gun in your hands swaps sets, and the HUD swaps with it
+## — the DOS panel off, the modern bar on (see _build_hud).
 func _on_hires_changed(_on: bool = false) -> void:
-	if _hud_panel != null:
-		var ptex := _load_panel_texture("PANEL0.IMG", false, Settings.hires_weapons)
-		if ptex != null:
-			_hud_panel.texture = ptex
+	if _hud_layer != null:
+		_build_hud()
 	if is_instance_valid(player) and player.has_method("_load_viewmodels"):
 		player.call("_load_viewmodels")
 
@@ -1727,16 +1717,8 @@ func _walk_step(delta: float) -> void:
 			"floor" if player.is_on_floor() else "air", player.velocity.y,
 			" (at target)" if arrived else ""])
 
-## What the HUD read-outs last showed (_process writes a label only when
-## its value moves). HUD_UNSET: nothing shown yet.
-const HUD_UNSET: int = -1000000
-var _hud_hp: int = HUD_UNSET
-var _hud_low: int = HUD_UNSET
-var _hud_ammo: int = HUD_UNSET
+## The AIR second last put on the message line (-1 = none).
 var _hud_air: int = -1
-var _hud_weapon: String = ""
-var _hud_second_name: String = ""
-var _hud_second_count: int = HUD_UNSET
 
 ## Entity action system — movers, proximity triggers, teleports — on the
 ## physics step (see ActionSystem.tick).
@@ -1789,42 +1771,16 @@ func _process(delta: float) -> void:
 				if here.distance_to(n.global_position) < 6000.0 \
 						and camera.is_position_in_frustum(n.global_position):
 					_seen_meshes[n.get_instance_id()] = true
-	if _health_label != null and is_instance_valid(player):
+	if _hud != null and is_instance_valid(player):
 		var hp: int = int(maxf(0.0, player.health))
-		var frac: float = 0.0
-		if player.max_health > 0.0:
-			frac = clampf(player.health / player.max_health, 0.0, 1.0)
-		var low: bool = frac <= 0.3
-		# The read-outs change a few times a minute; a label set every frame
-		# (and a theme override, which re-shapes it) cost a frame's worth of
-		# text layout for nothing. Each is written when its value moves.
-		if hp != _hud_hp:
-			_hud_hp = hp
-			_health_label.text = str(hp)
-		if int(low) != _hud_low:
-			_hud_low = int(low)
-			_health_label.add_theme_color_override("font_color",
-				Color(1, 0.4, 0.32) if low else Color(0.55, 0.95, 0.62))
-			if _health_fill != null:
-				# The DOS panel's fill is a flat rect that goes red when the
-				# soldier is nearly done.
-				_health_fill.color = Color(0.9, 0.3, 0.22) if low else Color(0.3, 0.85, 0.4)
-		if _health_fill != null and _health_fill.anchor_right != frac:
-			_health_fill.anchor_right = frac
-		var armor_frac: float = float(player.armor_gauge())
-		if _armor_fill != null and _armor_fill.anchor_right != armor_frac:
-			_armor_fill.anchor_right = armor_frac
 		# Radiation: dose from the marker-4 sources, charged per second.
 		if not _rad_sources.is_empty() and _game_over == null:
 			_rad_dose = _radiation_dose(player.global_position + Vector3(0.0, 37.5, 0.0))
 			if _rad_dose > 0.0:
-				player.take_damage(_rad_dose * delta, false)
+				player.take_dos_damage(_rad_dose * delta, false)   # DOS points x dt (0x13b2c7)
 		else:
 			_rad_dose = 0.0
 		_update_radiation_feedback(delta)
-		var rad_frac: float = clampf(_rad_dose / RAD_MAX_DOSE, 0.0, 1.0)
-		if _rad_fill != null and _rad_fill.anchor_right != rad_frac:
-			_rad_fill.anchor_right = rad_frac
 		_fade_hurt(delta)
 		var air: int = -1
 		if _water != null:
@@ -1838,32 +1794,20 @@ func _process(delta: float) -> void:
 			_hud_air = air
 			if air >= 0:
 				_set_status("AIR %d" % air, 1.2)
-		var wname: String = str(player.weapon_name)
-		if wname != _hud_weapon:
-			_hud_weapon = wname
-			_weapon_label.text = wname
-		if _second_label != null:
-			var sc: int = int(player.secondary_ammo)
-			var sname: String = str(player.secondary_name)
-			if sc != _hud_second_count or sname != _hud_second_name:
-				_hud_second_count = sc
-				_hud_second_name = sname
-				_second_label.text = "%s  x%d" % [sname, sc]
-				_second_label.modulate = Color(1, 1, 1) if sc > 0 else Color(0.55, 0.5, 0.5)
 		if _hud_mode != player.vehicle:
 			_set_hud_mode(player.vehicle)
 		if _hud_mode != 0:
 			_update_vehicle_hud()
-		_update_compass()
-		var am: int = int(player.ammo)
-		if am != _hud_ammo:
-			# A device with nothing to fire (the MP motion detector) shows no
-			# count at all.
-			_ammo_label.text = "" if am < 0 else str(am)
-			if (am == 0) != (_hud_ammo == 0) or _hud_ammo == HUD_UNSET:
-				_ammo_label.add_theme_color_override("font_color",
-					Color(1, 0.4, 0.32) if am == 0 else Color(0.55, 0.95, 0.62))
-			_hud_ammo = am
+		# The bar reads the soldier off this — it writes only what moved.
+		_hud.call("refresh", {
+			"health": player.health, "max_health": player.max_health,
+			"armor": float(player.armor_gauge()),
+			"rad": _rad_dose, "rad_frac": clampf(_rad_dose / RAD_MAX_DOSE, 0.0, 1.0),
+			"weapon_idx": int(player.get("_weapon_idx")), "weapon_name": str(player.weapon_name),
+			"ammo": int(player.ammo), "vehicle": int(player.vehicle),
+			"second_pool": int(player.secondary_pool), "second_name": str(player.secondary_name),
+			"second_count": int(player.secondary_ammo), "bearing": _hud_bearing(),
+		})
 		if hp <= 0 and _game_over == null and _dm == null:
 			_show_game_over()
 	# No DOS mission ends by body count: they end when the objective
@@ -1996,10 +1940,9 @@ func _radiation_dose(at: Vector3) -> float:
 	for src in _rad_sources:
 		var p: Vector3 = src["pos"]
 		var strength: float = src["strength"]
-		var d3: float = at.distance_to(p)
-		if d3 * 0.75 > strength:
-			continue
-		var r: float = strength - Vector2(at.x - p.x, at.z - p.z).length()
+		# DOS FUN_0013b1e0: the 3-D distance to the source, 50 per unit
+		# inside the strength, at most 12800 >> 8 = 50 a second per source.
+		var r: float = strength - at.distance_to(p)
 		if r <= 0.0:
 			continue
 		dose += minf(r * 50.0, 12800.0) / 256.0
@@ -4394,106 +4337,42 @@ func _build_status_ui() -> void:
 	var crosshair: Control = preload("res://scripts/crosshair.gd").new()
 	canvas.add_child(crosshair)
 
-	# --- bottom HUD bar: authentic DOS PANEL0.IMG (320×40 foot HUD) ---
-	# The art spans the full window width; its height is kept at the
-	# original 8:1 aspect (320:40), reproducing the DOS 20%-of-screen bar.
-	var panel := TextureRect.new()
-	panel.anchor_top = 1.0
-	panel.anchor_right = 1.0
-	panel.anchor_bottom = 1.0
-	panel.offset_top = -120.0                    # set precisely by _layout_hud
-	panel.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	# HI-RES ART: PANEL0.IMG is 640x96 in MDMDHRES.BSA against 320x40 in
-	# MDMDIMGS.BSA — SkyNET's own 640x480 mode art, four times the pixels
-	# ("co sa tyka toho hires tak staci aj hud", playtest 2026-09-12). The
-	# bar is stretched to the window either way, so the only difference
-	# is how sharp it is.
-	var ptex := _load_panel_texture("PANEL0.IMG", false, Settings.hires_weapons)
-	if ptex != null:
-		panel.texture = ptex
-		panel.stretch_mode = TextureRect.STRETCH_SCALE
-		panel.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	else:
-		var fallback := ColorRect.new()
-		fallback.color = Color(0.04, 0.05, 0.07, 0.85)
-		fallback.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		panel.add_child(fallback)
-	canvas.add_child(panel)
-	_hud_panel = panel
-
-	# HEALTH gauge fill — green bar in the recessed HEALTH slot.
-	var hp_slot := _panel_rect(panel, 172, 25, 41, 5)
-	_health_fill = ColorRect.new()
-	_health_fill.anchor_bottom = 1.0
-	_health_fill.anchor_right = 1.0
-	_health_fill.color = Color(0.3, 0.85, 0.4)
-	_health_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	hp_slot.add_child(_health_fill)
-
-	# Read-outs placed in the panel's recessed boxes.
-	_health_label = _hud_box_label()             # numeric health (left box)
-	_panel_rect(panel, 3, 20, 39, 17).add_child(_health_label)
-	# DOS draws the primary weapon's ICON in the (50,20) box with its count
-	# right-aligned at x 128 (FUN_00132154); the port names the weapon
-	# there instead and puts the count where DOS does.
-	_weapon_label = _hud_box_label()             # active weapon name
-	_weapon_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	_panel_rect(panel, 52, 20, 60, 17).add_child(_weapon_label)
-	_ammo_label = _hud_box_label()               # ammo count
-	_ammo_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_panel_rect(panel, 100, 20, 30, 17).add_child(_ammo_label)
-	# The compass window (see COMPASS_*).
-	_compass_tex = _load_panel_texture("COMPASS.IMG", false, Settings.hires_weapons)
-	_compass = _panel_rect(panel, 96, 3, 37, 14)
-	_compass.clip_contents = true
-	_compass.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	_compass.draw.connect(_draw_compass)
-	# The wide recessed box on the right of PANEL0 was left empty. The
-	# thrown item lives there now — until 2026-09-04 there was no way to
-	# see which grenade the throw key would use.
-	_second_label = _hud_box_label()
-	_panel_rect(panel, 218, 4, 98, 32).add_child(_second_label)
-
-	# RADIATION and ARMOR gauges — the two PANEL0 slots the port left
-	# empty. Rects measured off the art (320x40).
-	var rad_slot := _panel_rect(panel, 50, 5, 41, 10)
-	_rad_fill = ColorRect.new()
-	_rad_fill.anchor_bottom = 1.0
-	_rad_fill.anchor_right = 0.0
-	_rad_fill.color = Color(0.95, 0.85, 0.25)
-	_rad_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	rad_slot.add_child(_rad_fill)
-	var armor_slot := _panel_rect(panel, 172, 9, 41, 5)
-	_armor_fill = ColorRect.new()
-	_armor_fill.anchor_bottom = 1.0
-	_armor_fill.anchor_right = 0.0
-	_armor_fill.color = Color(0.45, 0.72, 1.0)
-	_armor_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	armor_slot.add_child(_armor_fill)
-
+	# --- the HUD bar (see _build_hud) ---
 	get_viewport().size_changed.connect(_layout_hud)
-	_layout_hud()
+	_build_hud()
 	# (There used to be an on-screen MENU button pinned top-right. Esc
 	# opens the same menu and the button sat over the view.)
 
-## The ribbon through the window, at the DOS scroll for _compass_angle
-## (the hi-res ribbon is the same art at 2x; it is drawn at the window's
-## own scale either way).
-func _draw_compass() -> void:
-	if _compass == null or _compass_tex == null or _compass_angle < 0:
-		return
-	var s: float = _compass.size.x / COMPASS_WINDOW_PX      # window px per DOS px
-	var scroll: int = (-148 * _compass_angle + 1024) >> 11
-	_compass.draw_texture_rect(_compass_tex,
-		Rect2(float(scroll) * s, 0.0, COMPASS_RIBBON_PX * s, _compass.size.y), false)
+## The HUD bar for the setting in force: the DOS panel — PANEL0 and every
+## DOS draw on it, the 320x200 art, at the bottom of the window at its
+## DOS proportion — or, with HI-RES ART on, the modern status bar in the
+## corner with the view uncovered. Built at start and again when the
+## setting flips.
+func _build_hud() -> void:
+	if _hud != null:
+		_hud.queue_free()
+		_hud = null
+	_hud_is_dos = not Settings.hires_weapons
+	if _hud_is_dos:
+		var p: Control = HudPanel.new()
+		p.anchor_top = 1.0
+		p.anchor_right = 1.0
+		p.anchor_bottom = 1.0
+		p.call("setup", false)
+		_hud = p
+	else:
+		_hud = HudModern.new()
+	_hud_layer.add_child(_hud)
+	# A vehicle's own panel (none today) would hide the bar.
+	_hud.visible = _hud_mode == 0 or String(VEH_PANELS[clampi(_hud_mode, 0, VEH_PANELS.size() - 1)]).is_empty()
+	_layout_hud()
 
-## The clockwise bearing the compass shows, 0..2047: the view's yaw
-## (DOS [0x38c94]/[0x38c9c] — the camera, so the jeep's turret) plus the
-## map's marker-7 offset.
-func _update_compass() -> void:
-	if _compass == null or camera == null or not is_instance_valid(camera):
-		return
+## The clockwise bearing the compass shows, 0..2047: the view's yaw (DOS
+## [0x38c94]/[0x38c9c] — the camera, so the jeep's turret) plus the map's
+## marker-7 offset; -1 with no camera.
+func _hud_bearing() -> int:
+	if camera == null or not is_instance_valid(camera):
+		return -1
 	var lvl_ref = _compass_level.get_ref() if _compass_level != null else null
 	if lvl_ref != _current_level:
 		_compass_level = weakref(_current_level) if _current_level != null else null
@@ -4501,10 +4380,7 @@ func _update_compass() -> void:
 	var fwd: Vector3 = -camera.global_transform.basis.z
 	# North is -z (DOS +z); turning right (clockwise from above) adds.
 	var bearing: float = fposmod(atan2(fwd.x, -fwd.z), TAU)
-	var a: int = (int(bearing * 2048.0 / TAU) + _compass_north) & 0x7FF
-	if a != _compass_angle:
-		_compass_angle = a
-		_compass.queue_redraw()
+	return (int(bearing * 2048.0 / TAU) + _compass_north) & 0x7FF
 
 ## Marker type 7: the compass offset in degrees at sub+2 (0x12df04),
 ## clamped 0..359 and turned into 11-bit units.
@@ -4516,34 +4392,49 @@ static func _compass_offset(level: LevelLoader.Level) -> int:
 			return (clampi(int(e.exit_map), 0, 359) << 11) / 360
 	return 0
 
-## How much of the window bottom the HUD covers — 0 while it is hidden.
+## How much of the window bottom the HUD covers — the DOS bar's height,
+## 0 while it is hidden or the modern bar (which covers no view) is up.
+## The view's projection centre sits in the middle of what is left
+## (fly_camera._update_projection).
 func hud_height() -> float:
-	if _hud_panel == null or not _hud_panel.visible:
+	if _hud == null or not _hud.visible or not _hud_is_dos:
 		return 0.0
-	return clampf(get_viewport().get_visible_rect().size.x / 8.0, 64.0, 160.0)
+	return HudPanel.bar_height(get_viewport().get_visible_rect().size.x)
 
-## Keep the PANEL0 bar full-width at its native 8:1 aspect (320:40).
+## Keep the DOS bar full-width at its native 8:1 aspect (320:40), and the
+## message line in the font and place its HUD wants.
 func _layout_hud() -> void:
-	if _hud_panel == null:
-		return
 	var vw: float = get_viewport().get_visible_rect().size.x
-	# Native 8:1 aspect up to 1280 wide; capped above so the bar never
-	# eats more than ~160 px of the view on big screens.
-	_hud_panel.offset_top = -clampf(vw / 8.0, 64.0, 160.0)
+	if _hud != null and _hud_is_dos:
+		_hud.offset_top = -HudPanel.bar_height(vw)
+	_style_status_label(vw)
 
-## Anchor a child Control inside the PANEL0 art by its source-pixel rect
-## (PANEL0 is 320×40). Anchors are fractional, so the child tracks the
-## stretched panel at any window size.
-func _panel_rect(parent: Control, sx: float, sy: float,
-		sw: float, sh: float) -> Control:
-	var c := Control.new()
-	c.anchor_left = sx / 320.0
-	c.anchor_right = (sx + sw) / 320.0
-	c.anchor_top = sy / 40.0
-	c.anchor_bottom = (sy + sh) / 40.0
-	c.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	parent.add_child(c)
-	return c
+## The message line (FUN_0012f453): under the DOS HUD it is FONT0004 at
+## the panel's pixel scale, palette 0xB3 over a 0x7F shadow one pixel
+## down and right, at (4,3) of the 320x200 screen; the modern bar keeps
+## the port's FONT0005 line. Rebuilt only when the scale changes.
+func _style_status_label(vw: float) -> void:
+	if _status_label == null:
+		return
+	var k: int = maxi(1, int(round(vw / 320.0))) if _hud_is_dos else 0
+	if k != _msg_scale:
+		_msg_scale = k
+		_status_font = _load_fnt("FONT0004.FNT", k) if k > 0 else _load_fnt("FONT0005.FNT", 2)
+		if _status_font != null:
+			_status_label.add_theme_font_override("font", _status_font)
+			_status_label.add_theme_font_size_override("font_size", _status_font.fixed_size)
+	if k > 0:
+		_status_label.position = Vector2(4.0 * k, 3.0 * k)
+		_status_label.add_theme_color_override("font_color", Color8(55, 235, 55))
+		_status_label.add_theme_color_override("font_shadow_color", Color8(18, 18, 21))
+		_status_label.add_theme_constant_override("shadow_offset_x", k)
+		_status_label.add_theme_constant_override("shadow_offset_y", k)
+	else:
+		_status_label.position = Vector2(8, 36)
+		_status_label.add_theme_color_override("font_color", Color(1, 1, 1))
+		_status_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0))
+		_status_label.add_theme_constant_override("shadow_offset_x", 2)
+		_status_label.add_theme_constant_override("shadow_offset_y", 2)
 
 ## A read-out Label that fills its parent panel box.
 func _hud_box_label() -> Label:
@@ -4614,8 +4505,8 @@ var _hud_mode: int = 0
 ## Swap the HUD between the foot bar and a vehicle cockpit.
 func _set_hud_mode(v: int) -> void:
 	_hud_mode = v
-	if _hud_panel != null:
-		_hud_panel.visible = v == 0 or String(VEH_PANELS[clampi(v, 0, VEH_PANELS.size() - 1)]).is_empty()
+	if _hud != null:
+		_hud.visible = v == 0 or String(VEH_PANELS[clampi(v, 0, VEH_PANELS.size() - 1)]).is_empty()
 	if _veh_layer == null:
 		_veh_layer = CanvasLayer.new()
 		_veh_layer.layer = 49

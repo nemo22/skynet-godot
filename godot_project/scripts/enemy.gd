@@ -84,10 +84,12 @@ const MACHINE_MARGIN: float = 60.0
 ## it closes on the player and detonates. How far past `near` the
 ## contact counts, and the blast it (and a dormant trap) throws.
 const KAMIKAZE_REACH: float = 40.0
-const BLAST_RADIUS: float = 250.0
-const BLAST_DAMAGE: float = 30.0
-const MACHINE_HIT_DAMAGE: float = 9.0
-const MACHINE_HIT_INTERVAL: float = 1.9
+## A machine's claw on the soldier: DOS 0x122854 takes 4 points for every
+## collision probe that finds him, every frame he stays in reach (no
+## cooldown) — a grip that empties the bar in seconds. Here: 4 points
+## each physics step the posed claw touches him.
+const MACHINE_HIT_DAMAGE: float = 4.0          # DOS points
+const MACHINE_HIT_INTERVAL: float = 0.0
 ## Wander leg length / interval when the player is not perceived.
 const WANDER_RADIUS: float = 1200.0
 ## Max uphill slope a walker takes (radians). Only the terminator family
@@ -937,7 +939,7 @@ func _tick_machine(m: Dictionary, delta: float, sense: Dictionary) -> void:
 	var tip: Vector3 = node.global_transform * tips[fi]
 	if tip.distance_to(_player.global_position + Vector3(0.0, 40.0, 0.0)) <= MACHINE_MARGIN:
 		m["cd"] = MACHINE_HIT_INTERVAL
-		_player.take_damage(MACHINE_HIT_DAMAGE, false)   # contact: no DIFFICULTY (0x12282f)
+		_player.take_dos_damage(MACHINE_HIT_DAMAGE, false)   # contact: no DIFFICULTY (0x12282f)
 		Audio.play_sfx_3d("HIT2.RAW", tip, -4.0)
 
 func _has_segment_node(n: Node3D) -> bool:
@@ -1317,8 +1319,10 @@ func _is_kamikaze() -> bool:
 		_kamikaze = 1 if (Array(_t.get("fire", [])).is_empty() and _segs.is_empty()) else 0
 	return _kamikaze == 1
 
-## Dormant trap / flying mine: detonate (DOS state 12 — effect + sound
-## 0x26) and throw a blast at the player.
+## Dormant trap / flying mine: DOS state 12 does ObjHit(self, HP + 1) —
+## the machine kills itself (effect + sound 0x26), and what hurts is the
+## ordinary death blast every robot throws (_death_blast, 75). The port
+## gave it a blast of its own worth 300 points until 2026-09-15.
 func _detonate_trap() -> void:
 	if _state == State.DEAD:
 		return
@@ -1327,20 +1331,11 @@ func _detonate_trap() -> void:
 	Audio.play_id_3d(DEATH_SOUND_ID, centre, -2.0)
 	Audio.play_sfx_3d("EXPLO1.RAW", centre, -2.0)
 	_spawn_explosion(centre, _body_size * 0.55)
-	_blast(centre)
 	_fling_parts(centre)
+	if not Net.active and is_inside_tree():
+		get_tree().create_timer(DEATH_BLAST_DELAY, false).timeout.connect(
+			Callable(get_script(), "_death_blast").bind(get_tree(), global_position))
 	queue_free()
-
-## Explosion damage on the player: full at the centre, nothing at
-## BLAST_RADIUS. Without this a mine that reaches the player just puffs.
-func _blast(centre: Vector3) -> void:
-	if _player == null or not is_instance_valid(_player):
-		return
-	var d: float = centre.distance_to(
-		_player.global_position + Vector3(0.0, 40.0, 0.0))
-	if d >= BLAST_RADIUS:
-		return
-	_player.take_damage(BLAST_DAMAGE * (1.0 - d / BLAST_RADIUS))
 
 ## Destroy the machine: DOS EnemyKill — instant explosion plus the
 ## type's wreck parts flung ballistically.

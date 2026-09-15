@@ -43,6 +43,7 @@
 extends RefCounted
 
 const Explosion := preload("res://scripts/explosion.gd")
+const Projectile := preload("res://scripts/projectile.gd")
 
 signal teleport_requested(target_map: int, marker_set: int)
 ## A destroyed object drops an item (FUN_00124293 → FUN_00124119).
@@ -1331,14 +1332,14 @@ func _advance_destructible(e: MapFile.Entity, damage: float) -> bool:
 			if node != null and is_instance_valid(node) \
 					and node is MeshInstance3D and meshes[new_stage] != null:
 				(node as MeshInstance3D).mesh = meshes[new_stage]
-				_blast(node, new_stage == meshes.size() - 1)
+				_blast(node, new_stage == meshes.size() - 1, absi(e.destroy_param))
 			if new_stage == meshes.size() - 1:
 				_spent[e.file_off] = true
 	elif want >= 1:
 		# No stage meshes — vanish (rubble piles etc.).
 		_spent[e.file_off] = true
 		if node != null and is_instance_valid(node):
-			_blast(node, true)
+			_blast(node, true, absi(e.destroy_param))
 			node.visible = false
 			_disable_collision(node)
 	return true
@@ -1422,12 +1423,7 @@ func _destroy(e: MapFile.Entity) -> void:
 					at += Vector3(randf_range(-0.5, 0.5) * spread, 0.0, randf_range(-0.5, 0.5) * spread)
 				Explosion.spawn(scene, at, radius * 1.6, int(s) >> 7)
 				k += 1
-		var pl := node.get_tree().get_first_node_in_group("player")
-		if pl is Node3D and pl.has_method("take_damage"):
-			var dist: float = (pl as Node3D).global_position.distance_to(centre)
-			var reach: float = radius * 2.5
-			if dist < reach:
-				pl.take_damage(45.0 * (1.0 - dist / reach))
+		_radial_blast(node, centre, absi(e.destroy_param))
 	# Gone from the world, whether or not it was in a tree to blow up in.
 	if alive and not _destr.has(e.file_off):
 		node.visible = false
@@ -1435,9 +1431,10 @@ func _destroy(e: MapFile.Entity) -> void:
 	if drop >= 0:
 		drop_requested.emit(Vector3(centre.x, origin.y, centre.z), drop)
 
-## Explosion at a destructible's centre; the final stage also hurts
-## the player nearby (DOS cars and generators blow up in your face).
-func _blast(node: Node3D, final: bool) -> void:
+## Explosion at a destructible's centre; the final stage also throws the
+## object's own blast (`strength`, the i16 at its link record +1 — the
+## cars of MAP.210 carry 200-300, the gas tanker 600, a crate nothing).
+func _blast(node: Node3D, final: bool, strength: int = 0) -> void:
 	var aabb: AABB = (node as MeshInstance3D).get_aabb() if node is MeshInstance3D else AABB()
 	var centre: Vector3 = node.global_transform * (aabb.position + aabb.size * 0.5)
 	var radius: float = maxf(aabb.size.length() * 0.35, 120.0)
@@ -1448,12 +1445,31 @@ func _blast(node: Node3D, final: bool) -> void:
 	if scene != null:
 		Explosion.spawn(scene, centre, radius * (1.6 if final else 1.0))
 	if final:
-		var pl := node.get_tree().get_first_node_in_group("player")
-		if pl is Node3D and pl.has_method("take_damage"):
-			var d: float = (pl as Node3D).global_position.distance_to(centre)
-			var reach: float = radius * 2.5
-			if d < reach:
-				pl.take_damage(45.0 * (1.0 - d / reach))
+		_radial_blast(node, centre, strength)
+
+## A dying object's blast, the DOS radial one (FUN_00124386 through
+## Projectile.dos_blast): `s` points at the centre + 40, nothing past half
+## of it — on the player (from his DOS point, with line of sight), on the
+## robots (ObjHit) and on the other destructibles in reach, which is how a
+## row of cars goes up one after another. Until 2026-09-15 the port dealt
+## a flat 450 points to the player from every wreck, crates included.
+func _radial_blast(source: Node3D, centre: Vector3, s: int) -> void:
+	if s <= 0 or not source.is_inside_tree():
+		return
+	var tree: SceneTree = source.get_tree()
+	Projectile.blast_player(centre, float(s), float(s), null, tree)
+	for e in tree.get_nodes_in_group("enemy"):
+		if e is Node3D and e.has_method("obj_hit"):
+			var d: float = e.blast_distance(centre) if e.has_method("blast_distance") \
+				else (e as Node3D).global_position.distance_to(centre)
+			var bd: float = Projectile.dos_blast(float(s), d)
+			if bd > 0.0:
+				e.call("obj_hit", bd)
+	for h in tree.get_nodes_in_group("hittable"):
+		if h is Node3D and h != source and h.has_method("take_damage"):
+			var bh: float = Projectile.dos_blast(float(s), (h as Node3D).global_position.distance_to(centre))
+			if bh > 0.0:
+				h.call_deferred("take_damage", bh)
 
 static func _disable_collision(node: Node3D) -> void:
 	for c in node.get_children():

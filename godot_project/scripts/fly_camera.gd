@@ -96,7 +96,8 @@ const KEY_TURN_RATE: float = 2.4
 const KEY_LOOK_RATE: float = 1.5
 ## A hand-thrown grenade (RMB) leaves the hand far slower than the
 ## launcher's round (Grenade.SPEED) — a lob, not a shot.
-const HAND_GRENADE_SPEED: float = 1500.0
+const HAND_GRENADE_SPEED: float = 500.0    # DOS thrown records: 500 u/s ahead …
+const THROW_LIFT: float = 392.0            # … and 392 u/s straight up
 const STEP_PROBE: float = 14.0                 # minimum forward advance
 
 # Weapon roster — DOS records 0..12 from `DAT_0004361c` in their
@@ -131,7 +132,7 @@ var _weapons: Array = [
 	{"name": "UZI",              "kind": "bullet",  "dmg": 10.0,  "rate": 5,  "pool": 0,  "cost": 1,  "snd": "SHOTS5.RAW",   "sel": 9,  "dry": 10, "cfa": "WEAPON01.CFA", "animspd": 16, "vx": 156},
 	{"name": "ASSAULT RIFLE",    "kind": "bullet",  "dmg": 20.0,  "rate": 4,  "pool": 0,  "cost": 3,  "snd": "SHOTS2.RAW",   "sel": 9,  "dry": 10, "cfa": "WEAPON02.CFA", "animspd": 16, "vx": 154},
 	{"name": "MACHINE GUN",      "kind": "bullet",  "dmg": 20.0,  "rate": 8,  "pool": 0,  "cost": 4,  "snd": "FASTGUN2.RAW", "sel": 9,  "dry": 10, "cfa": "WEAPON03.CFA", "animspd": 16, "vx": 154},
-	{"name": "SHOTGUN",          "kind": "shotgun", "dmg": 50.0,  "rate": 1,  "pool": 1,  "cost": 1,  "snd": "SHTGUN.RAW",   "sel": 9,  "dry": 10, "cfa": "WEAPON04.CFA", "animspd": 12, "vx": 64},
+	{"name": "SHOTGUN",          "kind": "shotgun", "dmg": 50.0,  "rate": 1,  "pool": 1,  "cost": 1,  "snd": "SHTGUN.RAW",   "sel": 9,  "dry": 10, "cfa": "WEAPON04.CFA", "animspd": 12, "vx": 64, "blast": 50.0},
 	{"name": "GRENADE LAUNCHER", "kind": "grenade", "dmg": 200.0, "rate": 1,  "pool": 2,  "cost": 1,  "snd": "GRNLAUN2.RAW", "sel": 9,  "dry": 10, "cfa": "WEAPON05.CFA", "animspd": 8,  "vx": 156, "splash": 256.0},
 	{"name": "ROCKET LAUNCHER",  "kind": "rocket",  "dmg": 400.0, "rate": 1,  "pool": 3,  "cost": 1,  "snd": "ROCKET2.RAW",  "sel": 9,  "dry": 10, "cfa": "WEAPON06.CFA", "animspd": 12, "vx": 175, "splash": 512.0},
 	{"name": "LASER RIFLE",      "kind": "laser",   "dmg": 25.0,  "rate": 6,  "pool": 4,  "cost": 2,  "snd": "LASER1.RAW",   "sel": 17, "dry": 16, "cfa": "WEAPON07.CFA", "animspd": 13, "vx": 168},
@@ -143,7 +144,7 @@ var _weapons: Array = [
 	# 0x141fc8 sets record 12's owned bit and selects it): an UZI with the
 	# 9999-round pool and a 20/s cadence. STRINGS.PRS calls it MINI
 	# ROCKET; the player knows it as the red super uzi.
-	{"name": "SUPER UZI",        "kind": "bullet",  "dmg": 50.0,  "rate": 20, "pool": 12, "cost": 1,  "snd": "SHOTS5.RAW",   "sel": 9,  "dry": 10, "cfa": "WEAPON12.CFA", "animspd": 16, "vx": 156},
+	{"name": "SUPER UZI",        "kind": "bullet",  "dmg": 50.0,  "rate": 20, "pool": 12, "cost": 1,  "snd": "SHOTS5.RAW",   "sel": 9,  "dry": 10, "cfa": "WEAPON12.CFA", "animspd": 16, "vx": 156, "blast": 50.0},
 	# Vehicle guns (DOS records 20/22 jeep, 24/25 HK — owned bit 2 = vehicle
 	# only, no viewmodel). Ammo types 18 (laser2, -40), 5 (rocket, -400,
 	# splash 512), 22 (laser1, -75). Pool 10 = vehicle energy 1000/2000
@@ -212,11 +213,17 @@ const VEHICLE_WEAPONS: Dictionary = {1: [13, 14], 2: [15, 16]}
 ## was stuck with whatever it started with. The port cycles it with the
 ## `0` key and the middle mouse button.
 const THROWABLES: Array = [
-	{"name": "PIPE BOMB",     "pool": 5, "dmg": 150.0, "splash": 220.0, "fuse": 2.2, "speed": 2600.0},
-	{"name": "MOLOTOV",       "pool": 6, "dmg": 60.0,  "splash": 190.0, "fuse": 3.0, "speed": 2400.0, "burst": true, "fire": true},
-	{"name": "GRENADE",       "pool": 2, "dmg": 200.0, "splash": 256.0, "fuse": 2.5, "speed": 2200.0},
-	{"name": "CANISTER BOMB", "pool": 8, "dmg": 400.0, "splash": 520.0, "fuse": 2.5, "speed": 2000.0},
-	{"name": "SATCHEL",       "pool": 9, "dmg": 700.0, "splash": 760.0, "fuse": 4.0, "speed": 1800.0},
+	# DOS records 14-18 (2026-09-15 audit): the ammo's damage is the direct
+	# hit AND the blast strength (Projectile.dos_blast — the reach is half
+	# the strength + 40, capped at 290); there is no fuse, they go off on
+	# the first thing they touch; thrown at 500 u/s ahead and 392 up (the
+	# satchel is dropped, 50 ahead). `splash` only sizes the deathmatch
+	# report and the effect.
+	{"name": "PIPE BOMB",     "pool": 5, "dmg": 200.0,   "splash": 140.0, "speed": 500.0},
+	{"name": "MOLOTOV",       "pool": 6, "dmg": 125.0,   "splash": 102.0, "speed": 500.0},
+	{"name": "GRENADE",       "pool": 2, "dmg": 200.0,   "splash": 140.0, "speed": 500.0},
+	{"name": "CANISTER BOMB", "pool": 8, "dmg": 800.0,   "splash": 290.0, "speed": 500.0},
+	{"name": "SATCHEL",       "pool": 9, "dmg": 15000.0, "splash": 290.0, "speed": 50.0},
 ]
 const THROW_DEFAULT: int = 1          # MOLOTOV, as the DOS default
 var _throw_idx: int = THROW_DEFAULT
@@ -446,7 +453,7 @@ func set_vehicle(v: int) -> void:
 		_foot_owned = _owned.duplicate()
 		_foot_weapon = _weapon_idx
 	vehicle = v
-	veh_hull = VEH_HULL_POINTS               # a fresh ride, a whole hull
+	veh_hull = hull_points(v)                # a fresh ride, a whole hull
 	_veh_speed = 0.0
 	_wheel = 0.0
 	_tilt_pitch = 0.0
@@ -661,7 +668,7 @@ func _ammo_for(idx: int) -> int:
 		return -1                          # a scanner has no rounds to show
 	var pool: int = int(_weapons[idx].get("pool", -1))
 	if pool < 0:
-		return 99
+		return -1                          # no pool, no count (DOS 0x132154 skips it)
 	return int(_pools.get(pool, 0))
 
 ## Mirror the active weapon's name/ammo into the HUD-facing fields.
@@ -784,10 +791,10 @@ func _physics_process(delta: float) -> void:
 	if _fire_cd > 0.0:
 		_fire_cd -= delta
 	_regen_vehicle_energy(delta)
-	# The DOS shield recharges by itself, faster on the easier levels
-	# (difficulty table field 4, 0.025 / 0.015 / 0.0125 per second).
-	if armor < 1.0 and health > 0.0:
-		armor = minf(armor + Settings.armor_regen() * delta, 1.0)
+	# (The DOS armour-regen routine, 0x1227f0 with the difficulty table's
+	# fourth column, has no caller: armour only comes back at a mission's
+	# start, on the next map and from pickups. The port let it recharge
+	# until 2026-09-15.)
 	if ui_fire:
 		ui_fire = false
 		_shoot()
@@ -1216,7 +1223,7 @@ const SWIM_FLOAT_BACK: float = 380.0   # push back under the surface
 const SWIM_DRAG: float = 7.0
 const SWIM_ENTRY_DAMP: float = 0.3     # a fall is broken by the water
 const HEAD_ROOM: float = 5.0           # DOS "-5" head-under margin
-const AIR_SECONDS: float = 24.0        # DOS 0x347 ticks at 35 Hz
+const AIR_SECONDS: float = 12.0        # DOS 840 ticks at 70 Hz (0x12477e)
 const DROWN_DPS: float = 85.0          # DOS 0x5500 >> 8 per second
 const SND_SPLASH: int = 115
 const SND_DROWN: int = 116
@@ -1359,10 +1366,25 @@ func _walk(delta: float, fwd_in: float, str_in: float) -> void:
 	velocity.z = horiz.z * speed
 	var before := global_position
 	var on_floor_before: bool = is_on_floor()
+	var fall_v: float = -velocity.y                # how fast he comes down
 	move_and_slide()
+	if not on_floor_before and is_on_floor():
+		_land(fall_v)
 	if on_floor_before and horiz.length() > 0.1 and is_on_wall():
 		_step_up(horiz, speed * delta)
 	_track_stuck(delta, horiz.length() > 0.1, global_position.distance_to(before))
+
+## A fall (DOS 0x122876): landing at `v` u/s costs (v - 396) x 1113 / 256
+## points past 396 u/s — a jump off a roof hurts, a stair does not. Not in
+## the water (the entry damps the fall, _water_check) and never in a
+## vehicle. The port had no fall damage at all until 2026-09-15.
+const FALL_SAFE_SPEED: float = 396.0
+const FALL_POINTS_PER_UNIT: float = 1113.0 / 256.0
+
+func _land(v: float) -> void:
+	if v <= FALL_SAFE_SPEED or in_water or vehicle != VEH_FOOT or noclip:
+		return
+	take_dos_damage((v - FALL_SAFE_SPEED) * FALL_POINTS_PER_UNIT, false)
 
 ## Stair step: when a wall stops grounded movement, try the same motion
 ## from up to STEP_HEIGHT higher and settle back down onto a walkable
@@ -1530,7 +1552,7 @@ const _KIND_COLOR: Dictionary = {
 	"plasma":  Color(0.45, 0.7, 1.0),      # cool blue
 }
 
-const MELEE_RANGE: float = 180.0           # close-quarters pipe reach
+const MELEE_RANGE: float = 120.0           # the pipe's reach, weapon record 0
 
 ## Fire the current weapon. Dispatches on `kind`:
 ##   bullet/shotgun        → hitscan ray + tracer + muzzle flash, and the
@@ -1697,6 +1719,31 @@ func _shoot(idx: int = -1) -> void:
 			_deal(n, dmg)
 		else:
 			Explosion.spawn(fx_parent, endpoint, 40.0, IMPACT_BANK_BULLET)
+		# The shotgun and the super uzi fire ammo with a blast of their own
+		# (DOS records 4 and 12: a direct 50 and a radial 50 where it lands).
+		var bs: float = float(w.get("blast", 0.0))
+		if bs > 0.0:
+			_hitscan_blast(endpoint, bs, n)
+
+## The DOS radial blast (Projectile.dos_blast) at a hitscan's impact, over
+## everything in reach but the thing the round itself struck (that one
+## took the direct hit).
+func _hitscan_blast(at: Vector3, s: float, struck: Node) -> void:
+	if Net.active:
+		return
+	for e in get_tree().get_nodes_in_group("enemy"):
+		if e is Node3D and e != struck and e.has_method("take_damage"):
+			var d: float = e.blast_distance(at) if e.has_method("blast_distance") \
+				else (e as Node3D).global_position.distance_to(at)
+			var bd: float = Projectile.dos_blast(s, d)
+			if bd > 0.0:
+				e.take_damage(bd)
+	for h in get_tree().get_nodes_in_group("hittable"):
+		if h is Node3D and h != struck and h.has_method("take_damage"):
+			var bh: float = Projectile.dos_blast(s, (h as Node3D).global_position.distance_to(at))
+			if bh > 0.0:
+				h.take_damage(bh)
+	Projectile.blast_player(at, s, s, self, get_tree())
 
 ## Damage `n` from this player's shot — deathmatch actors take the
 ## attributed form (their `net_damage` reports the hit to the server).
@@ -1760,13 +1807,15 @@ func _throw_secondary() -> void:
 	_fire_cd = 0.6
 	var fwd: Vector3 = aim_dir()
 	var muzzle: Vector3 = _muzzle_point(THROW_MUZZLE)   # the left hand
-	var arc: Vector3 = (fwd + Vector3.UP * 0.35).normalized()
+	# DOS: the item leaves along the view at the record's speed with
+	# THROW_LIFT u/s added straight up (0x125caf).
+	var vel: Vector3 = fwd * float(t.get("speed", HAND_GRENADE_SPEED)) + Vector3.UP * THROW_LIFT
+	var arc: Vector3 = vel.normalized()
 	if Net.active:
 		Net.send_fire(5, muzzle, arc)            # drawn as a launcher shot
 	var g := Grenade.new()
 	get_tree().current_scene.add_child(g)
-	g.setup(muzzle, arc, float(t["dmg"]), float(t["splash"]), self,
-		float(t.get("speed", HAND_GRENADE_SPEED)), t)
+	g.setup(muzzle, arc, float(t["dmg"]), float(t["splash"]), self, vel.length(), t)
 
 ## Step to the next thrown item that still has rounds. Returns false when
 ## the player is carrying none at all. Bound to `0` and the middle mouse
@@ -1866,11 +1915,15 @@ const DOS_HEALTH_POINTS: float = 1000.0
 ## is left after the hit keeps that fraction of it off the soldier.
 const ARMOR_COST_PER_POINT: float = 82.0 / 65536.0
 ## In a vehicle (0x130c4a) the soldier is not hurt at all: the hull takes
-## every hit, 1:1, from its own pool (0x130caa; 1000 for the jeep, and the
-## flag that picks 1500 is not decoded — both take 1000 here), and the
-## ARMOR bar shows the hull (0x13231d). At zero the ride is over.
+## every hit, 1:1, from its own pool (0x130caa: 1000 for vehicle kind 1,
+## 1500 for kind 2 — the jeep and the HK, in the order the port assumes),
+## and the ARMOR bar shows the hull (0x13231d). At zero the ride is over.
 const VEH_HULL_POINTS: float = 1000.0
+const VEH_HULL_POINTS_HK: float = 1500.0
 var veh_hull: float = VEH_HULL_POINTS
+
+static func hull_points(v: int) -> float:
+	return VEH_HULL_POINTS_HK if v == VEH_HK else VEH_HULL_POINTS
 
 ## Damage in DOS points (see DOS_HEALTH_POINTS): what the DOS tables and
 ## formulas say, straight. `scaled` = a direct weapon hit (DIFFICULTY
@@ -1929,7 +1982,7 @@ func take_damage(amount: float, scaled: bool = true) -> void:
 ## vehicle (DOS 0x13231d), both 0..1.
 func armor_gauge() -> float:
 	if vehicle != VEH_FOOT:
-		return clampf(veh_hull / VEH_HULL_POINTS, 0.0, 1.0)
+		return clampf(veh_hull / hull_points(vehicle), 0.0, 1.0)
 	return clampf(armor, 0.0, 1.0)
 
 ## Network game: environmental damage (take_damage with `scaled` false)

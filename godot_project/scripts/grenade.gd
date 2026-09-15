@@ -18,7 +18,6 @@ extends Node3D
 
 const Explosion  := preload("res://scripts/explosion.gd")
 const Projectile := preload("res://scripts/projectile.gd")
-const BurningPool := preload("res://scripts/burning_pool.gd")
 
 ## Playtest 2026-09-03: the DOS grenade flew "more in a straight
 ## line than a ballistic curve" — 2400/2400 dropped 1200 u per 2400 u of
@@ -45,12 +44,12 @@ var _damage: float = 200.0
 var _splash: float = 256.0
 var _owner: Node = null
 var _exploded: bool = false
-## Per-item overrides from fly_camera.THROWABLES: `fuse` seconds,
-## `burst` = shatter on the first thing it touches instead of bouncing
-## (the molotov's bottle), `fire` = leave a pool of burning fuel.
+## Per-item overrides from fly_camera.THROWABLES: `fuse` seconds (only
+## the launcher's shell has one to run out), `burst` = shatter on the
+## first thing it touches; a thrown item (`_contact`) goes off on anything.
 var _fuse: float = FUSE_TIME
 var _burst: bool = false
-var _fire: bool = false
+var _contact: bool = false
 ## A replicated copy of somebody else's grenade: flies and bangs, hurts
 ## nobody on this machine (the thrower's copy does the damage).
 var visual_only: bool = false
@@ -80,7 +79,7 @@ func setup(from: Vector3, dir: Vector3, damage: float, splash: float,
 	_fuse = float(cfg.get("fuse", FUSE_TIME))
 	_life = _fuse
 	_burst = bool(cfg.get("burst", false))
-	_fire = bool(cfg.get("fire", false))
+	_contact = not cfg.is_empty()              # a thrown item: off on contact
 	var tex := sprite_texture()
 	if tex != null:
 		var spr := Sprite3D.new()
@@ -132,7 +131,11 @@ func _physics_process(delta: float) -> void:
 			var n: Node = c
 			while n != null and not n.has_method("take_damage") and not n.has_method("net_damage") and not n.is_in_group("dm_vehicle"):
 				n = n.get_parent()
-			if _burst or (n != null and n != _owner and n is Node3D and _is_target(n)):
+			# DOS: the impact callback runs on the first thing struck, the
+			# ground and the walls included — a thrown item never bounces
+			# (2026-09-15 audit; the fuse and the bounce were the port's).
+			if _burst or (n != null and n != _owner and n is Node3D and _is_target(n)) \
+					or _contact:
 				_detonate(hit["position"])
 				return
 			# Off a wall it bounces; on the floor it drops dead and skids a
@@ -189,11 +192,9 @@ func _detonate(at: Vector3) -> void:
 			if bd > 0.0:
 				e.take_damage(bd)
 	Projectile.blast_player(at, _damage, _splash, _owner, get_tree())
+	# (No pool of burning fuel: DOS v1.00 has none — the molotov's fire is
+	# eleven sparks and the effect sprite's own animation.)
 	var scene := get_tree().current_scene
 	if scene != null:
 		Explosion.spawn(scene, at, 280.0, IMPACT_BANK)
-		if _fire:
-			var bp := BurningPool.new()
-			scene.add_child(bp)
-			bp.setup(at, _splash, _damage, _owner)
 	queue_free()
