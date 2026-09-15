@@ -277,6 +277,14 @@ func _maybe_import() -> void:
 			print("[menu] map scene: %s" % (p if not p.is_empty() else "FAILED"))
 			get_tree().quit(0 if not p.is_empty() else 1)
 			return
+	# `--import-missions`: bake only the mission scenes (a whole mission as
+	# one Godot scene) and quit. The full conversion is minutes of work a
+	# change to the mission bake alone does not need.
+	if "--import-missions" in args:
+		var want: int = Assets.mission_starts().size()
+		var n: int = await Assets.import_missions()
+		get_tree().quit(0 if n == want else 1)
+		return
 	# `--level-scene=MAP.210`: bake one level scene (the world in Godot
 	# format) and quit. The editor dock uses this.
 	for a in args:

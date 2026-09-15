@@ -49,6 +49,7 @@ const CFAFile    := preload("res://scripts/loaders/cfa_file.gd")
 const FramePack  := preload("res://scripts/loaders/frame_pack.gd")
 const MapScene   := preload("res://scripts/editor/map_scene.gd")
 const LevelScene := preload("res://scripts/level_scene.gd")
+const MissionScene := preload("res://scripts/mission_scene.gd")
 
 ## Bump whenever a loader changes its output.
 ## 10 (2026-09-14): animation frames share their materials, materials
@@ -61,10 +62,13 @@ const CACHE_VERSION: int = 10
 ## check.
 const SAVE_FLAGS: int = ResourceSaver.FLAG_COMPRESS | ResourceSaver.FLAG_CHANGE_PATH
 
-## The cache's subfolders — `kind` of fetch(), plus the map scenes. A wipe
-## touches these and nothing else.
+## The cache's subfolders — `kind` of fetch(), plus the map and mission
+## scenes. A wipe touches these and nothing else.
 const KINDS: PackedStringArray = ["tex", "mesh", "frames", "terrain", "sfx",
-	"cfa", "cfa_hi", "fx", "shape", "music", "maps"]
+	"cfa", "cfa_hi", "fx", "shape", "music", "maps", "missions"]
+## Folders of KINDS that hold whole SCENES, saved and checked by their own
+## code (level_scene.gd, mission_scene.gd) rather than served by fetch().
+const SCENE_KINDS: PackedStringArray = ["maps", "missions"]
 ## File kinds a wipe deletes inside those folders.
 const WIPE_EXTS: PackedStringArray = ["res", "scn", "txt", "tmp"]
 const VERSION_FILE := "VERSION"
@@ -723,7 +727,7 @@ func safe_key(key: String) -> String:
 ## become a path.
 func _path(kind: String, key: String) -> String:
 	var k := safe_key(key)
-	if kind == "maps" or not kind in KINDS or k.is_empty():
+	if kind in SCENE_KINDS or not kind in KINDS or k.is_empty():
 		var tag := kind + "/" + key
 		if not _refused.has(tag):
 			_refused[tag] = true
@@ -738,7 +742,7 @@ func has_cached(kind: String, key: String) -> bool:
 	if not enabled:
 		return false
 	var k := safe_key(key)
-	if kind == "maps" or not kind in KINDS or k.is_empty():
+	if kind in SCENE_KINDS or not kind in KINDS or k.is_empty():
 		return false
 	var p := "%s/%s/%s.res" % [root, kind, k]
 	return _mem.has(p) or (FileAccess.file_exists(p) and is_trusted(p, kind in LEAF_KINDS))
@@ -1226,6 +1230,97 @@ func level_scene(map_name: String) -> String:
 	return p if LevelScene.is_current(p) else ""
 
 # ---------------------------------------------------------------------
+# Mission scenes — a whole mission as one scene
+# ---------------------------------------------------------------------
+## Where MISSION.<start>.scn lives (scripts/mission_scene.gd).
+func mission_scene_path(start: int) -> String:
+	return MissionScene.scene_path(start)
+
+## The campaign missions a mission scene is baked for. Future Shock keeps
+## the per-map runtime (docs/m2_mission_scene_plan.md).
+func mission_starts() -> PackedInt32Array:
+	return MissionScene.STARTS if SkynetPaths.game != "shock" \
+		else PackedInt32Array()
+
+## Bake MISSION.<start>.scn when it is missing, stale or not this
+## installation's, and answer where it is ("" when it cannot be had).
+## `shared` is the census's parsed-map cache: a caller doing several
+## missions hands the same one round, so the interiors they have in common
+## are read once. The conversion asks for this — it wants the file, not
+## the resource.
+func build_mission_scene(start: int, shared: Dictionary = {}) -> String:
+	if not enabled:
+		return ""
+	var p := MissionScene.scene_path(start)
+	if p.is_empty():
+		return ""
+	# import_all keeps the map archive open; on its own this opens one.
+	var bsa: BSAReader = _readers.get(SkynetPaths.map_archive)
+	var mine: bool = bsa == null
+	if mine:
+		bsa = BSAReader.new()
+		if not bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive),
+				SkynetPaths.variant):
+			push_warning("[assets] cannot open %s for mission %d"
+				% [SkynetPaths.map_archive, start])
+			return ""
+	if MissionScene.is_current(start, bsa):
+		hits += 1
+	else:
+		misses += 1
+		p = MissionScene.save(start, bsa, shared)
+	if mine:
+		bsa.close()
+	if p.is_empty() or not FileAccess.file_exists(p):
+		return ""
+	if not is_trusted(p):
+		_note_untrusted(p)
+		return ""
+	return p
+
+## The mission scene itself, baked first when it has to be — what step 4
+## of docs/m2_mission_scene_plan.md starts a mission from.
+func mission_scene(start: int) -> PackedScene:
+	var p := build_mission_scene(start)
+	if p.is_empty():
+		return null
+	return ResourceLoader.load(p, "PackedScene",
+		ResourceLoader.CACHE_MODE_REUSE) as PackedScene
+
+## Only the mission scenes (`--import-missions`). A mission bake needs
+## nothing of the conversion but the level scenes of its own zones, and it
+## asks for those itself — so this is the short way round for a change to
+## the mission bake alone. Returns how many are ready.
+func import_missions(progress: Callable = Callable()) -> int:
+	if not enabled or _importing:
+		return 0
+	_importing = true
+	_open_readers()
+	var starts := mission_starts()
+	var shared: Dictionary = {}
+	var t0 := Time.get_ticks_msec()
+	var done: int = 0
+	var ready_now: int = 0
+	for s in starts:
+		var t1 := Time.get_ticks_msec()
+		var ok: bool = not build_mission_scene(int(s), shared).is_empty()
+		done += 1
+		if ok:
+			ready_now += 1
+		print("[assets] MISSION.%03d %s in %.1f s" % [int(s),
+			"ready" if ok else "FAILED", (Time.get_ticks_msec() - t1) / 1000.0])
+		if progress.is_valid():
+			progress.call(done, starts.size(), "MISSION.%03d" % int(s))
+		if is_inside_tree():
+			await get_tree().process_frame
+	_close_readers()
+	_importing = false
+	trust_save()
+	print("[assets] %d of %d mission scenes in %.1f s"
+		% [ready_now, done, (Time.get_ticks_msec() - t0) / 1000.0])
+	return ready_now
+
+# ---------------------------------------------------------------------
 # Full conversion pass
 # ---------------------------------------------------------------------
 ## Convert everything the game can use up front. `progress` receives
@@ -1304,6 +1399,15 @@ func import_all(progress: Callable = Callable(), map_scenes: bool = false) -> in
 				if map_scenes:
 					jobs.append([mn, func() -> void: map_scene(mn)])
 				jobs.append([mn + " (level)", func() -> void: level_scene(mn)])
+	# The missions come last: one holds INSTANCES of the level scenes above
+	# (scripts/mission_scene.gd), so every zone it stands on has to be baked
+	# before it. They share one census cache — the campaign's interiors are
+	# reached from several missions apiece.
+	var census: Dictionary = {}
+	for s in mission_starts():
+		var ms: int = int(s)
+		jobs.append(["MISSION.%03d" % ms,
+			func() -> void: build_mission_scene(ms, census)])
 
 	var t0 := Time.get_ticks_msec()
 	var last_yield := Time.get_ticks_usec()

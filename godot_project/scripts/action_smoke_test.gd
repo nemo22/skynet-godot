@@ -21,6 +21,8 @@ const MapMeshN := preload("res://scripts/editor/map_mesh.gd")
 const MapEntityRecR := preload("res://scripts/editor/map_entity_rec.gd")
 const LevelScene := preload("res://scripts/level_scene.gd")
 const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
+const MissionScene := preload("res://scripts/mission_scene.gd")
+const MissionCensus := preload("res://tools/mission_census.gd")
 
 const CAMPAIGN: Array = [
 	"MAP.210", "MAP.220", "MAP.230", "MAP.240",
@@ -59,6 +61,7 @@ func _ready() -> void:
 	_run_map_scene_checks()
 	_run_map_writer_checks()
 	_run_level_scene_checks()
+	_run_mission_scene_checks()
 	print("[smoke] %s (%d failures)"
 		% ["ALL PASS" if _fails == 0 else "FAILED", _fails])
 	get_tree().quit(1 if _fails > 0 else 0)
@@ -1094,6 +1097,63 @@ func _run_level_scene_checks() -> void:
 			compared += 1
 	_check(compared > 0 and worst_pos < 0.5 and worst_rot < 0.01,
 		"%d mover animations match the action system (pos %.3f u, basis %.4f)" % [compared, worst_pos, worst_rot])
+	root.free()
+
+## The mission scene (scripts/mission_scene.gd): mission 1 held as one
+## scene — its zones on the +X grid, its doorways as portals and the
+## re-authored world as phases.
+func _run_mission_scene_checks() -> void:
+	var mp: String = MissionScene.scene_path(210)
+	_check(not mp.is_empty(), "the cache has a place for mission scenes")
+	if mp.is_empty():
+		return
+	# A fresh bake every run: this is the code under test.
+	if FileAccess.file_exists(mp):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(mp))
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(LevelScene.sidecar_path(mp)))
+		Assets.trust_forget(mp)
+	var ps: PackedScene = Assets.mission_scene(210)
+	_check(ps != null, "MISSION.210 is baked and loads (%s)" % mp.get_file())
+	if ps == null:
+		return
+	var root: Node = ps.instantiate()
+	_check(root != null and int(root.get("bake_version")) == MissionScene.MISSION_BAKE_VERSION,
+		"the mission scene is a v%d bake" % MissionScene.MISSION_BAKE_VERSION)
+	if root == null:
+		return
+	# MAP.216 and MAP.217 are MAP.210 authored again later in the mission —
+	# PHASES of its world, not zones of their own.
+	var zones: Array = []
+	for z in root.get_node("Zones").get_children():
+		zones.append(int(z.get("map_num")))
+	zones.sort()
+	_check(zones == [210, 211, 212, 213, 214, 215, 218],
+		"mission 210 stands on zones %s" % str(zones))
+
+	# Every 0xF0 exit the census walks is a portal node.
+	var bsa = LevelLoader.BSAReader.new()
+	var census: Array = []
+	if bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant):
+		census = (MissionCensus._mission(210, bsa, {}) as Dictionary)["portals"]
+		bsa.close()
+	var portals: Node = root.get_node("Portals")
+	_check(portals.get_child_count() == census.size() and not census.is_empty(),
+		"%d portal nodes for the census's %d exits" % [portals.get_child_count(), census.size()])
+
+	# The bunker doorway: it opens into MAP.218's zone, at a real place.
+	var door: Node = portals.get_node_or_null("Portal_MAP_210_0cabb")
+	_check(door != null, "the MAP.210 doorway @0cabb is a portal node")
+	if door != null:
+		var tzp: NodePath = door.get("target_zone")
+		var tz: Node = door.get_node_or_null(tzp) if not tzp.is_empty() else null
+		_check(tz != null and String(tz.get("map_name")) == "MAP.218",
+			"…and leads into zone %s" % (String(tz.get("map_name")) if tz != null else "nothing"))
+		var tp: Vector3 = door.get("target_pos")
+		_check(tp.is_finite(), "…landing at %s in the world" % str(tp))
+	var z218: Node3D = root.get_node_or_null("Zones/Zone_MAP_218")
+	_check(z218 != null and z218.position.x > 65536.0,
+		"zone MAP.218 stands clear of the outdoor world, at x=%.0f"
+		% (z218.position.x if z218 != null else 0.0))
 	root.free()
 
 ## Walk a chain with ObjFlipLink's rules (follow link_next, stop at an
