@@ -2487,10 +2487,14 @@ func _on_teleport_requested(target_map: int, marker_set: int) -> void:
 		if _zones.has(target):
 			_enter_zone(target, marker_set)
 			return
-		# A phase variant of the world (MAP.216) or a hand-over into
-		# another mission: step out of the scene and let the per-map
-		# runtime carry the mission from here. Step 5 of the plan is what
-		# keeps the world for a phase.
+		if _phases.has(target):
+			# A re-authored variant of one of the mission's worlds: the
+			# world moves on to it where it stands, and nothing is left.
+			_switch_phase(target, marker_set)
+			return
+		# A hand-over into another mission (mission 7 flies out of its own
+		# world): step out of the scene and let the per-map runtime carry
+		# the mission from here.
 		print("[mission] %s is no zone of mission %d — leaving the mission scene"
 			% [target, _mission_scene_key])
 		_mission_scene_off = _mission_scene_key
@@ -2580,15 +2584,30 @@ func _end_level_change() -> void:
 ## other map, Future Shock, a network game and the phase variants still
 ## use.
 
-## The mission scene under Main, and its zones by map name:
-##   "MAP.218" → {node: Zone_MAP_218, level: LevelLoader.Level or null}
+## The mission scene under Main, and its zones by THE MAP THEY ARE IN:
+##   "MAP.218" → {node: Zone_MAP_218, level: LevelLoader.Level or null,
+##                map: "MAP.218", maps: every phase it can be in}
 ## A zone's Level is built the first time the player walks into it —
 ## mission 4 reaches sixteen interiors and building them all at the door
 ## would be a minute of nothing.
+##
+## The key is the map IN FORCE, not the one the zone was baked from: a
+## world zone re-authored into a phase variant (MAP.210 → MAP.216) is
+## re-keyed with it, so everything that reads a zone by map name — the
+## doorways, the per-map overlay, a save — keeps reading the DOS map the
+## player is actually standing in.
 var _mission: Node3D = null
 var _zones: Dictionary = {}
 var _active_zone: String = ""
 var _mission_scene_key: int = -1
+## Every variant a world zone of this mission can be re-authored into:
+##   "MAP.216" → the zone entry above (the same dictionary _zones holds).
+## Filled from the baked Phases branch; the base map is in it too, so a
+## world can be switched back.
+var _phases: Dictionary = {}
+## Which phase each world zone must come up in when a save is loaded:
+## home map name → the map in force when it was saved.
+var _pending_zone_phases: Dictionary = {}
 ## The mission whose scene we have stepped out of for good this session:
 ## a phase variant (MAP.216) is not a zone, so taking that exit hands the
 ## mission back to the per-map runtime and it keeps it to the end.
@@ -2631,10 +2650,30 @@ func _begin_mission_level(name: String, gen: int) -> bool:
 	if zones_node != null:
 		for c in zones_node.get_children():
 			if c is Node3D and not String(c.get("map_name")).is_empty():
-				zones[String(c.get("map_name"))] = {"node": c, "level": null}
-	if not zones.has(name):
-		# A phase variant of the world (MAP.216 is MAP.210 re-authored) or a
-		# map the census never reached: the mission carries on the old way.
+				var mn: String = String(c.get("map_name"))
+				zones[mn] = {"node": c, "level": null, "map": mn,
+					"maps": PackedStringArray([mn])}
+	# The phase table: which re-authored variants each world zone can be
+	# turned into (scripts/mission/phase_world.gd). MAP.216 is not a zone
+	# of its own — it is what the MAP.210 zone becomes.
+	var phases: Dictionary = {}
+	var phases_node: Node = root.get_node_or_null("Phases")
+	if phases_node != null:
+		for w in phases_node.get_children():
+			var home: String = "MAP.%03d" % int(w.get("world_map"))
+			var entry: Dictionary = zones.get(home, {})
+			var nums: PackedInt32Array = w.get("phase_maps")
+			if entry.is_empty() or nums.size() < 2:
+				continue
+			var names := PackedStringArray()
+			for n in nums:
+				names.append("MAP.%03d" % int(n))
+			entry["maps"] = names
+			for nm in names:
+				phases[nm] = entry
+	if not zones.has(name) and not phases.has(name):
+		# A map the census never reached, or a hand-over into another
+		# mission: the mission carries on the old way.
 		print("[mission] %d: %s is no zone of the scene — the per-map runtime takes the mission"
 			% [key, name])
 		root.free()
@@ -2655,8 +2694,21 @@ func _begin_mission_level(name: String, gen: int) -> bool:
 		((zones[zname] as Dictionary)["node"] as Node3D).visible = false
 	_mission = root
 	_zones = zones
+	_phases = phases
 	_mission_scene_key = key
 	_active_zone = ""
+	# A save taken after the world had been re-authored names its phase:
+	# the zone comes up as THAT map, not as the one it was baked from
+	# (save_to_slot's "zone_phases"). The active map says so too, and is
+	# the one that must hold whatever the save is silent about.
+	for home in _pending_zone_phases:
+		var want: String = String(_pending_zone_phases[home])
+		var pz: Dictionary = phases.get(want, {})
+		if not pz.is_empty() and String(pz.get("map", "")) == String(home):
+			_set_zone_phase(pz, want)
+	_pending_zone_phases = {}
+	if not _zones.has(name):
+		_set_zone_phase(_phases[name], name)
 	var ok: bool = await _activate_zone(name, "", gen)
 	if not ok:
 		push_warning("[mission] %d: zone %s would not build — falling back" % [key, name])
@@ -2684,6 +2736,7 @@ func _teardown_mission() -> void:
 		_mission.queue_free()
 	_mission = null
 	_zones = {}
+	_phases = {}
 	_active_zone = ""
 	_mission_scene_key = -1
 
@@ -2701,9 +2754,16 @@ func _snapshot_zones() -> void:
 ## scene already stands under it. Everything goes under the ZONE node,
 ## which carries the zone's origin — the sky is the exception, it is
 ## pinned to the camera.
-func _build_zone(zname: String, z: Dictionary) -> LevelLoader.Level:
+##
+## `carry` is the world the zone is being re-authored FROM when this is a
+## phase switch ({name, map, snap} — see _switch_phase): what the player
+## did to the objects both variants share comes over with it.
+func _build_zone(zname: String, z: Dictionary, carry: Dictionary = {}) -> LevelLoader.Level:
 	var node: Node3D = z["node"]
 	var t0: int = Time.get_ticks_msec()
+	# A zone that has never been built still has the level scene the
+	# mission bake stood under it; one being re-authored into a phase
+	# variant has not, and the loader reads that map's own baked scene.
 	var baked_root: Node = node.get_node_or_null("Level")
 	var loader := LevelLoader.new()
 	var level: LevelLoader.Level = loader.load_zone_from(zname, node.position, baked_root)
@@ -2724,9 +2784,15 @@ func _build_zone(zname: String, z: Dictionary) -> LevelLoader.Level:
 		node.add_child(level.entities)
 		_unblock_furniture(level)
 	# A loaded save's overlay for this zone, before the Behaviour branch
-	# enters the tree and its armed cues fire. Within one mission scene
-	# there is nothing to restore — the zone never went away — so the
-	# variant import (_import_variant_state) has no part here.
+	# enters the tree and its armed cues fire. Walking between the zones of
+	# one mission scene restores nothing — the zone never went away — but a
+	# PHASE switch rebuilds the world as another MAP, and what the player
+	# did to it is carried onto the new records by entity identity, exactly
+	# as the per-map runtime carries it (_import_variant_state).
+	if not carry.is_empty() and not _map_state.has(zname):
+		var carried: Dictionary = _carry_variant_state(level, zname, carry)
+		if not carried.is_empty():
+			_map_state[zname] = carried
 	if _map_state.has(zname):
 		_apply_map_state(level, zname)
 	if level.behaviour != null:
@@ -2757,7 +2823,8 @@ func _build_zone(zname: String, z: Dictionary) -> LevelLoader.Level:
 ## Make `zname` the zone the game is played in: the one the player came
 ## from goes quiet, this one wakes up, and every per-level setup runs
 ## against it. `_pending_marker_set` says where in it the player lands.
-func _activate_zone(zname: String, from: String, gen: int) -> bool:
+## `carry` is _build_zone's (a phase switch hands the world it came from).
+func _activate_zone(zname: String, from: String, gen: int, carry: Dictionary = {}) -> bool:
 	var z: Dictionary = _zones.get(zname, {})
 	if z.is_empty():
 		return false
@@ -2774,7 +2841,7 @@ func _activate_zone(zname: String, from: String, gen: int) -> bool:
 	if is_instance_valid(player):
 		player.water_level = INF
 	var fresh: bool = z.get("level") == null
-	if fresh and _build_zone(zname, z) == null:
+	if fresh and _build_zone(zname, z, carry) == null:
 		return false
 	var level: LevelLoader.Level = z["level"]
 	var node: Node3D = z["node"]
@@ -2875,6 +2942,119 @@ func _enter_zone(target: String, marker_set: int) -> void:
 	_fade_to(0.0, 0.35)
 	_finish_mission_if_done(2.5)
 
+## --- Phases (step 5, docs/m2_mission_scene_plan.md) -------------------
+## Half a mission's outdoor map is shipped several times over: MAP.216 is
+## MAP.210 later in the mission (the gate open, the truck gone, another
+## crop of robots) and MAP.217 is later still, and DOS walks into them
+## through ordinary 0xF0 exits that happen to lead back outdoors. The
+## scene holds the world ONCE and moves it FORWARD: the zone is rebuilt
+## from the variant's own MAP file where it stands, and the player lands
+## on that map's marker set in the same zone.
+##
+## Rebuilt, not patched. DOS loads the whole variant, and so does this —
+## the records, the chains, the robots, the pickups, the heightmap and the
+## baked geometry all come from the target map, which is the only way the
+## re-authored chains (MAP.216's gate chain is four links where MAP.210's
+## is six) can be right. What must NOT start over is what the player did:
+## the dead, the taken and the switch/mover/damage state of everything
+## both variants have in the same place comes across by entity identity —
+## never an act or a link, which belong to the map they are authored in
+## (_carry_variant_state, _same_behaviour).
+
+## The map the zone `entry` is in becomes `target`: the key it is filed
+## under, the node's own exports and whatever is still standing under it.
+## The level itself is NOT built here — _activate_zone does that.
+func _set_zone_phase(entry: Dictionary, target: String) -> void:
+	var old: String = String(entry.get("map", ""))
+	if old == target or target.is_empty():
+		return
+	var node: Node3D = entry["node"]
+	# A zone that has never been walked into still carries the level scene
+	# of the map it was baked from; the loader reads the target's own.
+	var baked: Node = node.get_node_or_null("Level")
+	if baked != null and is_instance_valid(baked):
+		node.remove_child(baked)
+		baked.queue_free()
+	_zones.erase(old)
+	entry["map"] = target
+	_zones[target] = entry
+	var num: int = _suffix(target)
+	node.set("map_name", target)
+	node.set("map_num", num)
+	if bool(node.get("outdoor")) \
+			and FileAccess.file_exists(SkynetPaths.gamedata_path("WLD.%03d" % num)):
+		node.set("wld_suffix", "%03d" % num)
+	print("[mission] zone %s is now %s" % [old, target])
+
+## Everything a built zone put in the world goes, and its overlay is kept
+## first — the zone is about to be built again as another map.
+func _free_zone_level(entry: Dictionary) -> void:
+	var lvl = entry.get("level")
+	entry["level"] = null
+	if lvl == null:
+		return
+	if lvl.action != null:
+		lvl.action.teleport_refused()
+	# The sky dome hangs under Main (it follows the camera); everything
+	# else of the zone stands under the zone node, so that is swept whole
+	# — the branches, their map lights, the occluders and any overlay.
+	if lvl.sky != null and is_instance_valid(lvl.sky):
+		lvl.sky.queue_free()
+	var node: Node3D = entry["node"]
+	if node != null and is_instance_valid(node):
+		for c in node.get_children():
+			node.remove_child(c)
+			c.queue_free()
+	if _current_level == lvl:
+		_current_level = null           # nothing may be ticked in between
+	# In-flight shots and grenades belong to the world that is going.
+	for p in get_tree().get_nodes_in_group("projectile"):
+		p.queue_free()
+	_seen_meshes.clear()                # the automap's fog is per map
+
+## A DOS exit into a re-authored variant of one of this mission's worlds.
+## The world zone is rebuilt as that variant in place and the player lands
+## on its marker set; every other zone is left exactly as it is.
+func _switch_phase(target: String, marker_set: int) -> void:
+	var entry: Dictionary = _phases.get(target, {})
+	if _mission == null or entry.is_empty() or _level_busy:
+		_refuse_teleport()
+		return
+	_level_busy = true
+	_level_gen += 1
+	var gen: int = _level_gen
+	if not Net.active and is_instance_valid(player):
+		player.set("input_locked", true)
+	await _fade_to(1.0, 0.25)
+	var t0: int = Time.get_ticks_msec()
+	var from: String = String(entry["map"])
+	# The zone being re-authored is usually NOT the one the player stands
+	# in (MAP.212's doorway leads out into MAP.216), so the zone they are
+	# leaving still has to be put to sleep — _activate_zone does that when
+	# it is told where the player came from.
+	var leaving: String = _active_zone if _active_zone != from else ""
+	var carry: Dictionary = {}
+	var lvl = entry.get("level")
+	if lvl != null:
+		# DOS keeps an overlay per map number: what the world was like is
+		# kept under its own name, and what carries into the variant is
+		# worked out from it when the new records are there.
+		var snap: Dictionary = _level_snapshot(lvl, from == _active_zone)
+		_map_state[from] = snap
+		carry = {"name": from, "map": lvl.map, "snap": snap}
+		_free_zone_level(entry)
+	_set_zone_phase(entry, target)
+	_pending_marker_set = marker_set
+	var ok: bool = await _activate_zone(target, leaving, gen, carry)
+	if gen != _level_gen:
+		return                              # another change took over
+	_end_level_change()
+	if not ok:
+		push_warning("[mission] cannot re-author the world as %s" % target)
+	_fade_to(0.0, 0.35)
+	print("[mission] phase %s → %s in %d ms" % [from, target, Time.get_ticks_msec() - t0])
+	_finish_mission_if_done(2.5)
+
 ## What the console's `zone` / `zones` print.
 func _zone_report(all: bool) -> String:
 	if _mission == null:
@@ -2882,17 +3062,36 @@ func _zone_report(all: bool) -> String:
 	if not all:
 		var z: Dictionary = _zones.get(_active_zone, {})
 		var at: Vector3 = (z["node"] as Node3D).position if not z.is_empty() else Vector3.ZERO
-		return "zone %s of mission %d at %s (%d zones)" \
-			% [_active_zone, _mission_scene_key, at, _zones.size()]
+		return "zone %s of mission %d at %s (%d zones)%s" \
+			% [_active_zone, _mission_scene_key, at, _zones.size(),
+			   _phase_note(z)]
 	var lines: Array = ["mission %d, %d zones:" % [_mission_scene_key, _zones.size()]]
 	for zname in _zones:
 		var z: Dictionary = _zones[zname]
 		var lvl = z.get("level")
-		lines.append("  %s %s at %s%s" % [
+		lines.append("  %s %s at %s%s%s" % [
 			"*" if String(zname) == _active_zone else " ", zname,
 			str((z["node"] as Node3D).position),
-			"" if lvl != null else "  (not built yet)"])
+			"" if lvl != null else "  (not built yet)",
+			_phase_note(z)])
 	return "\n".join(lines)
+
+## " — phase 2 of 3: MAP.210 > [MAP.216] > MAP.217" for a zone that is one
+## of a world's variants, "" for a zone that is only ever itself.
+func _phase_note(z: Dictionary) -> String:
+	var maps: PackedStringArray = z.get("maps", PackedStringArray())
+	if maps.size() < 2:
+		return ""
+	var here: String = String(z.get("map", ""))
+	var parts := PackedStringArray()
+	var at: int = 0
+	for i in maps.size():
+		if maps[i] == here:
+			at = i + 1
+			parts.append("[%s]" % maps[i])
+		else:
+			parts.append(maps[i])
+	return "  — phase %d of %d: %s" % [at, maps.size(), " > ".join(parts)]
 ## --- Save / load (docs §N.4) -----------------------------------------------
 ## A save is the DOS session state: the current map, the previous-map
 ## register, every map's Mst overlay and the player. Maps reload from
@@ -2936,6 +3135,10 @@ func save_to_slot(slot: int) -> bool:
 		# 2026-09-14 — both optional on load (see _install_save).
 		"mission_start_map": _mission_start_map,
 		"stats": Stats.mission_state(),
+		# Which variant each of the mission's worlds had been re-authored
+		# into (step 5): the active map says it for the world the player is
+		# in, this says it for the others. Absent = every world is its base.
+		"zone_phases": _zone_phases(),
 	}
 	if not SaveGame.write(slot, data):
 		_set_status("SAVE FAILED.")
@@ -2943,6 +3146,19 @@ func save_to_slot(slot: int) -> bool:
 	print("[skynet] saved slot %d: %s" % [slot, data["map"]])
 	_set_status("GAME SAVED.")
 	return true
+
+## The phase every world of the running mission scene stands in, by the
+## map it was baked from: {"MAP.210": "MAP.216"}. Only the worlds that
+## have moved on are in it, and the whole thing is empty without a
+## mission scene up.
+func _zone_phases() -> Dictionary:
+	var out: Dictionary = {}
+	for zname in _zones:
+		var z: Dictionary = _zones[zname]
+		var maps: PackedStringArray = z.get("maps", PackedStringArray())
+		if maps.size() > 1 and String(zname) != maps[0]:
+			out[maps[0]] = String(zname)
+	return out
 
 ## Restore `slot`: tear the current level down, install the saved state
 ## and reload the saved map with the player where they were. `data` is
@@ -2979,6 +3195,10 @@ func _install_save(data: Dictionary) -> void:
 	_prev_map_name = String(data.get("prev_map", ""))
 	_pending_marker_set = -1
 	_pending_player = data.get("player", {})
+	# Which variant each world of the mission had been re-authored into
+	# (_begin_mission_level puts the zones into them before the first one
+	# is built). A save from before step 5 carries none.
+	_pending_zone_phases = data.get("zone_phases", {})
 	# The mission script is read again and the saved counter laid over it.
 	_pending_objectives = data.get("objectives", {})
 	_pending_stats = data.get("stats", {})
@@ -3234,48 +3454,83 @@ func _import_variant_state(level: LevelLoader.Level, name: String) -> Dictionary
 			best_remap = remap
 	if best.is_empty():
 		return {}
-	var src: Dictionary = _map_state[best]
-	var out: Dictionary = {"dead": {}, "taken": {}, "action": {}}
-	for off in src.get("dead", {}):
-		if best_remap.has(off):
-			out["dead"][best_remap[off]] = true
-	for off in src.get("taken", {}):
-		if best_remap.has(off):
-			out["taken"][best_remap[off]] = true
-	# What the variant changed on the entities that behave alike. The HP
-	# table starts as this map's own: restore_state replaces it whole, and
-	# the old import left every object only this map has without hit points
-	# (it could no longer be damaged). The acts and links as the MAP data
-	# has them come from the variant's file — the snapshot holds only what
-	# play made of them.
 	var src_map: LevelLoader.MapFile.MapFile = _parse_map(best)
+	if src_map == null and level.action != null:
+		push_warning("[skynet] %s: cannot read variant %s — its switches and damage stay behind" % [name, best])
+	var out: Dictionary = _carry_records(level, src_map, _map_state[best], best_remap)
+	print("[skynet] %s: first visit — importing state from variant %s (%d%% of meshes shared, %d dead, %d taken, %d entities carried, %d re-authored kept fresh)"
+		% [name, best, int(best_ratio * 100.0), out["dead"].size(), out["taken"].size(),
+		   int(out.get("carried", 0)), int(out.get("kept", 0))])
+	out.erase("carried")
+	out.erase("kept")
+	return out
+
+## The same carry for a PHASE SWITCH (step 5): the world the player was
+## just in is `carry` = {name, map (as it was parsed then), snap}, and
+## `level` is the same zone built again from the variant's records. There
+## is nothing to search for and nothing to parse — the source map is the
+## one that has just come down — and the rule is the one above, to the
+## letter: identity by kind + name + DOS position, no act, no link.
+func _carry_variant_state(level: LevelLoader.Level, name: String,
+		carry: Dictionary) -> Dictionary:
+	var src_map: LevelLoader.MapFile.MapFile = carry.get("map")
+	if level.map == null or src_map == null:
+		return {}
+	var mine: Dictionary = {}                # key → my file offset
+	for e in level.map.entities:
+		mine[_entity_key(level.map, e)] = e.file_off
+	var remap: Dictionary = {}               # its offset → my offset
+	for e in src_map.entities:
+		var key: String = _entity_key(src_map, e)
+		if mine.has(key):
+			remap[e.file_off] = mine[key]
+	var out: Dictionary = _carry_records(level, src_map, carry.get("snap", {}), remap)
+	print("[mission] %s ← %s: %d of its entities are here too (%d dead, %d taken, %d carried, %d re-authored kept fresh)"
+		% [name, String(carry.get("name", "?")), remap.size(), out["dead"].size(),
+		   out["taken"].size(), int(out.get("carried", 0)), int(out.get("kept", 0))])
+	out.erase("carried")
+	out.erase("kept")
+	return out
+
+## Translate one map's overlay onto another's records through `remap`
+## (source file offset → this level's). Dead robots and taken pickups
+## always; the switch, mover, damage and destruction state only for the
+## entities that behave the same on both maps (_same_behaviour) — and
+## never an act byte or a link, which belong to the map they were
+## authored in. The HP table starts as this map's own: restore_state
+## replaces it whole, and an import that left the objects only this map
+## has out of it made them undamageable.
+func _carry_records(level: LevelLoader.Level, src_map: LevelLoader.MapFile.MapFile,
+		src: Dictionary, remap: Dictionary) -> Dictionary:
+	var out: Dictionary = {"dead": {}, "taken": {}, "action": {},
+		"carried": 0, "kept": 0}
+	for off in src.get("dead", {}):
+		if remap.has(off):
+			out["dead"][remap[off]] = true
+	for off in src.get("taken", {}):
+		if remap.has(off):
+			out["taken"][remap[off]] = true
 	var act_src: Dictionary = src.get("action", {})
 	var act: Dictionary = {}
 	if level.action != null:
 		act = {"states": {}, "movers": {}, "destr": {}, "spent": {},
 			"hp": level.action.save_state().get("hp", {})}
-	var carried: int = 0
-	var kept: int = 0
 	if src_map != null and not act.is_empty():
-		for off in best_remap:
+		for off in remap:
 			var s = src_map.entities_by_off.get(off)
-			var dst: int = int(best_remap[off])
+			var dst: int = int(remap[off])
 			var d = level.map.entities_by_off.get(dst)
 			if s == null or d == null or _entity_key(src_map, s) != _entity_key(level.map, d):
 				continue                     # (the variant's file changed since)
 			if not _same_behaviour(src_map, s, level.map, d):
-				kept += 1
+				out["kept"] = int(out["kept"]) + 1
 				continue
-			carried += 1
+			out["carried"] = int(out["carried"]) + 1
 			for part in ["states", "movers", "destr", "hp", "spent"]:
 				var from: Dictionary = act_src.get(part, {})
 				if from.has(off):
 					act[part][dst] = from[off]
-	elif not act.is_empty():
-		push_warning("[skynet] %s: cannot read variant %s — its switches and damage stay behind" % [name, best])
 	out["action"] = act
-	print("[skynet] %s: first visit — importing state from variant %s (%d%% of meshes shared, %d dead, %d taken, %d entities carried, %d re-authored kept fresh)"
-		% [name, best, int(best_ratio * 100.0), out["dead"].size(), out["taken"].size(), carried, kept])
 	return out
 
 ## Save repair for v0.3.0 (the 2026-09-14 variant import). Such a snapshot

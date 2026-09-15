@@ -314,17 +314,23 @@ func load_level(map_name: String) -> Level:
 ## instead of a second copy being loaded. The caller parents everything
 ## under the node that already stands at `origin`, which is why the
 ## branches are NOT moved here (see _stand_at_origin).
+##
+## `baked_root` may be null and the promise still holds: a PHASE switch
+## re-authors a zone into another MAP (main._switch_phase) and there is no
+## instance standing under it then — the baked scene of that map is loaded
+## here as usual, and the branches still stay zone-local.
 func load_zone_from(map_name: String, origin: Vector3, baked_root: Node) -> Level:
-	return load_zone(map_name, origin, baked_root)
+	return load_zone(map_name, origin, baked_root, true)
 
 ## Load a level as a ZONE standing at `origin`. Everything built from the
 ## MAP records keeps its DOS (zone-local) coordinates; the branch nodes
 ## get `origin` as their transform, so their children's global positions
 ## are world ones. At Vector3.ZERO this is load_level to the bit.
 ##
-## `baked_root` (load_zone_from) says the caller parents the branches
-## under a node that carries `origin` already.
-func load_zone(map_name: String, origin: Vector3, baked_root: Node = null) -> Level:
+## `parented` (load_zone_from) says the caller parents the branches under
+## a node that carries `origin` already.
+func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
+		parented: bool = false) -> Level:
 	var level := Level.new()
 	level.origin = origin
 	_trace = []
@@ -891,7 +897,7 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null) -> Le
 	# position in it stay in DOS space. A mission scene's zone is parented
 	# to a node that stands at the origin already — moving the branches too
 	# would put it there twice (load_zone_from).
-	if baked_root == null:
+	if not parented:
 		_stand_at_origin(level)
 
 	_phase("sky+rest")
