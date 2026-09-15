@@ -810,6 +810,9 @@ func _begin_level(name: String) -> void:
 		var in_scene: bool = await _begin_mission_level(name, gen)
 		if in_scene:
 			return
+	# The phases a loaded save named are a mission scene's business; the
+	# per-map runtime reads the variant from the map it loads.
+	_pending_zone_phases = {}
 
 	var loader := LevelLoader.new()
 	var level := loader.load_level(name)
@@ -2137,8 +2140,11 @@ func _setup_water(level: LevelLoader.Level) -> void:
 	if y == INF:
 		return
 	# Back on a map whose water a chain moved: the surface where it had got
-	# to, still gliding toward where it was going (_save_map_state).
-	var snap: Dictionary = _map_state.get(_level_name(), {})
+	# to, still gliding toward where it was going (_save_map_state). In a
+	# mission scene the zone keeps it on its own entry (_keep_zone_water,
+	# or the overlay it was built with).
+	var snap: Dictionary = _map_state.get(_level_name(), {}) if _mission == null \
+		else _zones.get(_active_zone, {})
 	if snap.has("water"):
 		_water_target = float(snap["water"])
 		y = float(snap.get("water_y", _water_target))
@@ -2608,6 +2614,22 @@ var _phases: Dictionary = {}
 ## Which phase each world zone must come up in when a save is loaded:
 ## home map name → the map in force when it was saved.
 var _pending_zone_phases: Dictionary = {}
+## The mission scene's overlays that are NOT standing in the world, by the
+## DOS map each one stands for (step 6):
+##   "MAP.214" → {dead, taken, action, sig, grid, outdoor, mission[, water]}
+## What a loaded save holds for the zones the player has not walked into
+## yet — a zone's overlay waits here until it is built — and what a world
+## was like before it was re-authored into a phase (MAP.210's state while
+## the zone is MAP.216, for the day an exit leads back into MAP.210).
+##
+## Behind the flag this, and every built zone's own level, IS the state of
+## the mission; the per-map `_map_state` holds only what lies outside the
+## scene. The two meet at the scene's edges: coming up it takes its own
+## maps out of `_map_state` (_take_scene_overlays), coming down it hands
+## all of them back (_teardown_mission) — which is how a v0.3 save plays in
+## a mission scene and how a hand-over carries the mission to the per-map
+## runtime.
+var _zone_state: Dictionary = {}
 ## The mission whose scene we have stepped out of for good this session:
 ## a phase variant (MAP.216) is not a zone, so taking that exit hands the
 ## mission back to the per-map runtime and it keeps it to the end.
@@ -2697,6 +2719,10 @@ func _begin_mission_level(name: String, gen: int) -> bool:
 	_phases = phases
 	_mission_scene_key = key
 	_active_zone = ""
+	# Whatever the per-map overlay holds for the maps of this scene becomes
+	# the zones' state — a loaded save's (either format), or what the
+	# per-map runtime did in this mission before the scene came up.
+	_take_scene_overlays(key)
 	# A save taken after the world had been re-authored names its phase:
 	# the zone comes up as THAT map, not as the one it was baked from
 	# (save_to_slot's "zone_phases"). The active map says so too, and is
@@ -2719,13 +2745,44 @@ func _begin_mission_level(name: String, gen: int) -> bool:
 		% [key, Time.get_ticks_msec() - t0, t_inst - t0, zones.size(), name])
 	return true
 
+## The per-map overlay's entries for the maps of this mission scene — its
+## zones and every phase of its worlds — move into `_zone_state`, where
+## each waits for its zone to be built. DOS never carries a map's state
+## from one mission into the next (MAP.211-215 are the truck interiors of
+## missions 1 AND 2): an overlay snapshotted while another mission was
+## being played is dropped. One without a mission of its own comes from a
+## save older than the tag and is taken, as the per-map runtime takes it.
+func _take_scene_overlays(key: int) -> void:
+	_zone_state = {}
+	var taken := PackedStringArray()
+	var dropped := PackedStringArray()
+	for mn in _map_state.keys():
+		var nm: String = String(mn)
+		if not _zones.has(nm) and not _phases.has(nm):
+			continue
+		var snap: Dictionary = _map_state[mn]
+		_map_state.erase(mn)
+		if int(snap.get("mission", key)) != key:
+			dropped.append(nm)
+			continue
+		_zone_state[nm] = snap
+		taken.append(nm)
+	if not taken.is_empty() or not dropped.is_empty():
+		print("[mission] %d: state waiting for %d zones (%s)%s" % [key, taken.size(),
+			", ".join(taken), "" if dropped.is_empty()
+				else "; another mission's left behind: " + ", ".join(dropped)])
+
 ## The scene and every zone in it go; whatever the player changed in the
-## zones is kept as the per-map overlay, so a mission that hands itself
-## back to the old runtime (a phase exit) carries its state over.
+## zones — built or still waiting — is handed to the per-map overlay, so a
+## mission that hands itself to the old runtime (an exit into another
+## mission, a zone that would not build) carries its state over.
 func _teardown_mission() -> void:
 	if _mission == null:
 		return
-	_snapshot_zones()
+	var overlays: Dictionary = _scene_overlays()
+	for mn in overlays:
+		_map_state[mn] = overlays[mn]
+	_zone_state = {}
 	# A zone's sky dome is the one thing of it that hangs under Main (it
 	# follows the camera), so it does not go with the scene.
 	for zname in _zones:
@@ -2740,15 +2797,42 @@ func _teardown_mission() -> void:
 	_active_zone = ""
 	_mission_scene_key = -1
 
-## Every built zone but the active one into the per-map overlay (the
-## active one is _save_map_state's, which also keeps its water).
-func _snapshot_zones() -> void:
+## The overlay of the zone filed under `zname` as it stands, {} when it has
+## not been built. The active zone's water is the surface in the world; a
+## sleeping zone's is what _keep_zone_water put on its entry.
+func _zone_snapshot(zname: String) -> Dictionary:
+	var z: Dictionary = _zones.get(zname, {})
+	var lvl = z.get("level")
+	if lvl == null:
+		return {}
+	var active: bool = zname == _active_zone
+	var snap: Dictionary = _level_snapshot(lvl, active)
+	if not active and z.has("water"):
+		snap["water"] = z["water"]
+		snap["water_y"] = z.get("water_y", z["water"])
+	return snap
+
+## Every overlay of the running mission scene by the DOS map it stands for:
+## each built zone as it stands, and every overlay still waiting.
+func _scene_overlays() -> Dictionary:
+	var out: Dictionary = _zone_state.duplicate()
 	for zname in _zones:
-		var z: Dictionary = _zones[zname]
-		var lvl = z.get("level")
-		if lvl == null or String(zname) == _active_zone:
-			continue
-		_map_state[String(zname)] = _level_snapshot(lvl)
+		var snap: Dictionary = _zone_snapshot(String(zname))
+		if not snap.is_empty():
+			out[String(zname)] = snap
+	return out
+
+## The water surface belongs to the active zone and hangs under Main, so a
+## zone being left keeps where a chain had moved it (acts 0xd6-0xda) on its
+## own entry — MAP.252's drained deck stays drained when the player comes
+## back from MAP.253. Nothing is kept for a dry zone.
+func _keep_zone_water() -> void:
+	var z: Dictionary = _zones.get(_active_zone, {})
+	if z.is_empty():
+		return
+	if _water != null and is_instance_valid(_water) and _water_target != INF:
+		z["water"] = _water_target
+		z["water_y"] = _water.position.y
 
 ## Build the runtime level of a zone out of the level scene the mission
 ## scene already stands under it. Everything goes under the ZONE node,
@@ -2783,18 +2867,28 @@ func _build_zone(zname: String, z: Dictionary, carry: Dictionary = {}) -> LevelL
 		_bake_entity_collision(level)
 		node.add_child(level.entities)
 		_unblock_furniture(level)
-	# A loaded save's overlay for this zone, before the Behaviour branch
-	# enters the tree and its armed cues fire. Walking between the zones of
-	# one mission scene restores nothing — the zone never went away — but a
-	# PHASE switch rebuilds the world as another MAP, and what the player
-	# did to it is carried onto the new records by entity identity, exactly
-	# as the per-map runtime carries it (_import_variant_state).
-	if not carry.is_empty() and not _map_state.has(zname):
-		var carried: Dictionary = _carry_variant_state(level, zname, carry)
-		if not carried.is_empty():
-			_map_state[zname] = carried
-	if _map_state.has(zname):
-		_apply_map_state(level, zname)
+	# The zone's overlay, before the Behaviour branch enters the tree and
+	# its armed cues fire. Walking between the zones of one mission scene
+	# restores nothing — the zone never went away. What does get applied:
+	# the overlay a loaded save left waiting for this zone (_zone_state),
+	# and on a PHASE switch, which rebuilds the world as another MAP, what
+	# the player did to it — carried onto the new records by entity
+	# identity, exactly as the per-map runtime carries it
+	# (_import_variant_state). A phase the world has been in before comes
+	# back as it was left, not carried.
+	var snap: Dictionary = _zone_state.get(zname, {})
+	if not snap.is_empty():
+		# The save repair of v0.3.0 holds for a zone's overlay as it does
+		# for a map's.
+		_unretire_uncounted_objectives(level, zname, snap)
+		_zone_state.erase(zname)          # the level holds it from here on
+		if snap.has("water"):
+			z["water"] = snap["water"]
+			z["water_y"] = snap.get("water_y", snap["water"])
+	elif not carry.is_empty():
+		snap = _carry_variant_state(level, zname, carry)
+	if not snap.is_empty():
+		_apply_snapshot(level, zname, snap)
 	if level.behaviour != null:
 		_connect_behaviour(level)
 		node.add_child(level.behaviour)
@@ -2828,6 +2922,8 @@ func _activate_zone(zname: String, from: String, gen: int, carry: Dictionary = {
 	var z: Dictionary = _zones.get(zname, {})
 	if z.is_empty():
 		return false
+	# Where the surface of the zone being left had got to stays with it.
+	_keep_zone_water()
 	if not from.is_empty() and from != zname:
 		_deactivate_zone(from)
 	# The water surface of the zone being left — or of this one, when a
@@ -2978,6 +3074,10 @@ func _set_zone_phase(entry: Dictionary, target: String) -> void:
 	_zones.erase(old)
 	entry["map"] = target
 	_zones[target] = entry
+	# The variant has a water marker of its own; a surface kept for the old
+	# map says nothing about it.
+	entry.erase("water")
+	entry.erase("water_y")
 	var num: int = _suffix(target)
 	node.set("map_name", target)
 	node.set("map_num", num)
@@ -3039,10 +3139,18 @@ func _switch_phase(target: String, marker_set: int) -> void:
 		# DOS keeps an overlay per map number: what the world was like is
 		# kept under its own name, and what carries into the variant is
 		# worked out from it when the new records are there.
-		var snap: Dictionary = _level_snapshot(lvl, from == _active_zone)
-		_map_state[from] = snap
+		var snap: Dictionary = _zone_snapshot(from)
+		_zone_state[from] = snap
 		carry = {"name": from, "map": lvl.map, "snap": snap}
 		_free_zone_level(entry)
+	elif _zone_state.has(from):
+		# A world not walked back into since a save was loaded: what the
+		# player did to it is still the waiting overlay, and it carries
+		# from there — against the records as the file has them, the way
+		# the per-map runtime reads a variant it carries from.
+		var src: LevelLoader.MapFile.MapFile = _parse_map(from)
+		if src != null:
+			carry = {"name": from, "map": src, "snap": _zone_state[from]}
 	_set_zone_phase(entry, target)
 	_pending_marker_set = marker_set
 	var ok: bool = await _activate_zone(target, leaving, gen, carry)
@@ -3072,8 +3180,17 @@ func _zone_report(all: bool) -> String:
 		lines.append("  %s %s at %s%s%s" % [
 			"*" if String(zname) == _active_zone else " ", zname,
 			str((z["node"] as Node3D).position),
-			"" if lvl != null else "  (not built yet)",
+			"" if lvl != null else ("  (not built yet, saved state waiting)"
+				if _zone_state.has(zname) else "  (not built yet)"),
 			_phase_note(z)])
+	# The phases a world has left behind keep their overlay under their own
+	# map name.
+	var kept := PackedStringArray()
+	for mn in _zone_state:
+		if not _zones.has(mn):
+			kept.append(String(mn))
+	if not kept.is_empty():
+		lines.append("  state kept for phases left behind: %s" % ", ".join(kept))
 	return "\n".join(lines)
 
 ## " — phase 2 of 3: MAP.210 > [MAP.216] > MAP.217" for a zone that is one
@@ -3096,6 +3213,22 @@ func _phase_note(z: Dictionary) -> String:
 ## A save is the DOS session state: the current map, the previous-map
 ## register, every map's Mst overlay and the player. Maps reload from
 ## disk on load, as they do on every transition.
+##
+## Two sessions, one file (scripts/save_game.gd):
+##   per-map (format 2)  {map, prev_map, map_state, player, objectives,
+##                        mission_start_map, stats} — what the per-map
+##                        runtime writes: Future Shock, loose maps, the
+##                        mission-scene flag off
+##   mission (format 3, "v0.4", step 6 of docs/m2_mission_scene_plan.md)
+##                       {map, mission, zone, phases, zones, return_zone,
+##                        player, objectives, mission_start_map, stats} —
+##                        written whenever a mission scene is up
+## Both load under either runtime. The zones of a mission save are keyed by
+## the DOS map each one stands for, so they ARE per-map overlays: installing
+## one lays them out as `_map_state` (_install_save), the per-map runtime
+## plays that as it is, and a mission scene coming up takes its own maps
+## back out of it (_take_scene_overlays) — the same door a per-map save
+## walks through into a mission scene.
 
 ## Snapshot the running game into `slot`. False when no level is up, or
 ## while the game is between states: a level change running, the mission
@@ -3111,52 +3244,93 @@ func save_to_slot(slot: int) -> bool:
 	if _level_busy or _mission_done or _game_over != null:
 		_set_status("CANNOT SAVE NOW.")
 		return false
-	_save_map_state()
-	# A mission scene is saved as the DOS session it stands for: the ACTIVE
-	# ZONE is the map, every built zone contributes its overlay, and the
-	# player's position goes back into the zone's own (DOS) coordinates —
-	# the file then reads the same whichever runtime loads it, and the zone
-	# origins of a rebaked mission cannot strand the player in mid-air.
-	# (Where the rest of the mission had got to — the return register aside
-	# — is step 6 of docs/m2_mission_scene_plan.md.)
-	_snapshot_zones()
+	# The player goes back into the level's own (DOS) coordinates: a zone of
+	# a mission scene stands off the origin, and a save must read the same
+	# whichever runtime loads it — nor may the zone origins of a rebaked
+	# mission strand the player in mid-air.
 	var psnap: Dictionary = player.save_state()
 	if _current_level.origin != Vector3.ZERO and psnap.has("pos"):
 		psnap["pos"] = (psnap["pos"] as Vector3) - _current_level.origin
-	var data := {
-		"version": SaveGame.VERSION,
-		"time": Time.get_datetime_string_from_system(false, true),
-		"map": _level_name(),
-		"prev_map": _prev_map_name,
-		"map_state": _map_state,
-		"player": psnap,
-		"objectives": {"key": _mission_key, "left": _objectives_left,
-			"cursor": _objective_cursor.duplicate()},
-		# 2026-09-14 — both optional on load (see _install_save).
-		"mission_start_map": _mission_start_map,
-		"stats": Stats.mission_state(),
-		# Which variant each of the mission's worlds had been re-authored
-		# into (step 5): the active map says it for the world the player is
-		# in, this says it for the others. Absent = every world is its base.
-		"zone_phases": _zone_phases(),
-	}
+	var data: Dictionary
+	if _mission != null:
+		data = _scene_save_data(psnap)
+	else:
+		_save_map_state()
+		data = {
+			"version": SaveGame.VERSION_MAP,
+			"time": Time.get_datetime_string_from_system(false, true),
+			"map": _level_name(),
+			"prev_map": _prev_map_name,
+			"map_state": _map_state,
+			"player": psnap,
+			"objectives": _objectives_save(),
+			# 2026-09-14 — both optional on load (see _install_save).
+			"mission_start_map": _mission_start_map,
+			"stats": Stats.mission_state(),
+		}
 	if not SaveGame.write(slot, data):
 		_set_status("SAVE FAILED.")
 		return false
-	print("[skynet] saved slot %d: %s" % [slot, data["map"]])
+	print("[skynet] saved slot %d: %s%s" % [slot, data["map"],
+		" (mission %d, %d zone overlays)" % [int(data["mission"]), (data["zones"] as Dictionary).size()]
+			if data.has("zones") else ""])
 	_set_status("GAME SAVED.")
 	return true
 
+## The mission counter as a save keeps it.
+func _objectives_save() -> Dictionary:
+	return {"key": _mission_key, "left": _objectives_left,
+		"cursor": _objective_cursor.duplicate()}
+
+## A mission scene saved as the mission it is (format 3, "v0.4"):
+##   map          the DOS map the player stands in — the active zone, under
+##                the map in force (MAP.217, not the MAP.210 it was baked
+##                from); the slot header and the per-map runtime read this
+##   mission      the scene's mission key (210)
+##   zone         the active zone — the same name as `map`
+##   phases       every world's phase: the map it was baked from → the map
+##                in force ({"MAP.210": "MAP.217"}); applied before any zone
+##                is built
+##   zones        map → overlay ({dead, taken, action, sig, grid, outdoor,
+##                mission[, water, water_y]}) for every zone the mission has
+##                built and every overlay still waiting (a zone not walked
+##                into since a load, a phase a world has left behind); a
+##                zone never built is absent — it comes up as its MAP says
+##   return_zone  the previous-map register: where an exit whose target is 0
+##                leads (DAT_00038b18)
+##   player       the player, in the zone's own coordinates
+##   objectives, mission_start_map, stats — as the per-map session has them
+## The score is not kept: the zone's maptype marker picks it again.
+func _scene_save_data(psnap: Dictionary) -> Dictionary:
+	return {
+		"version": SaveGame.VERSION,
+		"time": Time.get_datetime_string_from_system(false, true),
+		"map": _active_zone,
+		"mission": _mission_scene_key,
+		"zone": _active_zone,
+		"phases": _zone_phases(),
+		"zones": _scene_overlays(),
+		"return_zone": _prev_map_name,
+		"player": psnap,
+		"objectives": _objectives_save(),
+		"mission_start_map": _mission_start_map,
+		"stats": Stats.mission_state(),
+	}
+
+## Is `data` a mission-scene session (format 3)?
+static func _is_scene_save(data: Dictionary) -> bool:
+	return data.get("zones") is Dictionary
+
 ## The phase every world of the running mission scene stands in, by the
-## map it was baked from: {"MAP.210": "MAP.216"}. Only the worlds that
-## have moved on are in it, and the whole thing is empty without a
-## mission scene up.
+## map it was baked from: {"MAP.210": "MAP.216"}. Every world that has
+## phases is in it, one still in its base map too; empty without a mission
+## scene up.
 func _zone_phases() -> Dictionary:
 	var out: Dictionary = {}
 	for zname in _zones:
 		var z: Dictionary = _zones[zname]
 		var maps: PackedStringArray = z.get("maps", PackedStringArray())
-		if maps.size() > 1 and String(zname) != maps[0]:
+		if maps.size() > 1:
 			out[maps[0]] = String(zname)
 	return out
 
@@ -3190,15 +3364,29 @@ func load_from_slot(slot: int, data: Dictionary = {}) -> bool:
 	return await _change_level(map_name, true, false, data)
 
 ## A save's session state, laid in between the tear-down and the load.
+## Either session lands as the per-map overlay (see the section head): a
+## mission save's zones are keyed by DOS map already, and its return zone
+## is the previous-map register.
 func _install_save(data: Dictionary) -> void:
-	_map_state = data.get("map_state", {})
-	_prev_map_name = String(data.get("prev_map", ""))
+	if _is_scene_save(data):
+		_map_state = (data["zones"] as Dictionary).duplicate()
+		_prev_map_name = String(data.get("return_zone", ""))
+		# Which variant each world of the mission stands in
+		# (_begin_mission_level puts the zones into them before the first
+		# one is built; the per-map runtime needs none of it).
+		_pending_zone_phases = data.get("phases", {})
+		print("[skynet] mission save: mission %d, zone %s, %d zone overlays, return zone %s"
+			% [int(data.get("mission", -1)), String(data.get("zone", data.get("map", ""))),
+			   _map_state.size(), _prev_map_name if not _prev_map_name.is_empty() else "-"])
+	else:
+		var ms = data.get("map_state", {})
+		_map_state = (ms as Dictionary).duplicate() if ms is Dictionary else {}
+		_prev_map_name = String(data.get("prev_map", ""))
+		# A per-map save written inside a mission scene by the step-5 build
+		# named the phases as "zone_phases"; one from before carries none.
+		_pending_zone_phases = data.get("zone_phases", {})
 	_pending_marker_set = -1
 	_pending_player = data.get("player", {})
-	# Which variant each world of the mission had been re-authored into
-	# (_begin_mission_level puts the zones into them before the first one
-	# is built). A save from before step 5 carries none.
-	_pending_zone_phases = data.get("zone_phases", {})
 	# The mission script is read again and the saved counter laid over it.
 	_pending_objectives = data.get("objectives", {})
 	_pending_stats = data.get("stats", {})
@@ -3285,8 +3473,8 @@ func _save_map_state() -> void:
 
 ## The overlay of one level, whether or not it is the one being played. A
 ## mission scene keeps several of them alive at once and snapshots them all
-## when it comes down (_snapshot_zones); `with_water` belongs to the ACTIVE
-## one, which is the only level whose surface is in the world.
+## for a save or when it comes down (_zone_snapshot); `with_water` belongs
+## to the ACTIVE one, which is the only level whose surface is in the world.
 func _level_snapshot(lvl: LevelLoader.Level, with_water: bool = false) -> Dictionary:
 	var dead: Dictionary = {}
 	for off in lvl.enemy_marker_offs:
@@ -3312,6 +3500,10 @@ func _level_snapshot(lvl: LevelLoader.Level, with_water: bool = false) -> Dictio
 		"sig": _map_signature(lvl.map),
 		"grid": Vector2i(lvl.map.grid_width, lvl.map.grid_height),
 		"outdoor": lvl.is_outdoor,
+		# The mission it was played in (step 6): a mission scene takes no
+		# overlay of another mission's (_take_scene_overlays). Absent in
+		# saves from before; the per-map runtime does not read it.
+		"mission": _mission_key,
 	}
 	# Where a chain has moved the water (acts 0xd6-0xda), and where the
 	# surface has got to on its way — the marker alone put MAP.254's
@@ -3573,7 +3765,9 @@ func _unretire_uncounted_objectives(level: LevelLoader.Level, name: String, snap
 		print("[skynet] %s: objective @%05x [M%d] was retired but never counted — live again (v0.3.0 save repair)"
 			% [name, int(off), level.map.entities_by_off[int(off)].link_act_type - 0x25])
 
-## Re-apply a saved snapshot to a freshly loaded map (DOS MstLoad).
+## Re-apply a saved snapshot to a freshly loaded map (DOS MstLoad). The
+## per-map runtime's: a mission scene applies its zones' overlays itself
+## (_build_zone), from _zone_state and never through the variant search.
 func _apply_map_state(level: LevelLoader.Level, name: String) -> void:
 	var snap: Dictionary = _map_state.get(name, {})
 	if snap.is_empty():
@@ -3583,6 +3777,12 @@ func _apply_map_state(level: LevelLoader.Level, name: String) -> void:
 		_map_state[name] = snap
 	else:
 		_unretire_uncounted_objectives(level, name, snap)
+	_apply_snapshot(level, name, snap)
+
+## An overlay onto a level whose records have just been read: the dead
+## robots and the taken pickups leave, and the action system takes the
+## switch, mover, damage and act state.
+func _apply_snapshot(level: LevelLoader.Level, name: String, snap: Dictionary) -> void:
 	var dead: Dictionary = snap.get("dead", {})
 	if level.enemies:
 		for c in level.enemies.get_children():
@@ -4211,9 +4411,11 @@ func _clear_level() -> void:
 	if _current_level == null:
 		_teardown_mission()
 		return
-	_save_map_state()
-	# A mission scene holds every zone's branches under itself, so its own
+	# A mission scene snapshots its zones itself, the active one with its
+	# water, and it holds every zone's branches under itself, so its own
 	# tear-down takes them all; the frees below then find nothing left.
+	if _mission == null:
+		_save_map_state()
 	_teardown_mission()
 	# In-flight shots and grenades belong to the map being torn down.
 	for p in get_tree().get_nodes_in_group("projectile"):
@@ -4939,8 +5141,10 @@ func run_command(line: String) -> String:
 						float(e.get("_health")) if e.get("_health") != null else -1.0])
 			return "%d enemies\n%s" % [lines.size(), "\n".join(lines)]
 		"counters", "ctal":
-			return "hostiles tracked %d, map state for %d maps, prev map %s" % [
-				_mission_hostiles, _map_state.size(), _prev_map_name if not _prev_map_name.is_empty() else "-"]
+			return "hostiles tracked %d, map state for %d maps%s, prev map %s" % [
+				_mission_hostiles, _map_state.size(),
+				"" if _mission == null else " (outside the mission scene; %d zone overlays waiting)" % _zone_state.size(),
+				_prev_map_name if not _prev_map_name.is_empty() else "-"]
 		"save":
 			var slot: int = int(args[0]) - 1 if not args.is_empty() and args[0].is_valid_int() else SaveGame.QUICK_SLOT
 			if slot < 0 or slot >= SaveGame.SLOTS:

@@ -5,11 +5,19 @@
 ## game's LOAD screen must not offer the other's saves). The first line
 ## is a short header the LOAD menu can show without parsing the body:
 ##   SKYNET-SAVE <version>|<map>|<yyyy-mm-dd hh:mm>|<game>
-## Format 2 bodies are JSON: `JSON.from_native` of the session dictionary
-## built by main.save_to_slot, so int keys, Vector2i / Vector3 values and
-## typed arrays come back exactly as they went in. Objects are neither
-## written nor read (to_native without allow_objects), so a save file —
-## something players share — cannot load a Resource or run a script.
+## Format 2 and 3 bodies are JSON: `JSON.from_native` of the session
+## dictionary built by main.save_to_slot, so int keys, Vector2i / Vector3
+## values and typed arrays come back exactly as they went in. Objects are
+## neither written nor read (to_native without allow_objects), so a save
+## file — something players share — cannot load a Resource or run a script.
+## The two JSON formats differ in the session they hold, not in encoding:
+##   3  a MISSION SCENE session (v0.4, docs/m2_mission_scene_plan.md) — the
+##      mission, the zone the player is in, each world's phase and the
+##      overlay of every zone the mission has built (main._scene_save_data)
+##   2  a per-map session — the map, the previous-map register and the
+##      per-map overlay; what every game without a mission scene still
+##      writes (Future Shock, loose maps, the mission-scene flag off), so
+##      a v0.3 build keeps reading those
 ## Format 1 bodies (var_to_str text, older builds) still load when they
 ## name no Object or Resource: str_to_var would instantiate or load those.
 ## Used via `const SaveGame := preload("res://scripts/save_game.gd")`
@@ -19,7 +27,10 @@ const DIR := "user://saves"
 const SLOTS: int = 10
 ## F6 / F7 use slot 0 — shown as the first LOAD.IMG bar.
 const QUICK_SLOT: int = 0
-const VERSION: int = 2
+## The newest format this build reads and writes: a mission-scene session.
+const VERSION: int = 3
+## A per-map session (JSON, 2026-09-14 onwards).
+const VERSION_MAP: int = 2
 ## The var_to_str text format builds before 2026-09-14 wrote.
 const VERSION_TEXT: int = 1
 const MAGIC := "SKYNET-SAVE"
@@ -60,6 +71,9 @@ static func exists(slot: int) -> bool:
 	return not _file(slot).is_empty()
 
 ## Write `data` (must carry "map") to `slot`. Returns false on failure.
+## The header states the format the body says it is ("version", VERSION_MAP
+## when it says nothing), so a per-map session stays readable to a build
+## that knows no mission scenes.
 static func write(slot: int, data: Dictionary) -> bool:
 	DirAccess.make_dir_recursive_absolute(folder())
 	var target: String = path(slot)
@@ -71,7 +85,8 @@ static func write(slot: int, data: Dictionary) -> bool:
 		push_error("[save] cannot write %s (%s)" % [tmp, error_string(FileAccess.get_open_error())])
 		return false
 	var stamp: String = Time.get_datetime_string_from_system(false, true).left(16)
-	var ok: bool = f.store_line("%s %d|%s|%s|%s" % [MAGIC, VERSION, String(data.get("map", "")), stamp, _game()]) \
+	var version: int = clampi(int(data.get("version", VERSION_MAP)), VERSION_MAP, VERSION)
+	var ok: bool = f.store_line("%s %d|%s|%s|%s" % [MAGIC, version, String(data.get("map", "")), stamp, _game()]) \
 		and f.store_string(body)
 	f.close()
 	if not ok:
@@ -104,7 +119,7 @@ static func read(slot: int) -> Dictionary:
 	if parts.size() > 3 and not parts[3].is_empty() and parts[3] != _game():
 		return _refuse(file, "this is a %s save" % ("Future Shock" if parts[3] == "shock" else "SkyNET"))
 	var v: Variant = null
-	if version == VERSION:
+	if version == VERSION or version == VERSION_MAP:
 		v = _from_json(body)
 	elif version == VERSION_TEXT:
 		v = _from_text(body)
@@ -123,8 +138,8 @@ static func _refuse(file: String, why: String) -> Dictionary:
 	push_warning("[save] %s: %s" % [file, why])
 	return {}
 
-## Format 2. A type the file names that is not plain data (an Object, a
-## script-typed container) comes back null instead of being built.
+## Formats 2 and 3. A type the file names that is not plain data (an
+## Object, a script-typed container) comes back null instead of being built.
 static func _from_json(body: String) -> Variant:
 	var json := JSON.new()
 	if json.parse(body) != OK:

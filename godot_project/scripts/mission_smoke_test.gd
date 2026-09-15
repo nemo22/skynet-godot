@@ -1,5 +1,5 @@
-## Headless end-to-end test of the MISSION-SCENE runtime (steps 4 and 5 of
-## docs/m2_mission_scene_plan.md) on the real game scene.
+## Headless end-to-end test of the MISSION-SCENE runtime (steps 4, 5 and 6
+## of docs/m2_mission_scene_plan.md) on the real game scene.
 ##
 ## It is a scene of its own rather than a section of game_smoke_test.gd
 ## because the runtime is chosen when the first level starts: the flag has
@@ -12,6 +12,13 @@
 ## exit into MAP.216 re-authors the world where it stands instead of
 ## loading it, the mission carries on into MAP.217 and the jeep counts its
 ## objective there — and finally mission 3's two phase edges.
+##
+## And the SAVES (step 6): a mission save from inside an interior with its
+## state, loaded back after walking out (the zones not walked into wait
+## for their overlay, the return door still knows the way); one taken in
+## phase MAP.217 comes back as that phase with what the phases carried; the
+## same session as a v0.3 per-map save plays inside the scene, and the
+## mission save plays in the per-map runtime with the flag down.
 ##
 ##   godot --headless --path . res://scenes/mission_smoke_test.tscn
 
@@ -95,6 +102,91 @@ func _pickup_there(off: int) -> bool:
 		if s.has_meta("pickup_off") and int(s.get_meta("pickup_off")) == off:
 			return true
 	return false
+
+## The same two questions about the level that is up ONLY — the zones
+## asleep beside it keep their robots and pickups in the same groups, and
+## file offsets of two maps can coincide.
+func _enemy_alive_here(off: int) -> bool:
+	var lvl = _main.get("_current_level")
+	if lvl == null or lvl.enemies == null:
+		return false
+	for e in get_tree().get_nodes_in_group("enemy"):
+		if lvl.enemies.is_ancestor_of(e) and e.has_meta("marker_off") \
+				and int(e.get_meta("marker_off")) == off \
+				and not (e.has_method("is_dead") and e.call("is_dead")):
+			return true
+	return false
+
+func _pickup_here(off: int) -> bool:
+	var lvl = _main.get("_current_level")
+	if lvl == null or lvl.sprites == null:
+		return false
+	for s in get_tree().get_nodes_in_group("pickup"):
+		if lvl.sprites.is_ancestor_of(s) and s.has_meta("pickup_off") \
+				and int(s.get_meta("pickup_off")) == off:
+			return true
+	return false
+
+## Load `slot` (or `data`, a slot already read) and wait until `sfx` is up
+## from THAT load: a new level object, the saved player applied and the
+## fade over. A load into the map already up used to pass at once, before
+## the load had even started.
+func _load(slot: int, sfx: String, data: Dictionary = {}) -> bool:
+	await _wait(func() -> bool: return not bool(_main.get("_level_busy")) and _settled(), 30.0)
+	var before = _main.get("_current_level")
+	var old_id: int = (before as Object).get_instance_id() if before != null else 0
+	if data.is_empty():
+		_main.call("load_from_slot", slot)
+	else:
+		_main.call("load_from_slot", slot, data)
+	return await _wait(func() -> bool:
+		var cur = _main.get("_current_level")
+		return cur != null and (cur as Object).get_instance_id() != old_id and _level_is(sfx) \
+			and _settled() and not bool(_main.get("_level_busy")) \
+			and (_main.get("_pending_player") as Dictionary).is_empty(), 240.0)
+
+## The format number on a slot file's header line (SKYNET-SAVE <n>|…).
+func _header_version(slot: int) -> int:
+	var f := FileAccess.open(SaveGame.path(slot), FileAccess.READ)
+	if f == null:
+		return -1
+	var head: String = f.get_line()
+	f.close()
+	var v: String = head.trim_prefix(SaveGame.MAGIC).strip_edges().get_slice("|", 0)
+	return int(v) if v.is_valid_int() else -1
+
+## Is the zone filed under `zname` built?
+func _built(zname: String) -> bool:
+	var z: Dictionary = (_main.get("_zones") as Dictionary).get(zname, {})
+	return not z.is_empty() and z.get("level") != null
+
+## What the level that is up gets done to it before a save: one robot
+## killed and one item taken — collected the way the pickup collects itself
+## when the player reaches it, without walking him across the map's
+## doorways to get there. Returns {robot: marker offset or -1, item: pickup
+## offset or -1}.
+func _spoil_here() -> Dictionary:
+	var out: Dictionary = {"robot": -1, "item": -1}
+	var lvl = _main.get("_current_level")
+	var player: CharacterBody3D = _main.get("player")
+	if lvl == null:
+		return out
+	for n in get_tree().get_nodes_in_group("enemy"):
+		if lvl.enemies == null or not lvl.enemies.is_ancestor_of(n) or not n.has_meta("marker_off") \
+				or bool(n.get("indestructible")):
+			continue
+		n.call("take_damage", 1.0e6)
+		if bool(n.call("is_dead")):
+			out["robot"] = int(n.get_meta("marker_off"))
+			break
+	for n in get_tree().get_nodes_in_group("pickup"):
+		if lvl.sprites != null and lvl.sprites.is_ancestor_of(n) and n.has_meta("pickup_off"):
+			out["item"] = int(n.get_meta("pickup_off"))
+			n.call("collect", player)
+			break
+	for f in 10:
+		await get_tree().physics_frame
+	return out
 
 ## What the player does to the world before it is re-authored, chosen
 ## among the things the NEXT variant (`next_name`) has in the same place —
@@ -312,18 +404,32 @@ func _run() -> void:
 	_check(absf(player.global_position.y - y0) < 200.0,
 		"the player stays on MAP.218's floor (dy=%.0f)" % (player.global_position.y - y0))
 
-	# --- 2b. A save taken inside the scene reads back as the DOS session
-	# it stands for: the active zone is the map, the player is stored in
-	# that zone's own coordinates, and every built zone keeps its overlay.
+	# --- 2b. A save taken inside the scene is a MISSION save (format 3,
+	# v0.4): the mission, the active zone (also the map, for the header and
+	# the per-map runtime), the player in that zone's own coordinates, the
+	# return register, and the overlay of every zone built so far.
 	var pos_218: Vector3 = player.global_position
 	_check(bool(_main.call("save_to_slot", SAVE_SLOT)), "the game saves from inside a zone")
 	var slot: Dictionary = SaveGame.read(SAVE_SLOT)
-	_check(String(slot.get("map", "")) == "MAP.218", "the save names the active zone as the map")
+	_check(_header_version(SAVE_SLOT) == SaveGame.VERSION and SaveGame.VERSION == 3,
+		"a mission scene writes save format %d" % _header_version(SAVE_SLOT))
+	_check(SaveGame.info(SAVE_SLOT).begins_with("MAP.218 · "),
+		"the LOAD menu still reads the map the player is in (%s)" % SaveGame.info(SAVE_SLOT))
+	_check(String(slot.get("map", "")) == "MAP.218" and String(slot.get("zone", "")) == "MAP.218"
+		and int(slot.get("mission", -1)) == 210,
+		"the save names mission %s, zone %s" % [str(slot.get("mission")), str(slot.get("zone"))])
 	var saved_pos: Vector3 = (slot.get("player", {}) as Dictionary).get("pos", Vector3.INF)
 	_check(saved_pos.is_finite() and saved_pos.x < 20000.0,
 		"the player is stored in the zone's own coordinates (x=%.0f)" % saved_pos.x)
-	_check((slot.get("map_state", {}) as Dictionary).has("MAP.210"),
-		"the overlay of the zone left behind is in the save")
+	var szones: Dictionary = slot.get("zones", {})
+	_check(not slot.has("map_state") and szones.has("MAP.210") and szones.has("MAP.218")
+		and szones.size() == 2,
+		"the save holds the overlay of the two zones built so far (%s)" % str(szones.keys()))
+	_check(((szones.get("MAP.210", {}) as Dictionary).get("dead", {}) as Dictionary).has(victim_off),
+		"the zone left behind keeps its dead robot in the save")
+	_check(String(slot.get("return_zone", "")) == "MAP.210", "the save keeps the return register")
+	_check((slot.get("phases", {}) as Dictionary).get("MAP.210", "") == "MAP.210",
+		"the save names the world's phase (%s)" % str(slot.get("phases")))
 
 	# --- 3. The return exit: back out at MAP.210's marker 27 ----------
 	ok = await _go(0, 27, "210")
@@ -343,8 +449,7 @@ func _run() -> void:
 		"the mission survives the round trip unchanged")
 
 	# --- 3b. …and loading it puts the mission back together ------------
-	_main.call("load_from_slot", SAVE_SLOT)
-	ok = await _wait(func() -> bool: return _level_is("218") and _settled(), 240.0)
+	ok = await _load(SAVE_SLOT, "218")
 	_check(ok, "the save loads back into zone MAP.218")
 	if ok:
 		_check(_main.get("_mission") != null and String(_main.get("_active_zone")) == "MAP.218",
@@ -355,8 +460,13 @@ func _run() -> void:
 		_check(int(_main.get("_mission_key")) == key_before
 			and int(_main.get("_objectives_left")) == left_before,
 			"the loaded mission keeps its key and counter")
+		_check(not _built("MAP.210") and (_main.get("_zone_state") as Dictionary).has("MAP.210")
+			and not (_main.get("_map_state") as Dictionary).has("MAP.210"),
+			"the world is not built yet, its overlay waits in the scene")
 		ok = await _go(0, 27, "210")
 		_check(ok, "the loaded return register still leads to MAP.210")
+		_check(not (_main.get("_zone_state") as Dictionary).has("MAP.210"),
+			"walking in built the world with its overlay")
 		var risen: bool = false
 		for e in get_tree().get_nodes_in_group("enemy"):
 			if e.has_meta("marker_off") and int(e.get_meta("marker_off")) == victim_off:
@@ -378,6 +488,8 @@ func _run() -> void:
 			ok = await _go(214, 10, "214")
 			_check(ok, "MAP.215 → MAP.214 at marker set 10")
 			_check(_marker_gap(10) < 700.0, "the player lands on MAP.214's marker set 10")
+			if ok:
+				await _interior_save_load(victim_off, left_before)
 		# MAP.212 has MAP.214's maptype (1): the score must NOT restart.
 		var song_before: String = Audio.music_name()
 		ok = await _go(212, 0, "212")
@@ -391,6 +503,9 @@ func _run() -> void:
 	# --- 5. A doorway taken with the USE key, through the records -----
 	ok = await _go(210, 27, "210")
 	_check(ok, "back on MAP.210 for the use-key run")
+	if ok:
+		_check(not _enemy_alive_here(victim_off),
+			"the world's robot is still dead: its overlay waited through the load until walked into")
 	# What the player does to the world before the phase switch is asked
 	# about afterwards — among what MAP.216 still has in the same place.
 	var spoil_216: Dictionary = {}
@@ -494,14 +609,7 @@ func _run() -> void:
 				"the jeep counts [M3]: %d objectives left" % int(_main.get("_objectives_left")))
 		# A save taken in a phase comes back as that phase.
 		if not bool(_main.get("_mission_done")):
-			_check(bool(_main.call("save_to_slot", SAVE_SLOT)), "the game saves in phase MAP.217")
-			var slot2: Dictionary = SaveGame.read(SAVE_SLOT)
-			_check(String(slot2.get("map", "")) == "MAP.217", "the save names MAP.217 as the map")
-			_main.call("load_from_slot", SAVE_SLOT)
-			ok = await _wait(func() -> bool: return _level_is("217") and _settled(), 240.0)
-			_check(ok, "the save loads back into the mission scene in phase MAP.217")
-			_check(_main.get("_mission") != null and _active() == "MAP.217",
-				"the loaded world zone is MAP.217, not the map it was baked from")
+			await _phase_save_load(spoil_217, left_before)
 	_check(_main.get("_game_over") == null, "no end screen fired by itself")
 
 	# --- 8. Mission 3's phases: MAP.233 → MAP.235 → MAP.234 ------------
@@ -524,7 +632,232 @@ func _run() -> void:
 			ok = await _go(234, 0, "234", 300.0)
 			_check(ok and _active() == "MAP.234", "the second edge re-authors the world as MAP.234")
 		_check(_main.get("_game_over") == null, "mission 3's phases fired no end screen")
+
+	# --- 9. Mission 4: a zone's water where a chain moved it ------------
+	# The harbour MAP.240 has a water marker, its warehouse MAP.242 none. The
+	# surface hangs under Main and belongs to the active zone, so the zone
+	# being left has to keep where it had got to — across a doorway, in a
+	# save taken elsewhere, and through the load of that save.
+	await _wait(func() -> bool: return not bool(_main.get("_level_busy")) and _settled(), 30.0)
+	print("[mission-e2e] map 240 → %s" % str(_main.call("run_command", "map 240")))
+	ok = await _wait(func() -> bool: return _level_is("240") and _settled(), 300.0)
+	_check(ok and _main.get("_mission") != null and _active() == "MAP.240",
+		"mission 4 comes up inside its scene with MAP.240 active")
+	if ok and _main.get("_mission") != null:
+		var wt: float = float(_main.get("_water_target"))
+		_check(wt != INF, "MAP.240 has its water surface (y=%s)" % str(wt))
+		if wt != INF:
+			var drained: float = wt - 160.0
+			_main.call("_on_water_level", -160.0, false)     # a chain lets 160 units out
+			for f in 10:
+				await get_tree().physics_frame
+			ok = await _go(242, 0, "242")
+			_check(ok and float(_main.get("_water_target")) == INF, "MAP.242 is dry")
+			if ok:
+				_check(bool(_main.call("save_to_slot", SAVE_SLOT)), "the game saves in MAP.242")
+				var wdata: Dictionary = SaveGame.read(SAVE_SLOT)
+				var w240: Dictionary = (wdata.get("zones", {}) as Dictionary).get("MAP.240", {})
+				_check(is_equal_approx(float(w240.get("water", INF)), drained),
+					"the save keeps the sleeping harbour's water at %.0f (%s)" % [drained, str(w240.get("water"))])
+				ok = await _go(0, 0, "240")
+				_check(ok and is_equal_approx(float(_main.get("_water_target")), drained),
+					"back in MAP.240 the water is where the chain moved it (%.0f)" % float(_main.get("_water_target")))
+				ok = await _load(SAVE_SLOT, "242")
+				_check(ok and _active() == "MAP.242", "the save loads back into MAP.242")
+				if ok:
+					ok = await _go(0, 0, "240")
+					_check(ok and is_equal_approx(float(_main.get("_water_target")), drained),
+						"after the load the harbour comes up with the saved water (%.0f)"
+						% float(_main.get("_water_target")))
 	_finish()
+
+## --- Step 6: saves ------------------------------------------------------
+## What _interior_save_load did to MAP.214, for the per-map run of the
+## same save at the end.
+var _spoil_214: Dictionary = {}
+
+## 4b. Inside MAP.214 (entered back from MAP.215, so the return register
+## is MAP.215): a robot killed and an item taken, the game saved, the
+## player walks out into the world, the save is loaded. The zone comes back
+## as it was saved, the zones not walked into keep their overlays waiting,
+## and the return door leads back into MAP.215.
+func _interior_save_load(victim_off: int, left_before: int) -> void:
+	var player: CharacterBody3D = _main.get("player")
+	var spoil: Dictionary = await _spoil_here()
+	_spoil_214 = spoil
+	_check(int(spoil["robot"]) >= 0 and not _enemy_alive_here(int(spoil["robot"])),
+		"a robot of MAP.214 was killed (@%05x)" % int(spoil["robot"]))
+	_check(int(spoil["item"]) >= 0, "an item of MAP.214 was taken (@%05x)" % int(spoil["item"]))
+	var pos: Vector3 = player.global_position
+	var hp: float = float(player.get("health"))
+	_check(bool(_main.call("save_to_slot", SAVE_SLOT)), "the game saves inside MAP.214")
+	var data: Dictionary = SaveGame.read(SAVE_SLOT)
+	var zones: Dictionary = data.get("zones", {})
+	var mine: Dictionary = zones.get("MAP.214", {})
+	_check(String(data.get("zone", "")) == "MAP.214" and String(data.get("return_zone", "")) == "MAP.215",
+		"the save is zone MAP.214 with the return register MAP.215 (%s, %s)"
+		% [str(data.get("zone")), str(data.get("return_zone"))])
+	_check((mine.get("dead", {}) as Dictionary).has(int(spoil["robot"]))
+		and (mine.get("taken", {}) as Dictionary).has(int(spoil["item"])),
+		"MAP.214's overlay holds the dead robot and the taken item")
+	_check(zones.has("MAP.210") and zones.has("MAP.218") and zones.has("MAP.215")
+		and not zones.has("MAP.211") and not zones.has("MAP.212") and not zones.has("MAP.213"),
+		"every zone built so far is in the save, the ones never walked into are not (%s)"
+		% str(zones.keys()))
+	# Out of the interior, and the world changes under the save: one more
+	# robot of MAP.210 goes, which the load must bring back.
+	var ok: bool = await _go(210, 27, "210")
+	_check(ok, "walked out of MAP.214 into the world")
+	var extra: int = -1
+	var lvl = _main.get("_current_level")
+	for e in get_tree().get_nodes_in_group("enemy"):
+		if lvl.enemies != null and lvl.enemies.is_ancestor_of(e) and e.has_meta("marker_off") \
+				and int(e.get_meta("marker_off")) != victim_off and not bool(e.call("is_dead")) \
+				and not bool(e.get("indestructible")):
+			e.call("take_damage", 1.0e6)
+			if bool(e.call("is_dead")):
+				extra = int(e.get_meta("marker_off"))
+				break
+	_check(extra >= 0 and not _enemy_alive_here(extra),
+		"after the save another robot of MAP.210 dies (@%05x)" % extra)
+	ok = await _load(SAVE_SLOT, "214")
+	_check(ok, "the save loads back into zone MAP.214")
+	if not ok:
+		return
+	_check(_main.get("_mission") != null and _active() == "MAP.214", "the scene is up with MAP.214 active")
+	_check(player.global_position.distance_to(pos) < 300.0,
+		"the player is back where the save left them (d=%.0f)" % player.global_position.distance_to(pos))
+	_check(is_equal_approx(float(player.get("health")), hp), "health comes back from the save")
+	_check(not _enemy_alive_here(int(spoil["robot"])) and not _pickup_here(int(spoil["item"])),
+		"MAP.214 keeps its dead robot and its taken item")
+	_check(String(_main.get("_prev_map_name")) == "MAP.215", "the return register is MAP.215 again")
+	_check(int(_main.get("_objectives_left")) == left_before, "the objective counter comes back")
+	var waiting: Dictionary = _main.get("_zone_state")
+	_check(not _built("MAP.210") and not _built("MAP.215") and waiting.has("MAP.210")
+		and waiting.has("MAP.215") and waiting.has("MAP.218"),
+		"only MAP.214 is built; the other zones' overlays wait (%s)" % str(waiting.keys()))
+	# The return door after the load: back into MAP.215, built now from its
+	# waiting overlay.
+	ok = await _go(0, 0, "215")
+	_check(ok and _active() == "MAP.215" and _marker_gap(0) < 700.0,
+		"the return door leads into MAP.215 at its marker set 0 (d=%.0f)" % _marker_gap(0))
+	_check(not (_main.get("_zone_state") as Dictionary).has("MAP.215"),
+		"MAP.215 took its overlay when it was built")
+	ok = await _go(214, 10, "214")
+	_check(ok and not _enemy_alive_here(int(spoil["robot"])) and not _pickup_here(int(spoil["item"])),
+		"back in MAP.214 the robot is still dead and the item still gone")
+	# The world: the robot killed after the save is back, the one before is not.
+	ok = await _go(210, 27, "210")
+	_check(ok and not _enemy_alive_here(victim_off) and (extra < 0 or _enemy_alive_here(extra)),
+		"the world comes up as saved: the robot killed before the save dead, the one after alive (@%05x)"
+		% extra)
+	ok = await _go(214, 10, "214")
+	_check(ok, "back into MAP.214 for the rest of the run")
+
+## 7b. Saved in phase MAP.217 after the phases carried a robot, an item and
+## a dent from MAP.210 and MAP.216 and the jeep counted [M3]: the load puts
+## the world into MAP.217 before it is built and everything is still there.
+## Then the same session as a v0.3 per-map save loaded with the flag up,
+## and the mission save loaded with the flag DOWN.
+func _phase_save_load(spoil_217: Dictionary, left_before: int) -> void:
+	var player: CharacterBody3D = _main.get("player")
+	var left: int = int(_main.get("_objectives_left"))
+	var pos: Vector3 = player.global_position
+	_check(bool(_main.call("save_to_slot", SAVE_SLOT)), "the game saves in phase MAP.217")
+	var slot2: Dictionary = SaveGame.read(SAVE_SLOT)
+	var zones: Dictionary = slot2.get("zones", {})
+	_check(String(slot2.get("map", "")) == "MAP.217", "the save names MAP.217 as the map")
+	_check((slot2.get("phases", {}) as Dictionary).get("MAP.210", "") == "MAP.217",
+		"the save names the world's phase MAP.217 (%s)" % str(slot2.get("phases")))
+	_check(zones.has("MAP.217") and zones.has("MAP.216") and zones.has("MAP.210"),
+		"the phases the world left behind keep their overlays in the save (%s)" % str(zones.keys()))
+	var ok: bool = await _load(SAVE_SLOT, "217")
+	_check(ok, "the save loads back into the mission scene in phase MAP.217")
+	if not ok:
+		return
+	_check(_main.get("_mission") != null and _active() == "MAP.217",
+		"the loaded world zone is MAP.217, not the map it was baked from")
+	_check(int(_main.get("_objectives_left")) == left and left == left_before - 1,
+		"the counted [M3] stays counted (%d left)" % int(_main.get("_objectives_left")))
+	if not spoil_217.is_empty():
+		_check_carried(spoil_217, "MAP.216 → MAP.217, saved and loaded")
+	_check(String(_main.get("_prev_map_name")) == "MAP.215", "the return register is MAP.215")
+	var waiting: Dictionary = _main.get("_zone_state")
+	_check(waiting.has("MAP.216") and waiting.has("MAP.210"),
+		"the phases left behind wait under their own maps (%s)" % str(waiting.keys()))
+
+	# --- 7c. The same session as a v0.3 per-map save, flag up ----------
+	# What the per-map runtime writes: the map, the previous-map register and
+	# the per-map overlay, no mission, no phases, no mission tags.
+	var legacy_state: Dictionary = {}
+	for mn in zones:
+		var o: Dictionary = (zones[mn] as Dictionary).duplicate()
+		o.erase("mission")
+		legacy_state[mn] = o
+	var legacy: Dictionary = {
+		"version": SaveGame.VERSION_MAP,
+		"time": slot2.get("time", ""),
+		"map": "MAP.217",
+		"prev_map": slot2.get("return_zone", ""),
+		"map_state": legacy_state,
+		"player": slot2["player"],
+		"objectives": slot2["objectives"],
+		"mission_start_map": slot2.get("mission_start_map", ""),
+		"stats": slot2.get("stats", {}),
+	}
+	_check(SaveGame.write(SAVE_SLOT, legacy) and _header_version(SAVE_SLOT) == SaveGame.VERSION_MAP,
+		"a per-map save is written as format %d" % _header_version(SAVE_SLOT))
+	ok = await _load(SAVE_SLOT, "217")
+	_check(ok, "the v0.3 per-map save loads with the flag up")
+	if ok:
+		_check(_main.get("_mission") != null and _active() == "MAP.217",
+			"it plays inside the mission scene, the world zone in phase MAP.217")
+		var ms: Dictionary = _main.get("_map_state")
+		var leftover: Array = []
+		for mn in ms:
+			if (_main.get("_zones") as Dictionary).has(mn) or (_main.get("_phases") as Dictionary).has(mn):
+				leftover.append(mn)
+		_check(leftover.is_empty() and (_main.get("_zone_state") as Dictionary).has("MAP.216")
+			and (_main.get("_zone_state") as Dictionary).has("MAP.214"),
+			"its per-map overlays became the zones' state (per-map overlay left for scene maps: %s)"
+			% str(leftover))
+		_check(int(_main.get("_objectives_left")) == left, "the counter comes back (%d left)" % left)
+		if not spoil_217.is_empty():
+			_check_carried(spoil_217, "the v0.3 save in phase MAP.217")
+		_check(String(_main.get("_prev_map_name")) == "MAP.215", "the previous-map register became the return zone")
+		ok = await _go(214, 10, "214")
+		_check(ok and not _enemy_alive_here(int(_spoil_214.get("robot", -1)))
+			and not _pickup_here(int(_spoil_214.get("item", -1))),
+			"an interior walked into takes its per-map overlay: MAP.214's robot dead, item gone")
+		if ok:
+			ok = await _go(0, 10, "217")
+			_check(ok and _active() == "MAP.217", "and the return door leads back into MAP.217")
+
+	# --- 7d. The mission save with the flag DOWN ------------------------
+	# The per-map runtime plays it: the map is the zone, the zones are its
+	# per-map overlay, the return zone its previous-map register.
+	await _wait(func() -> bool: return not bool(_main.get("_level_busy")) and _settled(), 30.0)
+	Settings.mission_scenes = false
+	ok = await _load(SAVE_SLOT, "217", slot2)
+	_check(ok, "the mission save loads with the flag down")
+	if ok:
+		var lvl = _main.get("_current_level")
+		_check(_main.get("_mission") == null and (lvl.origin as Vector3) == Vector3.ZERO,
+			"the per-map runtime has MAP.217 up on its own")
+		var ms2: Dictionary = _main.get("_map_state")
+		_check(ms2.has("MAP.217") and ms2.has("MAP.216") and ms2.has("MAP.214") and ms2.has("MAP.210"),
+			"the save's zones are the per-map overlay (%s)" % str(ms2.keys()))
+		_check(player.global_position.distance_to(pos) < 300.0,
+			"the player stands where the save left them (d=%.0f)" % player.global_position.distance_to(pos))
+		_check(int(_main.get("_objectives_left")) == left, "the counter comes back (%d left)" % left)
+		if not spoil_217.is_empty():
+			_check_carried(spoil_217, "the mission save in the per-map runtime")
+		_check(String(_main.get("_prev_map_name")) == "MAP.215", "the return zone is the previous-map register")
+		ok = await _go(214, 10, "214")
+		_check(ok and _main.get("_mission") == null and not _enemy_alive_here(int(_spoil_214.get("robot", -1)))
+			and not _pickup_here(int(_spoil_214.get("item", -1))),
+			"MAP.214 loads per map with the save's overlay: its robot dead, its item gone")
+	Settings.mission_scenes = true
 
 func _active() -> String:
 	return String(_main.get("_active_zone"))

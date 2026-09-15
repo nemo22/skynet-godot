@@ -283,6 +283,14 @@ func _run() -> void:
 			_check(av != null and is_instance_valid(av), "client has an avatar on the host")
 			ok = await _wait(func() -> bool: return _left.has(cid), 90.0)
 			_check(ok, "client left cleanly after --quit-after")
+			if ok:
+				# Leaving is the first thing the client's quit does, not the
+				# last: its cache manifest is written as the process exits.
+				# _finish used to kill it right here, so what it had baked
+				# (MAP.605's level scene, meshes, textures — rebuilt over the
+				# host's copies, which were not in the manifest yet either)
+				# was never recorded, and every run rebuilt all of it twice.
+				await _wait(func() -> bool: return not OS.is_process_running(_client_pid), 20.0)
 	_finish()
 
 ## What a hostile client could send, fed straight into the server's

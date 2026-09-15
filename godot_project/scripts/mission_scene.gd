@@ -149,18 +149,29 @@ static func source_hash_of(maps: PackedInt32Array, bsa: BSAReader) -> int:
 ## Is the mission scene on disk this bake's, built from this data, and
 ## written by this installation?
 static func is_current(start: int, bsa: BSAReader) -> bool:
+	return stale_reason(start, bsa).is_empty()
+
+## Why the mission scene on disk cannot be used, "" when it can. The bake
+## says it in the log: a rebake that happens for no visible reason is
+## nearly always the last of these — the scene, or a level scene or asset
+## it stands on, that this installation's trust manifest has no record of
+## (a checkout moved to another disk or machine without its user://
+## cache_manifest rebuilds each mission once, the first time it is played).
+static func stale_reason(start: int, bsa: BSAReader) -> String:
 	var p := scene_path(start)
 	if p.is_empty() or not FileAccess.file_exists(p):
-		return false
+		return "not baked yet"
 	var meta := _read_sidecar(p)
 	if int(meta.get("bake_version", "-1")) != MISSION_BAKE_VERSION:
-		return false
+		return "baked by bake %s, this is %d" % [meta.get("bake_version", "?"), MISSION_BAKE_VERSION]
 	var maps := _sidecar_maps(meta)
 	if maps.is_empty():
-		return false
+		return "its sidecar names no maps"
 	if int(meta.get("source_hash", "0")) != source_hash_of(maps, bsa):
-		return false
-	return Assets.is_trusted(p)
+		return "the maps or heightmaps it was baked from changed"
+	if not Assets.is_trusted(p):
+		return "it or a scene it stands on was not written by this installation"
+	return ""
 
 # ---------------------------------------------------------------------
 # Layout

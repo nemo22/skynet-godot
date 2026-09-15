@@ -1264,10 +1264,12 @@ func build_mission_scene(start: int, shared: Dictionary = {}) -> String:
 			push_warning("[assets] cannot open %s for mission %d"
 				% [SkynetPaths.map_archive, start])
 			return ""
-	if MissionScene.is_current(start, bsa):
+	var stale: String = MissionScene.stale_reason(start, bsa)
+	if stale.is_empty():
 		hits += 1
 	else:
 		misses += 1
+		print("[mission] %d: baking MISSION.%03d.scn — %s" % [start, start, stale])
 		p = MissionScene.save(start, bsa, shared)
 	if mine:
 		bsa.close()
