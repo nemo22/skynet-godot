@@ -112,7 +112,7 @@ var untrusted: int = 0
 
 var _palette: PackedColorArray = PackedColorArray()
 var _tex_files: Dictionary = {}          # bank → TexFile / false
-var _tex_headers: Dictionary = {}        # bank → PackedInt32Array [w, h, frames]*
+var _tex_headers: Dictionary = {}        # bank → PackedInt32Array [w, h, frames, ms]*
 var _mem: Dictionary = {}                # path → Resource (session cache)
 ## Session-cache generations: level_started() advances `_gen`, every use
 ## stamps the entry, and entries no recent level used are let go.
@@ -858,6 +858,11 @@ func _tex_header(bank: int) -> PackedInt32Array:
 ## TextureNNN.parse's layout decisions, minus the pixels (see there for
 ## the format). A sprite record whose run-length data turns out to be
 ## broken still reports its header size here.
+##
+## Four numbers a record: width, height, frame count and the record's own
+## frame period in milliseconds (descriptor +22, 0 where it says nothing).
+## DOS reads that period for every animated texture it draws — see the
+## TEXTURE.NNN header — so it belongs with the size and the frame count.
 static func _parse_tex_header(b: PackedByteArray) -> PackedInt32Array:
 	var out := PackedInt32Array()
 	var size: int = b.size()
@@ -873,12 +878,14 @@ static func _parse_tex_header(b: PackedByteArray) -> PackedInt32Array:
 		var w: int = 0
 		var h: int = 0
 		var frames: int = 0
+		var ms: int = 0
 		var desc: int = b.decode_u32(ro)
 		if desc == 0:
 			w = 1                                # solid colour
 			h = 1
 			frames = 1
 		elif desc + 28 <= size:
+			ms = b.decode_u16(desc + 22)
 			var dw: int = b.decode_u16(desc + 4)
 			var dh: int = b.decode_u16(desc + 6)
 			var pix_off: int = desc + b.decode_u32(desc + 14)
@@ -910,6 +917,7 @@ static func _parse_tex_header(b: PackedByteArray) -> PackedInt32Array:
 		out.append(w)
 		out.append(h)
 		out.append(frames)
+		out.append(ms if frames > 1 else 0)
 	return out
 
 ## Record `rec` of TEXTURE.<bank> as a saveable texture; index 0 is
@@ -934,9 +942,18 @@ func _texture_image(bank: int, rec: int, transparent0: bool) -> Image:
 ## Number of frames of a record (1 for a still; 0 when unreadable).
 func record_frames(bank: int, rec: int) -> int:
 	var h := _tex_header(bank)
-	if rec < 0 or rec * 3 + 2 >= h.size():
+	if rec < 0 or rec * 4 + 2 >= h.size():
 		return 0
-	return h[rec * 3 + 2]
+	return h[rec * 4 + 2]
+
+## How long DOS holds one frame of an animated record, in milliseconds
+## (descriptor +22; 0 for a still or an unreadable record). The fires of
+## banks 208/216/218 say 114 ms, bank 206's burning drum 142.
+func record_frame_ms(bank: int, rec: int) -> int:
+	var h := _tex_header(bank)
+	if rec < 0 or rec * 4 + 3 >= h.size():
+		return 0
+	return h[rec * 4 + 3]
 
 ## World size per texel for a billboard of this record: the DOS sprite
 ## is SPRITE_PIXEL_SIZE units per DOS pixel whatever resolution the
@@ -948,18 +965,18 @@ func sprite_pixel_size(bank: int, rec: int, tex: Texture2D, dos_pixel: float) ->
 
 ## Number of records in TEXTURE.<bank> (0 when the file is missing).
 func record_count(bank: int) -> int:
-	return _tex_header(bank).size() / 3
+	return _tex_header(bank).size() / 4
 
 ## Native DOS pixel size of a record (the UV divisor).
 func record_size(bank: int, rec: int) -> Vector2i:
 	var h := _tex_header(bank)
-	var n: int = h.size() / 3
+	var n: int = h.size() / 4
 	if n == 0:
 		return Vector2i(64, 64)
 	var ri: int = clampi(rec, 0, n - 1)
-	if h[ri * 3] <= 0:
+	if h[ri * 4] <= 0:
 		return Vector2i(64, 64)
-	return Vector2i(h[ri * 3], h[ri * 3 + 1])
+	return Vector2i(h[ri * 4], h[ri * 4 + 1])
 
 ## A saveable texture from an Image. (Never go through ImageTexture:
 ## on the headless renderer get_image() comes back empty.)
@@ -1596,6 +1613,6 @@ func _import_animations(bank: int) -> void:
 		return
 	if bank in EFFECT_BANKS and h[2] > 0:
 		ex.call("bank_frames", bank, 0)
-	for r in h.size() / 3:
-		if h[r * 3 + 2] > 1:
+	for r in h.size() / 4:
+		if h[r * 4 + 2] > 1:
 			ex.call("bank_frames", bank, r, 2)

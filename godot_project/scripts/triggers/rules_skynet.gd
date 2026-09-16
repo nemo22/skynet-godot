@@ -224,7 +224,11 @@ const USE_REACH: float = 130.0
 ## three hundred units up a tower wall, which no radius in the original
 ## would reach.
 const USE_RAY: float = 600.0
-const DESTRUCT_DAMAGE_PER_STAGE: float = 16.0  # handler 0x120433 stage step
+## The step the destructible handler (v1.01 0x120833, v1.00 0x120433)
+## adds to an object's damage counter, one call at a time; the stage it
+## shows is counter >> 4. The handler is passed no damage value, so this
+## is a whole stage per qualifying hit and never a fraction of one.
+const DESTRUCT_DAMAGE_PER_STAGE: float = 16.0
 
 # ---------------------------------------------------------------------
 # Kinds

@@ -467,7 +467,7 @@ func on_player_hit(file_off: int, damage: float) -> bool:
 		# comes from registration (act 0x18/0x19 OR a TRANSFRM.PRS name
 		# match — cars carry bit1 + HP but act 0x00 in the MAP data).
 		if _destr.has(file_off):
-			acted = _advance_destructible(e, damage)
+			acted = _advance_destructible(e)
 		elif not spent and ((e.state_byte & 2) != 0 or ((e.state_byte & 4) != 0 and depleted)):
 			_trigger(e)
 			acted = true
@@ -1424,16 +1424,27 @@ func _apply_mover_transform(node: Node3D, m: Dictionary) -> void:
 	# The AnimatableBody3D child follows through the global-transform
 	# notification (main.gd _make_animatable keeps sync_to_physics off).
 
-## Destructible damage-stage advance (handler 0x120433): the damage
-## counter steps one TRANSFRM.PRS stage per DESTRUCT_DAMAGE_PER_STAGE
-## points; past the last stage the object is a spent wreck (or, with no
-## stage meshes, vanishes).
-func _advance_destructible(e: MapFile.Entity, damage: float) -> bool:
+## Destructible damage-stage advance (handler 0x120833, act 0x19). The
+## handler is never told HOW HARD the object was hit — ObjHit calls it
+## with no damage value at all; it adds 16 to the object's counter and
+## takes the stage as counter >> 4. So one qualifying hit moves a
+## TRANSFRM.PRS wreck on by EXACTLY ONE stage, whether it was a pipe or
+## a rocket, and what decides how many blows an object takes is its hit
+## points, not its stage count.
+##
+## The port stepped `damage / DESTRUCT_DAMAGE_PER_STAGE` stages, so a
+## single 50-point pipe blow jumped three stages at once and a car fell
+## apart in one swing. The counter is kept in DOS units so the constant
+## still means what its name says.
+##
+## Past the last stage the object is a spent wreck (or, with no stage
+## meshes, vanishes).
+func _advance_destructible(e: MapFile.Entity) -> bool:
 	var d: Dictionary = _destr[e.file_off]
 	var meshes: Array = d["meshes"]
 	if d["stage"] >= meshes.size() - 1 and (meshes.size() > 1 or _spent.has(e.file_off)):
 		return false                          # final wreck / already gone
-	d["accum"] += damage
+	d["accum"] += DESTRUCT_DAMAGE_PER_STAGE
 	var want: int = int(d["accum"] / DESTRUCT_DAMAGE_PER_STAGE)
 	var node: Node3D = _nodes.get(e.file_off)
 	if meshes.size() > 1:
@@ -1489,8 +1500,8 @@ func _break_down(e: MapFile.Entity) -> void:
 	print("[action] destructible @%05x struck by a chain" % e.file_off)
 	var was_spent: bool = _spent.has(e.file_off)
 	# (The stage itself is announced by _advance_destructible, which every
-	# way of damaging the thing goes through.)
-	_advance_destructible(e, DESTRUCT_DAMAGE_PER_STAGE)
+	# way of damaging the thing goes through — one stage a call.)
+	_advance_destructible(e)
 	if was_spent or not _spent.has(e.file_off):
 		return                                   # still standing, or long gone
 	_hp[e.file_off] = 0.0

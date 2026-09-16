@@ -162,11 +162,17 @@ const STEP_PROBE: float = 14.0                 # minimum forward advance
 #   pool   weapon +0x4c shared ammo pool, cost = +0x50 rounds per shot
 #   snd    fire sound: weapon +0x48, or the ammo type's +0x1c when -1
 #   sel    select sound id (+0x54), dry = empty-pool sound id (+0x58)
+#   isnd   impact sound id, the ammo type's +0x20 (-1 = silent). Only the
+#          melee swing reads it here; every other family's impact noise
+#          comes out of the projectile / explosion it spawns.
 #   vx     viewmodel screen X (+0x00); cfa = WEAPON%02d.CFA
 # Slot identities follow STRINGS.PRS + the CFA art (confirmed in-game
 # 2026-07-27). JEEP PLASMA is record 13+ (vehicle/MP), not in the cycle.
 var _weapons: Array = [
-	{"name": "PIPE",             "kind": "melee",   "dmg": 50.0,  "rate": 2,  "pool": -1, "cost": 0,  "snd": "SWISH1.RAW",   "sel": -1, "dry": -1, "cfa": "WEAPON00.CFA", "animspd": 18, "vx": 62},
+	# The pipe's ammo type is 17 (0x40b7a): 50 damage, no impact sprite,
+	# impact sound id 0 = PIPEHIT1.RAW — the metallic clang the original
+	# makes on a crate. The port played HIT2.RAW (id 28) for every swing.
+	{"name": "PIPE",             "kind": "melee",   "dmg": 50.0,  "rate": 2,  "pool": -1, "cost": 0,  "snd": "SWISH1.RAW",   "sel": -1, "dry": -1, "isnd": 0, "cfa": "WEAPON00.CFA", "animspd": 18, "vx": 62},
 	{"name": "UZI",              "kind": "bullet",  "dmg": 10.0,  "rate": 5,  "pool": 0,  "cost": 1,  "snd": "SHOTS5.RAW",   "sel": 9,  "dry": 10, "cfa": "WEAPON01.CFA", "animspd": 16, "vx": 156},
 	{"name": "ASSAULT RIFLE",    "kind": "bullet",  "dmg": 20.0,  "rate": 4,  "pool": 0,  "cost": 3,  "snd": "SHOTS2.RAW",   "sel": 9,  "dry": 10, "cfa": "WEAPON02.CFA", "animspd": 16, "vx": 154},
 	{"name": "MACHINE GUN",      "kind": "bullet",  "dmg": 20.0,  "rate": 8,  "pool": 0,  "cost": 4,  "snd": "FASTGUN2.RAW", "sel": 9,  "dry": 10, "cfa": "WEAPON03.CFA", "animspd": 16, "vx": 154},
@@ -1802,7 +1808,8 @@ func _shoot(idx: int = -1) -> void:
 	# viewmodel swing animation (CFA frames) is the only visible cue.
 	if kind == "melee":
 		# Melee reaches from the eye, not from the gun corner.
-		_melee_hit(_cam.global_position + fwd * 40.0, fwd, dmg)
+		_melee_hit(_cam.global_position + fwd * 40.0, fwd, dmg,
+			int(w.get("isnd", -1)))
 		return
 
 	var tint: Color = _KIND_COLOR.get(kind, Color.WHITE)
@@ -1991,7 +1998,13 @@ func cycle_throwable(dir: int) -> bool:
 ## camera up to MELEE_RANGE; if it lands on a damageable node we apply
 ## `dmg` and play the impact sound. No tracer, no muzzle flash — the
 ## viewmodel swing animation is the only on-screen feedback.
-func _melee_hit(from: Vector3, fwd: Vector3, dmg: float) -> void:
+##
+## `isnd` is the swing's own ammo record +0x20, so the weapon table
+## decides what the blow sounds like rather than this function. DOS
+## impact FUN_0012311f plays it wherever the swing lands, prop or
+## machine alike; id 0 is a real sound (PIPEHIT1.RAW) and only -1 means
+## silence, which is why it is passed as an int and not as a name.
+func _melee_hit(from: Vector3, fwd: Vector3, dmg: float, isnd: int) -> void:
 	var space := get_world_3d().direct_space_state
 	if space == null:
 		return
@@ -2006,7 +2019,7 @@ func _melee_hit(from: Vector3, fwd: Vector3, dmg: float) -> void:
 	while n != null and not n.has_method("take_damage"):
 		n = n.get_parent()
 	if n != null and n != self:
-		Audio.play_sfx_3d("HIT2.RAW", hit["position"], -3.0)
+		Audio.play_id_3d(isnd, hit["position"], -3.0)
 		_deal(n, dmg)
 
 ## Activate action (Controls "activate", default F): operate the door or

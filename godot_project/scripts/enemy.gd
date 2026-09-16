@@ -16,7 +16,8 @@
 ##   9  flyers (HK): script sets the altitude target (var 56).
 ##   13 tanks: script sets speed (var 48) and heading (var 44).
 ##   2/8 turret segments: aim one axis (0 pitch, 1 yaw) within limits at
-##      the turn rate while the player is inside the engage range; fire
+##      the turn rate while the player is inside the engage range AND
+##      perceived, and at a fixed rest pose the rest of the time; fire
 ##      from the segment's muzzle. Child segments (guns on a rotating
 ##      head) are separate types on the same actor.
 ##   0/10/11 static bases, machines, transports: animate only.
@@ -53,7 +54,11 @@ const BOLT_SPEED_SCALE: float = 5.0
 const FIRE_RATE_DIV: float = 128.0
 ## Aim cone before a shot is released — DOS 0x8c of 2048 (24.6°).
 const AIM_CONE: float = 140.0 / 2048.0 * TAU
-## DOS perception cutoff (FUN_0013bcda: 0x7d1).
+## DOS perception cutoff (FUN_0013c4da: `< 0x7d1`, so 2000 units). It is
+## a hard cap on the whole engine, not a per-type field: the heavy
+## turrets carry a 2200-unit engage range and still cannot perceive
+## past 2000, which is why they sit at rest while a distant player is
+## well inside their reach.
 const PERCEPTION_RANGE: float = 2000.0
 ## Hover handler 0x13c300 vertical limits: sinks toward the player at
 ## 250 u/s, climbs at 300 u/s, and never goes below (p6 - 100) above the
@@ -256,6 +261,12 @@ var _wander_target: Vector3 = Vector3.ZERO
 var _wander_t: float = 0.0
 var _blocked: bool = false
 var _seen: bool = false
+## DOS alert bit 0x8000 at record+0xc. The damage routine (FUN_00139819)
+## sets it on the root and on every child segment; perception
+## (FUN_0013c4da) consumes it on the next tick and reports "perceived"
+## for that one tick whatever the distance and the line of sight say.
+## So a hit buys exactly one free "I see you" — no more.
+var _alert: bool = false
 var _dormant_dist: float = 0.0                 # > 0: trap, explode when near
 var _ticks: int = 0
 ## This actor's phase in the staggered checks (a multiple of 3 and 4).
@@ -609,7 +620,7 @@ func _tick_data(delta: float) -> void:
 		7, 6, 9, 13:
 			_move_data(delta, sense)
 	for seg in _segs:
-		_aim_segment(seg, delta)
+		_aim_segment(seg, delta, bool(sense.get("see", false)))
 	for m in _machines:
 		_tick_machine(m, delta, sense)
 	# Root shooter.
@@ -635,7 +646,11 @@ func _sense() -> Dictionary:
 	var dist: float = flat.length()
 	var angle: int = _dos_angle(flat)
 	var facing: int = int(round(global_rotation.y / TAU * 2048.0)) & 0x7FF
-	s["see"] = dist < PERCEPTION_RANGE and _has_los()
+	# FUN_0013c4da: the alert bit 0x8000 short-circuits the whole test and
+	# is cleared here, so a machine that was just shot perceives the player
+	# for one tick and then goes back to measuring for itself.
+	s["see"] = _alert or (dist < PERCEPTION_RANGE and _has_los())
+	_alert = false
 	s["dist"] = dist
 	s["bearing"] = (angle - facing) & 0x7FF
 	s["angle"] = angle
@@ -954,15 +969,41 @@ func _has_segment_node(n: Node3D) -> bool:
 			return true
 	return false
 
-## DOS turret state 2: track the player on the segment's axis within
-## its limits while inside the engage range, then fire from it.
-func _aim_segment(seg: Dictionary, delta: float) -> void:
+## Where a turret head points when it has nothing to track: DOS state 2
+## (FUN_00137965) aims it at (self.x, self.y-200, self.z-300) — a point
+## just off its own origin, so the pose is the same wherever the turret
+## stands. DOS y counts downward and the port mirrors y and z when it
+## reads a DOS position (level_behaviour.entity_pos), so the offset is
+## +200 up and +300 along world Z here. The point is in WORLD space, not
+## the turret's own: every turret in the original rests looking the same
+## way, as far as its yaw limits let it.
+const TURRET_REST: Vector3 = Vector3(0.0, 200.0, 300.0)
+
+## DOS turret state 2 (FUN_00137965), once per frame: the head tracks
+## the player while he is inside the engage range (type field dw8) AND
+## perceived; otherwise it turns toward the rest pose above and does not
+## shoot (the handler skips the fire routine on that branch). Either way
+## it KEEPS TURNING at its own rate and clamps onto the target angle —
+## it never freezes and never sweeps on its own.
+##
+## The port used to return early out of range, so the head simply stopped
+## where it was. With perception now capped at 2000 units (FUN_0013c4da)
+## — below the 2200-unit engage range of the heavy turrets — and a hit
+## granting a single perceived tick, the head snaps to the shooter and
+## then swings back toward the rest pose, which is what the DOS tower
+## does and what the playtest described as "shaking".
+func _aim_segment(seg: Dictionary, delta: float, see: bool) -> void:
 	var node: Node3D = seg["node"]
-	if not is_instance_valid(node) or _player == null:
+	if not is_instance_valid(node):
 		return
-	var to_g: Vector3 = _player.global_position + Vector3(0.0, 60.0, 0.0) - node.global_position
-	if to_g.length() > seg["range"]:
-		return
+	var engaged: bool = false
+	var to_g: Vector3 = TURRET_REST
+	if _player != null and see:
+		var to_p: Vector3 = _player.global_position + Vector3(0.0, 60.0, 0.0) \
+			- node.global_position
+		if to_p.length() <= float(seg["range"]):
+			to_g = to_p
+			engaged = true
 	var parent: Node3D = node.get_parent() as Node3D
 	var pbasis: Basis = parent.global_transform.basis if parent != null else Basis()
 	var d: Vector3 = pbasis.inverse() * to_g
@@ -981,6 +1022,8 @@ func _aim_segment(seg: Dictionary, delta: float) -> void:
 		var hi: float = -seg["amin"]
 		want = clampf(want, minf(lo, hi), maxf(lo, hi))
 		node.rotation.x = _approach_angle(node.rotation.x, want, rate)
+	if not engaged:
+		return                                  # resting: the handler does not fire
 	var fp: Array = seg["t"].get("fire", [])
 	if not fp.is_empty():
 		_try_fire(node, fp, delta, seg["t"])
@@ -1288,7 +1331,13 @@ func take_damage(amount: float, by_player: bool = true) -> void:
 		if _health <= 0.0:
 			_detonate_trap()
 		return
-	_seen = true                            # being shot alerts it (DOS 0x8000)
+	# DOS FUN_00139819 sets the alert bit 0x8000 on the record it hurt AND
+	# on every child segment of it; the next perception tick spends it and
+	# the machine knows where the shot came from for exactly that tick.
+	# One flag per actor covers the whole family here — the segments are
+	# children of this node and tick with it.
+	_seen = true
+	_alert = true
 	if _health <= 0.0:
 		_die()
 	elif _state == State.IDLE and _brain == null:
@@ -1310,6 +1359,7 @@ func obj_hit(amount: float) -> bool:
 			return true
 		return false
 	_seen = true
+	_alert = true                           # ObjHit alerts it too (0x8000)
 	if _health <= 0.0:
 		_die()
 		return true

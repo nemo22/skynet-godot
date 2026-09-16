@@ -203,9 +203,12 @@ func _run_map210_checks(level: LevelLoader.Level) -> void:
 	if car != null:
 		var cnode: MeshInstance3D = action._nodes.get(car.file_off)
 		var mesh_before: Mesh = cnode.mesh
+		# One hit, one stage — the DOS handler is told nothing about how
+		# hard the blow was (0x120833), so the 20 points only matter to
+		# the car's hit points.
 		action.on_player_hit(car.file_off, 20.0)
 		_check(cnode.mesh != mesh_before,
-			"car mesh swapped to damage stage after 20 damage")
+			"car mesh swapped one damage stage on one hit")
 
 	# --- 4. DISH (act 0x3b) rotates from load (state bit0 set) ---
 	var dish: LevelLoader.MapFile.Entity = null

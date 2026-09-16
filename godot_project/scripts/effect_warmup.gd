@@ -35,6 +35,9 @@ const AIData := preload("res://scripts/enemy_ai_data.gd")
 ## scripts.
 const EXTRA_BANKS: Array = [Explosion.BANK_ENEMY_DEATH, 356, 365]
 ## Sounds every fight plays whatever the ammo (Enemy / Debris / Grenade).
+## The weapons' own fire and impact sounds are not listed here: the loop
+## below walks the ammo table and warms every one it names, the pipe's
+## PIPEHIT1.RAW (type 17, sound id 0) included.
 const EXTRA_SOUNDS: Array = ["EXPLO1.RAW", "HIT2.RAW"]
 ## How far in front of the camera the warm-up effects stand: past
 ## Explosion.NEAR_SKIP and Projectile.NEAR_CLIP, close enough to be drawn.

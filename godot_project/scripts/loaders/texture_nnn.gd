@@ -16,6 +16,16 @@
 ##              +14 u32 pix_data_offset (relative to descriptor)
 ##              +18 u16 row_gap
 ##              +20 u16 depth
+##              +22 u16 ms_per_frame
+##
+## `depth` > 1 IS the "this record is animated" flag — there is no other.
+## The DOS texture fetch (FUN_00149e00, 0x149e6f) compares depth to 1,
+## and where the caller asks for frame -1 — which every world draw path
+## does, the map billboards at 0x136f28 and the mesh faces at 0x134651 —
+## it takes `frame = (ms_clock / ms_per_frame) % depth` off one
+## free-running millisecond counter. So every copy of an animated record
+## runs in lockstep, at its own record's rate: the fires at +22 = 114
+## are 8.77 fps, the burning drum of bank 206 at 142 is 7.04 fps.
 ##
 ## Pixel data has TWO on-disk layouts, selected by `row_gap`:
 ##

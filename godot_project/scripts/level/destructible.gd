@@ -1,9 +1,10 @@
 ## A destructible object — a car that wrecks in stages, a wall a ram
 ## punches through, a sign (docs/map_format_plan.md §2).
 ##
-## DOS: act 0x18/0x19 (handler 0x120433) steps the mesh through the
-## damage stages TRANSFRM.PRS lists for its name, one stage per
-## DESTRUCT_DAMAGE_PER_STAGE points of damage; an object with no stage
+## DOS: act 0x18/0x19 (handler 0x120833) steps the mesh through the
+## damage stages TRANSFRM.PRS lists for its name — act 0x19 by exactly
+## one stage per qualifying hit, whatever the hit was worth, since the
+## handler is passed no damage value at all; an object with no stage
 ## list vanishes when its HP is gone. A chain can break one outright
 ## (MAP.248's girder ram). The body is the hit target: the player's
 ## rays parent-walk from the shape to this node.

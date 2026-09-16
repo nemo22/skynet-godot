@@ -1207,6 +1207,11 @@ static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
 			# A record with several frames is a DOS animated billboard —
 			# the fires (216 flames, 218 campfires, 208/206 burning drums)
 			# store four, played in a loop from a per-entity start frame.
+			# The start frame is the port's: DOS runs every animated record
+			# off ONE free-running millisecond clock (FUN_00149e00 reads it
+			# at 0x149e7a), so its fires all flicker in step. Kept because a
+			# yard of identical flames in lockstep reads worse than DOS
+			# looks — the rate below IS the record's own.
 			var anim: SpriteFrames = sprite_anim(e.sprite_index)
 			if anim != null:
 				var a := AnimatedSprite3D.new()
@@ -1283,9 +1288,11 @@ static func _limit_one(n: Node, xf: Transform3D, radius: float) -> void:
 	gi.visibility_range_end = FOG_FAR + r + DRAW_MARGIN * 2.0
 	gi.visibility_range_end_margin = DRAW_MARGIN
 
-## Frames per second of the DOS animated billboards. An estimate: the
-## rate of the scenery animation is not traced yet (the effect pool's
-## explosions run near 24 fps, which makes a four-frame fire flicker).
+## Fallback rate for an animated billboard whose record does not say how
+## fast it runs. Every record in the shipped data does say — DOS keeps
+## the period in milliseconds at descriptor +22 and divides its own
+## millisecond clock by it (FUN_00149e00, 0x149e7f) — so this only
+## catches a record with a zero there.
 const SPRITE_ANIM_FPS: float = 12.0
 static var _anim_cache: Dictionary = {}      # sprite index → SpriteFrames or null
 
@@ -1294,14 +1301,22 @@ static var _anim_cache: Dictionary = {}      # sprite index → SpriteFrames or 
 ## into the asset cache (Explosion.bank_frames — a single-frame record is
 ## remembered there as such, never decoded); the SpriteFrames are kept for
 ## the session.
+##
+## The speed is the record's own: 114 ms a frame for the fires of banks
+## 208/216/218 (8.77 fps), 142 for bank 206's burning drum (7.04). The
+## port used to run every one of them at a guessed 12.
 static func sprite_anim(sprite_index: int) -> SpriteFrames:
 	if _anim_cache.has(sprite_index):
 		return _anim_cache[sprite_index]
-	var frames: Array = Explosion.bank_frames(sprite_index >> 7, sprite_index & 0x7F, 2)
+	var bank: int = sprite_index >> 7
+	var rec: int = sprite_index & 0x7F
+	var frames: Array = Explosion.bank_frames(bank, rec, 2)
 	var sf: SpriteFrames = null
 	if frames.size() >= 2:
+		var ms: int = Assets.record_frame_ms(bank, rec)
 		sf = SpriteFrames.new()
-		sf.set_animation_speed("default", SPRITE_ANIM_FPS)
+		sf.set_animation_speed("default",
+			1000.0 / float(ms) if ms > 0 else SPRITE_ANIM_FPS)
 		sf.set_animation_loop("default", true)
 		for t in frames:
 			sf.add_frame("default", t)
@@ -1332,10 +1347,11 @@ static func _style_sprite(spr: SpriteBase3D, tex: Texture2D, pixel_size: float =
 	spr.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
 	spr.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
 
-## Spawn a destruction drop (FUN_00124119): one of the drop type's
-## sprites at random (0 = nothing), placed on the ground under `pos`
-## (Godot coordinates); a pickup when the item table lists it.
-static func spawn_drop(level: Level, pos: Vector3, drop_type: int) -> Sprite3D:
+## Spawn a destruction drop (v1.01 FUN_00124619, v1.00 FUN_00124119):
+## one of the drop type's sprites at random (0 = nothing), placed on the
+## ground under `pos` (Godot coordinates); a pickup when the item table
+## lists it.
+static func spawn_drop(level: Level, pos: Vector3, drop_type: int) -> Node3D:
 	if level == null or level.sprites == null:
 		return null
 	if drop_type < 0 or drop_type >= PickupData.DROPS.size():
@@ -1355,19 +1371,40 @@ static func spawn_drop(level: Level, pos: Vector3, drop_type: int) -> Sprite3D:
 ## level.sprites, which carries the zone origin, and the heightmap below
 ## is sampled in map coordinates — both want the DOS space, not the
 ## world one. ActionSystem.drop_requested emits zone-local for this.
-static func spawn_item(level: Level, pos: Vector3, si: int) -> Sprite3D:
+##
+## A drop is an ordinary map billboard once it is down: DOS writes it into
+## the record list (v1.01 FUN_00124619) and from then on draws it through
+## the same path as the sprites the map was built with, asking for frame
+## -1 (0x136f28) — so a multi-frame record left behind ANIMATES. What the
+## wrecked cars of MAP.210 leave is exactly that: destruction type 0x68,
+## drop list 2, TEXTURE.218 records 0-3, four frames each at 114 ms. The
+## port made a plain Sprite3D here and took frame 0, so the wreck burned
+## with the fire loop playing over a still picture (playtest 2026-09-16).
+## The placed-sprite path (_build_sprites) has had the animation since
+## 2026-09-11; this one was left behind.
+static func spawn_item(level: Level, pos: Vector3, si: int) -> Node3D:
 	if level == null or level.sprites == null:
 		return null
 	var tex: Texture2D = Assets.texture(si >> 7, si & 0x7F, true)
 	if tex == null:
 		return null
-	var spr: Sprite3D
+	var spr: SpriteBase3D
 	if PickupData.ITEMS.has(si):
 		var p := Pickup.new()
 		p.setup_item(si)
 		spr = p
 	else:
-		spr = Sprite3D.new()
+		var anim: SpriteFrames = sprite_anim(si)
+		if anim != null:
+			var a := AnimatedSprite3D.new()
+			a.sprite_frames = anim
+			a.play("default")
+			spr = a
+		else:
+			spr = Sprite3D.new()
+		# No `fullbright` mark is needed here: _style_sprite leaves the
+		# sprite unshaded, and the pass that shades indoor billboards
+		# (main._light_level) has already run by the time anything drops.
 	var px: float = Assets.sprite_pixel_size(si >> 7, si & 0x7F, tex,
 		pixel_scale_for(si))
 	_style_sprite(spr, tex, px)
