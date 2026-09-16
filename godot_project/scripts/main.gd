@@ -3465,7 +3465,7 @@ func cheat_state() -> Dictionary:
 const COMMAND_NAMES: Array = [
 	"ammo", "armor", "arnold", "bake", "cbane", "boom", "bots", "brightness", "killall", "wait", "floormap", "wallmap", "walkto", "movers", "what",
 	"cheats", "class", "counters", "drop", "dump", "enemies", "exit", "fly",
-	"gamma", "give", "god", "heal", "health", "help", "hp", "illbeback", "load",
+	"gamma", "give", "god", "heal", "health", "help", "hp", "illbeback", "invert", "load",
 	"map", "maps", "menu", "moon", "music", "nextlevel", "nitrous", "noclip",
 	"objectives", "occlusion", "options", "pause", "players", "pos", "quit",
 	"rebake", "save", "secondary", "shoot", "showspawns",
@@ -4092,6 +4092,12 @@ func run_command(line: String) -> String:
 			if not args.is_empty() and args[0].is_valid_float():
 				Settings.set_brightness(float(args[0]))
 			return "brightness %.2f" % Settings.brightness()
+		"invert", "invertmouse":
+			# The DOS CONTROL CONFIGURATION screen has no box for this — a
+			# port-only option, so console/settings is the only way to it.
+			if not args.is_empty():
+				Settings.set_invert_y(args[0].to_lower() in ["on", "1", "true", "yes"])
+			return "invert mouse Y: %s" % ("on" if Settings.invert_y else "off")
 		"bots":
 			if not Net.is_server():
 				return "only the host can change bots"
