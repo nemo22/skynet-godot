@@ -100,6 +100,14 @@ func _record_named(mesh: String):
 			return e
 	return null
 
+## The LIVE act byte of a record of the level that is up — the trigger
+## runtime's, since the records stopped carrying play's changes (step 5a).
+func _act_of(e) -> int:
+	var lvl = _main.get("_current_level")
+	if lvl == null or lvl.action == null or e == null:
+		return -1
+	return lvl.action.act_of(e.file_off)
+
 ## Is a robot / a pickup at `off` (an offset in the map that is up) still
 ## in the world?
 func _enemy_alive(off: int) -> bool:
@@ -319,19 +327,22 @@ func _fire_jeep_hint() -> void:
 		print("[mission-e2e] note: MAP.210's jeep is not here to fire")
 		return
 	var left: int = int(_main.get("_objectives_left"))
-	_check(jeep.link_act_type == 0x1C, "MAP.210's jeep is the hint [G1] (act %02x)" % jeep.link_act_type)
+	_check(lvl.action.act_of(jeep.file_off) == 0x1C,
+		"MAP.210's jeep is the hint [G1] (act %02x)" % lvl.action.act_of(jeep.file_off))
 	var at := Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z)) + (lvl.origin as Vector3)
 	lvl.action.press_use()
 	lvl.action.tick(0.016, at, at)
 	await get_tree().physics_frame
-	_check(jeep.link_act_type == 0xFF and int(_main.get("_objectives_left")) == left,
+	_check(lvl.action.act_of(jeep.file_off) == 0xFF and int(_main.get("_objectives_left")) == left,
 		"the gates fire it: retired on MAP.210, and the objective counter has not moved (%d)" % left)
 
 ## Step 0's other half, asked of the code rather than of the world: the
 ## records a phase switch carries FROM are the map's own, as the file has
-## them. The live copy the runtime plays on has retired acts, swapped
-## water valves, cut path links and flipped state bits in it, and
-## _same_behaviour compares exactly those two bytes.
+## them. Play no longer writes into a level's records at all (step 5a puts
+## the retired acts, the swapped water valves, the cut path links and the
+## flipped bits in the trigger runtime), but the carry must still re-read
+## the MAP rather than hand over whatever copy it is given — so a copy is
+## spoiled here by hand and the source asked for.
 func _check_phase_source_map() -> void:
 	var live = _main.call("_parse_map", "MAP.210")
 	if live == null:
@@ -622,7 +633,7 @@ func _run() -> void:
 			"the mission key and the objective counter are untouched by the phase")
 		# What the census says MAP.216 re-authors.
 		var jeep = _record_named("HUMMERTK")
-		_check(jeep != null and jeep.link_act_type == 0x1C,
+		_check(jeep != null and _act_of(jeep) == 0x1C,
 			"the jeep on MAP.216 is still the hint act 1c")
 		var gate = _record_named("BIGDOORC")
 		_check(gate != null and gate.link_next <= 0,
@@ -655,7 +666,7 @@ func _run() -> void:
 		_check(int(_main.get("_objectives_left")) == left_before,
 			"the objective counter is still %d" % left_before)
 		var jeep217 = _record_named("HUMMERTK")
-		_check(jeep217 != null and jeep217.link_act_type == 0x28,
+		_check(jeep217 != null and _act_of(jeep217) == 0x28,
 			"the jeep on MAP.217 carries the [M3] objective act 28")
 		# Step 0: the hint fired two phases back on MAP.210 retired THAT
 		# map's copy of this entity. Nothing of it may stand here.

@@ -453,22 +453,11 @@ func _reset(level, snap: Dictionary) -> void:
 ## stores the ones play has CHANGED, so restore_state cannot undo a cue
 ## DOS retired (act ← 0xFF) or a water valve that swapped its own act —
 ## and the next check of a chain carrying a hint found the message gone
-## for good. Every record goes back to what map_file.gd read, and the
-## cue nodes with it.
+## for good. The runtime puts every one of them back to what map_file.gd
+## read, and the cue nodes with it.
 func _restore_acts(level) -> void:
-	var a = level.action
-	var b = level.behaviour
-	for off in a._parsed_act:
-		var e = level.map.entities_by_off.get(off)
-		if e == null:
-			continue
-		e.link_act_type = int(a._parsed_act[off])
-		e.link_next = int(a._parsed_link.get(off, e.link_next))
-		if b == null:
-			continue
-		var n: Node = b.node(off)
-		if n != null and "spent" in n:
-			n.set("spent", e.link_act_type == 0xFF)
+	if level.triggers != null:
+		level.triggers.reset_acts()
 
 # ---------------------------------------------------------------------
 # One node
@@ -818,11 +807,7 @@ func _check_relay(level, node: Dictionary, num: int, id: int, act: int,
 		return
 	var at: int = int(mode.get("at", Rules.RELAY_AT))
 	var got: PackedStringArray = await _record_around(level, func() -> void:
-		e.state_byte |= 1                        # what a chain does to it
-		if level.behaviour != null:
-			var n: Node = level.behaviour.node(id)
-			if n != null:
-				level.behaviour.set_state(n, e.state_byte)
+		level.triggers.arm(id)                   # what a chain does to it
 		a.objectives_left = at)
 	var why: String = _why(TriggerEquiv.compare(node.get("first", []), got))
 	_row(num, id, act, kind, "counter", FAIL if not why.is_empty() else PASS, why)
@@ -1115,7 +1100,7 @@ func _gate_chaining_to(level, graph: Dictionary, id: int) -> Array:
 	var eye: Vector3 = _drv.eye()
 	for pi in (a._prox as Array).size():
 		var g = a._prox[pi]
-		if g.link_act_type != Rules.ACT_PROX_GATE:
+		if a.act_of(g.file_off) != Rules.ACT_PROX_GATE:
 			continue
 		if eye.distance_to((a._prox_pos[pi] as Vector3) + (level.origin as Vector3)) \
 				> a._prox_radius(g):
@@ -1132,7 +1117,7 @@ func _is_wall_button(level, id: int) -> bool:
 	var e = level.map.entities_by_off.get(id)
 	if e == null:
 		return false
-	return (e.flags & 3) == 1 and (e.state_byte & 8) != 0 and e.name_index >= 0
+	return (e.flags & 3) == 1 and (level.triggers.state(id) & 8) != 0 and e.name_index >= 0
 
 func _epos(level, id: int) -> Vector3:
 	var e = level.map.entities_by_off.get(id)
@@ -1186,7 +1171,7 @@ func _mover_settled(level, want: Array) -> String:
 			continue
 		if String(m["family"]) == "rot" and float(m["limit"]) == 0.0:
 			continue
-		if (int(e.state_byte) & 1) != 0:
+		if level.triggers.enabled(id):
 			bad.append("%05x still enabled after its travel" % id)
 		elif float(m["dir"]) > 0.0:
 			bad.append("%05x did not flip its direction" % id)

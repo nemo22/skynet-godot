@@ -353,7 +353,7 @@ func _run() -> void:
 				dbody = c
 		_check(dbody != null, "the door leaf carries an AnimatableBody3D")
 		var closed: Transform3D = dnode.global_transform
-		door_e.state_byte |= 1
+		lvl.triggers.arm(door_e.file_off)
 		for f in 150:
 			await get_tree().physics_frame
 		_check(not dnode.global_transform.basis.is_equal_approx(closed.basis), "the door leaf swung open")
@@ -387,7 +387,7 @@ func _run() -> void:
 		_check(blocked_before, "the closed gate blocks a player capsule in the opening")
 		_gate_diag(lvl, leaves, centre, probe, space, "closed")
 		for e in leaves:
-			e.state_byte |= 1
+			lvl.triggers.arm(e.file_off)
 		for f in 300:
 			await get_tree().physics_frame
 		var blocked_after: bool = not space.intersect_shape(probe, 4).is_empty()
@@ -995,7 +995,8 @@ func _check_variant_objective() -> void:
 		return
 	var lvl = _main.get("_current_level")
 	var jeep = lvl.map.entities_by_off.get(jeep_off)
-	_check(jeep != null and jeep.link_act_type == 0x1C, "MAP.210's jeep is hint [G1] (act 0x1c)")
+	_check(jeep != null and lvl.action.act_of(jeep_off) == 0x1C,
+		"MAP.210's jeep is hint [G1] (act 0x1c)")
 	if jeep == null:
 		return
 	var left0: int = int(_main.get("_objectives_left"))
@@ -1004,7 +1005,7 @@ func _check_variant_objective() -> void:
 	var at := Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z))
 	lvl.action.press_use()                   # the eight gates answer the use key
 	lvl.action.tick(0.016, at)
-	_check(jeep.link_act_type == 0xFF and int(_main.get("_objectives_left")) == left0,
+	_check(lvl.action.act_of(jeep_off) == 0xFF and int(_main.get("_objectives_left")) == left0,
 		"the gates fire MAP.210's jeep hint: retired, nothing counted")
 
 	_main.call("_on_teleport_requested", 216, 12)
@@ -1014,7 +1015,7 @@ func _check_variant_objective() -> void:
 		return
 	lvl = _main.get("_current_level")
 	var j216 = lvl.map.entities_by_off.get(jeep_off)
-	_check(j216 != null and j216.link_act_type == 0x1C,
+	_check(j216 != null and lvl.action.act_of(jeep_off) == 0x1C,
 		"MAP.216's jeep hint is its own: no act byte crosses from MAP.210")
 
 	_main.call("_on_teleport_requested", 217, 14)
@@ -1025,10 +1026,11 @@ func _check_variant_objective() -> void:
 	lvl = _main.get("_current_level")
 	var j217 = lvl.map.entities_by_off.get(jeep_off)
 	var cue: Node = lvl.behaviour.node(jeep_off) if lvl.behaviour != null else null
-	_check(j217 != null and j217.link_act_type == 0x28 and cue != null and not bool(cue.get("spent")),
+	_check(j217 != null and lvl.action.act_of(jeep_off) == 0x28
+		and cue != null and not bool(cue.get("spent")),
 		"MAP.217's jeep arrives as a live [M3] objective")
 	var trig = lvl.map.entities_by_off.get(0x80c5)
-	_check(trig != null and trig.link_act_type == 0xF2 and (trig.state_byte & 1) != 0,
+	_check(trig != null and trig.link_act_type == 0xF2 and lvl.action.enabled(0x80c5),
 		"MAP.217's 210BASE3 keeps its armed 0xF2 bit (scenery with state 00 on the variants)")
 	if j217 == null or cue == null:
 		return
@@ -1059,7 +1061,7 @@ func _check_variant_objective() -> void:
 		return
 	lvl = _main.get("_current_level")
 	cue = lvl.behaviour.node(jeep_off)
-	_check(bool(cue.get("spent")) and lvl.map.entities_by_off[jeep_off].link_act_type == 0xFF
+	_check(bool(cue.get("spent")) and lvl.action.act_of(jeep_off) == 0xFF
 		and int(_main.get("_objectives_left")) == left1,
 		"a counted objective stays counted after the load (%d left)" % int(_main.get("_objectives_left")))
 	_check(not bool(_main.get("_mission_done")), "the loaded level can end its mission (_mission_done down)")
@@ -1086,7 +1088,7 @@ func _check_variant_objective() -> void:
 		return
 	lvl = _main.get("_current_level")
 	cue = lvl.behaviour.node(jeep_off)
-	_check(not bool(cue.get("spent")) and lvl.map.entities_by_off[jeep_off].link_act_type == 0x28
+	_check(not bool(cue.get("spent")) and lvl.action.act_of(jeep_off) == 0x28
 		and int(_main.get("_objectives_left")) == left0,
 		"an objective retired but never counted comes back live (%d left)" % int(_main.get("_objectives_left")))
 	lvl.action.press_use()
@@ -1128,7 +1130,7 @@ func _check_jeep_objective() -> void:
 		return
 	var lvl = _main.get("_current_level")
 	var jeep = lvl.map.entities_by_off.get(0x75cb)
-	_check(jeep != null and jeep.link_act_type == 0x28,
+	_check(jeep != null and lvl.action.act_of(0x75cb) == 0x28,
 		"the MAP.217 jeep carries objective act 0x28")
 	if jeep == null:
 		return

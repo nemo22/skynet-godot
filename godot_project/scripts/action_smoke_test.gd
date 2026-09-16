@@ -132,7 +132,7 @@ func _run_map210_checks(level: LevelLoader.Level) -> void:
 			var before: Transform3D = node.transform
 			var far := Vector3(1e9, 0.0, 1e9)
 			action._flip_link(button)             # the button's chain fires
-			_check((target.state_byte & 1) != 0, "chain enabled the mover")
+			_check(action.enabled(target.file_off), "chain enabled the mover")
 			for i in 30:                          # ~0.5 s of motion
 				action.tick(0.016, far)
 			_check(node.transform != before, "mover transform is moving")
@@ -163,9 +163,11 @@ func _run_map210_checks(level: LevelLoader.Level) -> void:
 				if cur != null and ActionSystem.is_mover(cur.link_act_type):
 					gate = cur
 					break
-			_check(gate != null and (gate.state_byte & 1) == 0, "the tower button's gate starts disabled")
+			_check(gate != null and not l216.action.enabled(gate.file_off),
+				"the tower button's gate starts disabled")
 			_check(l216.action.use_nearby(near), "use beside the button operates it without aiming")
-			_check(gate != null and (gate.state_byte & 1) != 0, "the button's chain enabled the gate")
+			_check(gate != null and l216.action.enabled(gate.file_off),
+				"the button's chain enabled the gate")
 			_check(not l216.action.use_nearby(near + Vector3(600.0, 0.0, 0.0)), "use 600 u away does nothing")
 
 	# --- 2. GENER0: HP-gated (state bit2, hp 200) chain on destruction ---
@@ -177,14 +179,14 @@ func _run_map210_checks(level: LevelLoader.Level) -> void:
 	_check(gener != null, "GENER0 with bit2 + HP exists")
 	if gener != null:
 		var next_e = map.entities_by_off.get(gener.link_next)
-		var st_before: int = next_e.state_byte if next_e != null else -1
+		var st_before: int = action.state_of(next_e.file_off) if next_e != null else -1
 		action.on_player_hit(gener.file_off, 50.0)
-		_check(next_e == null or next_e.state_byte == st_before,
+		_check(next_e == null or action.state_of(next_e.file_off) == st_before,
 			"GENER0 survives a 50-damage hit (no chain fire)")
 		_check(action.on_player_hit(gener.file_off, 500.0),
 			"GENER0 dies to the big hit and fires its chain")
 		if next_e != null:
-			_check(next_e.state_byte != st_before,
+			_check(action.state_of(next_e.file_off) != st_before,
 				"GENER0 chain flipped its target's state")
 
 	# --- 3. Destructible car: TRANSFRM.PRS stage swap on damage ---
@@ -286,10 +288,14 @@ func _run_behaviour_checks() -> void:
 	# MAP.217: the HUMMERTK carries mission 1's last objective (act 0x28)
 	# and eight 0xEF gates ring it. Tripping one fires the objective from
 	# its node, once; a second gate flips a spent cue and nothing happens;
-	# the record is retired the way DOS does it (act 0xFF).
+	# its act byte is retired the way DOS does it (act 0xFF) — in the
+	# trigger runtime, which is where the bytes play changes live.
 	var l217: LevelLoader.Level = LevelLoader.new().load_level("MAP.217")
-	_check(l217 != null and l217.behaviour != null and l217.action.behaviour == l217.behaviour,
-		"MAP.217 loads with a Behaviour branch wired into the action system")
+	_check(l217 != null and l217.behaviour != null and l217.triggers != null
+		and l217.action.triggers == l217.triggers
+		and l217.behaviour.runtime == l217.triggers
+		and l217.triggers.presenter == l217.behaviour,
+		"MAP.217 loads with one trigger runtime, wired to the action system and the branch")
 	if l217 != null and l217.behaviour != null:
 		var seen: Array = []
 		l217.behaviour.objective_complete.connect(func(i: int) -> void: seen.append(i))
@@ -316,8 +322,9 @@ func _run_behaviour_checks() -> void:
 			l217.action.press_use()                  # DOS: a gate answers the use key
 			l217.action.tick(0.016, Vector3(float(g0.x), -float(g0.y), -float(g0.z)))
 			_check(seen == [2], "tripping a gate fires objective [M3] from its node (%s)" % str(seen))
-			_check(target.link_act_type == 0xFF and (target.state_byte & 1) == 0,
-				"the objective record is retired (act 0xFF, bit 0 clear)")
+			_check(l217.triggers.act(target.file_off) == 0xFF
+				and not l217.triggers.enabled(target.file_off),
+				"the objective is retired (act 0xFF, bit 0 clear)")
 			var g1 = gates[1]
 			var p1 := Vector3(float(g1.x), -float(g1.y), -float(g1.z))
 			l217.action.tick(0.016, p1 + Vector3(9000.0, 0.0, 0.0))
@@ -356,9 +363,10 @@ func _run_behaviour_checks() -> void:
 			ljeep.action.tick(0.016, eye - Vector3(0.0, 75.0, 0.0), eye)
 			_check(fired == [2], "%d gates flipping in one tick count [M3] once (%s)"
 				% [inside, str(fired)])
-			_check(jeep.link_act_type == 0xFF and (jeep.state_byte & 1) == 0,
-				"…and leave the record retired, not toggled back down (act %02x st %02x)"
-				% [jeep.link_act_type, jeep.state_byte])
+			_check(ljeep.triggers.act(jeep.file_off) == 0xFF
+				and not ljeep.triggers.enabled(jeep.file_off),
+				"…and leave it retired, not toggled back down (act %02x st %02x)"
+				% [ljeep.triggers.act(jeep.file_off), ljeep.triggers.state(jeep.file_off)])
 
 	# MAP.213: a crate with the "act on death" bit (state 04) chains to
 	# the crate stacked on it, whose act 0x1B means "demolished by the
@@ -399,15 +407,15 @@ func _run_behaviour_checks() -> void:
 			"MAP.210 has the canyon lever (0xF1), the lever behind the gate (0xF2) and BIGDOOR")
 		if door != null and lever_b != null:
 			l210.action._flip_link(lever_a)
-			_check((door.state_byte & 1) != 0, "the canyon lever sets the gate moving")
+			_check(l210.action.enabled(door.file_off), "the canyon lever sets the gate moving")
 			for i in 900:
-				if (door.state_byte & 1) == 0:
+				if not l210.action.enabled(door.file_off):
 					break
 				l210.action.tick(0.016, far)
-			_check((door.state_byte & 1) == 0, "the gate stops when it is fully open")
+			_check(not l210.action.enabled(door.file_off), "the gate stops when it is fully open")
 			l210.action._flip_link(lever_b)
 			var m: Dictionary = l210.action._movers.get(door.file_off, {})
-			_check((door.state_byte & 1) != 0 and float(m.get("dir", 1.0)) < 0.0,
+			_check(l210.action.enabled(door.file_off) and float(m.get("dir", 1.0)) < 0.0,
 				"the lever behind the gate runs it back — it closes")
 
 	# MAP.232: the nine consoles bring the objective counter to 1; then
@@ -422,14 +430,16 @@ func _run_behaviour_checks() -> void:
 		for off in spawns:
 			if spawns[off].is_hidden():
 				hidden += 1
-		_check(relay != null and relay.link_act_type == 0x2C and (relay.state_byte & 1) != 0,
+		_check(relay != null and relay.link_act_type == 0x2C
+			and l232.action.enabled(relay.file_off),
 			"MAP.232 has the armed 0x2C relay 232MAIN")
 		_check(spawns.size() >= 7 and hidden == spawns.size(),
 			"the 0xF3 spawn robots are built hidden (%d of %d)" % [hidden, spawns.size()])
 		if relay != null:
 			l232.action.objectives_left = 2
 			l232.action.tick(0.016, far2)
-			_check((relay.state_byte & 1) != 0, "the relay waits while two objectives are left")
+			_check(l232.action.enabled(relay.file_off),
+				"the relay waits while two objectives are left")
 			l232.action.objectives_left = 1
 			l232.action.tick(0.016, far2)
 			l232.action.tick(0.016, far2)
@@ -437,7 +447,8 @@ func _run_behaviour_checks() -> void:
 			for off in spawns:
 				if not spawns[off].is_hidden():
 					out += 1
-			_check((relay.state_byte & 1) == 0, "at one objective left the relay fires and switches off")
+			_check(not l232.action.enabled(relay.file_off),
+				"at one objective left the relay fires and switches off")
 			_check(out >= 7, "the relay's chain lets the robots out (%d)" % out)
 			_check(l232.action._spent.has(0x3512), "232DOOR6 gives way")
 
@@ -466,7 +477,7 @@ func _run_behaviour_checks() -> void:
 				% tnode.position.distance_to(before))
 			l210b.action._flip_link(lever)
 			var head = l210b.map.entities_by_off.get(truck.link_next)
-			_check(head != null and (head.state_byte & 1) != 0,
+			_check(head != null and l210b.action.enabled(head.file_off),
 				"the lever switches the truck's path on")
 			for i in 60:
 				l210b.action.tick(0.05, tnode.position)
@@ -573,17 +584,17 @@ func _run_behaviour_checks() -> void:
 		# 75 u lower, and the jeep could drive past it (playtest 2026-09-15).
 		# Body 1034.5 u away, eye 1015.2 u.
 		var bx = l260.map.entities_by_off.get(0x14fb6)
-		_check(bx != null and bx.link_act_type == 0xF2 and (bx.state_byte & 1) != 0,
+		_check(bx != null and bx.link_act_type == 0xF2 and l260.action.enabled(bx.file_off),
 			"MAP.260 has the armed mission-end BUTTONX (0xF2)")
 		if bx != null and l260.behaviour != null:
 			var m1: Array = []
 			l260.behaviour.objective_complete.connect(func(i: int) -> void: m1.append(i))
 			var feet: Vector3 = Vector3(float(bx.x), -float(bx.y), -float(bx.z)) + Vector3(990.0, -300.0, 0.0)
 			l260.action.tick(0.016, feet)
-			_check((bx.state_byte & 1) != 0 and m1.is_empty(),
+			_check(l260.action.enabled(bx.file_off) and m1.is_empty(),
 				"BUTTONX waits while the point measured from is 1034 u off")
 			l260.action.tick(0.016, feet, feet + Vector3(0.0, 75.0, 0.0))
-			_check((bx.state_byte & 1) == 0 and m1 == [0],
+			_check(not l260.action.enabled(bx.file_off) and m1 == [0],
 				"from the eye, 1015 u off, it fires and its chain counts [M1] (%s)" % str(m1))
 
 	# MAP.254 (the flooded sewers): acts 0xd6-0xda move the water level.
@@ -604,22 +615,23 @@ func _run_behaviour_checks() -> void:
 			and walk != null and walk.link_act_type == 0xd7,
 			"MAP.254 has the sewer's water movers (0xd8 drains, 0xd7 floods)")
 		if hole != null and walk != null:
-			hole.state_byte |= 1
+			l254.triggers.arm(hole.file_off)
 			l254.action.tick(0.016, far3)
-			walk.state_byte |= 1
+			l254.triggers.arm(walk.file_off)
 			l254.action.tick(0.016, far3)
 			_check(asked == [[-140.0, false], [170.0, false]],
 				"the movers ask for -140, then +170 (%s)" % str(asked))
-			_check((hole.state_byte & 1) == 0 and (walk.state_byte & 1) == 0,
+			_check(not l254.action.enabled(hole.file_off)
+				and not l254.action.enabled(walk.file_off),
 				"a water mover switches itself off after it fires")
 		if valve != null and (valve.link_act_type == 0xd9 or valve.link_act_type == 0xda):
 			var was_act: int = valve.link_act_type
-			valve.state_byte |= 1
+			l254.triggers.arm(valve.file_off)
 			l254.action.tick(0.016, far3)
-			_check(valve.link_act_type != was_act
-				and (valve.link_act_type == 0xd9 or valve.link_act_type == 0xda),
+			var now_act: int = l254.triggers.act(valve.file_off)
+			_check(now_act != was_act and (now_act == 0xd9 or now_act == 0xda),
 				"the valve's 0x%02x becomes 0x%02x — next time it goes the other way"
-				% [was_act, valve.link_act_type])
+				% [was_act, now_act])
 
 ## Phase 2 — map transitions: marker sets on both ends of an exit, the
 ## per-map state overlay round trip, doorway touch arming and the
@@ -654,8 +666,7 @@ func _run_transition_checks(level210: LevelLoader.Level) -> void:
 		_check(not l210b.action._spent.has(off), "fresh MAP.210 parse starts unspent")
 		l210b.action.restore_state(snap)
 		_check(l210b.action._spent.has(off), "restore_state re-applies the spent flag")
-		var e = l210b.map.entities_by_off.get(off)
-		_check(e != null and e.state_byte == int(snap["states"][off]),
+		_check(l210b.triggers.state(off) == int(snap["states"][off]),
 			"restore_state re-applies entity state bytes")
 
 	# Doorway touch: standing on a 0xF0 exit sprite arms it directly.
@@ -687,7 +698,8 @@ func _run_transition_checks(level210: LevelLoader.Level) -> void:
 		var epos2 := Vector3(float(ex2.x), -float(ex2.y), -float(ex2.z))
 		l210d.action.arm_proximity(epos2)
 		l210d.action.tick(0.016, epos2)
-		_check((ex2.state_byte & 1) == 0, "spawning on a doorway does not arm it by itself")
+		_check(not l210d.action.enabled(ex2.file_off),
+			"spawning on a doorway does not arm it by itself")
 		l210d.action.activate_teleport(epos2)
 		_check(seen2.size() == 1, "use at the doorway fires it even when the spawn pre-latched its gate")
 		l210d.action.tick(0.016, epos2 + Vector3(2000.0, 0.0, 0.0))
@@ -751,7 +763,7 @@ func _run_zone_origin_checks() -> void:
 			% (ZONE_ORIGIN.length() / 1000.0))
 		lz.action.arm_proximity(elocal + ZONE_ORIGIN)
 		lz.action.tick(0.016, elocal + ZONE_ORIGIN)
-		_check((ex.state_byte & 1) == 0,
+		_check(not lz.action.enabled(ex.file_off),
 			"spawning on the doorway does not arm it by itself, in a zone either")
 		lz.action.activate_teleport(elocal + ZONE_ORIGIN)
 		_check(seen.size() == 1,
@@ -779,10 +791,12 @@ func _run_zone_origin_checks() -> void:
 		% [str(at_zero["seen"]), str(at_slot["seen"])])
 	var t0 = at_zero["target"]
 	var t1 = at_slot["target"]
-	_check(t0.link_act_type == 0xFF and t1.link_act_type == 0xFF
-		and (t0.state_byte & 1) == 0 and (t1.state_byte & 1) == 0,
-		"both objective records retire the same way (act %02x / %02x)"
-		% [t0.link_act_type, t1.link_act_type])
+	var a0 = (at_zero["level"] as LevelLoader.Level).action
+	var a1 = (at_slot["level"] as LevelLoader.Level).action
+	_check(a0.act_of(t0.file_off) == 0xFF and a1.act_of(t1.file_off) == 0xFF
+		and not a0.enabled(t0.file_off) and not a1.enabled(t1.file_off),
+		"both objectives retire the same way (act %02x / %02x)"
+		% [a0.act_of(t0.file_off), a1.act_of(t1.file_off)])
 
 ## The direct child of `root` whose own (zone-local) position is `at`.
 func _child_at(root: Node, at: Vector3) -> Node3D:

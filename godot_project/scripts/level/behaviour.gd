@@ -2,33 +2,47 @@
 ## §8, phase F2).
 ##
 ## The branch holds one node per entity with behaviour (built by
-## scripts/level_behaviour.gd at import) and this script is what the
-## DOS object layer becomes on top of them:
+## scripts/level_behaviour.gd at import) and this script is what the DOS
+## object layer LOOKS like on top of them: the sound a chain plays, the
+## line it prints, the objective it counts, the ambient loop it starts
+## and stops.
 ##
-##   flip(id)        ObjFlipLink (FUN_001394aa): walk the chain from a
-##                   node toggling bit 0 of each `state`, an 0xEF gate
-##                   forcing its bit back on, stopping at an actor. A
-##                   one-shot node whose bit goes UP fires at once —
-##                   the DOS engine runs the handler as the chain is
-##                   flipped — and clears the bit again.
-##   fire()          on SoundCue, VoiceCue, MessageCue, Objective.
-##   hint_message / objective_complete / mission_failed
-##                   what the cues report to the game.
+## What it no longer is, since step 5a of docs/trigger_graph_plan.md, is
+## a keeper of state. The chain walk (ObjFlipLink) and the decision that
+## a cue has fired moved to scripts/triggers/trigger_runtime.gd, which
+## holds the state bytes, the act bytes and the links of the whole level
+## and is the only thing that writes them; the mirror into the MAP
+## records is gone with it, and the records are read-only data now. This
+## branch is what the runtime calls OUT to:
 ##
-## Every flip and every cue is also ANNOUNCED on the level's trigger
-## event bus (`bus`, scripts/triggers/trigger_bus.gd — M3 step 3). That
-## is an observer and nothing more: the walk below does not know whether
-## anything is listening and behaves the same when the bus is null.
+##   present_fire(id)     run that entity's node — play, print, count —
+##                        and say whether it is spent afterwards. The
+##                        runtime decides what the entity's bit and act
+##                        byte become.
+##   present_silence(id)  the chain took the bit away: a level kind (the
+##                        0xEE ambient loops) stops.
+##   targets_of(id)       where the chain goes next, as the bake wired it.
+##   node_bytes(id)       the act and state a node was baked with — for a
+##                        branch the runtime has no records for.
+##
+## The `state` export on the nodes is the byte the MAP was AUTHORED with
+## and stays that: nothing writes it at run time any more, so there is no
+## second copy to disagree with the runtime. The one node-side mirror
+## left is `spent` on the cue classes — their own guard against firing
+## twice — and sync_from_runtime puts it back after a restore.
+##
+## Every cue that fires is still ANNOUNCED on the level's trigger event
+## bus (`bus`, scripts/triggers/trigger_bus.gd — M3 step 3). That is an
+## observer and nothing more: nothing below asks whether anything is
+## listening and it behaves the same when the bus is null.
 ##
 ## F2 runs class by class, so while action_system.gd still drives the
-## movers, triggers, exits and destructibles from the MAP records, every
-## state change made here is MIRRORED into the record (bind_records) and
-## restore_state pushes the records back into the nodes
-## (sync_from_records). When the last class has moved, the mirror goes.
+## movers, triggers, exits and destructibles, their geometry in this
+## branch stays asleep (sleep_geometry). When the last class has moved,
+## that goes too.
 
 extends Node3D
 
-const ActionSystem := preload("res://scripts/action_system.gd")
 const Rules := preload("res://scripts/triggers/rules_skynet.gd")
 
 ## A hint cue ([G1]..) fired: index = act - 0x1C.
@@ -40,11 +54,15 @@ signal mission_failed()
 
 var _by_id: Dictionary = {}          # id → node
 var _indexed: bool = false
-var _map = null                      # MapFile.MapFile — the records mirror (F2)
+## The level's trigger runtime (scripts/triggers/trigger_runtime.gd): it
+## owns the state and drives everything below. Null for a branch nobody
+## plays — the editor opening a baked scene, the bake itself — and then
+## the nodes' own baked bytes are all there is.
+var runtime: RefCounted = null
 ## The level's trigger event bus (scripts/triggers/trigger_bus.gd, M3
-## step 3): every flip of the chain walk and every cue that fires is
-## announced on it. An OBSERVER — null is the normal case in a test that
-## builds a branch by hand, and nothing below reads anything back.
+## step 3): every cue that fires is announced on it. An OBSERVER — null
+## is the normal case in a test that builds a branch by hand, and nothing
+## below reads anything back.
 var bus: RefCounted = null
 
 func _ready() -> void:
@@ -52,17 +70,14 @@ func _ready() -> void:
 	# One-shots armed in the MAP data fire once at level start (a door
 	# sound a map starts enabled, a radio line on entry). On a map entered
 	# again, or loaded from a save, main.gd has laid the saved state over
-	# the records (sync_from_records) BEFORE this branch enters the tree, so
-	# a cue that already fired has its bit down and does not replay.
+	# the runtime BEFORE this branch enters the tree, so a cue that already
+	# fired has its bit down and does not replay.
 	for id in _by_id:
-		var n: Node = _by_id[id]
-		if n.has_method("fire") and (state_of(n) & 1) != 0:
-			_fire(n)
-
-## The parsed MAP whose records still drive the classes action_system.gd
-## has not handed over yet.
-func bind_records(map) -> void:
-	_map = map
+		if runtime != null:
+			if runtime.enabled(int(id)):
+				runtime.fire(int(id))
+		elif (state_of(_by_id[id]) & 1) != 0:
+			present_fire(int(id))
 
 ## F2 transition: while the loader still builds the movers, the
 ## destructibles, the damageables and the button panels from the
@@ -104,84 +119,59 @@ static func id_of(n: Node) -> int:
 		return int(n.get("id"))
 	return int(n.get_meta("id", -1))
 
-## The DOS state byte of a node — an export on the scripted kinds, a
-## meta entry on the scriptless SoundLoop.
+## The DOS state byte a node was BAKED with — an export on the scripted
+## kinds, a meta entry on the scriptless SoundLoop. Not the live one:
+## that is the runtime's (TriggerRuntime.state).
 static func state_of(n: Node) -> int:
 	if "state" in n:
 		return int(n.get("state"))
 	return int(n.get_meta("state", 0))
-
-static func set_state(n: Node, v: int) -> void:
-	if "state" in n:
-		n.set("state", v)
-	else:
-		n.set_meta("state", v)
 
 static func act_of(n: Node) -> int:
 	if "act" in n:
 		return int(n.get("act"))
 	return int(n.get_meta("act", 0))
 
-## ObjFlipLink from the node of `start_id`. Returns [[id, new_state] …]
-## in walk order, so the caller can see what went up.
-func flip(start_id: int) -> Array:
+# ---------------------------------------------------------------------
+# What the runtime calls
+# ---------------------------------------------------------------------
+## Run entity `id`'s node: the cue plays, prints or counts, and says so
+## on the bus. Returns {} when there is no node or the node has nothing
+## to fire — the runtime then leaves the entity's bit and act byte alone
+## — and {"spent": …} otherwise, which is what a cue DOS retires (act ←
+## 0xFF) reports back.
+func present_fire(id: int) -> Dictionary:
 	_ensure_index()
-	var out: Array = []
-	var visited: Dictionary = {}
-	var stack: Array = [start_id]
-	while not stack.is_empty():
-		var id: int = int(stack.pop_back())
-		if visited.has(id):
-			continue
-		visited[id] = true
-		var node: Node = _by_id.get(id)
-		var rec = _map.entities_by_off.get(id) if _map != null else null
-		if node == null and rec == null:
-			continue
-		# The record is the truth while action_system.gd still clears bits
-		# there (a mover at the end of its run, a spent trigger): the node's
-		# copy would flip a bit that is already down.
-		var act: int = int(rec.link_act_type) if rec != null else act_of(node)
-		var s: int = (int(rec.state_byte) if rec != null else state_of(node)) ^ 1
-		if act == ActionSystem.ACT_PROX_GATE:
-			s |= 1                                   # a gate stays live (skynet_gh.c:39837)
-		if node != null:
-			set_state(node, s)
-		_mirror(id, s)
-		if bus != null:
-			bus.announce_flip(id, act, s)
-		out.append([id, s])
-		if (s & 1) != 0 and node != null and node.has_method("fire"):
-			_fire(node)
-		elif (s & 1) == 0 and node != null and node.has_method("silence"):
-			# A LEVEL kind runs for as long as its bit is up (the 0xEE
-			# ambient loops), so the flip that takes the bit away is what
-			# ends it — there is no handler of its own to notice.
-			node.call("silence")
-		if _is_actor(id):
-			break                                    # the walk stops AT an actor
-		var next: Array = _next_ids(id, node, rec)
-		for i in range(next.size() - 1, -1, -1):
-			stack.append(next[i])
-	return out
+	var n: Node = _by_id.get(id)
+	if n == null or not n.has_method("fire"):
+		return {}
+	# A cue DOS has RETIRED does nothing at all when its bit goes up again
+	# — and must not be announced as if it had. The bus used to say "hint"
+	# on every later flip of a chain whose message had long since been
+	# read, which is what the step-4 verifier saw as a second activation
+	# doing more than the graph said it would.
+	var was_spent: bool = "spent" in n and bool(n.get("spent"))
+	n.call("fire")
+	if not was_spent:
+		_announce_fire(n)
+	return {"spent": "spent" in n and bool(n.get("spent"))}
 
-## Where the chain goes next: down the node's `targets` where there is a
-## node (that branch can fan out), down the record's own link otherwise.
-## Markers get no node in the bake, and the DOS chain runs straight
-## through them — MAP.210's lever switches the truck's PATH MARKERS on,
-## which is what sets the truck driving.
-func _next_ids(id: int, node: Node, rec) -> Array:
-	var out: Array = []
-	if node != null:
-		for t in _targets_of(node):
-			out.append(id_of(t))
-		if not out.is_empty():
-			return out
-	if rec != null and int(rec.link_next) > 0:
-		out.append(int(rec.link_next))
-	return out
+## The chain took the bit away from a LEVEL kind: the 0xEE ambient loop
+## that has been running since it went up stops here.
+func present_silence(id: int) -> void:
+	_ensure_index()
+	var n: Node = _by_id.get(id)
+	if n != null and n.has_method("silence"):
+		n.call("silence")
 
-func _targets_of(n: Node) -> Array:
+## Where a flip of `id` goes next — the ids the bake wired this node's
+## `targets` to. Empty when the node has none, or there is no node: the
+## runtime then follows the entity's own link.
+func targets_of(id: int) -> Array:
+	_ensure_index()
+	var n: Node = _by_id.get(id)
+	if n == null:
+		return []
 	var paths: Array = []
 	if "targets" in n:
 		paths = n.get("targets")
@@ -191,34 +181,18 @@ func _targets_of(n: Node) -> Array:
 	for p in paths:
 		var t: Node = n.get_node_or_null(p)
 		if t != null:
-			out.append(t)
+			out.append(id_of(t))
 	return out
 
-## Run a one-shot: the node does its thing, its enable bit clears (the
-## DOS handlers clear their own bit), and a cue that DOS retires (act ←
-## 0xFF) is retired in the record too.
-func _fire(n: Node) -> void:
-	# A cue DOS has RETIRED (act ← 0xFF, `spent` here) does nothing at all
-	# when its bit goes up again — and must not be announced as if it had.
-	# The bus used to say "hint" on every later flip of a chain whose
-	# message had long since been read, which is what the step-4 verifier
-	# saw as a second activation doing more than the graph said it would.
-	var was_spent: bool = "spent" in n and bool(n.get("spent"))
-	n.call("fire")
-	if not was_spent:
-		_announce_fire(n)
-	# What the handler does to its own record afterwards is the rules
-	# module's row (rules_skynet, `on_fire`): a CUE clears its own enable
-	# bit — or retires its act byte — the way its DOS handler does, while a
-	# LEVEL kind whose row says "none" keeps the bit and runs on. The 0xEE
-	# ambient loop is the second sort: cleared here, a second flip of the
-	# same chain would read as a fresh rise and start it all over again.
-	if String(Rules.rule_for(act_of(n)).get("on_fire", "clear")) != "none":
-		var s: int = state_of(n) & ~1
-		set_state(n, s)
-		_mirror(id_of(n), s)
-	if "spent" in n and bool(n.get("spent")):
-		_retire(id_of(n))
+## The act and state byte node `id` was baked with, for a runtime that
+## has no MAP record for it (a branch built by hand). {} when there is no
+## such node.
+func node_bytes(id: int) -> Dictionary:
+	_ensure_index()
+	var n: Node = _by_id.get(id)
+	if n == null:
+		return {}
+	return {"act": act_of(n), "state": state_of(n)}
 
 ## Say what just fired, in the rules module's own vocabulary (M3 step 3).
 ## Nothing here changes what the cue did — it has already done it.
@@ -258,39 +232,15 @@ func _on_cue_fired(index: int, n: Node) -> void:
 	else:
 		hint_message.emit(index)
 
-func _mirror(id: int, s: int) -> void:
-	if _map == null:
-		return
-	var e = _map.entities_by_off.get(id)
-	if e != null:
-		e.state_byte = s
-
-func _retire(id: int) -> void:
-	if _map == null:
-		return
-	var e = _map.entities_by_off.get(id)
-	if e != null:
-		e.link_act_type = 0xFF
-
-func _is_actor(id: int) -> bool:
-	if _map == null:
-		return false
-	var e = _map.entities_by_off.get(id)
-	return e != null and (int(e.flags) & 0x40) != 0
-
-## After a state overlay restore: the records are the truth, copy them
-## back onto the nodes — the state bits, and the retirement of a cue that
-## already fired (its act byte 0xFF, see _retire): an objective whose
-## `spent` came back false counted a second time on the next chain flip.
-func sync_from_records() -> void:
-	if _map == null:
+## After the runtime took a state overlay: a cue whose act byte came back
+## as 0xFF fired before this visit and must not count again, so its
+## node's own guard goes back up with it (an objective whose `spent` came
+## back false counted a second time on the next chain flip).
+func sync_from_runtime() -> void:
+	if runtime == null:
 		return
 	_ensure_index()
 	for id in _by_id:
-		var e = _map.entities_by_off.get(id)
-		if e == null:
-			continue
 		var n: Node = _by_id[id]
-		set_state(n, int(e.state_byte))
-		if "spent" in n and int(e.link_act_type) == 0xFF:
-			n.set("spent", true)
+		if "spent" in n:
+			n.set("spent", runtime.act(int(id)) == 0xFF)

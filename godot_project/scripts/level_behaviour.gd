@@ -42,9 +42,11 @@
 ##
 ## F1 (2026-09-05) generated the branch; F2 (same day, first step) put
 ## it in the running level with scripts/level/behaviour.gd on its root:
-## the chain walk runs on the nodes and the one-shot cues fire from
-## them, while action_system.gd still drives movers, triggers, exits and
-## destructibles from the records the nodes mirror into.
+## the one-shot cues fire from the nodes, and the chain walk that reaches
+## them is the trigger runtime's (scripts/triggers/trigger_runtime.gd,
+## plan step 5a), which owns the state the whole level reads. What the
+## bake writes into the nodes below — act, state, hp, targets — is the
+## MAP as it was AUTHORED, and stays that: nothing changes it at run time.
 
 extends RefCounted
 

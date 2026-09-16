@@ -245,7 +245,7 @@ func _solve_map() -> void:
 			_running = false
 			return                      # main loads the map, level_ready() goes on
 		var ex = a._map.entities_by_off.get(x["off"])
-		var armed: bool = ex != null and (ex.state_byte & 1) != 0
+		var armed: bool = ex != null and a.enabled(ex.file_off)
 		# world → zone-local: _reachable measures in the records' space.
 		var line_ok: bool = ex != null \
 			and a._reachable(p.global_position - _zone, _epos(ex) - _zone)
@@ -815,16 +815,20 @@ func _candidates(a, name: String, shoot: bool) -> Array:
 		var k: String = "p%05x" % e.file_off
 		if _done.has(name + ":" + k) or a._spent.has(e.file_off):
 			continue
-		var chain: bool = e.link_act_type == 0xF1 or e.link_act_type == 0xF2
-		if chain and (e.state_byte & 1) == 0:
+		# The live bytes, which are the trigger runtime's (step 5a) — a
+		# lever spent earlier in this run is not the lever the MAP file has.
+		var act: int = a.act_of(e.file_off)
+		var chain: bool = act == 0xF1 or act == 0xF2
+		if chain and not a.enabled(e.file_off):
 			continue                     # a spent lever
-		var use_only: bool = (e.flags & 3) == 1 and (e.state_byte & 8) != 0 and e.name_index >= 0
+		var use_only: bool = (e.flags & 3) == 1 and (a.state_of(e.file_off) & 8) != 0 \
+			and e.name_index >= 0
 		# A 0xEF gate is the USE KEY at a doorway, not a tripwire: its DOS
 		# handler (0x137e2e) runs only in the frame ACTIVATE goes down, so
 		# standing in one does nothing whatever. Walking into the eight that
 		# ring MAP.217's jeep is what the solver did for [M3], and mission 1
 		# could not be finished; a player presses the key there.
-		var gate: bool = e.link_act_type == 0xEF and not use_only
+		var gate: bool = act == 0xEF and not use_only
 		# Where to stand. A gate or a lever is measured by its own handler,
 		# 3D from the EYE (ActionSystem.on_player_activate since
 		# 2026-09-16), so the spot has to satisfy that and not merely be
@@ -904,7 +908,7 @@ func _settle(a) -> void:
 		var moving: bool = false
 		for off in a._movers:
 			var e = a._map.entities_by_off.get(off)
-			if e != null and (e.state_byte & 1) != 0 and String(a._movers[off]["family"]) != "rot":
+			if e != null and a.enabled(off) and String(a._movers[off]["family"]) != "rot":
 				moving = true
 				break
 		if not moving:
@@ -1172,10 +1176,12 @@ func _write_view(name: String, a) -> void:
 		if cx >= 0 and cx < w and cz >= 0 and cz < h:
 			rows[cz][cx] = ch.unicode_at(0)
 	for e in a._prox:
-		var use_only: bool = (e.flags & 3) == 1 and (e.state_byte & 8) != 0 and e.name_index >= 0
+		var use_only: bool = (e.flags & 3) == 1 and (a.state_of(e.file_off) & 8) != 0 \
+			and e.name_index >= 0
 		mark.call(_epos(e), "U" if use_only else "G")
 	for e in a._map.entities:
-		if e.link_act_type >= 0x26 and e.link_act_type <= 0x2A:
+		var act: int = a.act_of(e.file_off)
+		if act >= 0x26 and act <= 0x2A:
 			mark.call(_epos(e), "O")
 	for e in a._teleports:
 		mark.call(_epos(e), "E")

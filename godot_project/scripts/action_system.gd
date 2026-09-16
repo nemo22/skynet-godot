@@ -28,9 +28,18 @@
 ##   0xF0                 — interior teleport (0x137881): target map at
 ##                          sub+2, spawn-marker set at sub+4; one-shot.
 ##
-## Runtime state (mutated state bytes, mover progress, damage stages)
-## lives on/next to the parsed MapFile — reloading a map re-parses it,
-## which matches DOS (maps are always reloaded from disk; the Mst
+## Where the state lives: NOT here, and not in the parsed MapFile
+## either. Since step 5a of docs/trigger_graph_plan.md every state byte,
+## act byte and link belongs to the level's trigger runtime
+## (scripts/triggers/trigger_runtime.gd, `triggers` below), which is the
+## only thing that writes one; the records this sweeps are the DATA the
+## map was authored with — position, radius, flags, hit points, the
+## destruction table — and are read-only. What is still kept here is the
+## machinery of the classes that have not moved yet: mover progress,
+## damage stages, hit points, the latches of the sweeps.
+##
+## Reloading a map re-parses it and the runtime starts from the records
+## again, which matches DOS (maps are always reloaded from disk; the Mst
 ## state overlay arrives with map transitions in phase 2).
 ##
 ## Every handler run below also ANNOUNCES itself on the level's trigger
@@ -44,10 +53,10 @@
 ##
 ## Phase F2 of docs/map_format_plan.md moves this, class by class, onto
 ## the level's Behaviour branch (scripts/level/behaviour.gd). Done so
-## far: the chain walk itself (ObjFlipLink runs on the nodes and mirrors
-## every state bit back into the records read here) and the one-shot
-## cues — sounds, voice lines, hints, objectives fire from their nodes.
-## Still here: movers, proximity, exits, destructibles, demolition.
+## far: the chain walk itself (ObjFlipLink, now the trigger runtime's)
+## and the one-shot cues — sounds, voice lines, hints, objectives fire
+## from their nodes. Still here: movers, proximity, exits,
+## destructibles, demolition, relays, spawns, water, lights.
 
 extends RefCounted
 
@@ -132,22 +141,18 @@ var _teleports: Array = []        # entities with act 0xF0
 ## physics step, and the records never move.
 var _prox_pos: PackedVector3Array = PackedVector3Array()
 var _teleport_pos: PackedVector3Array = PackedVector3Array()
-## Act byte and link as parsed, per file offset: save_state() keeps the
-## ones play changed (a cue retired to 0xFF, the water valves swapping
-## 0xd9/0xda, a path end cut off), which re-parsing the map would undo.
-var _parsed_act: Dictionary = {}
-var _parsed_link: Dictionary = {}
 var _light_ents: Array = []       # variant-2 lights with a light act
 ## file_off → OmniLight3D placed by main (_place_map_lights); a light
-## act flips the record and this node follows.
+## act flips the runtime's enable word and this node follows.
 var map_lights: Dictionary = {}
 var _light_fx_clock: float = 0.0
 var _light_strobe_on: Dictionary = {}   # file_off → visible (flicker/strobe state)
 var _destruct_nodes: Array = []   # entities with acts 0x18/0x19
 var _demolish_nodes: Array = []   # entities with act 0x1B
-## The level's Behaviour branch (scripts/level/behaviour.gd): the chain
-## walk runs there and the cue nodes fire themselves (F2).
-var behaviour: Node = null
+## The level's trigger state (scripts/triggers/trigger_runtime.gd, step
+## 5a): the chain walk, the cues, and every state byte, act byte and link
+## the sweeps below read. Set by the level loader.
+var triggers: RefCounted = null
 ## The level's trigger event bus (scripts/triggers/trigger_bus.gd, M3
 ## step 3): every handler run below announces itself on it. An OBSERVER
 ## — the sweeps do not know whether anything listens, `null` is an
@@ -230,11 +235,25 @@ func _say(off: int, kind: String, effect_kind: String, payload: Dictionary) -> v
 	if not effect_kind.is_empty():
 		bus.announce_effect(off, effect_kind, payload)
 
+## --- the live bytes --------------------------------------------------
+## Everything below reads an entity's state byte, act byte and link
+## through these three, never off the record: the record is what the MAP
+## file said, the runtime is what play has made of it (step 5a).
+func state_of(off: int) -> int:
+	return triggers.state(off) if triggers != null else 0
+
+func act_of(off: int) -> int:
+	return triggers.act(off) if triggers != null else 0
+
+func link_of(off: int) -> int:
+	return triggers.link(off) if triggers != null else 0
+
+func enabled(off: int) -> bool:
+	return triggers != null and triggers.enabled(off)
+
 func setup(map: MapFile.MapFile) -> void:
 	_map = map
 	for e in map.entities:
-		_parsed_act[e.file_off] = e.link_act_type
-		_parsed_link[e.file_off] = e.link_next
 		# Placement MARKERS (enemy starts, radiation sources …) keep
 		# other data where a sprite keeps its act byte — an enemy
 		# marker's "act" is its enemy type.
@@ -318,7 +337,7 @@ func _light_apply(e: MapFile.Entity) -> void:
 	var l = map_lights.get(e.file_off)
 	if l == null or not is_instance_valid(l):
 		return
-	var on: bool = e.light_enable > 0
+	var on: bool = triggers.light_enable(e.file_off) > 0
 	if _light_strobe_on.has(e.file_off):
 		on = on and bool(_light_strobe_on[e.file_off])
 	(l as Node3D).visible = on
@@ -326,9 +345,10 @@ func _light_apply(e: MapFile.Entity) -> void:
 ## One-shot light acts, run when the light's bit 0 is set (DOS runs the
 ## handler each tick the bit is on; toggle and the fades clear it).
 func _light_step(e: MapFile.Entity, fx_tick: bool) -> void:
-	var act: int = e.link_act_type
+	var act: int = act_of(e.file_off)
 	if act == ACT_LIGHT_TOGGLE:
-		e.light_enable = -e.light_enable if e.light_enable != 0 else 1
+		var word: int = triggers.light_enable(e.file_off)
+		triggers.set_light_enable(e.file_off, -word if word != 0 else 1)
 		_clear_enable(e)
 		_light_apply(e)
 	elif act == ACT_LIGHT_FLICKER or act == ACT_LIGHT_STROBE:
@@ -347,7 +367,8 @@ func _light_step(e: MapFile.Entity, fx_tick: bool) -> void:
 			f = -float(act - 0x0C) / 4.0
 		if l != null and is_instance_valid(l):
 			(l as OmniLight3D).light_energy = maxf((l as OmniLight3D).light_energy * (1.0 + f), 0.0)
-		e.light_intensity = maxi(int(float(e.light_intensity) * (1.0 + f)), 0)
+		triggers.set_light_intensity(e.file_off,
+			maxi(int(float(triggers.light_intensity(e.file_off)) * (1.0 + f)), 0))
 		_clear_enable(e)
 		_light_apply(e)
 
@@ -367,6 +388,19 @@ static func gate_runs(e: MapFile.Entity) -> bool:
 	if e.link_act_type != ACT_PROX_GATE:
 		return false
 	var bits: int = e.state_byte & 6
+	return bits == 0 or bits == 6
+
+## The same two tests on the LIVE bytes (step 5a). The statics above read
+## the MAP record and answer for the map as it was authored — which is
+## what the variant carry and the graph builder want; a sweep that is
+## about the entity as it stands now asks these.
+func is_wall_button_live(e: MapFile.Entity) -> bool:
+	return (e.flags & 3) == 1 and (state_of(e.file_off) & 8) != 0 and e.name_index >= 0
+
+func gate_runs_live(e: MapFile.Entity) -> bool:
+	if act_of(e.file_off) != ACT_PROX_GATE:
+		return false
+	var bits: int = state_of(e.file_off) & 6
 	return bits == 0 or bits == 6
 
 ## Does this act type get a visual/interactive node treatment?
@@ -425,7 +459,7 @@ func mover_report() -> String:
 			var b: Basis = (n as Node3D).global_transform.basis
 			bx = "X%s Y%s" % [str(b.x.round()), str(b.y.round())]
 		out.append("@%05x %-8s %-7s act %02x state %02x progress %.0f/%.0f dir %+.0f sign %+.0f axis %d %s" % [
-			off, nm, String(m["family"]), e.link_act_type if e else 0, e.state_byte if e else 0,
+			off, nm, String(m["family"]), act_of(off), state_of(off),
 			float(m["progress"]), span, float(m["dir"]), float(m.get("sign", 1.0)), int(m["axis"]), bx])
 	return "
 ".join(out) if out.size() > 0 else "no movers"
@@ -462,13 +496,14 @@ func on_player_hit(file_off: int, damage: float) -> bool:
 	var has_hp: bool = _hp.has(file_off) and (e.flags & 3) == 1 and not spent
 	var depleted: bool = has_hp and _hp[file_off] - damage <= 0.0
 	var acted: bool = false
-	if (e.state_byte & 6) != 0:
+	var st: int = state_of(file_off)
+	if (st & 6) != 0:
 		# Destructible damage accumulates every qualifying hit. Membership
 		# comes from registration (act 0x18/0x19 OR a TRANSFRM.PRS name
 		# match — cars carry bit1 + HP but act 0x00 in the MAP data).
 		if _destr.has(file_off):
 			acted = _advance_destructible(e)
-		elif not spent and ((e.state_byte & 2) != 0 or ((e.state_byte & 4) != 0 and depleted)):
+		elif not spent and ((st & 2) != 0 or ((st & 4) != 0 and depleted)):
 			_trigger(e)
 			acted = true
 	if has_hp:
@@ -511,9 +546,10 @@ func on_player_activate(file_off: int, player_pos: Vector3 = Vector3.INF,
 	# a tower wall, which no proximity radius in the original reaches.
 	# Records that are not proximity types keep the port's aim-and-press
 	# rule as it was: the ray is all they have ever had.
-	if player_pos.is_finite() and not is_wall_button(e) and (gate_runs(e)
-			or e.link_act_type == ACT_PROX_CHAIN_A
-			or e.link_act_type == ACT_PROX_CHAIN_B):
+	var act: int = act_of(file_off)
+	if player_pos.is_finite() and not is_wall_button_live(e) and (gate_runs_live(e)
+			or act == ACT_PROX_CHAIN_A
+			or act == ACT_PROX_CHAIN_B):
 		var from: Vector3 = (eye if eye.is_finite() else player_pos) - zone_origin
 		if not _within(_dos_pos(e), from, _prox_radius(e)):
 			return false
@@ -528,29 +564,29 @@ func on_player_activate(file_off: int, player_pos: Vector3 = Vector3.INF,
 	# retired the whole rule on 2026-09-15 — DOS has no use-key path to a
 	# cue at all, and his own DOS run of mission 5 reaches neither the
 	# picture nor the hint beside it. They are unreachable there too.
-	var usable: bool = (e.state_byte & 2) != 0 \
-		or gate_runs(e) or e.link_act_type == ACT_PROX_CHAIN_A \
-		or e.link_act_type == ACT_PROX_CHAIN_B
+	var usable: bool = (state_of(file_off) & 2) != 0 \
+		or gate_runs_live(e) or act == ACT_PROX_CHAIN_A \
+		or act == ACT_PROX_CHAIN_B
 	if not usable:
 		return false
 	# 0xF1/0xF2 are one-shot in DOS (they clear their own bit 0 when they
 	# fire — see the proximity loop): once spent, the use key must not
 	# flip the chain back either, or pressing F at MAP.210's lever
 	# after it tripped would shut the gate again.
-	var chain_trigger: bool = e.link_act_type == ACT_PROX_CHAIN_A 		or e.link_act_type == ACT_PROX_CHAIN_B
-	if chain_trigger and (e.state_byte & 1) == 0:
+	var chain_trigger: bool = act == ACT_PROX_CHAIN_A or act == ACT_PROX_CHAIN_B
+	if chain_trigger and not enabled(file_off):
 		return false
 	# A gate whose chain ends in an exit (the truck DOOR in MAP.211/212,
 	# the bunker doorway gates) is the use-key way through: arm the exit
 	# if the chain has not flipped yet and go, wherever its sprite sits.
-	if e.link_act_type == ACT_PROX_GATE:
+	if act == ACT_PROX_GATE:
 		var t: MapFile.Entity = _chain_teleport(e)
 		if t != null:
 			return _use_exit(e, t)
 		# The gate the key was aimed at: flipped here, so the key's sweep
 		# in tick() must leave it alone or it would flip straight back.
 		_edge_done[e.file_off] = true
-	if (e.state_byte & 2) != 0:
+	if (state_of(file_off) & 2) != 0:
 		_trigger(e)
 	else:
 		_flip_link(e)
@@ -564,11 +600,11 @@ func _chain_teleport(start: MapFile.Entity) -> MapFile.Entity:
 	var visited: Dictionary = {}
 	while cur != null and not visited.has(cur.file_off):
 		visited[cur.file_off] = true
-		if cur.link_act_type == ACT_TELEPORT:
+		if act_of(cur.file_off) == ACT_TELEPORT:
 			return cur
-		if cur.link_next < 1:
+		if link_of(cur.file_off) < 1:
 			return null
-		cur = _map.entities_by_off.get(cur.link_next)
+		cur = _map.entities_by_off.get(link_of(cur.file_off))
 	return null
 
 ## Use-key on a gate whose chain ends in a doorway.
@@ -604,11 +640,11 @@ func _use_exit(gate: MapFile.Entity, t: MapFile.Entity) -> bool:
 	if not _exit_walked.has(gate.file_off):
 		_exit_walked[gate.file_off] = true
 		_flip_link(gate)
-	t.state_byte |= 1
+	triggers.arm(t.file_off)
 	return _fire_teleport(t)
 
 func _fire_teleport(t: MapFile.Entity) -> bool:
-	if _teleport_fired or (t.state_byte & 1) == 0:
+	if _teleport_fired or not enabled(t.file_off):
 		return false
 	_clear_enable(t)                         # one-shot (0x137881)
 	# DOS holds no latch in the handler — it clears its own bit 0 and would
@@ -637,17 +673,17 @@ func _trigger(e: MapFile.Entity) -> void:
 	_flip_link(e)
 	_do_action(e)
 
-## ObjFlipLink FUN_001394aa — runs on the Behaviour branch since F2
-## (scripts/level/behaviour.gd flip): toggle bit 0 down the chain, an
-## 0xEF node forces its bit back on, the walk stops at an actor, and a
-## one-shot cue whose bit goes up fires there and then. The nodes
-## mirror every bit into the records, so the sweeps below keep reading
-## the entities as before.
+## ObjFlipLink FUN_001394aa — the trigger runtime's since step 5a
+## (scripts/triggers/trigger_runtime.gd flip): toggle bit 0 down the
+## chain, an 0xEF node forces its bit back on, the walk stops at an
+## actor, and a one-shot cue whose bit goes up fires there and then. What
+## comes back is the walk order and the new bytes, which is what the
+## per-tick sweeps below need to know was armed.
 func _flip_link(start: MapFile.Entity) -> void:
-	if behaviour == null:
-		push_warning("[action] no Behaviour branch — chain from @%05x dropped" % start.file_off)
+	if triggers == null:
+		push_warning("[action] no trigger runtime — chain from @%05x dropped" % start.file_off)
 		return
-	for item in behaviour.flip(start.file_off):
+	for item in triggers.flip(start.file_off):
 		var e: MapFile.Entity = _map.entities_by_off.get(int(item[0]))
 		if e == null:
 			continue
@@ -686,7 +722,7 @@ func _refresh_switch_visual(e: MapFile.Entity) -> void:
 			mi = found[0]
 	if mi == null or mi.mesh == null or mi.mesh.get_surface_count() != 2:
 		return
-	var lit: bool = (e.state_byte & 1) != 0
+	var lit: bool = enabled(e.file_off)
 	node.set_meta("switch_lit", lit)
 	mi.set_surface_override_material(0, mi.mesh.surface_get_material(1) if lit else null)
 	mi.set_surface_override_material(1, mi.mesh.surface_get_material(0) if lit else null)
@@ -694,7 +730,7 @@ func _refresh_switch_visual(e: MapFile.Entity) -> void:
 ## ObjDoAction: dispatch when enabled. Movers/proximity/teleports are
 ## per-tick handlers driven from tick(); the one-shot families run here.
 func _do_action(e: MapFile.Entity) -> void:
-	var act: int = e.link_act_type
+	var act: int = act_of(e.file_off)
 	if act <= 0 or act >= 0xFE:
 		return
 	if is_mover(act) or act == ACT_PROX_GATE \
@@ -738,11 +774,12 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 		if fx_tick:
 			_light_fx_clock = 0.0
 		for e in _light_ents:
-			if (e.state_byte & 1) != 0 or _armed.has(e.file_off):
+			if _fires(e):
 				if not _light_live.has(e.file_off):
 					_light_live[e.file_off] = true
 					_say(e.file_off, "light", "light",
-						{"op": Rules.light_op(e.link_act_type), "enable": e.light_enable})
+						{"op": Rules.light_op(act_of(e.file_off)),
+						 "enable": triggers.light_enable(e.file_off)})
 				_light_step(e, fx_tick)
 			else:
 				_light_live.erase(e.file_off)
@@ -753,7 +790,7 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 	# Movers ------------------------------------------------------
 	for off in _movers:
 		var e: MapFile.Entity = _map.entities_by_off.get(off)
-		if e == null or (e.state_byte & 1) == 0:
+		if e == null or not enabled(off):
 			# A chain took the bit away in the middle of a run: the mover
 			# stops where it stands and the next enable is a new run.
 			var stopped: Dictionary = _movers[off]
@@ -774,7 +811,7 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 		# player (handlers 0x137e2e and 0x1379c4); the radii differ.
 		# MAP.220's mission objective hangs off an 0xF2 button 1024 units
 		# from the road, which is how that jeep mission ends.
-		if is_wall_button(e):
+		if is_wall_button_live(e):
 			continue                         # the key or the crosshair, not the walk
 		if _spent.has(e.file_off):
 			continue
@@ -789,19 +826,20 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 		# flipped BIGDOOR again and shut it in his face ("potom sa zasa
 		# zavrie a nedá sa tam dostať"). 0xEF gates are different: they
 		# force their own bit back on (see gate_runs).
-		var chain_trigger: bool = e.link_act_type == ACT_PROX_CHAIN_A 			or e.link_act_type == ACT_PROX_CHAIN_B
+		var act: int = act_of(e.file_off)
+		var chain_trigger: bool = act == ACT_PROX_CHAIN_A or act == ACT_PROX_CHAIN_B
 		# 0xEF: the key, not the approach. A gate whose chain ends in an
 		# exit is the use key's way through and goes by activate_teleport.
-		if e.link_act_type == ACT_PROX_GATE:
+		if act == ACT_PROX_GATE:
 			if _use_edge and inside and _chain_teleport(e) == null and not _edge_done.has(e.file_off):
 				print("[action] gate @%05x used at %s" % [e.file_off, epos])
 				_flip_link(e)
 			continue
-		if chain_trigger and (e.state_byte & 1) == 0:
+		if chain_trigger and not enabled(e.file_off):
 			continue
 		if inside and not latched:
 			_prox_latched[e.file_off] = true
-			print("[action] gate @%05x (act %02x) tripped at %s" % [e.file_off, e.link_act_type, epos])
+			print("[action] gate @%05x (act %02x) tripped at %s" % [e.file_off, act, epos])
 			# DOS order: ObjFlipLink from the trigger — which toggles the
 			# trigger itself as well — then `state &= 0xFE`.
 			_flip_link(e)
@@ -837,7 +875,7 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 	# console — the counter is then 1 — and sets off the robots, the
 	# stuck door and the voice line.
 	for e in _relays:
-		if (e.state_byte & 1) == 0:
+		if not enabled(e.file_off):
 			continue
 		if objectives_left > 0 and objectives_left == RELAY_AT:
 			print("[action] relay @%05x fires (%d objective left)" % [e.file_off, objectives_left])
@@ -860,11 +898,11 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 		if not _fires(e):
 			continue
 		_clear_enable(e)
-		var cfg: Array = WATER_ACTS[e.link_act_type]
+		var cfg: Array = WATER_ACTS[act_of(e.file_off)]
 		var delta_u: int = int(cfg[0])
 		var partner: int = int(cfg[1])
 		if partner != 0:
-			e.link_act_type = partner        # next time it goes the other way
+			triggers.set_act(e.file_off, partner)   # next time it goes the other way
 		var target: float = -float(delta_u)
 		if delta_u == 0:
 			# zone-local ↔ world: an absolute surface height, and what it
@@ -886,9 +924,9 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 		var epos: Vector3 = _teleport_pos[ti]
 		var touching: bool = _within_touch(epos, here, TELEPORT_TOUCH_RADIUS)
 		if touching and not _touch_latched.get(e.file_off, false):
-			e.state_byte |= 1
+			triggers.arm(e.file_off)
 		if _armed.has(e.file_off):
-			e.state_byte |= 1
+			triggers.arm(e.file_off)
 		_touch_latched[e.file_off] = touching
 		# An exit a CHAIN switched on fires the moment it is enabled (DOS
 		# 0x138081), on foot as well as in a vehicle: MAP.270's tunnel
@@ -929,7 +967,7 @@ func activate_teleport(player_pos: Vector3, eye: Vector3 = Vector3.INF) -> bool:
 		return false
 	for gi in _prox.size():
 		var g: MapFile.Entity = _prox[gi]
-		if g.link_act_type != ACT_PROX_GATE or _spent.has(g.file_off):
+		if act_of(g.file_off) != ACT_PROX_GATE or _spent.has(g.file_off):
 			continue
 		var gpos: Vector3 = _prox_pos[gi]
 		# Distance and nothing else, as the handler does it: the 0xEF
@@ -944,7 +982,7 @@ func activate_teleport(player_pos: Vector3, eye: Vector3 = Vector3.INF) -> bool:
 			return _use_exit(g, t)
 	for ti in _teleports.size():
 		var e: MapFile.Entity = _teleports[ti]
-		if (e.state_byte & 1) == 0:
+		if not enabled(e.file_off):
 			continue
 		var epos: Vector3 = _teleport_pos[ti]
 		if not _within_touch(epos, here, TELEPORT_TOUCH_RADIUS):
@@ -1012,7 +1050,7 @@ func use_nearby(player_pos: Vector3, eye: Vector3 = Vector3.INF) -> bool:
 	var best_d: float = INF
 	for pi in _prox.size():
 		var e: MapFile.Entity = _prox[pi]
-		if _spent.has(e.file_off) or not is_wall_button(e):
+		if _spent.has(e.file_off) or not is_wall_button_live(e):
 			continue
 		var epos: Vector3 = _prox_pos[pi]
 		var d: float = epos.distance_to(from_eye)
@@ -1047,9 +1085,10 @@ func arm_proximity(player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> void:
 			_touch_latched[e.file_off] = true
 
 func _prox_radius(e: MapFile.Entity) -> float:
-	if e.link_act_type == ACT_PROX_CHAIN_A:
+	var act: int = act_of(e.file_off)
+	if act == ACT_PROX_CHAIN_A:
 		return 256.0
-	if e.link_act_type == ACT_PROX_CHAIN_B:
+	if act == ACT_PROX_CHAIN_B:
 		return 1024.0
 	return PROX_GATE_RADIUS + PLAYER_RADIUS
 
@@ -1057,19 +1096,16 @@ func _prox_radius(e: MapFile.Entity) -> float:
 ## Enabled now, or enabled at any point earlier in this tick (see
 ## `_armed`) — the test the one-shot sweeps use.
 func _fires(e: MapFile.Entity) -> bool:
-	return (e.state_byte & 1) != 0 or _armed.has(e.file_off)
+	return enabled(e.file_off) or _armed.has(e.file_off)
 
-## Switch an entity's enable bit off in the record AND on its Behaviour
-## node: the chain walk reads the record, the cue nodes their own copy.
-## (Clearing the record alone left the node at 1, so the next flip of a
-## door that had run its course took it 1 → 0 and it never moved again —
-## MAP.210's gate could open but never close.)
+## Switch an entity's enable bit off — what the DOS handlers do to
+## themselves when they are done. One place to write it since step 5a:
+## the bit used to live in the record AND on the Behaviour node, and
+## clearing the record alone left the node at 1, so the next flip of a
+## door that had run its course took it 1 → 0 and it never moved again
+## (MAP.210's gate could open but never close).
 func _clear_enable(e: MapFile.Entity) -> void:
-	e.state_byte &= ~1
-	if behaviour != null:
-		var n: Node = behaviour.node(e.file_off)
-		if n != null:
-			behaviour.set_state(n, e.state_byte)
+	triggers.clear_enable(e.file_off)
 
 ## An 0xF3 spawn point's robot, built hidden by the level loader
 ## (SpawnEnemiesInit — at most 50 a map).
@@ -1120,18 +1156,18 @@ func _step_path_vehicle(v: Dictionary, delta: float, player_pos: Vector3) -> voi
 		# path@<the vehicle's own marker> (M3 step 3).
 		_say(int(v["off"]), "marker", "path",
 			{"head": int(v["head"]), "vehicle": int(v.get("vehicle", -1))})
-	elif (cur.state_byte & 1) == 0:
+	elif not enabled(cur.file_off):
 		# The path is off (nobody has thrown the lever): brake, and clear
 		# the bit down the whole chain, as the DOS stop case does.
 		v["tspd"] = 0.0
 		_path_disable(int(v["head"]))
 	elif node.position.distance_to(_dos_pos(cur)) <= PATH_REACH:
-		var nxt: MapFile.Entity = _map.entities_by_off.get(cur.link_next) \
-			if cur.link_next > 0 else null
+		var nxt: MapFile.Entity = _map.entities_by_off.get(link_of(cur.file_off)) \
+			if link_of(cur.file_off) > 0 else null
 		if nxt == null:
 			v["tspd"] = 0.0
 			_path_disable(int(v["head"]))
-		elif (nxt.flags & 3) == 3 and nxt.marker_type >= 0 and (nxt.state_byte & 1) != 0:
+		elif (nxt.flags & 3) == 3 and nxt.marker_type >= 0 and enabled(nxt.file_off):
 			if nxt.marker_type == MARKER_PATH_LOOP:
 				nxt = _map.entities_by_off.get(int(v["head"]))
 			if nxt != null:
@@ -1144,7 +1180,7 @@ func _step_path_vehicle(v: Dictionary, delta: float, player_pos: Vector3) -> voi
 			print("[action] path vehicle at @%05x fires the end of its path @%05x"
 				% [cur.file_off, nxt.file_off])
 			_flip_link(nxt)
-			cur.link_next = 0
+			triggers.cut_link(cur.file_off)
 			v["tspd"] = 0.0
 			return
 	var to: Vector3 = _dos_pos(cur) - node.position
@@ -1163,11 +1199,11 @@ func _path_disable(head: int) -> void:
 	var cur: MapFile.Entity = _map.entities_by_off.get(head)
 	var hops: int = 0
 	while cur != null and hops < 64:
-		if (cur.state_byte & 1) != 0:
+		if enabled(cur.file_off):
 			_clear_enable(cur)
-		if (cur.flags & 0x40) != 0 or cur.link_next < 1:
+		if (cur.flags & 0x40) != 0 or link_of(cur.file_off) < 1:
 			return
-		cur = _map.entities_by_off.get(cur.link_next)
+		cur = _map.entities_by_off.get(link_of(cur.file_off))
 		hops += 1
 
 func _spawn_in(off: int) -> void:
@@ -1205,19 +1241,13 @@ static func _within_touch(epos: Vector3, player_pos: Vector3, radius: float) -> 
 ## travel, damage stages, spent switches, remaining HP — is captured here
 ## and re-applied on return.
 func save_state() -> Dictionary:
-	var states: Dictionary = {}
-	# Act bytes and links play has changed ("acts" / "links", 2026-09-14;
-	# a snapshot without them restores as before). They belong to this map
-	# number only: main.gd never carries them to a variant map.
-	var acts: Dictionary = {}
-	var links: Dictionary = {}
-	if _map != null:
-		for e in _map.entities:
-			states[e.file_off] = e.state_byte
-			if e.link_act_type != int(_parsed_act.get(e.file_off, e.link_act_type)):
-				acts[e.file_off] = e.link_act_type
-			if e.link_next != int(_parsed_link.get(e.file_off, e.link_next)):
-				links[e.file_off] = e.link_next
+	# The state bytes, and the act bytes and links play has changed
+	# ("acts" / "links", 2026-09-14; a snapshot without them restores as
+	# before) — the trigger runtime's, which is where they live. They
+	# belong to this map number only: main.gd never carries them to a
+	# variant map.
+	var bytes: Dictionary = triggers.snapshot() if triggers != null \
+		else {"states": {}, "acts": {}, "links": {}}
 	var movers: Dictionary = {}
 	for off in _movers:
 		var m: Dictionary = _movers[off]
@@ -1227,39 +1257,25 @@ func save_state() -> Dictionary:
 		var d: Dictionary = _destr[off]
 		destr[off] = [d["stage"], d["accum"]]
 	return {
-		"states": states, "movers": movers, "destr": destr,
+		"states": bytes["states"], "movers": movers, "destr": destr,
 		"hp": _hp.duplicate(), "spent": _spent.duplicate(),
 		"spawned": _spawned.duplicate(),
-		"acts": acts, "links": links,
+		"acts": bytes["acts"], "links": bytes["links"],
 	}
 
 ## Re-apply a save_state() snapshot. Call after every node is registered
 ## (register_node / register_destructible) so the visuals refresh too —
 ## and before the Behaviour branch enters the tree (main.gd), whose _ready
-## fires the cues the records say are armed.
+## fires the cues the state says are armed.
 func restore_state(snap: Dictionary) -> void:
 	if _map == null or snap.is_empty():
 		return
-	var states: Dictionary = snap.get("states", {})
-	for off in states:
-		var e: MapFile.Entity = _map.entities_by_off.get(off)
-		if e != null:
-			e.state_byte = int(states[off])
-	# A cue that fired is retired (0xFF) and a water valve remembers which
-	# way it goes next; sync_from_records reads the retirement onto the
-	# cue nodes, or an objective would count again on the next flip.
-	var acts: Dictionary = snap.get("acts", {})
-	for off in acts:
-		var e: MapFile.Entity = _map.entities_by_off.get(off)
-		if e != null:
-			e.link_act_type = int(acts[off])
-	var links: Dictionary = snap.get("links", {})
-	for off in links:
-		var e: MapFile.Entity = _map.entities_by_off.get(off)
-		if e != null:
-			e.link_next = int(links[off])
-	if behaviour != null:
-		behaviour.sync_from_records()
+	# The state bytes, and the act bytes and links play changed — a cue
+	# that fired is retired (0xFF), a water valve remembers which way it
+	# goes next. The runtime takes them and puts the retirement back onto
+	# the cue nodes, or an objective would count again on the next flip.
+	if triggers != null:
+		triggers.restore(snap)
 	_hp = (snap.get("hp", {}) as Dictionary).duplicate()
 	_spent = (snap.get("spent", {}) as Dictionary).duplicate()
 	# A plain HP object that was destroyed left the world (_destroy: mesh

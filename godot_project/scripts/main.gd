@@ -3760,6 +3760,13 @@ static func _same_behaviour(sm: LevelLoader.MapFile.MapFile, s, dm: LevelLoader.
 ## could stand where the variant has an objective. (Step 0 of the trigger
 ## graph plan; `lvl` is the fallback for a map that cannot be re-read,
 ## which is better than carrying nothing.)
+##
+## Step 5a takes the danger out of that fallback as well: play writes
+## nothing into a level's records now — the retired acts, the swapped
+## valves, the cut links and the flipped bits are the trigger runtime's —
+## so a level's own copy reads the same as a re-parse. Re-reading stays,
+## because it is the promise this function makes and costs a few
+## milliseconds once per phase.
 func _phase_source_map(from: String, lvl) -> LevelLoader.MapFile.MapFile:
 	var parsed: LevelLoader.MapFile.MapFile = _parse_map(from)
 	if parsed != null:

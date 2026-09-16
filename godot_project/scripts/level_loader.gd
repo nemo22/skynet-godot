@@ -29,6 +29,7 @@ const PickupData   := preload("res://scripts/pickup_data.gd")
 const LevelScene   := preload("res://scripts/level_scene.gd")
 const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
 const TriggerBus   := preload("res://scripts/triggers/trigger_bus.gd")
+const TriggerRuntime := preload("res://scripts/triggers/trigger_runtime.gd")
 const Explosion    := preload("res://scripts/explosion.gd")
 
 ## World units per sprite texel — billboards are sized texture_px × this.
@@ -262,6 +263,12 @@ class Level:
 	## the game subscribes, and it dies with the level. One per ZONE, so a
 	## mission scene's maps each announce under their own map number.
 	var bus: RefCounted = null
+	## The trigger state of this zone and the only thing that writes it
+	## (scripts/triggers/trigger_runtime.gd, plan step 5a): the chain
+	## walk, the cues, and the state bytes, act bytes and links the whole
+	## level reads. The parsed MAP above is the DATA it started from and
+	## is never written to.
+	var triggers: RefCounted = null
 	## TRANSFRM.PRS: mesh name → its damage-stage mesh names. Kept for
 	## the bake, which classifies the destructibles by it too.
 	var transfrm: Dictionary = {}
@@ -388,9 +395,16 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 	# to be announced. Nothing subscribes: it is an observer.
 	level.bus = TriggerBus.new()
 	level.bus.map = int(level.map_suffix) if level.map_suffix.is_valid_int() else -1
+	# The trigger state (step 5a). Everything below asks it for a state
+	# byte, an act byte or a link, and it is the only thing that writes
+	# one — the records are read-only from here on.
+	level.triggers = TriggerRuntime.new()
+	level.triggers.bus = level.bus
+	level.triggers.setup(level.map)
 	# Action/link system — chains, movers, destructibles, teleports.
 	level.action = ActionSystem.new()
 	level.action.bus = level.bus
+	level.action.triggers = level.triggers
 	# zone-local ↔ world: the records it keeps are zone-local, so it needs
 	# the offset to read the player's world position and to hand positions
 	# back to the physics world and the audio.
@@ -463,12 +477,15 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 	# the chains on them from here on.
 	if level.behaviour == null:
 		level.behaviour = LevelBehaviour.build(level)
-	level.behaviour.bind_records(level.map)
 	# Its bodies and meshes sleep while the entity loop below still
 	# builds the same objects from the records (F2, class by class).
 	level.behaviour.sleep_geometry(level.behaviour)
-	level.action.behaviour = level.behaviour
+	# The branch is the runtime's presentation — the cues it plays and
+	# prints, and the chain wiring the bake laid down — and the runtime is
+	# where its state lives.
+	level.behaviour.runtime = level.triggers
 	level.behaviour.bus = level.bus
+	level.triggers.presenter = level.behaviour
 
 	_phase("baked scene")
 	# Terrain mesh — built once and served from the asset cache

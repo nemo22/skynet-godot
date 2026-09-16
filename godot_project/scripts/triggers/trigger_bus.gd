@@ -7,7 +7,8 @@
 ##
 ## This is that trace as data. Every class that already performs a
 ## trigger event calls one of the three announce_* methods below as it
-## does it — scripts/level/behaviour.gd for the chain walk and the cues,
+## does it — scripts/triggers/trigger_runtime.gd for the chain walk and
+## scripts/level/behaviour.gd for the cues it runs,
 ## scripts/action_system.gd for the exits, movers, water, lights,
 ## destructibles, demolition, spawns, relays and path vehicles. Nothing
 ## about play changes: this is an OBSERVER. The emitting code never asks
@@ -52,9 +53,10 @@
 ## Who may subscribe: main.gd (the mission-facing effects), the
 ## presenters under scripts/level/ (each for its own id), the tests and
 ## the step-4 verifier. Prefer watch(id, cb) — ONE entity — over the
-## broadcast signals: when step 5 moves the source of truth from the MAP
-## records onto the graph runtime, the emitting side is replaced
-## wholesale, and a subscriber that only ever named an id cannot tell.
+## broadcast signals: step 5a moved the source of truth from the MAP
+## records onto the trigger runtime and the rest of step 5 replaces the
+## emitting side class by class, and a subscriber that only ever named an
+## id cannot tell.
 ##
 ## The bus belongs to the Level (LevelLoader.Level.bus) and dies with it,
 ## so a mission scene holding several zones has one bus per zone, each
