@@ -486,6 +486,12 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 	level.behaviour.runtime = level.triggers
 	level.behaviour.bus = level.bus
 	level.triggers.presenter = level.behaviour
+	# The proximity class runs on the branch's own nodes (step 5c): the
+	# sweep, the use key and the wall buttons are theirs, and the two of
+	# them meet over the classes that have not moved yet — the records,
+	# the hit points and the doorway a gate's chain ends in.
+	level.action.behaviour = level.behaviour
+	level.behaviour.action = level.action
 
 	_phase("baked scene")
 	# Terrain mesh — built once and served from the asset cache

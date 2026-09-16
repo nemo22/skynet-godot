@@ -61,7 +61,7 @@ func _ready() -> void:
 			continue
 		print("[smoke] %s: movers=%d destr=%d prox=%d teleports=%d"
 			% [m, level.action._movers.size(), level.action._destr.size(),
-			   level.action._prox.size(), level.action._teleports.size()])
+			   level.behaviour.prox_nodes().size(), level.action._teleports.size()])
 		if m == "MAP.210":
 			level210 = level
 	if level210 != null:
@@ -305,7 +305,10 @@ func _run_behaviour_checks() -> void:
 				target = e
 		_check(target != null, "MAP.217 carries the [M3] objective (act 0x28) on a mesh")
 		var gates: Array = []
-		for g in l217.action._prox:
+		# The gates are their own nodes now (step 5c): the branch keeps the
+		# list the handlers run for, and the record says where each one is.
+		for pn in l217.behaviour.prox_nodes():
+			var g = l217.action.record(int(pn.id))
 			if g.link_act_type != 0xEF:
 				continue
 			var cur = g
@@ -351,7 +354,8 @@ func _run_behaviour_checks() -> void:
 			var eye := Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z))
 			var reach: float = ActionSystem.PROX_GATE_RADIUS + ActionSystem.PLAYER_RADIUS
 			var inside: int = 0
-			for g in ljeep.action._prox:
+			for pn in ljeep.behaviour.prox_nodes():
+				var g = ljeep.action.record(int(pn.id))
 				if g.link_act_type == 0xEF and g.link_next == jeep.file_off \
 						and eye.distance_to(Vector3(float(g.x), -float(g.y), -float(g.z))) <= reach:
 					inside += 1
@@ -385,7 +389,9 @@ func _run_behaviour_checks() -> void:
 					break
 		_check(base != null, "MAP.213 has a crate whose death chain demolishes the crate on it")
 		if base != null:
-			_check(not l213.action._prox.has(base), "a state-04 0xEF prop is not a proximity gate")
+			var bnode = l213.behaviour.prox_node(base.file_off)
+			_check(bnode != null and not l213.behaviour.prox_nodes().has(bnode),
+				"a state-04 0xEF prop has a node and is on no proximity sweep")
 			var tnode: Node3D = l213.action._nodes[top.file_off]
 			l213.action.on_player_hit(base.file_off, 500.0)
 			l213.action.tick(0.016, Vector3(1e9, 0.0, 1e9))
@@ -822,7 +828,8 @@ func _zone_gate_setup(origin: Vector3) -> Dictionary:
 			target = e
 	if target == null:
 		return {}
-	for g in lvl.action._prox:
+	for pn in lvl.behaviour.prox_nodes():
+		var g = lvl.action.record(int(pn.id))
 		if g.link_act_type != 0xEF:
 			continue
 		var cur = g

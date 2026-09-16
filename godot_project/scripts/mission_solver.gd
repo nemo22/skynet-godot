@@ -78,13 +78,13 @@ const RETAKE: int = 3
 const SETTLE_MAX: float = 6.0
 const BUCKET: float = 256.0
 ## How near a WALL BUTTON the solver stands before it presses the key
-## (ActionSystem.USE_REACH) — the one record the key reaches without a
-## proximity measure of its own (ActionSystem.is_wall_button).
-const USE_REACH: float = 130.0      # ActionSystem.USE_REACH
+## (RulesSkynet.USE_REACH) — the one record the key reaches without a
+## proximity measure of its own (Trigger.is_wall_button).
+const USE_REACH: float = 130.0      # RulesSkynet.USE_REACH
 ## The use key is also the CROSSHAIR: fly_camera._try_activate rays this
 ## far from the eye and operates whatever mesh it hits, so a button across
 ## a room is pressed by looking at it — the hand reach above is only for
-## the key pressed with nothing under the crosshair (ActionSystem.use_nearby).
+## the key pressed with nothing under the crosshair (behaviour.use_nearby).
 const ACTIVATE_RAY: float = 600.0
 ## How far from an ARMED exit the use key still takes it —
 ## activate_teleport's TELEPORT_TOUCH_RADIUS, the same radius that arms the
@@ -727,7 +727,7 @@ func _nearest(ep: Vector3, reach: float, vwin: float = V_WINDOW) -> int:
 
 ## A spot the player can walk to from which a PROXIMITY record is in reach
 ## — 3D, from the eye, the way its own handler measures him
-## (ActionSystem.on_player_activate / tick). The plain _reach_point below
+## (Trigger.prox_use / prox_watch). The plain _reach_point below
 ## measures horizontally inside a 512-unit vertical window, which is the
 ## doorways' rule and far too generous for these: MAP.210's tower lever
 ## stands 295 units over the ground at its foot, and the run pressed it
@@ -811,9 +811,10 @@ func _candidates(a, name: String, shoot: bool) -> Array:
 			if n >= 0:
 				out.append({"kind": "shoot", "off": off, "key": k, "at": _pos[n], "what": _ename(a, e)})
 		return out
-	for e in a._prox:
+	for t in _prox_nodes(a):
+		var e = a.record(int(t.id))
 		var k: String = "p%05x" % e.file_off
-		if _done.has(name + ":" + k) or a._spent.has(e.file_off):
+		if _done.has(name + ":" + k) or a.is_spent(e.file_off):
 			continue
 		# The live bytes, which are the trigger runtime's (step 5a) — a
 		# lever spent earlier in this run is not the lever the MAP file has.
@@ -821,22 +822,21 @@ func _candidates(a, name: String, shoot: bool) -> Array:
 		var chain: bool = act == 0xF1 or act == 0xF2
 		if chain and not a.enabled(e.file_off):
 			continue                     # a spent lever
-		var use_only: bool = (e.flags & 3) == 1 and (a.state_of(e.file_off) & 8) != 0 \
-			and e.name_index >= 0
+		var use_only: bool = t.is_wall_button()
 		# A 0xEF gate is the USE KEY at a doorway, not a tripwire: its DOS
-		# handler (0x137e2e) runs only in the frame ACTIVATE goes down, so
+		# handler (0x1386a0) runs only in the frame ACTIVATE goes down, so
 		# standing in one does nothing whatever. Walking into the eight that
 		# ring MAP.217's jeep is what the solver did for [M3], and mission 1
 		# could not be finished; a player presses the key there.
 		var gate: bool = act == 0xEF and not use_only
 		# Where to stand. A gate or a lever is measured by its own handler,
-		# 3D from the EYE (ActionSystem.on_player_activate since
-		# 2026-09-16), so the spot has to satisfy that and not merely be
-		# near in plan: MAP.210's tower levers stand three hundred units
-		# over the ground at their foot. A WALL BUTTON is the exception the
-		# owner kept — the key answers it instead of proximity — so for one
-		# of those the reach is the hand's and then the crosshair's.
-		var reach: float = a._prox_radius(e)
+		# 3D from the EYE (the trigger's own node since 2026-09-16), so the
+		# spot has to satisfy that and not merely be near in plan: MAP.210's
+		# tower levers stand three hundred units over the ground at their
+		# foot. A WALL BUTTON is the exception the owner kept — the key
+		# answers it instead of proximity — so for one of those the reach is
+		# the hand's and then the crosshair's.
+		var reach: float = float(t.measure())
 		var at: Vector3 = _reach_point(_epos(e), USE_REACH) if use_only \
 			else _reach_eye(_epos(e), reach)
 		var kind: String = "use" if use_only else ("use-gate" if gate else "walk-in")
@@ -989,12 +989,12 @@ func _exits(a, name: String) -> Array:
 	var spots: Dictionary = {}
 	for e in a._teleports:
 		spots[e.file_off] = [[_epos(e), EXIT_REACH]]
-	for g in a._prox:
-		if g.link_act_type != 0xEF or a._spent.has(g.file_off):
+	for g in _prox_nodes(a):
+		if int(g.act) != 0xEF or a.is_spent(int(g.id)):
 			continue
-		var t = a._chain_teleport(g)
-		if t != null and spots.has(t.file_off):
-			(spots[t.file_off] as Array).append([_epos(g), a._prox_radius(g)])
+		var t: int = a.behaviour.chain_exit(int(g.id))
+		if t >= 0 and spots.has(t):
+			(spots[t] as Array).append([_epos(a.record(int(g.id))), float(g.measure())])
 	var out: Array = []
 	for e in a._teleports:
 		var target: String = ("MAP.%03d" % e.exit_map) if e.exit_map > 0 else String(main._prev_map_name)
@@ -1069,7 +1069,8 @@ func _report_unreached(a, name: String) -> void:
 		var tgt: String = ("MAP.%03d" % e.exit_map) if e.exit_map > 0 else "previous map"
 		if _reach_point(_epos(e), EXIT_REACH) == Vector3.INF:
 			targets.append(["EXIT @%05x → %s set %d" % [e.file_off, tgt, e.exit_marker_id], _epos(e)])
-	for e in a._prox:
+	for t in _prox_nodes(a):
+		var e = a.record(int(t.id))
 		if not _done.has("%s:p%05x" % [name, e.file_off]):
 			targets.append(["trigger %s @%05x (act %02x)" % [_ename(a, e), e.file_off, e.link_act_type], _epos(e)])
 	for e in a._map.entities:
@@ -1175,10 +1176,8 @@ func _write_view(name: String, a) -> void:
 		var cz: int = roundi(pos.z / _cell) - lo.y
 		if cx >= 0 and cx < w and cz >= 0 and cz < h:
 			rows[cz][cx] = ch.unicode_at(0)
-	for e in a._prox:
-		var use_only: bool = (e.flags & 3) == 1 and (a.state_of(e.file_off) & 8) != 0 \
-			and e.name_index >= 0
-		mark.call(_epos(e), "U" if use_only else "G")
+	for t in _prox_nodes(a):
+		mark.call(_epos(a.record(int(t.id))), "U" if t.is_wall_button() else "G")
 	for e in a._map.entities:
 		var act: int = a.act_of(e.file_off)
 		if act >= 0x26 and act <= 0x2A:
@@ -1205,6 +1204,12 @@ func _write_view(name: String, a) -> void:
 ## origin (_setup) goes on here, once, for every caller.
 func _epos(e) -> Vector3:
 	return Vector3(float(e.x), -float(e.y), -float(e.z)) + _zone
+
+## The map's proximity triggers (0xEF gates, 0xF1/0xF2 levers, wall
+## buttons) — their own nodes on the level's Behaviour branch since step
+## 5c, where the sweep and the measure live.
+func _prox_nodes(a) -> Array:
+	return a.behaviour.prox_nodes() if a.behaviour != null else []
 
 ## Where the run stands when a mission scene is up: the console's own zone
 ## line (the zone, its mission, where it stands and which phase its world is

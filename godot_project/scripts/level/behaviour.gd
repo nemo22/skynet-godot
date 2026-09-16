@@ -25,6 +25,16 @@
 ##   node_bytes(id)       the act and state a node was baked with — for a
 ##                        branch the runtime has no records for.
 ##
+## Since step 5c it is also where the PROXIMITY class lives: the 0xEF
+## gates, the 0xF1/0xF2 chain triggers and the wall buttons watch the
+## player and answer the use key from their own nodes
+## (scripts/level/trigger.gd), and this holds the sweep over them — the
+## order the map put them in, the key's edge, and what a proximity node
+## still has to ask the classes that have not moved yet (the record it
+## was made from, whether it has been shot to pieces, and taking the
+## doorway a gate's chain ends in). The state those nodes read and write
+## is the runtime's, as everything here is.
+##
 ## The `state` export on the nodes is the byte the MAP was AUTHORED with
 ## and stays that: nothing writes it at run time any more, so there is no
 ## second copy to disagree with the runtime. The one node-side mirror
@@ -37,9 +47,11 @@
 ## listening and it behaves the same when the bus is null.
 ##
 ## F2 runs class by class, so while action_system.gd still drives the
-## movers, triggers, exits and destructibles, their geometry in this
-## branch stays asleep (sleep_geometry). When the last class has moved,
-## that goes too.
+## movers, the exits and the destructibles, their geometry in this branch
+## stays asleep (sleep_geometry). When the last class has moved, that
+## goes too — except for the proximity shapes, which sleep for good: a
+## trigger's measure is evaluated, never an Area3D overlap, so that the
+## running game, the verifier and the lock all measure one way (plan §2).
 
 extends Node3D
 
@@ -64,6 +76,28 @@ var runtime: RefCounted = null
 ## is the normal case in a test that builds a branch by hand, and nothing
 ## below reads anything back.
 var bus: RefCounted = null
+## The classes that have not moved off the records yet — the movers, the
+## exits, the destructibles, the hit points and the per-tick bookkeeping
+## of a chain walk (scripts/action_system.gd). The proximity nodes reach
+## three things through it: whether a record is a spent wreck, the MAP
+## record's own read-only data, and the doorway a gate's chain ends in.
+## Step 5h takes it away with the rest of ActionSystem; null is an
+## ordinary state (a branch built by hand in a test) and the nodes fall
+## back to what the bake wrote on them.
+var action: RefCounted = null
+
+## Every Trigger node of the map by id, and the ones the DOS handlers
+## actually run for, in the order the MAP lists them — the sweep list
+## ActionSystem used to build at setup. An 0xEF whose state bits 1-2 are
+## not both clear or both set is not a gate and is on neither.
+var _prox: Array = []
+var _prox_by_id: Dictionary = {}
+## The use key's first frame. DOS 0x1386a0 opens with `cmp [0x2c7f], 1`
+## — ACTIVATE went down this very frame — and only then flips every live
+## 0xEF gate within 60 u; walking into one does nothing (disassembled
+## 2026-09-11). The port had them fire on approach, so the jeep drove
+## into MAP.220's truck by itself. Set by press_use, spent by prox_tick.
+var _use_edge: bool = false
 
 func _ready() -> void:
 	_ensure_index()
@@ -108,6 +142,11 @@ func _ensure_index() -> void:
 			_by_id[id_of(n)] = n
 			if n.has_signal("fired"):
 				n.connect("fired", _on_cue_fired.bind(n))
+			if n.has_method("prox_watch"):
+				n.set("branch", self)
+				_prox_by_id[id_of(n)] = n
+				if bool(n.call("on_sweep")):
+					_prox.append(n)
 
 ## The node of entity `id` (the MAP file offset), or null.
 func node(id: int) -> Node:
@@ -193,6 +232,172 @@ func node_bytes(id: int) -> Dictionary:
 	if n == null:
 		return {}
 	return {"act": act_of(n), "state": state_of(n)}
+
+# ---------------------------------------------------------------------
+# The proximity class (step 5c)
+# ---------------------------------------------------------------------
+## Every position below is ZONE-LOCAL — the DOS coordinates the records
+## and the nodes are in. The caller takes the player's world position into
+## that space once (ActionSystem.zone_origin) and everything here works in
+## it, as the sweep it came from did.
+
+## The triggers the handlers run for, in map order. A caller that wants
+## one of them wants its id, where it stands and how far it reaches, all
+## of which the node answers.
+func prox_nodes() -> Array:
+	_ensure_index()
+	return _prox
+
+## The Trigger node of entity `id`, whether or not it is on the sweep
+## (a state-04 0xEF prop has one and is not a gate), or null.
+func prox_node(id: int) -> Node:
+	_ensure_index()
+	return _prox_by_id.get(id)
+
+## The use key went down — every live 0xEF gate in reach answers it on
+## the next sweep, wherever the crosshair was pointing.
+func press_use() -> void:
+	_use_edge = true
+
+## One tick of every proximity trigger, from the eye. Run from the level's
+## per-tick sweep (ActionSystem.tick) in the place it has always held:
+## after the movers, before the one-shot classes that read what a chain
+## armed this tick.
+##
+## Variant-1 meshes with state bit 3 — the wall buttons — are not here:
+## walking past a button must not press it, so the key and the crosshair
+## are the only ways they run at all.
+func prox_tick(eye: Vector3) -> void:
+	_ensure_index()
+	for t in _prox:
+		if t.is_wall_button():
+			continue
+		if action != null and bool(action.is_spent(int(t.id))):
+			continue
+		t.prox_watch(eye, _use_edge)
+	_use_edge = false
+	for t in _prox_by_id.values():
+		t.edge_done = false
+
+## Called right after the player is placed: latch every trigger the spawn
+## point already lies inside, so a return exit that drops the player
+## beside the gate it came through (MAP.210 marker 27 is 64 units from the
+## bunker gate; MAP.211's start sits inside its DOOR gate) waits for him
+## to step out and back in instead of bouncing straight back.
+func prox_arm(eye: Vector3) -> void:
+	_ensure_index()
+	for t in _prox:
+		t.prox_arm(eye)
+
+## The use key reached the record at `id` — through the crosshair ray that
+## found its mesh, or through use_nearby. `eye` is Vector3.INF for a
+## caller that has picked both the entity and the place and says so.
+## False when there is no proximity node for that id: the record is not
+## one of these and the caller's own use-key path applies.
+func prox_use(id: int, eye: Vector3) -> bool:
+	var t: Node = prox_node(id)
+	return bool(t.prox_use(eye)) if t != null else false
+
+## Use key with nothing activatable under the crosshair: operate the
+## nearest WALL BUTTON the player stands at. Those are the records the
+## sweep leaves alone, so this and the crosshair ray are the only ways
+## they run at all.
+##
+## Nothing else is reached from here any more. Until 2026-09-16 this swept
+## every variant-1 proximity record and every unchained cue within 130
+## units of the FEET — a hand reach the port invented, three times the
+## radius of the handler it was standing in for. So the key opened a gate
+## from well outside the 60 units DOS measures, which is most of what the
+## step-4 verifier called port_use_reach (157 of its failures). A gate is
+## the key's, but on the handler's own terms: press_use sets the edge and
+## the sweep fires every gate within its radius OF THE EYE.
+##
+## Measured as the record's own handler measures it: 3D, from the eye, at
+## the radius the slot carries (Trigger.measure).
+func use_nearby(eye: Vector3) -> bool:
+	_ensure_index()
+	var best: Node = null
+	var best_d: float = INF
+	for t in _prox:
+		if action != null and bool(action.is_spent(int(t.id))):
+			continue
+		if not t.is_wall_button():
+			continue
+		var d: float = (t.position as Vector3).distance_to(eye)
+		if d > float(t.measure()) or d >= best_d:
+			continue
+		best_d = d
+		best = t
+	if best == null:
+		return false
+	return bool(best.prox_use(eye))
+
+## The first 0xEF gate in reach of the eye whose chain ends in a doorway —
+## DOS's own way through a door, and what the use key takes first.
+##
+## Distance and nothing else, as the handler does it: the 0xEF handler
+## casts no ray, and the key's own sweep casts none either. A ray here
+## refused MAP.241's doorway gate from 38 units away, where the map's own
+## geometry stands between the sprite and the floor the player is on.
+func gate_to_exit(eye: Vector3) -> Node:
+	_ensure_index()
+	for t in _prox:
+		if t.act_now() != Rules.ACT_PROX_GATE:
+			continue
+		if action != null and bool(action.is_spent(int(t.id))):
+			continue
+		if not t.inside(eye):
+			continue
+		if chain_exit(int(t.id)) < 0:
+			continue
+		return t
+	return null
+
+## Take the doorway `gate`'s chain ends in. The exits are still the action
+## system's (step 5h), so it is asked to do it — the walk of the gate's
+## own chain is the gate's, and happens there.
+func use_exit_through(gate: Node) -> bool:
+	return bool(action.use_exit_through(gate)) if action != null else false
+
+## The first 0xF0 exit down the chain from `id`, or -1. The live link and
+## act bytes, which are the runtime's: a path whose link play has cut goes
+## nowhere any more.
+func chain_exit(id: int) -> int:
+	if runtime == null:
+		return -1
+	var cur: int = id
+	var seen: Dictionary = {}
+	while cur > 0 and not seen.has(cur):
+		seen[cur] = true
+		if int(runtime.act(cur)) == Rules.ACT_TELEPORT:
+			return cur
+		cur = int(runtime.link(cur))
+	return -1
+
+## Walk the chain from `id` — ObjFlipLink, which is the runtime's. What
+## is not is the bookkeeping around it: which entities a walk armed during
+## this tick, for the one-shot sweeps that have not moved yet, and the lit
+## face of a BUTTON mesh the loader built. When the last of those moves
+## (step 5h) this goes straight to the runtime.
+func flip_chain(id: int) -> void:
+	if action != null:
+		action.flip_chain(id)
+	elif runtime != null:
+		runtime.flip(id)
+
+## The MAP record of `id` — the read-only data the map was authored with,
+## which is where the static half of a rule lives (a wall button's name
+## and variant). Null when the branch has no action system to ask.
+func record_of(id: int):
+	return action.record(id) if action != null else null
+
+## Everything the proximity nodes remember about the player, forgotten —
+## what the verifier clears between two checks of the same map.
+func prox_forget() -> void:
+	_ensure_index()
+	_use_edge = false
+	for t in _prox_by_id.values():
+		t.prox_forget()
 
 ## Say what just fired, in the rules module's own vocabulary (M3 step 3).
 ## Nothing here changes what the cue did — it has already done it.

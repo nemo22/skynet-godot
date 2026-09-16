@@ -583,9 +583,10 @@ static func _trigger(e: MapFile.Entity, name: String, variant: int, shapes: Dict
 	elif e.link_act_type == ActionSystem.ACT_PROX_CHAIN_B:
 		r = 1024.0
 	n.radius = r
-	# The port's rule (action_system.gd tick): a NAMED variant-1 mesh
-	# with state bit 3 is a wall button, use key only; an unnamed one is
-	# an invisible floor trigger (MAP.231's lift call points).
+	# The port's rule (scripts/level/trigger.gd is_wall_button): a NAMED
+	# variant-1 mesh with state bit 3 is a wall button, use key only; an
+	# unnamed one is an invisible floor trigger (MAP.231's lift call
+	# points).
 	n.use_key = variant == 1 and (e.state_byte & 8) != 0 and not name.is_empty()
 	n.state = e.state_byte
 	(n.get_node(^"Shape") as CollisionShape3D).shape = _cylinder(shapes, r)

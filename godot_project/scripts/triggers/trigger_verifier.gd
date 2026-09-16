@@ -281,11 +281,10 @@ func _verify_map(name: String) -> void:
 	# path. fly_camera reads KEY_1..KEY_9 straight off the event.
 	_drv.press_key(KEY_3)
 	_prox_world = []
-	for pi in (level.action._prox as Array).size():
-		var pe = level.action._prox[pi]
-		_prox_world.append([int(pe.file_off),
-			(level.action._prox_pos[pi] as Vector3) + (level.origin as Vector3),
-			level.action._prox_radius(pe)])
+	for pn in (level.behaviour.prox_nodes() as Array):
+		_prox_world.append([int(pn.id),
+			(pn.position as Vector3) + (level.origin as Vector3),
+			float(pn.measure())])
 	_exit_world = []
 	for ti in (level.action._teleports as Array).size():
 		_exit_world.append((level.action._teleport_pos[ti] as Vector3)
@@ -416,12 +415,9 @@ func _reset(level, snap: Dictionary) -> void:
 	var a = level.action
 	_restore_acts(level)
 	a.restore_state(snap["action"])
-	a._prox_latched.clear()
+	level.behaviour.prox_forget()
 	a._touch_latched.clear()
 	a._armed.clear()
-	a._edge_done.clear()
-	a._exit_walked.clear()
-	a._use_edge = false
 	a._teleport_fired = false
 	a._light_live.clear()
 	a._light_strobe_on.clear()
@@ -1096,19 +1092,16 @@ func _shooting_spot(level, id: int, aim: Vector3) -> Dictionary:
 ## chain ends in doorway `id` — what the key really does here. Empty when
 ## no such gate is in reach of where he stands now.
 func _gate_chaining_to(level, graph: Dictionary, id: int) -> Array:
-	var a = level.action
 	var eye: Vector3 = _drv.eye()
-	for pi in (a._prox as Array).size():
-		var g = a._prox[pi]
-		if a.act_of(g.file_off) != Rules.ACT_PROX_GATE:
+	for g in (level.behaviour.prox_nodes() as Array):
+		if g.act_now() != Rules.ACT_PROX_GATE:
 			continue
-		if eye.distance_to((a._prox_pos[pi] as Vector3) + (level.origin as Vector3)) \
-				> a._prox_radius(g):
+		if eye.distance_to((g.position as Vector3) + (level.origin as Vector3)) \
+				> float(g.measure()):
 			continue
-		var t = a._chain_teleport(g)
-		if t == null or t.file_off != id:
+		if level.behaviour.chain_exit(int(g.id)) != id:
 			continue
-		return (TriggerEquiv.node_of(graph, g.file_off) as Dictionary).get("first", [])
+		return (TriggerEquiv.node_of(graph, int(g.id)) as Dictionary).get("first", [])
 	return []
 
 ## The port's one surviving invented rule (rules_skynet._modes): a named
