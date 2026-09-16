@@ -15,6 +15,11 @@
 ##   hint_message / objective_complete / mission_failed
 ##                   what the cues report to the game.
 ##
+## Every flip and every cue is also ANNOUNCED on the level's trigger
+## event bus (`bus`, scripts/triggers/trigger_bus.gd — M3 step 3). That
+## is an observer and nothing more: the walk below does not know whether
+## anything is listening and behaves the same when the bus is null.
+##
 ## F2 runs class by class, so while action_system.gd still drives the
 ## movers, triggers, exits and destructibles from the MAP records, every
 ## state change made here is MIRRORED into the record (bind_records) and
@@ -24,6 +29,7 @@
 extends Node3D
 
 const ActionSystem := preload("res://scripts/action_system.gd")
+const Rules := preload("res://scripts/triggers/rules_skynet.gd")
 
 ## A hint cue ([G1]..) fired: index = act - 0x1C.
 signal hint_message(index: int)
@@ -35,6 +41,11 @@ signal mission_failed()
 var _by_id: Dictionary = {}          # id → node
 var _indexed: bool = false
 var _map = null                      # MapFile.MapFile — the records mirror (F2)
+## The level's trigger event bus (scripts/triggers/trigger_bus.gd, M3
+## step 3): every flip of the chain walk and every cue that fires is
+## announced on it. An OBSERVER — null is the normal case in a test that
+## builds a branch by hand, and nothing below reads anything back.
+var bus: RefCounted = null
 
 func _ready() -> void:
 	_ensure_index()
@@ -137,6 +148,8 @@ func flip(start_id: int) -> Array:
 		if node != null:
 			set_state(node, s)
 		_mirror(id, s)
+		if bus != null:
+			bus.announce_flip(id, act, s)
 		out.append([id, s])
 		if (s & 1) != 0 and node != null and node.has_method("fire"):
 			_fire(node)
@@ -181,11 +194,36 @@ func _targets_of(n: Node) -> Array:
 ## 0xFF) is retired in the record too.
 func _fire(n: Node) -> void:
 	n.call("fire")
+	_announce_fire(n)
 	var s: int = state_of(n) & ~1
 	set_state(n, s)
 	_mirror(id_of(n), s)
 	if "spent" in n and bool(n.get("spent")):
 		_retire(id_of(n))
+
+## Say what just fired, in the rules module's own vocabulary (M3 step 3).
+## Nothing here changes what the cue did — it has already done it.
+func _announce_fire(n: Node) -> void:
+	if bus == null:
+		return
+	var id: int = id_of(n)
+	var kind: String = Rules.kind_of(act_of(n))
+	bus.announce_fire(id, kind)
+	match kind:
+		"sound_cue":
+			bus.announce_effect(id, "sound", {"sound": int(n.get("sound_id"))})
+		"voice":
+			bus.announce_effect(id, "voice", {"voice": int(n.get("voice_id"))})
+		"hint":
+			bus.announce_effect(id, "hint", {"index": int(n.get("index"))})
+		"objective":
+			# One node class carries both [M1].. and the 0x2B fail act.
+			if "fails_mission" in n and bool(n.get("fails_mission")):
+				bus.announce_effect(id, "fail", {})
+			else:
+				bus.announce_effect(id, "objective", {"index": int(n.get("index"))})
+		"fail":
+			bus.announce_effect(id, "fail", {})
 
 func _on_cue_fired(index: int, n: Node) -> void:
 	if "fails_mission" in n:

@@ -129,10 +129,38 @@ func _run() -> void:
 		"the bots' bodies animate (%d distinct clip frames in a second)" % poses.size())
 	# Whether two bots find each other inside a fixed window is luck — on a
 	# loaded machine (this suite runs four Godot processes back to back)
-	# 12 s was not enough and the check failed with "0 shots". Keep the
-	# window for the movement checks above, then WAIT for the first shot.
+	# 12 s was not enough and the check failed with "0 shots", and 45 s was
+	# not enough either on 2026-09-16 (the same run's bots fired four shots
+	# a minute later). Waiting longer only makes the coin heavier. Give
+	# them something to shoot at instead: the host counts as a candidate
+	# like any other (bot_brain._candidates), so standing in front of one
+	# settles it without moving a single bot and without softening what is
+	# asserted — the bot still has to see him, turn and decide to fire.
+	# A bot only shoots what it can SEE (bot_brain._think casts a ray), and
+	# the arena is full of walls, so one fixed spot beside it is another
+	# coin toss: stand in a few places round it in turn, a couple of
+	# seconds each, and stop the moment a trigger is pulled.
 	if _bot_fired == 0 and _deaths.is_empty():
-		await _wait(func() -> bool: return _bot_fired > 0 or _deaths.size() > 0, 45.0)
+		var around: Array = [Vector3(200.0, 0.0, 0.0), Vector3(-200.0, 0.0, 0.0),
+			Vector3(0.0, 0.0, 200.0), Vector3(0.0, 0.0, -200.0),
+			Vector3(500.0, 0.0, 0.0), Vector3(0.0, 0.0, 500.0)]
+		for step in around.size() * 2:
+			if _bot_fired > 0 or not _deaths.is_empty():
+				break
+			var bait: Node3D = null
+			for a in avatars:
+				if is_instance_valid(a) and bool(a.get("alive")) \
+						and Net.is_alive(int(a.get("net_id"))):
+					bait = a
+					break
+			if bait == null:
+				break
+			if not Net.is_alive(Net.local_id):
+				Net._srv_respawn(Net.local_id)   # shot while baiting: get up
+			player.set_spawn(bait.global_position + around[step % around.size()], 0.0, false)
+			await _wait(func() -> bool: return _bot_fired > 0 or _deaths.size() > 0, 2.5)
+		if _bot_fired == 0 and _deaths.is_empty():
+			await _wait(func() -> bool: return _bot_fired > 0 or _deaths.size() > 0, 20.0)
 	_check(_bot_fired > 0 or _deaths.size() > 0, "bots fired %d shots, %d deaths" % [_bot_fired, _deaths.size()])
 	# The HUMAN class carries the MOTION DETECTOR (DOS weapon record 13):
 	# it is in the loadout, it has no trigger, and its marks only draw
@@ -157,12 +185,38 @@ func _run() -> void:
 	player.call("_select_weapon", det)
 	_check(bool(player.call("detector_active")) and int(player.ammo) < 0,
 		"the detector is in hand and shows no ammo (%d)" % int(player.ammo))
-	var before_fire: int = _fired
+	# …and it has no trigger. This used to count Net.fired events over one
+	# physics frame and expect none, which was wrong twice over: the HOST's
+	# own shots never raise that signal at all (net_game._srv_fire emits
+	# only for `id != local_id`), so the check could not have caught a
+	# detector that DID fire; and the only thing it could see was the three
+	# bots shooting at each other inside that one frame, which is a coin
+	# toss — a run on 2026-09-16 failed with "1 fire events" and the next
+	# passed with 0. It asks the WEAPON now, with no frame in between.
+	# A real gun leaves its cooldown running and its viewmodel firing
+	# (fly_camera._shoot); the detector returns before either, on
+	# `kind == "detector"`. The real gun goes first, so a probe that could
+	# never fail is caught here rather than passing quietly.
+	var real: int = -1
+	for slot in (player.call("owned_list") as Array):
+		if int(slot) != det:
+			real = int(slot)
+			break
+	player.call("_select_weapon", real)
 	player.set("_fire_cd", 0.0)
+	player.set("_vm_firing", false)
 	player.call("_shoot")
-	await get_tree().physics_frame
-	_check(_fired == before_fire,
-		"the detector has no trigger (%d fire events)" % (_fired - before_fire))
+	_check(real >= 0 and float(player.get("_fire_cd")) > 0.0,
+		"a gun with a trigger leaves a cooldown behind (slot %d, %.3f s)"
+		% [real, float(player.get("_fire_cd"))])
+	player.call("_select_weapon", det)
+	player.set("_fire_cd", 0.0)
+	player.set("_vm_firing", false)
+	player.call("_shoot")
+	_check(float(player.get("_fire_cd")) == 0.0 and not bool(player.get("_vm_firing"))
+		and bool(player.call("detector_active")),
+		"the detector has no trigger (cooldown %.3f, viewmodel %s)"
+		% [float(player.get("_fire_cd")), str(player.get("_vm_firing"))])
 	# And it has to MARK somebody standing in front of it inside its reach
 	# (2026-09-14: in play it showed nobody).
 	var scanner: Control = dm_node.get("_detector") if dm_node != null else null

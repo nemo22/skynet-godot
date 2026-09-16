@@ -35,6 +35,7 @@ const EMPTY_SLOTS: PackedInt32Array = [
 
 const KINDS: PackedStringArray = Skynet.KINDS
 const UNDECODED: Dictionary = Skynet.UNDECODED
+const NOT_A_LIGHT: Dictionary = Skynet.NOT_A_LIGHT
 const MARKER_PATH_LOOP: int = Skynet.MARKER_PATH_LOOP
 const MARKER_BORDER_FIRST: int = Skynet.MARKER_BORDER_FIRST
 const MARKER_BORDER_LAST: int = Skynet.MARKER_BORDER_LAST
@@ -71,6 +72,16 @@ static func has_rule(act: int) -> bool:
 static func kind_of(act: int) -> String:
 	return String(rule_for(act)["kind"])
 
+## Classified by the RECORD, not the act byte alone — the light band
+## only means a light on a variant-2 record (Skynet.NOT_A_LIGHT). The
+## sub-record layout is the MAP format's, not either engine's table, so
+## this holds for Future Shock's maps as it does for SkyNET's.
+static func rule_for_record(act: int, variant: int) -> Dictionary:
+	var r: Dictionary = rule_for(act)
+	if variant != 2 and String(r["kind"]) == "light":
+		return NOT_A_LIGHT
+	return r
+
 static func informational() -> bool:
 	return INFORMATIONAL
 
@@ -94,6 +105,7 @@ static func rules_hash() -> String:
 		parts.append("game=%s informational=%s" % [GAME, INFORMATIONAL])
 		for a in acts:
 			parts.append("%02x=%s" % [int(a), JSON.stringify(all_rules()[a])])
+		parts.append("notalight=%s" % JSON.stringify(NOT_A_LIGHT))
 		_hash = ";".join(parts).sha256_text().substr(0, 16)
 	return _hash
 

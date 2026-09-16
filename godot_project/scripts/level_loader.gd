@@ -28,6 +28,7 @@ const Pickup       := preload("res://scripts/pickup.gd")
 const PickupData   := preload("res://scripts/pickup_data.gd")
 const LevelScene   := preload("res://scripts/level_scene.gd")
 const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
+const TriggerBus   := preload("res://scripts/triggers/trigger_bus.gd")
 const Explosion    := preload("res://scripts/explosion.gd")
 
 ## World units per sprite texel — billboards are sized texture_px × this.
@@ -255,6 +256,12 @@ class Level:
 	## Entity action/link system (doors, movers, destructibles,
 	## proximity triggers, teleports). The level controller ticks it.
 	var action: ActionSystem = null
+	## Every trigger event this level performs, announced
+	## (scripts/triggers/trigger_bus.gd, M3 step 3). An OBSERVER: the
+	## action system and the Behaviour branch announce on it, nothing in
+	## the game subscribes, and it dies with the level. One per ZONE, so a
+	## mission scene's maps each announce under their own map number.
+	var bus: RefCounted = null
 	## TRANSFRM.PRS: mesh name → its damage-stage mesh names. Kept for
 	## the bake, which classifies the destructibles by it too.
 	var transfrm: Dictionary = {}
@@ -376,8 +383,14 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 		   level.map.names.size(), level.map.entities.size(),
 		   "OUTDOOR" if level.is_outdoor else "INDOOR"])
 
+	# The event bus (M3 step 3) is built BEFORE the action system so that
+	# every trigger event of this level, from the first one, has somewhere
+	# to be announced. Nothing subscribes: it is an observer.
+	level.bus = TriggerBus.new()
+	level.bus.map = int(level.map_suffix) if level.map_suffix.is_valid_int() else -1
 	# Action/link system — chains, movers, destructibles, teleports.
 	level.action = ActionSystem.new()
+	level.action.bus = level.bus
 	# zone-local ↔ world: the records it keeps are zone-local, so it needs
 	# the offset to read the player's world position and to hand positions
 	# back to the physics world and the audio.
@@ -455,6 +468,7 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 	# builds the same objects from the records (F2, class by class).
 	level.behaviour.sleep_geometry(level.behaviour)
 	level.action.behaviour = level.behaviour
+	level.behaviour.bus = level.bus
 
 	_phase("baked scene")
 	# Terrain mesh — built once and served from the asset cache

@@ -33,6 +33,15 @@
 ## which matches DOS (maps are always reloaded from disk; the Mst
 ## state overlay arrives with map transitions in phase 2).
 ##
+## Every handler run below also ANNOUNCES itself on the level's trigger
+## event bus (`bus`, scripts/triggers/trigger_bus.gd — M3 step 3): what
+## fired and what it came to, as data. It is an observer — the sweeps
+## never ask who is listening, nothing in the game subscribes, and with
+## no bus at all the code takes the same path. What it buys is that the
+## generated graph's prediction for a node and what the running game
+## actually does can be laid side by side (scripts/triggers/
+## trigger_equiv.gd).
+##
 ## Phase F2 of docs/map_format_plan.md moves this, class by class, onto
 ## the level's Behaviour branch (scripts/level/behaviour.gd). Done so
 ## far: the chain walk itself (ObjFlipLink runs on the nodes and mirrors
@@ -142,6 +151,17 @@ var _demolish_nodes: Array = []   # entities with act 0x1B
 ## The level's Behaviour branch (scripts/level/behaviour.gd): the chain
 ## walk runs there and the cue nodes fire themselves (F2).
 var behaviour: Node = null
+## The level's trigger event bus (scripts/triggers/trigger_bus.gd, M3
+## step 3): every handler run below announces itself on it. An OBSERVER
+## — the sweeps do not know whether anything listens, `null` is an
+## ordinary state (a test building an ActionSystem by hand), and play is
+## the same either way. See _say.
+var bus: RefCounted = null
+## file_off → true while a light act is running, so the light effect is
+## announced on the EDGE. The flicker and strobe handlers run every tick
+## their bit is up (0x137713 / 0x13773b) and would otherwise announce a
+## hundred times a second.
+var _light_live: Dictionary = {}
 ## Physics access for reachability tests (set by the level controller).
 var space: PhysicsDirectSpaceState3D = null
 var player_body: CollisionObject3D = null
@@ -198,6 +218,17 @@ var _path_vehicles: Dictionary = {}   # marker file_off → runtime state
 func press_use() -> void:
 	_use_edge = true
 var _unhandled_logged: Dictionary = {}
+
+## Announce one handler run and what it came to (M3 step 3). One call
+## site per handler, `kind` as scripts/triggers/rules_skynet.gd names it
+## and `effect_kind` as scripts/triggers/trigger_bus.gd lists it; both
+## are data, and nothing here is told to anyone in particular.
+func _say(off: int, kind: String, effect_kind: String, payload: Dictionary) -> void:
+	if bus == null:
+		return
+	bus.announce_fire(off, kind)
+	if not effect_kind.is_empty():
+		bus.announce_effect(off, effect_kind, payload)
 
 func setup(map: MapFile.MapFile) -> void:
 	_map = map
@@ -528,8 +559,17 @@ func _fire_teleport(t: MapFile.Entity) -> bool:
 	if _teleport_fired or (t.state_byte & 1) == 0:
 		return false
 	_clear_enable(t)                         # one-shot (0x137881)
+	# DOS holds no latch in the handler — it clears its own bit 0 and would
+	# fire again on the next rise — but the map change it asks for
+	# (`or [0x30a50], 0x20`, v1.01 0x1380b2) is tested at the top of the
+	# next frame, before the entity sweep, and the level is torn down:
+	# one map change per level instance, always. The port's transition is
+	# asynchronous (a fade), and a player standing in a gate re-toggles
+	# the exit's bit every frame, so the outcome needs saying out loud.
 	_teleport_fired = true
 	print("[action] teleport → map %d, marker set %d" % [t.exit_map, t.exit_marker_id])
+	_say(t.file_off, "exit", "exit", {"map": t.exit_map, "set": t.exit_marker_id,
+		"back": t.exit_map == 0})
 	teleport_requested.emit(t.exit_map, t.exit_marker_id)
 	return true
 
@@ -647,15 +687,26 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 			_light_fx_clock = 0.0
 		for e in _light_ents:
 			if (e.state_byte & 1) != 0 or _armed.has(e.file_off):
+				if not _light_live.has(e.file_off):
+					_light_live[e.file_off] = true
+					_say(e.file_off, "light", "light",
+						{"op": Rules.light_op(e.link_act_type), "enable": e.light_enable})
 				_light_step(e, fx_tick)
-			elif _light_strobe_on.has(e.file_off):
-				# The chain took the bit away: the flicker ends on.
-				_light_strobe_on.erase(e.file_off)
-				_light_apply(e)
+			else:
+				_light_live.erase(e.file_off)
+				if _light_strobe_on.has(e.file_off):
+					# The chain took the bit away: the flicker ends on.
+					_light_strobe_on.erase(e.file_off)
+					_light_apply(e)
 	# Movers ------------------------------------------------------
 	for off in _movers:
 		var e: MapFile.Entity = _map.entities_by_off.get(off)
 		if e == null or (e.state_byte & 1) == 0:
+			# A chain took the bit away in the middle of a run: the mover
+			# stops where it stands and the next enable is a new run.
+			var stopped: Dictionary = _movers[off]
+			if bool(stopped.get("running", false)):
+				stopped["running"] = false
 			continue
 		_step_mover(off, e, delta)
 	# Proximity triggers ------------------------------------------
@@ -741,6 +792,7 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 			continue
 		if objectives_left > 0 and objectives_left == RELAY_AT:
 			print("[action] relay @%05x fires (%d objective left)" % [e.file_off, objectives_left])
+			_say(e.file_off, "relay", "relay", {"at": RELAY_AT, "left": objectives_left})
 			_flip_link(e)
 			_clear_enable(e)
 	# Spawn points (0xF3): the chain enables the sprite, its robot
@@ -764,13 +816,17 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 		var partner: int = int(cfg[1])
 		if partner != 0:
 			e.link_act_type = partner        # next time it goes the other way
+		var target: float = -float(delta_u)
 		if delta_u == 0:
 			# zone-local ↔ world: an absolute surface height, and what it
 			# sets is compared with world positions.
-			water_level_requested.emit(-float(e.y) + zone_origin.y, true)
+			target = -float(e.y) + zone_origin.y
+			water_level_requested.emit(target, true)
 		else:
-			water_level_requested.emit(-float(delta_u), false)
+			water_level_requested.emit(target, false)
 		print("[action] water act @%05x (DOS delta %d)" % [e.file_off, delta_u])
+		_say(e.file_off, "water", "water",
+			{"delta": delta_u, "absolute": delta_u == 0, "target": target})
 	# Teleports ---------------------------------------------------
 	# A chain (0xEF gate → sound node → 0xF0) or touching the doorway
 	# sprite ARMS the exit (state bit 0); the map change itself needs
@@ -950,8 +1006,10 @@ func register_spawn(off: int, node: Node) -> void:
 ## A vehicle actor that drives its marker path: `path_head` is the first
 ## marker (the actor marker's own link).
 func register_path_vehicle(off: int, node: Node3D, path_head: int) -> void:
+	var e: MapFile.Entity = _map.entities_by_off.get(off) if _map != null else null
 	_path_vehicles[off] = {
 		"node": node, "head": path_head, "tgt": 0, "tspd": 0.0, "spd": 0.0,
+		"off": off, "vehicle": e.enemy_type if e != null else -1,
 	}
 
 static func _dos_pos(e: MapFile.Entity) -> Vector3:
@@ -985,6 +1043,10 @@ func _step_path_vehicle(v: Dictionary, delta: float, player_pos: Vector3) -> voi
 		v["tgt"] = cur.file_off
 		v["spd"] = 0.0
 		v["tspd"] = PATH_SPEED_K * node.position.distance_to(_dos_pos(cur))
+		# The vehicle has picked its path up — what the graph calls
+		# path@<the vehicle's own marker> (M3 step 3).
+		_say(int(v["off"]), "marker", "path",
+			{"head": int(v["head"]), "vehicle": int(v.get("vehicle", -1))})
 	elif (cur.state_byte & 1) == 0:
 		# The path is off (nobody has thrown the lever): brake, and clear
 		# the bit down the whole chain, as the DOS stop case does.
@@ -1037,6 +1099,8 @@ func _path_disable(head: int) -> void:
 
 func _spawn_in(off: int) -> void:
 	_spawned[off] = true
+	var e: MapFile.Entity = _map.entities_by_off.get(off) if _map != null else null
+	_say(off, "spawn", "spawn", {"type": (e.exit_map & 0xFFFF) if e != null else -1})
 	var n = _spawns.get(off)
 	if n != null and is_instance_valid(n) and n.has_method("spawn_in"):
 		print("[action] spawn @%05x: %s appears" % [off, n.name])
@@ -1185,6 +1249,10 @@ func _step_mover(off: int, e: MapFile.Entity, delta: float) -> void:
 		# Continuous rotator — never stops while enabled. Only the acts
 		# whose handler carries NO angle spin like this: the radar DISH
 		# (0x3b), the GLOBE, MAP.232's sky dome.
+		if not bool(m.get("running", false)):
+			m["running"] = true
+			_say(off, "mover", "spin", {"family": fam,
+				"axis": int(m["axis"]), "speed": ROT_SPEED})
 		m["progress"] = fmod(m["progress"] + ROT_SPEED * delta, 2048.0)
 		_apply_mover_transform(node, m)
 		return
@@ -1209,11 +1277,33 @@ func _step_mover(off: int, e: MapFile.Entity, delta: float) -> void:
 	if m["progress"] == 0.0 or m["progress"] == span:
 		print("[action] mover @%05x %s %s starts (%s, span %.0f)" % [off, node.name, fam,
 			"forward" if m["dir"] > 0.0 else "back", span])
+	if not bool(m.get("running", false)):
+		# Announced at the START of the run, with the travel the run will
+		# make: the DOS handler self-disables on arrival and the graph's
+		# simulation settles it the same way, so the two are talking about
+		# one and the same movement — here, the moment it begins (step 3).
+		m["running"] = true
+		_say(off, "mover", "move", {"family": fam, "axis": int(m["axis"]),
+			"travel": _mover_travel(m, target), "speed": speed})
 	m["progress"] = p
 	_apply_mover_transform(node, m)
 	if p == target:
 		_clear_enable(e)                       # arrived: self-disable
 		m["dir"] = -m["dir"]                     # next activation reverses
+		m["running"] = false
+
+## How far this run carries the mover from where it stands, signed, in
+## the units its family works in — the same number the graph's
+## simulation writes as move@<id>:<family><axis><travel>
+## (trigger_graph._settle). From either end of the travel that is the
+## whole span; a mover a chain switched off half way and switched on
+## again makes only the rest of it, and says so.
+static func _mover_travel(m: Dictionary, target: float) -> float:
+	var sign: float = float(m.get("sign", 1.0))
+	var fam: String = String(m["family"])
+	if fam != "rot" and fam != "slide" and float(m["limit"]) < 0.0:
+		sign = -sign
+	return (target - float(m["progress"])) * sign
 
 ## DOS axis p4 (0=X, 1=Y-down, 2=Z) → Godot world direction.
 static func dos_axis(axis_i: int) -> Vector3:
@@ -1289,6 +1379,7 @@ func _demolish(e: MapFile.Entity) -> void:
 	if not _hp.has(e.file_off) or float(_hp[e.file_off]) <= 0.0:
 		_hp[e.file_off] = 1.0
 	print("[action] demolish @%05x (act 0x1b, hp %.0f)" % [e.file_off, float(_hp[e.file_off])])
+	_say(e.file_off, "demolish", "demolish", {"hp": float(_hp[e.file_off])})
 	on_player_hit(e.file_off, float(_hp[e.file_off]) + 1.0)
 
 ## Run a destructible through every one of its TRANSFRM.PRS stages at
@@ -1305,6 +1396,9 @@ func _break_down(e: MapFile.Entity) -> void:
 	print("[action] destructible @%05x struck by a chain" % e.file_off)
 	var was_spent: bool = _spent.has(e.file_off)
 	_advance_destructible(e, DESTRUCT_DAMAGE_PER_STAGE)
+	var d: Dictionary = _destr[e.file_off]
+	_say(e.file_off, "destructible", "destruct",
+		{"stage": int(d["stage"]), "stages": (d["meshes"] as Array).size()})
 	if was_spent or not _spent.has(e.file_off):
 		return                                   # still standing, or long gone
 	_hp[e.file_off] = 0.0

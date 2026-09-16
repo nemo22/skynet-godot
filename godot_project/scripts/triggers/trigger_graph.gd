@@ -315,7 +315,10 @@ static func _wants_node(e, incoming: Dictionary) -> bool:
 		or e.hp > 0 or (e.state_byte & 6) != 0
 
 ## The rule row that applies to one entity — by MARKER TYPE for a
-## placement marker, by act id for everything else.
+## placement marker, by act id AND RECORD VARIANT for everything else
+## (rules_*.rule_for_record: the light band only means a light on a
+## variant-2 record, for the same reason a marker's act byte means
+## nothing — the sub-record keeps other data in those bytes).
 static func _rule_of(ctx: Dictionary, id: int) -> Dictionary:
 	var e = ctx["ents"][id]
 	var rules = ctx["rules"]
@@ -327,7 +330,7 @@ static func _rule_of(ctx: Dictionary, id: int) -> Dictionary:
 			"note": "a placement marker: classified by its type, never by its act byte",
 			"modes": [{"mode": "chain"}],
 		}
-	return rules.rule_for(e.link_act_type)
+	return rules.rule_for_record(e.link_act_type, e.flags & 3)
 
 # ---------------------------------------------------------------------
 # The chain walk — ObjFlipLink FUN_001394aa
@@ -593,14 +596,11 @@ static func _effects(ctx: Dictionary, id: int) -> Dictionary:
 			return out
 	return {}
 
+## The light bands are SkyNET's in both games (rules_shock.gd runs the
+## same rows), so the one naming lives in the rules module — the runtime
+## announces the same word on the event bus.
 static func _light_op(act: int) -> String:
-	match act:
-		RulesSkynet.ACT_LIGHT_TOGGLE: return "toggle"
-		RulesSkynet.ACT_LIGHT_FLICKER: return "flicker"
-		RulesSkynet.ACT_LIGHT_STROBE: return "strobe"
-	if act >= RulesSkynet.ACT_LIGHT_FADE_UP_FIRST and act < 0x10:
-		return "fade_up"
-	return "fade_down"
+	return RulesSkynet.light_op(act)
 
 ## Travel, direction, speed and running time of a mover act — the same
 ## numbers ActionSystem.register_node and _step_mover derive from the
@@ -629,8 +629,26 @@ static func _simulate(ctx: Dictionary, id: int, modes: Array) -> Dictionary:
 		return {"first": [], "second": []}
 	var st: Dictionary = _fresh_state(ctx)
 	var first: Array = _fire(ctx, id, st)
-	var second: Array = _fire(ctx, id, st)
+	# An exit ENDS the level instance, so there is no second activation to
+	# simulate. The 0xF0 handler itself holds no latch — decoded from the
+	# v1.01 bytes at 0x138081 (2026-09-16): it clears its own bit 0 inline
+	# and would fire again on the next rise. But the same handler sets the
+	# map-change request (`or [0x30a50], 0x20`), and the frame loop tests
+	# that at 0x117a2e BEFORE the next entity sweep and tears the level
+	# down: DOS performs exactly one map change per level instance. The
+	# graph said the exit fires twice, which read as "walk back through and
+	# it works again"; the runtime's one-map-change latch
+	# (action_system._teleport_fired) was the one that matched DOS.
+	var second: Array = [] if _ends_instance(first) else _fire(ctx, id, st)
 	return {"first": first, "second": second}
+
+## Does this activation take the level away — i.e. is a map change part
+## of what it comes to?
+static func _ends_instance(fx: Array) -> bool:
+	for f in fx:
+		if String(f).begins_with("exit"):
+			return true
+	return false
 
 static func _fresh_state(ctx: Dictionary) -> Dictionary:
 	var st: Dictionary = {"bit": {}, "act": {}, "stage": {}, "dir": {}, "spent": {}}
@@ -677,7 +695,9 @@ static func _edge(ctx: Dictionary, id: int, st: Dictionary, fx: Array) -> void:
 		return
 	var act: int = int(st["act"].get(id, e.link_act_type))
 	var rules = ctx["rules"]
-	var rule: Dictionary = rules.rule_for(act)
+	# The act the record carries NOW (a water valve swaps its own), read
+	# against the record it sits on — see _rule_of.
+	var rule: Dictionary = rules.rule_for_record(act, e.flags & 3)
 	var kind: String = String(rule["kind"])
 	var clear: bool = true
 	match kind:
@@ -854,7 +874,7 @@ static func _node_warnings(ctx: Dictionary, id: int, modes: Array) -> Array:
 	# the map does not start enabled (a rotator or an ambient loop with
 	# bit 0 already set is running from the first frame — the Behaviour
 	# branch fires those one-shots at level start).
-	if not ctx["incoming"].has(id) and _needs_chain(kind) and modes.is_empty() \
+	if not ctx["incoming"].has(id) and _needs_chain(kind, e) and modes.is_empty() \
 			and (e.state_byte & 1) == 0:
 		out.append({"class": "unreachable",
 			"detail": "a %s nothing links to and nothing can set off" % kind})
@@ -875,8 +895,20 @@ static func _node_warnings(ctx: Dictionary, id: int, modes: Array) -> Array:
 ## DESTRUCTIBLE is not one: gunfire takes it through its damage stages
 ## with no chain in sight (ObjHit → 0x120433), so one nothing links to is
 ## ordinary scenery, not a dead end.
-static func _needs_chain(kind: String) -> bool:
-	return kind in ["mover", "demolish", "hint", "objective",
+##
+## Nor is a DEMOLITION prop that carries hit points, for the same reason
+## and by the same routine. Act 0x1B (handler 0x1378bf) is only a chain's
+## way of KILLING an object: hp = max(hp, 1), then ObjHit(hp + 1) — and
+## ObjHit (0x139019) is the routine every bullet calls. A crate with 40
+## points and act 0x1B breaks under fire whether or not anything ever
+## links to it; what the act adds is a second way to break it. Reading
+## those as dead ends made 141 of the 243 "unreachable" warnings, which
+## buried the hundred that are worth looking at. A demolition prop with
+## NO hit points is still flagged: nothing at all can set that one off.
+static func _needs_chain(kind: String, e) -> bool:
+	if kind == "demolish":
+		return e.hp <= 0
+	return kind in ["mover", "hint", "objective",
 		"fail", "sound_cue", "voice", "water", "spawn", "light", "exit", "relay"]
 
 ## Must the player be able to stand at this node for it to work?

@@ -237,6 +237,27 @@ const UNDECODED: Dictionary = {
 	"modes": [{"mode": "chain"}],
 }
 
+## Acts 0x01-0x12 are the LIGHT handlers, and a light is a VARIANT-2
+## record. Those handlers work on that record's own sub-fields — the
+## intensity u16 at sub+0 and the enable i16 at sub+8 (map_file.gd §
+## "Sub-record layout by variant") — and a variant-1 mesh keeps its
+## pitch and roll Euler angles in the same bytes, a variant-3 sprite its
+## sprite index. So the act byte alone no more makes a light than a
+## marker's act byte makes an objective: the record decides, exactly as
+## MARKER_KIND decides for a placement marker.
+##
+## Six variant-1 meshes of the shipped maps carry act 0x01, and the
+## running game has never lit one: action_system.setup takes an entity
+## into _light_ents only when `(flags & 3) == 2`, and _do_action leaves
+## the rest alone. The graph read them as lamps, which put six
+## fade/toggle effects in the lock that nothing in the game performs.
+const NOT_A_LIGHT: Dictionary = {
+	"kind": "inert", "family": "", "p4": 0, "p6": 0,
+	"fire": "edge", "on_fire": "none", "dos": "", "prov": "port",
+	"note": "a light act on a record that is not a light: the 0x137700 handlers write the variant-2 intensity/enable words, which this variant keeps other data in",
+	"modes": [{"mode": "chain"}],
+}
+
 # ---------------------------------------------------------------------
 # Marker rules — a marker is classified by its TYPE, never by its act
 # byte. A placement marker's sub-record keeps other data where a sprite
@@ -272,6 +293,19 @@ static func informational() -> bool:
 static func game_name() -> String:
 	return GAME
 
+## What a light act DOES, in one word — the name the graph writes into
+## its effects, the lock pins and the event bus announces, so the three
+## cannot drift apart. (Only meaningful on a variant-2 record; see
+## NOT_A_LIGHT.)
+static func light_op(act: int) -> String:
+	match act:
+		ACT_LIGHT_TOGGLE: return "toggle"
+		ACT_LIGHT_FLICKER: return "flicker"
+		ACT_LIGHT_STROBE: return "strobe"
+	if act >= ACT_LIGHT_FADE_UP_FIRST and act < 0x10:
+		return "fade_up"
+	return "fade_down"
+
 static func marker_kind(marker_type: int) -> String:
 	if MARKER_KIND.has(marker_type):
 		return String(MARKER_KIND[marker_type])
@@ -304,6 +338,16 @@ static func has_rule(act: int) -> bool:
 static func kind_of(act: int) -> String:
 	return String(rule_for(act)["kind"])
 
+## The rule of an act byte AS CARRIED BY A PARTICULAR RECORD. The table
+## above is keyed by the act alone, but two of the bands only mean what
+## they say on the right kind of record — see NOT_A_LIGHT. `variant` is
+## the record's `flags & 3` (1 mesh/actor, 2 light, 3 sprite/marker).
+static func rule_for_record(act: int, variant: int) -> Dictionary:
+	var r: Dictionary = rule_for(act)
+	if variant != 2 and String(r["kind"]) == "light":
+		return NOT_A_LIGHT
+	return r
+
 ## A short, stable fingerprint of the whole table: the generated graphs
 ## carry it and rebuild themselves when a row changes. JSON.stringify
 ## sorts keys, so the same table always hashes the same.
@@ -319,6 +363,9 @@ static func rules_hash() -> String:
 		mts.sort()
 		for mt in mts:
 			parts.append("m%d=%s" % [int(mt), String(MARKER_KIND[mt])])
+		# The per-RECORD rules (rule_for_record) are rules too: a change to
+		# one has to rebuild every stored graph, like a change to a row.
+		parts.append("notalight=%s" % JSON.stringify(NOT_A_LIGHT))
 		parts.append("r=%.1f/%.1f/%.1f/%.1f/%.1f/%.1f"
 			% [PROX_GATE_RADIUS, PROX_CHAIN_A_RADIUS, PROX_CHAIN_B_RADIUS,
 			   PLAYER_RADIUS, TELEPORT_TOUCH_RADIUS, PROX_VERTICAL_WINDOW])
@@ -476,6 +523,20 @@ static func _build() -> Dictionary:
 				% PLAYER_RADIUS,
 		}],
 		"note": "the handler never looks at bit 0 — a gate is always live — and forces its own bit back on inside ObjFlipLink"})
+	# The 0xF0 handler, decoded from the v1.01 bytes at 0x138081 (the
+	# v1.00 0x137881 + the 0x13xxxx band's 0x800), 2026-09-16:
+	#   the target map goes into the pending-map register, the marker set
+	#   into its own, `or [0x30a50], 0x20` asks for the map change, and
+	#   `and byte [esi+edi+5], 0xfe` clears the node's OWN bit 0 inline —
+	#   it does NOT retire its act byte the way an objective does
+	#   (0x139e09, which it never calls). ObjDoAction dispatches it on
+	#   every frame the bit is up, so the self-clear is the only thing
+	#   making it once-per-rise, and a chain re-arming it would fire it
+	#   again. It cannot be SEEN to: the frame loop tests that 0x20 at
+	#   0x117a2e, before the next entity sweep, and tears the level down —
+	#   one map change per level instance, always. The port's
+	#   _teleport_fired latch is that outcome; the graph's simulation
+	#   stops at the first exit for the same reason (trigger_graph._simulate).
 	r[ACT_TELEPORT] = _row("exit", {"dos": "0x137881", "prov": "dos",
 		"modes": [
 			{"mode": "chain", "edge": "bit0-rise", "note": "an exit a chain enables fires at once"},
@@ -484,7 +545,7 @@ static func _build() -> Dictionary:
 			 "edge": "enter", "prov": "port",
 			 "note": "touching the doorway ARMS bit 0; the use key takes it — the port's 2D test, a doorway sprite hangs above the floor"},
 		],
-		"note": "target map at sub+2 (0 = back the way we came), spawn-marker set at sub+4; one-shot"})
+		"note": "target map at sub+2 (0 = back the way we came), spawn-marker set at sub+4; the handler holds no latch, but the map change it asks for ends the level instance before any handler runs again"})
 	for a in [ACT_PROX_CHAIN_A, ACT_PROX_CHAIN_B]:
 		var rad: float = PROX_CHAIN_A_RADIUS if a == ACT_PROX_CHAIN_A else PROX_CHAIN_B_RADIUS
 		r[a] = _row("prox_chain", {"dos": "0x138223", "prov": "dos",

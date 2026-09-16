@@ -32,6 +32,8 @@ const MissionScene := preload("res://scripts/mission_scene.gd")
 const MissionCensus := preload("res://tools/mission_census.gd")
 const TriggerGraph := preload("res://scripts/triggers/trigger_graph.gd")
 const TriggerLock := preload("res://scripts/triggers/trigger_lock.gd")
+const TriggerBus := preload("res://scripts/triggers/trigger_bus.gd")
+const TriggerEquiv := preload("res://scripts/triggers/trigger_equiv.gd")
 
 const CAMPAIGN: Array = [
 	"MAP.210", "MAP.220", "MAP.230", "MAP.240",
@@ -72,6 +74,7 @@ func _ready() -> void:
 	_run_level_scene_checks()
 	_run_mission_scene_checks()
 	_run_trigger_lock_checks()
+	_run_trigger_bus_checks()
 	print("[smoke] %s (%d failures)"
 		% ["ALL PASS" if _fails == 0 else "FAILED", _fails])
 	get_tree().quit(1 if _fails > 0 else 0)
@@ -1260,6 +1263,93 @@ func _run_trigger_lock_checks() -> void:
 		"%d maps and %d nodes match the lock in %.2f s (%d unpinned)"
 		% [int(res["checked"]), int(head.get("nodes", 0)),
 		   float(res["ms"]) / 1000.0, int(res["unpinned"])])
+
+## M3 step 3 — the event BUS, and what it is for.
+##
+## Every trigger event the runtime performs is announced
+## (scripts/triggers/trigger_bus.gd). Nothing in the game subscribes, so
+## the first half below is the bus on its own: it delivers by id, it
+## records in order, and a level that has just been built has no
+## listeners at all — the proof that nothing about play hangs off it.
+##
+## The second half is why it exists. For a handful of real nodes, the
+## graph's PREDICTION of what the first activation comes to (its
+## `first[]`, the same list the lock pins) is laid against what the
+## running game ANNOUNCED when that node was actually set off
+## (scripts/triggers/trigger_equiv.gd). Where the two disagree, one of
+## them is wrong about the game — which is the question step 4's verifier
+## then asks of every node of every map.
+const EQUIV_NODES: Array = [
+	# map, node, how it is driven, what it is
+	["MAP.215", 0x032cb, "the silo chain: four covers slide, [M1] counts, the line plays"],
+	["MAP.215", 0x02e54, "a lone mover: a door sound and one lift"],
+	["MAP.215", 0x03ed8, "an exit: the door sound, then the map change"],
+	["MAP.210", 0x077f3, "the canyon lever (0xF1): the gate's two leaves part"],
+	["MAP.217", 0x0ba48, "one gate of the ring round the jeep: [M3]"],
+	["MAP.254", 0x053d0, "a water valve: the surface rises and three walls move"],
+]
+
+func _run_trigger_bus_checks() -> void:
+	# --- the bus on its own ------------------------------------------
+	var bus = TriggerBus.new()
+	bus.map = 210
+	var heard: Array = []
+	var other: Array = []
+	var cb: Callable = func(ev: StringName, data: Dictionary) -> void: heard.append([ev, data])
+	bus.watch(0x1234, cb)
+	bus.watch(0x9999, func(ev: StringName, data: Dictionary) -> void: other.append(ev))
+	bus.record(true)
+	bus.announce_flip(0x1234, 0xEF, 0x01)
+	bus.announce_fire(0x1234, "prox_gate")
+	bus.announce_effect(0x9999, "objective", {"index": 2})
+	_check(heard.size() == 2 and other.size() == 1,
+		"the bus delivers by id (%d to one watcher, %d to the other)" % [heard.size(), other.size()])
+	_check(String(heard[0][0]) == String(TriggerBus.EV_FLIPPED)
+		and int((heard[0][1] as Dictionary)["state"]) == 1,
+		"a flip carries the act and the state byte after it")
+	bus.unwatch(0x1234, cb)
+	bus.announce_fire(0x1234, "prox_gate")
+	_check(heard.size() == 2, "unwatch stops the delivery (%d)" % heard.size())
+	_check(bus.history().size() == 4 and bus.take().size() == 4 and bus.history().is_empty(),
+		"the recording keeps every announcement in order, and take() empties it")
+	# The graph's own vocabulary, so the two lists can be compared.
+	_check(TriggerEquiv.token({"ev": TriggerBus.EV_EFFECT, "id": 0x075cb,
+			"kind": "objective", "payload": {"index": 2}}) == "obj2"
+		and TriggerEquiv.token({"ev": TriggerBus.EV_EFFECT, "id": 0x02f55,
+			"kind": "move", "payload": {"family": "slide", "axis": 1, "travel": -378.0}})
+			== "move@02f55:slideY-378"
+		and TriggerEquiv.token({"ev": TriggerBus.EV_FLIPPED, "id": 1, "act": 0, "state": 0}).is_empty(),
+		"a bus event reads back as the graph's own effect token")
+
+	# --- nothing in the game listens ---------------------------------
+	var l215: LevelLoader.Level = LevelLoader.new().load_level("MAP.215")
+	_check(l215 != null and l215.bus != null and l215.action.bus == l215.bus
+		and l215.behaviour != null and l215.behaviour.bus == l215.bus,
+		"a level brings one bus, and the action system and the branch both announce on it")
+	if l215 != null and l215.bus != null:
+		var listeners: int = 0
+		for n in l215.map.entities:
+			listeners += l215.bus.watchers(n.file_off)
+		_check(listeners == 0 and not l215.bus.recording(),
+			"a freshly built level has no subscribers and records nothing (%d)" % listeners)
+
+	# --- the graph's prediction against the running game --------------
+	var agreed: int = 0
+	for row in EQUIV_NODES:
+		var map_name: String = String(row[0])
+		var id: int = int(row[1])
+		var level: LevelLoader.Level = LevelLoader.new().load_level(map_name)
+		if level == null:
+			_check(false, "%s loads for the graph-vs-bus check" % map_name)
+			continue
+		var graph: Dictionary = TriggerEquiv.graph_of(level)
+		var res: Dictionary = TriggerEquiv.check(level, graph, id)
+		if bool(res.get("ok", false)):
+			agreed += 1
+		_check(bool(res.get("ok", false)), "%s — %s" % [TriggerEquiv.describe(res), String(row[2])])
+	_check(agreed == EQUIV_NODES.size(),
+		"%d of %d nodes do exactly what the graph says they do"
+		% [agreed, EQUIV_NODES.size()])
 
 ## Walk a chain with ObjFlipLink's rules (follow link_next, stop at an
 ## actor flag or chain end) and return the first mover entity, or null.
