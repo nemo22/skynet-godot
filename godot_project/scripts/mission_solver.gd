@@ -32,6 +32,16 @@
 ## Movement between cells is by capsule sweeps, not by the character
 ## controller itself; the route it prints is what to walk with --walk when
 ## the controller and the sweeps disagree.
+##
+## MISSION SCENES (--mission-scene). With the whole mission standing as one
+## scene, a doorway is no longer a level change: the player is MOVED to the
+## zone next door, which stands off on the +X grid with its records still in
+## their own DOS coordinates. Nothing here changes but where things are —
+## `_zone` is the active zone's origin and `_epos` puts every record in the
+## world the sweeps walk (main._solver_level_ready calls level_ready() after
+## a doorway and after a world is re-authored into a phase, exactly as it is
+## called after a load). The run is reported by ZONE, and a mission ends
+## inside the scene the same way it ends on a map: the counter reaches zero.
 extends Node
 
 ## 16, not 32: a player walks round the corner of a machine; on a 32 u
@@ -51,9 +61,18 @@ const WATER_EXIT: float = 40.0      # a swimmer steps out onto a ledge this high
 const EYE: float = 75.0
 const SHOOT_RANGE: float = 2500.0
 const ROUNDS: int = 40
+## How often a flood in progress says how far it has got.
+const PROGRESS_MSEC: int = 5000
+## How often the run may take a door it has already been through (_exits).
+const RETAKE: int = 3
 const SETTLE_MAX: float = 6.0
 const BUCKET: float = 256.0
 const USE_REACH: float = 130.0      # ActionSystem.USE_REACH
+## The use key is also the CROSSHAIR: fly_camera._try_activate rays this
+## far from the eye and operates whatever mesh it hits, so a button across
+## a room is pressed by looking at it — the hand reach above is only for
+## the key pressed with nothing under the crosshair (ActionSystem.use_nearby).
+const ACTIVATE_RAY: float = 600.0
 ## How far from an ARMED exit the use key still takes it — activate_teleport's
 ## TELEPORT_TOUCH_RADIUS + PROX_GATE_RADIUS (a gate chain arms it; touching
 ## is only one way to).
@@ -78,16 +97,41 @@ var _swim_shape: CapsuleShape3D = null
 var _exclude: Array[RID] = []
 var _cell: float = CELL_INDOOR
 var _dive: bool = true
+## Is the level being solved an outdoor one? Outdoors the ground is a
+## 256x256 heightmap with buildings standing ON it — one surface per column
+## — and the map is 65536 units across; indoors it is stacked decks,
+## catwalks and clutter in a few thousand. The flood is the same everywhere
+## but its per-column effort is not (_lands, _flood, _why_not): the indoor
+## thoroughness over an outdoor city is what made MAP.210 fail to finish a
+## single round in 26 minutes (2026-09-11).
+var _outdoor: bool = false
 var _water: float = INF
 var _lo: Vector3 = Vector3.ZERO
 var _hi: Vector3 = Vector3.ZERO
+## The map's own fence, in world x/z (LevelLoader.border_boxes, DOS
+## FUN_00122711): every commit of the player's move has to land inside one
+## of the boxes or it is undone and his speed zeroed
+## (fly_camera._border_clamp) — MAP.260's invisible wall is this. So the
+## ground beyond them is not ground a player can walk, and the flood used
+## to spend its minutes out there: MAP.210's city is a corner of a
+## 65536-unit desert. Empty = no fence to keep (no boxes, or the level was
+## entered from outside them, where DOS lets the move stand too).
+var _fence: Array = []
 # One flood.
 var _key: Dictionary = {}           # Vector3i → node index
 var _pos: PackedVector3Array = PackedVector3Array()
 var _bucket: Dictionary = {}        # Vector2i (BUCKET u) → Array of node indices
+## Grid column (Vector2i in cells) → the feet heights already standing in
+## it. Outdoors the flood asks this before it rays a neighbouring column,
+## and spares the ray whenever the answer is already there (about four of
+## a cell's eight neighbours, measured on MAP.210). The sweeps are the
+## expensive part, not the rays — this is worth a few per cent, no more.
+var _col: Dictionary = {}
 var _capped: bool = false
 # The whole run.
 var _visited: Dictionary = {}       # "MAP.252#12" → true (entered by that marker set)
+## "MAP.214:03002" → how often that door has been taken (_exits, RETAKE).
+var _door_uses: Dictionary = {}
 var _done: Dictionary = {}          # "MAP.252:p04057" → true (fired once)
 var _seeds: Dictionary = {}         # map name → Array[Vector3] reached earlier
 var _route: PackedStringArray = PackedStringArray()
@@ -128,8 +172,9 @@ func _solve_map() -> void:
 	var seeds: Array = _seeds.get(name, [])
 	seeds.append(entry)
 	_seeds[name] = seeds
-	print("[solve] === %s  entry %s  water %s  cell %d  %s" % [name, entry.snapped(Vector3.ONE),
-		"-" if _water == INF else "%.0f" % _water, int(_cell), "outdoor" if lvl.is_outdoor else "indoor"])
+	print("[solve] === %s  entry %s  water %s  cell %d  %s%s" % [name, entry.snapped(Vector3.ONE),
+		"-" if _water == INF else "%.0f" % _water, int(_cell),
+		"outdoor" if lvl.is_outdoor else "indoor", _where()])
 	var rounds: int = 0
 	var shot: bool = false
 	while rounds < ROUNDS:
@@ -171,8 +216,11 @@ func _solve_map() -> void:
 		await _frames(3)
 		if a.activate_teleport(p.global_position, main._eye_position()):
 			_visited[x["vkey"]] = true
-			_route.append("%s: EXIT → %s set %d from %s" % [name, x["target"], x["set"], x["at"].snapped(Vector3.ONE)])
-			print("[solve] exit @%05x → %s set %d (from %s)" % [x["off"], x["target"], x["set"], x["at"].snapped(Vector3.ONE)])
+			_door_uses[x["dkey"]] = int(x["used"]) + 1
+			_route.append("%s: EXIT → %s set %d from %s%s" % [name, x["target"], x["set"],
+				x["at"].snapped(Vector3.ONE), "  (the way back)" if int(x["score"]) < 0 else ""])
+			print("[solve] exit @%05x → %s set %d (from %s)%s" % [x["off"], x["target"], x["set"],
+				x["at"].snapped(Vector3.ONE), "  (the way back)" if int(x["score"]) < 0 else ""])
 			_write_view(name, a)
 			_running = false
 			return                      # main loads the map, level_ready() goes on
@@ -217,9 +265,20 @@ func _setup(lvl) -> void:
 	_q.collide_with_areas = false
 	_q.collision_mask = main.player.collision_mask
 	_exclude_actors()
-	_water = float(main.player.water_level)
+	_water = float(main.player.water_level)   # INF on a dry map — see _wet
 	_cell = CELL_OUTDOOR if lvl.is_outdoor else CELL_INDOOR
 	_dive = not lvl.is_outdoor          # a whole harbour in 3D is too many cells
+	_outdoor = lvl.is_outdoor
+	# The fence holds from the moment the player is inside a box — coming
+	# in from outside one, DOS lets him be (_border_clamp), and so do we.
+	_fence = []
+	var boxes: Array = main._world_border_boxes(lvl)
+	var at := Vector2(main.player.global_position.x, main.player.global_position.z)
+	for b in boxes:
+		if (b as Rect2).has_point(at):
+			_fence = boxes
+			print("[solve] fenced by %d border box(es), %s" % [boxes.size(), str(b)])
+			break
 	_lo = Vector3(INF, INF, INF)
 	_hi = -_lo
 	for e in lvl.map.entities:
@@ -254,6 +313,7 @@ func _flood(seeds: Array) -> void:
 	_key.clear()
 	_pos = PackedVector3Array()
 	_bucket.clear()
+	_col.clear()
 	_capped = false
 	_leaks = 0
 	_leak_at = Vector3.INF
@@ -263,14 +323,21 @@ func _flood(seeds: Array) -> void:
 		if f != Vector3.INF and not _key.has(_k(f)):
 			queue.append(_add(f))
 	var head: int = 0
+	# A flood of a whole outdoor map is a minute of silence at best; it says
+	# where it has got to, so a run that is merely slow is told from one
+	# that is stuck (and so the cost of a change to the rules above shows).
+	var t_last: int = Time.get_ticks_msec()
 	while head < queue.size():
 		if _pos.size() >= MAX_NODES:
 			_capped = true
 			break
+		if Time.get_ticks_msec() - t_last >= PROGRESS_MSEC:
+			t_last = Time.get_ticks_msec()
+			print("[solve]   flooding: %d cells, %d still to walk" % [_pos.size(), queue.size() - head])
 		var i: int = queue[head]
 		head += 1
 		var p: Vector3 = _pos[i]
-		var swim: bool = p.y < _water - 1.0
+		var swim: bool = _wet(p.y)
 		var ix: int = roundi(p.x / _cell)
 		var iz: int = roundi(p.z / _cell)
 		for d in DIRS:
@@ -278,6 +345,10 @@ func _flood(seeds: Array) -> void:
 			var tz: float = float(iz + d.y) * _cell
 			if tx < _lo.x or tx > _hi.x or tz < _lo.z or tz > _hi.z:
 				continue
+			if not _in_fence(tx, tz):
+				continue                     # the move would be undone there
+			if _outdoor and not swim and _known_step(Vector2i(ix + d.x, iz + d.y), p.y):
+				continue                     # standing there already: the way on exists
 			var moved: bool = false
 			for landed in _lands(tx, tz, p.y, swim):
 				if _key.has(_k(landed)):
@@ -285,7 +356,7 @@ func _flood(seeds: Array) -> void:
 				elif _passable(p, landed) and _inside(landed, p):
 					queue.append(_add(landed))
 					moved = true
-			if not moved:
+			if not moved and not _outdoor:
 				# Step OVER — or swim past — something narrower than the
 				# body: no cell next to MAP.252's 12 u cable duct fits a
 				# 40 u body, but the controller crosses it in one stride
@@ -293,9 +364,17 @@ func _flood(seeds: Array) -> void:
 				# the rule used to skip them while swimming, so once the
 				# water sat at its real height (32 u higher) mission 5's
 				# cabin counted as swimming and the flood never left it.
+				#
+				# Indoors only. Outdoors the grid is 64 u, so the same try
+				# would leap 128 to 256 units — further than a player
+				# strides — and it is the frontier's cost: every cell that
+				# ends against a wall (a city is mostly walls) paid three
+				# more columns of sweeps for nothing.
 				for k in [2, 3, 4]:
 					var fx: float = float(ix + d.x * k) * _cell
 					var fz: float = float(iz + d.y * k) * _cell
+					if not _in_fence(fx, fz):
+						break
 					var got: bool = false
 					for landed in _lands(fx, fz, p.y, swim):
 						if not _key.has(_k(landed)) and _passable(p, landed) and _inside(landed, p):
@@ -356,20 +435,51 @@ func _add(f: Vector3) -> int:
 	var arr: Array = _bucket.get(b, [])
 	arr.append(i)
 	_bucket[b] = arr
+	var c := Vector2i(roundi(f.x / _cell), roundi(f.z / _cell))
+	var ys: PackedFloat32Array = _col.get(c, PackedFloat32Array())
+	ys.append(f.y)
+	_col[c] = ys
 	return i
+
+## Is the x/z point inside the map's fence — somewhere the player's move
+## would stand (fly_camera._inside_border)? True everywhere when the map
+## has no fence to keep.
+func _in_fence(x: float, z: float) -> bool:
+	if _fence.is_empty():
+		return true
+	var p := Vector2(x, z)
+	for b in _fence:
+		if (b as Rect2).has_point(p):
+			return true
+	return false
+
+## Is there already a cell in the column next door a step away from `y` —
+## i.e. would _lands find its floor and the flood find it known? Outdoors
+## that is the whole of it: the ground is one surface per column, so a
+## known floor within a step IS the floor the ray would have returned, and
+## the ray can be spared. (Indoors a column holds decks above and below one
+## another and the ray has to run; this is only ever asked outdoors.)
+func _known_step(col: Vector2i, y: float) -> bool:
+	var ys = _col.get(col)
+	if ys == null:
+		return false
+	for cy in (ys as PackedFloat32Array):
+		if absf(cy - y) <= STEP and (_water == INF or cy >= _water - 1.0):
+			return true
+	return false
 
 ## Grid key of a cell. Swimming cells are 48 u deep instead of 16 (the
 ## flooded submarine filled the node cap in 3D); the parity of the Y part
 ## keeps a swimming height from ever sharing a key with a standing one.
 func _k(f: Vector3) -> Vector3i:
-	if f.y < _water - 1.0:
+	if _wet(f.y):
 		return Vector3i(roundi(f.x / _cell), roundi(f.y / SWIM_QUANT) * 2 + 1, roundi(f.z / _cell))
 	return Vector3i(roundi(f.x / _cell), roundi(f.y / Y_QUANT) * 2, roundi(f.z / _cell))
 
 ## Where a body standing (or swimming) at `s` really is: on the floor
 ## under it, or where it floats in the water.
 func _seed_point(s: Vector3) -> Vector3:
-	if s.y < _water - 1.0:
+	if _wet(s.y):
 		return s
 	var hit := _ray(s + Vector3(0.0, 40.0, 0.0), s - Vector3(0.0, 400.0, 0.0))
 	if hit.is_empty():
@@ -388,7 +498,14 @@ func _lands(tx: float, tz: float, from_y: float, swim: bool) -> Array:
 		top = _water + WATER_EXIT + 2.0  # a floating swimmer climbs out
 	var bottom: float = from_y - MAX_DROP
 	var y: float = top
-	for _i in 3:
+	# Three floors indoors — a ray that starts inside a thick slab meets its
+	# underside first, and a deck has another under it. Outdoors ONE: the
+	# terrain is a single heightmap and what stands on it is walked round,
+	# not under, so the second and third rays only ever found the inside of
+	# a building the flood reaches through its door anyway. (Open water
+	# still yields both the bottom to wade on and the surface to float on —
+	# that is the first ray's own doing, below.)
+	for _i in (1 if _outdoor else 3):
 		var hit := _ray(Vector3(tx, y, tz), Vector3(tx, bottom, tz))
 		if hit.is_empty():
 			if out.is_empty() and _water != INF and _water < top and _water > bottom:
@@ -397,7 +514,7 @@ func _lands(tx: float, tz: float, from_y: float, swim: bool) -> Array:
 		var hp: Vector3 = hit["position"]
 		if absf((hit["normal"] as Vector3).y) >= FLOOR_MIN_NY:
 			var fy: float = hp.y
-			if _water != INF and fy < _water - 1.0:
+			if _wet(fy):
 				# Under water a body can do BOTH: WADE along the bottom —
 				# the controller walks the flooded submarine at y -185
 				# under a -120 surface, straight past the wardrobe that
@@ -420,7 +537,7 @@ func _passable(a: Vector3, b: Vector3) -> bool:
 
 ## "" when the capsule gets from `a` to `b`, otherwise which sweep stopped it.
 func _why_not(a: Vector3, b: Vector3) -> String:
-	if a.y < _water - 1.0 and b.y < _water - 1.0:
+	if _wet(a.y) and _wet(b.y):
 		if _free(a, b - a):
 			return ""
 		# Swim up first, then across and down onto it: a straight diagonal
@@ -461,7 +578,11 @@ func _why_not(a: Vector3, b: Vector3) -> String:
 			why = "across"
 		if rise >= STEP - 0.5:
 			return why
-		rise = minf(rise + 16.0, STEP)
+		# How finely the step-up is searched. Indoors 16 units — the ledges
+		# and ducts a submarine is full of are that size. Outdoors 40: a
+		# kerb, a step and the 80 u limit itself are all it has to find, and
+		# six tries per blocked direction over a city is where the time went.
+		rise = minf(rise + (40.0 if _outdoor else 16.0), STEP)
 	return why
 
 ## One sweep, told in full: how far it got, and at the first contact
@@ -486,7 +607,7 @@ func _sweep_detail(feet: Vector3, motion: Vector3) -> String:
 ## Why the flood does not go on from cell `p`: per direction, the floors
 ## found in the next column and what stops the capsule reaching each.
 func _explain(p: Vector3) -> void:
-	var swim: bool = p.y < _water - 1.0
+	var swim: bool = _wet(p.y)
 	var ix: int = roundi(p.x / _cell)
 	var iz: int = roundi(p.z / _cell)
 	for d in DIRS:
@@ -514,9 +635,20 @@ func _explain(p: Vector3) -> void:
 			parts.append("floor y %.0f: %s" % [t.y, why])
 		print("[solve]     from %s toward (%+d,%+d) → (%.0f, %.0f): %s" % [p.snapped(Vector3.ONE), d.x, d.y, tx, tz, "; ".join(parts)])
 
+## Is `y` under the water? A map with no water marker has no surface at
+## all, and `_water` is then INF — under which "y < _water" is true of
+## every height there is. Every water test goes through here, because the
+## ones that did it by hand had the flood SWIMMING over every dry map in
+## the game: a swimmer crosses a gap at any height it can rise to (there is
+## no ceiling out of doors) and moves in three dimensions indoors, so the
+## solver walked through the walls of MAP.210's compound and flew around
+## the inside of MAP.213. What it called reachable was not.
+func _wet(y: float) -> bool:
+	return _water != INF and y < _water - 1.0
+
 func _free(feet: Vector3, motion: Vector3) -> bool:
 	# In the water (either end under the surface) the body is the short one.
-	var wet: bool = _water != INF and (feet.y < _water - 1.0 or feet.y + motion.y < _water - 1.0)
+	var wet: bool = _wet(feet.y) or _wet(feet.y + motion.y)
 	_q.shape = _swim_shape if wet else _body_shape
 	var cy: float = (SWIM_BODY * 0.5 if wet else _shape_y) + LIFT
 	_q.transform = Transform3D(Basis(), feet + Vector3(0.0, cy, 0.0))
@@ -636,9 +768,28 @@ func _candidates(a, name: String, shoot: bool) -> Array:
 		if chain and (e.state_byte & 1) == 0:
 			continue                     # a spent lever
 		var use_only: bool = (e.flags & 3) == 1 and (e.state_byte & 8) != 0 and e.name_index >= 0
+		# A 0xEF gate is the USE KEY at a doorway, not a tripwire: its DOS
+		# handler (0x137e2e) runs only in the frame ACTIVATE goes down, so
+		# standing in one does nothing whatever. Walking into the eight that
+		# ring MAP.217's jeep is what the solver did for [M3], and mission 1
+		# could not be finished; a player presses the key there.
+		var gate: bool = e.link_act_type == 0xEF and not use_only
 		var at: Vector3 = _reach_point(_epos(e), USE_REACH if use_only else a._prox_radius(e))
+		var kind: String = "use" if use_only else ("use-gate" if gate else "walk-in")
+		if at == Vector3.INF and (e.flags & 3) == 1:
+			# Out of the hand's reach and out of the gate's radius — but a
+			# BUTTON on the wall is operated by LOOKING at it (ACTIVATE_RAY:
+			# the ray walks up to the mesh's own node and activates it,
+			# whatever its act). MAP.214's BUTTON01, the one that opens the
+			# doors to MAP.215 and so to mission 1's [M1] and [M2], sits 163
+			# units off round a wall corner: no cell of the flood is within
+			# 130 of it, and plenty of them can see it.
+			var seen: int = _shooting_spot(a, e.file_off, _aim_point(a, e.file_off, e), ACTIVATE_RAY)
+			if seen >= 0:
+				at = _pos[seen]
+				kind = "use"
 		if at != Vector3.INF:
-			out.append({"kind": "use" if use_only else "walk-in", "off": e.file_off, "key": k,
+			out.append({"kind": kind, "off": e.file_off, "key": k,
 				"at": at, "what": _ename(a, e)})
 	for e in a._use_msgs:
 		var k: String = "u%05x" % e.file_off
@@ -660,6 +811,12 @@ func _perform(a, name: String, act: Dictionary) -> void:
 	match String(act["kind"]):
 		"use":
 			a.on_player_activate(int(act["off"]), main.player.global_position)
+		"use-gate":
+			# The action system's own use edge, not main's — that one would
+			# take a doorway the press happens to stand in as well, and the
+			# solver takes its exits itself, one at a time and on purpose.
+			a.press_use()
+			await _frames(2)
 		"shoot":
 			for _k in 15:
 				if not a.is_damageable_off(int(act["off"])):
@@ -717,12 +874,14 @@ func _aim_point(a, off: int, e) -> Vector3:
 		return mi.global_transform * mi.mesh.get_aabb().get_center()
 	return _epos(e) if e != null else Vector3.INF
 
-## A reachable cell with a clear line of fire at `aim`, nearest first.
-func _shooting_spot(a, off: int, aim: Vector3) -> int:
+## A reachable cell with a clear line at `aim`, nearest first — a place to
+## shoot the thing from, or (with the shorter ACTIVATE_RAY) to look at it
+## and press the use key.
+func _shooting_spot(a, off: int, aim: Vector3, reach: float = SHOOT_RANGE) -> int:
 	if aim == Vector3.INF:
 		return -1
 	var near: Array = []
-	var r: int = int(ceil(SHOOT_RANGE / BUCKET))
+	var r: int = int(ceil(reach / BUCKET))
 	var bx: int = floori(aim.x / BUCKET)
 	var bz: int = floori(aim.z / BUCKET)
 	for dx in range(-r, r + 1):
@@ -732,7 +891,7 @@ func _shooting_spot(a, off: int, aim: Vector3) -> int:
 				continue
 			for i in arr:
 				var d: float = _pos[i].distance_to(aim)
-				if d <= SHOOT_RANGE:
+				if d <= reach:
 					near.append([d, i])
 	near.sort_custom(func(x, y): return x[0] < y[0])
 	var target = a._nodes.get(off)
@@ -749,25 +908,58 @@ func _shooting_spot(a, off: int, aim: Vector3) -> int:
 			c = (c as Node).get_parent()
 	return -1
 
-## Exits this space reaches, the ones to unseen maps first.
+## Exits this space reaches: a map it has not seen first, then a door it
+## has not been through, and last — when there is nothing new here at all —
+## the way BACK. A player who has cleared a room walks out of it the way he
+## came in; without that the run ended on MAP.217 with mission 1's [M1] and
+## [M2] still behind the OTHER door of MAP.214, one it had already used. A
+## door is taken at most RETAKE times, so the walk cannot go on for ever;
+## the least-used one goes first, so it spreads out instead of swinging
+## between the same two rooms.
 func _exits(a, name: String) -> Array:
+	# Where the use key reaches a doorway from: the sprite itself, and any
+	# 0xEF gate whose chain ends in it (activate_teleport takes either).
+	# MAP.210's cargo box is the second kind and only the second kind — the
+	# boarded door is opened at a gate at eye height, and the doorway sprite
+	# it arms is behind the boards, out of reach. Standing at the sprite
+	# alone, the run could never get into the truck (and so never into
+	# MAP.216, which is the mission).
+	var spots: Dictionary = {}
+	for e in a._teleports:
+		spots[e.file_off] = [[_epos(e), EXIT_REACH]]
+	for g in a._prox:
+		if g.link_act_type != 0xEF or a._spent.has(g.file_off):
+			continue
+		var t = a._chain_teleport(g)
+		if t != null and spots.has(t.file_off):
+			(spots[t.file_off] as Array).append([_epos(g), a._prox_radius(g)])
 	var out: Array = []
 	for e in a._teleports:
-		var at: Vector3 = _reach_point(_epos(e), EXIT_REACH)
-		if at == Vector3.INF:
-			continue
 		var target: String = ("MAP.%03d" % e.exit_map) if e.exit_map > 0 else String(main._prev_map_name)
 		var vkey: String = "%s#%d" % [target, e.exit_marker_id]
+		var dkey: String = "%s:%05x" % [name, e.file_off]
+		var used: int = int(_door_uses.get(dkey, 0))
 		var score: int = 0
 		if not _seen_map(target):
 			score = 2
 		elif not _visited.has(vkey):
 			score = 1
+		elif used < RETAKE:
+			score = -1                   # nothing new that way, but a way on
 		else:
-			continue                     # been through that door already
-		out.append({"off": e.file_off, "at": at, "target": target, "set": e.exit_marker_id,
-			"vkey": vkey, "score": score})
-	out.sort_custom(func(x, y): return x["score"] > y["score"])
+			continue                     # been through that door often enough
+		# Every place the key reaches it from is offered, not just the
+		# first: the cargo box's doorway sprite IS in reach and simply will
+		# not fire from there — it is the gate behind the boards that opens
+		# it — and one try per doorway left the truck shut for good.
+		for s in (spots[e.file_off] as Array):
+			var at: Vector3 = _reach_point(s[0] as Vector3, float(s[1]))
+			if at == Vector3.INF:
+				continue
+			out.append({"off": e.file_off, "at": at, "target": target, "set": e.exit_marker_id,
+				"vkey": vkey, "dkey": dkey, "used": used, "score": score})
+	out.sort_custom(func(x, y): return x["used"] < y["used"] \
+		if x["score"] == y["score"] else x["score"] > y["score"])
 	return out
 
 func _seen_map(target: String) -> bool:
@@ -783,14 +975,15 @@ func _pass(name: String) -> void:
 	print("[solve] route:")
 	for r in _route:
 		print("[solve]   " + r)
-	print("[solve] RESULT PASS — mission complete on %s after %.0f s" % [name,
-		(Time.get_ticks_msec() - _t0) / 1000.0])
+	print("[solve] RESULT PASS — mission complete on %s after %.0f s%s" % [name,
+		(Time.get_ticks_msec() - _t0) / 1000.0, _where()])
 	_write_view(name, main._current_level.action)
 	_quit(0)
 
 func _fail(name: String, a) -> void:
 	_finished = true
-	print("[solve] STUCK on %s: nothing left to fire and no exit to a new place" % name)
+	print("[solve] STUCK on %s%s: nothing left to fire and no exit to a new place"
+		% [name, _where()])
 	print("[solve] route so far:")
 	for r in _route:
 		print("[solve]   " + r)
@@ -798,7 +991,8 @@ func _fail(name: String, a) -> void:
 	print("[solve] movers now:
 " + String(a.mover_report()))
 	_write_view(name, a)
-	print("[solve] RESULT FAIL — stuck on %s after %.0f s" % [name, (Time.get_ticks_msec() - _t0) / 1000.0])
+	print("[solve] RESULT FAIL — stuck on %s after %.0f s%s"
+		% [name, (Time.get_ticks_msec() - _t0) / 1000.0, _where()])
 	_quit(1)
 
 func _quit(code: int) -> void:
@@ -911,7 +1105,7 @@ func _write_view(name: String, a) -> void:
 	for p in _pos:
 		var cx: int = roundi(p.x / _cell) - lo.x
 		var cz: int = roundi(p.z / _cell) - lo.y
-		var ch: int = 126 if p.y < _water - 1.0 else 46
+		var ch: int = 126 if _wet(p.y) else 46
 		if rows[cz][cx] != 46:
 			rows[cz][cx] = ch
 	var mark := func(pos: Vector3, ch: String) -> void:
@@ -947,6 +1141,14 @@ func _write_view(name: String, a) -> void:
 ## origin (_setup) goes on here, once, for every caller.
 func _epos(e) -> Vector3:
 	return Vector3(float(e.x), -float(e.y), -float(e.z)) + _zone
+
+## Where the run stands when a mission scene is up: the console's own zone
+## line (the zone, its mission, where it stands and which phase its world is
+## in). "" under the per-map runtime, where the map name says it all.
+func _where() -> String:
+	if main == null or main._mission == null:
+		return ""
+	return "  [%s]" % String(main.call("_zone_report", false))
 
 func _ename(a, e) -> String:
 	if e == null:

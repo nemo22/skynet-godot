@@ -579,16 +579,7 @@ func _cli_after_level() -> void:
 		for c in cmds2.split(";"):
 			if not c.strip_edges().is_empty():
 				print("[cli] ] %s → %s" % [c.strip_edges(), await run_command(c.strip_edges())])
-	if _cli.has("solve"):
-		# Automation: play the mission through with collisions, map after
-		# map, until it is complete or stuck (scripts/mission_solver.gd).
-		var solver: Node = get_node_or_null("MissionSolver")
-		if solver == null:
-			solver = load("res://scripts/mission_solver.gd").new()
-			solver.name = "MissionSolver"
-			solver.set("main", self)
-			add_child(solver)
-		solver.call("level_ready")
+	_solver_level_ready()
 	if _cli.has("console-open"):
 		# Automation: drop the console itself (a screenshot of its UI).
 		open_console(String(_cli["console-open"]))
@@ -636,6 +627,23 @@ func _cli_after_level() -> void:
 		await _perf_probe(float(_cli.get("perf", 8.0)))
 		if _cli.has("quit-after-shot"):
 			get_tree().quit()
+
+## --solve: the mission solver is told that a world is up and playable
+## (scripts/mission_solver.gd, which then floods it, fires what it can and
+## takes an exit). It is told once per PLACE, whichever runtime brought it
+## up: after a level change, and — inside a mission scene, where a doorway
+## is no longer a level change — after a move into another zone and after a
+## world has been re-authored into a phase.
+func _solver_level_ready() -> void:
+	if not _cli.has("solve"):
+		return
+	var solver: Node = get_node_or_null("MissionSolver")
+	if solver == null:
+		solver = load("res://scripts/mission_solver.gd").new()
+		solver.name = "MissionSolver"
+		solver.set("main", self)
+		add_child(solver)
+	solver.call("level_ready")
 
 ## Frame-time probe. Prints the distribution, not just the average: a
 ## mean of 8 ms with a 90 ms worst frame is exactly what "docela dost to
@@ -2253,23 +2261,38 @@ static func _mission_of(map_name: String) -> int:
 	var sfx: int = _suffix(map_name)
 	return (sfx / 10) * 10 if sfx >= _mission_base() else -1
 
-## The mission `map_name` is played in. Usually its own (_mission_of), but
-## a map whose own number starts no campaign mission is a side area of the
-## mission being played: the shared interiors MAP.340+ that missions 3, 4
-## and 5 walk into (MAP.230/234/235 → 340 341 472 473 479 581 592 598,
-## MAP.240/250 → 349 350 472 582 598) and mission 4's MAP.292/293 behind
-## MAP.241. Each of those used to start a "mission" of its own — the
-## counter went to 0 on the way in and back to full on the way out, with
-## the objectives already done retired for good, so the mission could not
-## end. DOS resets the counter only when a mission starts. A save being
-## loaded names its mission; a loose map with nothing running keeps its own.
+## The mission `map_name` is played in. DOS resets the mission register
+## when a mission STARTS and never again, so a map's own number decides
+## only when it is a campaign start map; every other map is a side area of
+## the mission being played.
+##
+## Which mission a side area belongs to is not in its number:
+##   - the shared interiors belong to two missions apiece — MAP.211-215 are
+##     the truck hangars of missions 1 AND 2, MAP.242-248 the harbour sheds
+##     of 4 and 5, MAP.281-286 the base of 7 and 8;
+##   - MAP.250 is mission 5's own WORLD, two doorways past its start map
+##     MAP.252, and starts no mission at all;
+##   - the MAP.340+ rooms and mission 4's MAP.292/293 belong to whoever
+##     walks in.
+## The mission SCENE's map list answers it (Assets.mission_holds — the
+## bake's census). Taking the number instead put mission 5 into mission 4's
+## briefing at the first hangar door, and each of those maps used to start a
+## "mission" of its own: the counter went to 0 on the way in and back to
+## full on the way out, with the objectives already done retired for good,
+## so the mission could not end. A save being loaded names its mission; a
+## loose map with nothing running, or one no mission scene claims, keeps its
+## own number.
 func _mission_key_for(map_name: String) -> int:
 	var own: int = _mission_of(map_name)
-	if own < 0 or not _mission_start_for_key(own).is_empty():
-		return own
+	if own < 0 or _campaign_maps.has(map_name):
+		return own                          # a start map, and only it, sets the mission
 	var loading: int = int(_pending_objectives.get("key", -1))
 	if loading >= 0 and not _mission_start_for_key(loading).is_empty():
 		return loading
+	if _mission_key >= 0 and Assets.mission_holds(_mission_key, map_name):
+		return _mission_key
+	if not _mission_start_for_key(own).is_empty():
+		return own
 	return _mission_key if _mission_key >= 0 else own
 
 ## Load the mission script when the mission changes; keep the counter
@@ -2642,14 +2665,16 @@ func _mission_scenes_on() -> bool:
 	return (Settings.mission_scenes or _cli.has("mission-scene")) \
 		and not Net.active and _dm == null and SkynetPaths.game != "shock"
 
-## Should `name` come up inside its mission's scene?
+## Should `name` come up inside its mission's scene? Only a map of a
+## campaign mission this game bakes a scene for (Assets.mission_start_of).
 func _want_mission_scene(name: String) -> bool:
 	if not _mission_scenes_on():
 		return false
 	var key: int = _mission_key_for(name)
 	if key < 0 or key == _mission_scene_off:
 		return false
-	return not _mission_start_for_key(key).is_empty()
+	return Assets.mission_start_of(key) >= 0 \
+		and not _mission_start_for_key(key).is_empty()
 
 ## Bring the mission scene up with `name` as the active zone. False when
 ## it cannot be had — no baked scene, or `name` is not one of its zones —
@@ -2657,7 +2682,11 @@ func _want_mission_scene(name: String) -> bool:
 func _begin_mission_level(name: String, gen: int) -> bool:
 	var key: int = _mission_key_for(name)
 	var t0: int = Time.get_ticks_msec()
-	var packed: PackedScene = Assets.mission_scene(key)
+	# The scene is filed under the map the mission BEGINS on, which is not
+	# always the mission's own number: mission 5 is the 25x maps and starts
+	# on MAP.252 (Assets.mission_start_of).
+	var start: int = Assets.mission_start_of(key)
+	var packed: PackedScene = Assets.mission_scene(start) if start >= 0 else null
 	if packed == null:
 		print("[mission] %d has no baked scene — the per-map runtime keeps it" % key)
 		_mission_scene_off = key
@@ -3037,6 +3066,7 @@ func _enter_zone(target: String, marker_set: int) -> void:
 		push_warning("[mission] cannot enter zone %s" % target)
 	_fade_to(0.0, 0.35)
 	_finish_mission_if_done(2.5)
+	_solver_level_ready()               # --solve: a doorway is its level change
 
 ## --- Phases (step 5, docs/m2_mission_scene_plan.md) -------------------
 ## Half a mission's outdoor map is shipped several times over: MAP.216 is
@@ -3162,6 +3192,7 @@ func _switch_phase(target: String, marker_set: int) -> void:
 	_fade_to(0.0, 0.35)
 	print("[mission] phase %s → %s in %d ms" % [from, target, Time.get_ticks_msec() - t0])
 	_finish_mission_if_done(2.5)
+	_solver_level_ready()               # --solve: the world it walks is a new one
 
 ## What the console's `zone` / `zones` print.
 func _zone_report(all: bool) -> String:

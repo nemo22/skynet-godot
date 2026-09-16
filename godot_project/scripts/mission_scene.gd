@@ -129,6 +129,20 @@ static func _sidecar_maps(meta: Dictionary) -> PackedInt32Array:
 			out.append(int(s))
 	return out
 
+## Every DOS map the baked mission scene of `start` holds — its zones AND
+## the re-authored variants of its worlds — straight out of the sidecar,
+## without loading the scene. This is the census's own answer to "which
+## mission is this map played in", which no map number can give on its own:
+## the interiors belong to two missions apiece (MAP.211-215 to missions 1
+## and 2, MAP.242-248 to 4 and 5, MAP.281-286 to 7 and 8) and MAP.250 is
+## mission 5's world although it starts no mission at all. Empty when the
+## mission has never been baked (Assets.mission_maps caches it).
+static func baked_maps(start: int) -> PackedInt32Array:
+	var p := scene_path(start)
+	if p.is_empty() or not FileAccess.file_exists(p):
+		return PackedInt32Array()
+	return _sidecar_maps(_read_sidecar(p))
+
 ## A fingerprint of everything the bake read: the bytes of every MAP the
 ## mission uses (zones AND the re-authored variants, whose records are the
 ## phase diffs) and the heightmaps under them.

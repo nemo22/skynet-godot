@@ -13,6 +13,12 @@
 ## loading it, the mission carries on into MAP.217 and the jeep counts its
 ## objective there — and finally mission 3's two phase edges.
 ##
+## Then mission 1 is FINISHED where it is played (step 7): the two
+## objectives inside MAP.215 take the counter to zero without the scene
+## being left, and MISSION COMPLETE comes up with mission 2 behind it. And
+## mission 5 — the one mission that does not begin on its own world — comes
+## up as its own scene, with the hangar it shares with mission 4 still in it.
+##
 ## And the SAVES (step 6): a mission save from inside an interior with its
 ## state, loaded back after walking out (the zones not walked into wait
 ## for their overlay, the return door still knows the way); one taken in
@@ -612,6 +618,13 @@ func _run() -> void:
 			await _phase_save_load(spoil_217, left_before)
 	_check(_main.get("_game_over") == null, "no end screen fired by itself")
 
+	# --- 7e. The END of mission 1, inside the scene --------------------
+	# [M3] is the jeep out in the world; [M1] and [M2] are inside MAP.215,
+	# two doorways off it. Until now no run had driven those two in a scene,
+	# so nothing proved a mission can be FINISHED without leaving one — the
+	# counter reaching zero, MISSION COMPLETE, and the next mission behind it.
+	await _finish_mission_1(left_before)
+
 	# --- 8. Mission 3's phases: MAP.233 → MAP.235 → MAP.234 ------------
 	# Mission 3 walks out of the bunker into two more variants of its own
 	# world. Only that the edges apply at all is asked here.
@@ -669,7 +682,156 @@ func _run() -> void:
 					_check(ok and is_equal_approx(float(_main.get("_water_target")), drained),
 						"after the load the harbour comes up with the saved water (%.0f)"
 						% float(_main.get("_water_target")))
+
+	# --- 10. Mission 5: the mission that does not start on its own world --
+	# DOS numbers mission 5 by its maps — the 25x decade, briefing 250.TXT —
+	# but it BEGINS in the sub pens of MAP.252, and the harbour MAP.250 is
+	# two doorways further on. The scene is filed under the map the mission
+	# starts on (Assets.mission_start_of): asking for MISSION.250.scn instead
+	# baked a stray scene of a mission that begins nowhere, MAP.252 was no
+	# zone of it, and every mission-5 map quietly fell back to the per-map
+	# runtime.
+	await _wait(func() -> bool: return not bool(_main.get("_level_busy")) and _settled(), 30.0)
+	print("[mission-e2e] map 252 → %s" % str(_main.call("run_command", "map 252")))
+	ok = await _wait(func() -> bool: return _level_is("252") and _settled(), 300.0)
+	_check(ok and _main.get("_mission") != null and _active() == "MAP.252",
+		"mission 5 comes up inside its own scene with MAP.252 active (%s)" % _zone_line())
+	if ok and _main.get("_mission") != null:
+		_check(int(_main.get("_mission_scene_key")) == 250,
+			"the scene is mission 250's — the number its briefing and counter use (%d)"
+			% int(_main.get("_mission_scene_key")))
+		var m5: Dictionary = _main.get("_zones")
+		_check(m5.size() == 17, "mission 5 stands on %d zones" % m5.size())
+		var world: Dictionary = m5.get("MAP.250", {})
+		_check(not world.is_empty() and (world["node"] as Node3D).position == Vector3.ZERO,
+			"the harbour MAP.250 is the mission's world, at the origin")
+		_check(int(_main.get("_mission_key")) == 250 and int(_main.get("_objectives_left")) > 0,
+			"the mission key is 250 with %d objectives" % int(_main.get("_objectives_left")))
+		# MAP.247 is a hangar of mission 4 as much as of mission 5: its own
+		# number would hand the mission — and its objective counter — to
+		# mission 4 at the door. The scene it stands in settles it.
+		ok = await _go(247, 0, "247")
+		_check(ok and _main.get("_mission") != null and _active() == "MAP.247"
+			and int(_main.get("_mission_key")) == 250,
+			"the shared hangar MAP.247 stays in mission 5 (key %d, zone %s)"
+			% [int(_main.get("_mission_key")), _active()])
+		if ok:
+			ok = await _go(250, 0, "250", 300.0)
+			_check(ok and _active() == "MAP.250",
+				"and the way back leads into the harbour zone (%s)" % _zone_line())
 	_finish()
+
+## --- Step 7: the mission ends where it is played ------------------------
+
+## Every [M] objective record of the level that is up: act 0x26+n, the
+## entities the DOS counter comes down on (0x26 = [M1] … 0x2A = [M5]).
+func _objective_records() -> Array:
+	var out: Array = []
+	var lvl = _main.get("_current_level")
+	if lvl == null or lvl.map == null:
+		return out
+	for e in lvl.map.entities:
+		if e.link_act_type >= 0x26 and e.link_act_type <= 0x2A:
+			out.append(e)
+	return out
+
+## Does the chain `e` starts run through `off`? ObjFlipLink's own walk —
+## follow link_next, stop at an actor flag or the end of the chain.
+func _chain_reaches(m, e, off: int) -> bool:
+	var seen: Dictionary = {}
+	var cur = m.entities_by_off.get(e.link_next) if e.link_next > 0 else null
+	while cur != null and not seen.has(cur.file_off):
+		seen[cur.file_off] = true
+		if int(cur.file_off) == off:
+			return true
+		if (cur.flags & 0x40) != 0 or cur.link_next <= 0:
+			break
+		cur = m.entities_by_off.get(cur.link_next)
+	return false
+
+## What a player touches to count the objective at `off`: an objective act
+## is the END of a chain (a gate at the door of the room, a button on the
+## wall), never something walked into by itself. Returns the record or null.
+func _trigger_for(off: int):
+	var lvl = _main.get("_current_level")
+	if lvl == null or lvl.map == null:
+		return null
+	for e in lvl.map.entities:
+		if e.link_act_type != 0xEF and e.link_act_type != 0xF1 and e.link_act_type != 0xF2:
+			continue
+		if _chain_reaches(lvl.map, e, off):
+			return e
+	return null
+
+## Walk up to a record and press the use key there, which is how a player
+## counts an objective: the 0xEF gates that ring it flip on the key, the
+## 0xF1/0xF2 ones on the tick that sees the player inside their radius.
+func _drive_record(e) -> void:
+	var lvl = _main.get("_current_level")
+	var player: CharacterBody3D = _main.get("player")
+	var at := Vector3(float(e.x), -float(e.y), -float(e.z)) + (lvl.origin as Vector3)
+	player.set("noclip", true)
+	player.velocity = Vector3.ZERO
+	player.global_position = at
+	for f in 30:
+		await get_tree().physics_frame
+	_main.call("_on_use_pressed", player.global_position)
+	for f in 30:
+		await get_tree().physics_frame
+	player.set("noclip", false)
+
+## 7e. Mission 1 to its end without leaving its scene. The run stands in
+## MAP.214 on the per-map runtime (7d put it there), the flag is up again
+## and [M3] is counted: walking into MAP.215 brings the scene back, and its
+## own two objectives take the counter to zero.
+func _finish_mission_1(left_before: int) -> void:
+	await _wait(func() -> bool: return not bool(_main.get("_level_busy")) and _settled(), 30.0)
+	print("[mission-e2e] map 215 → %s" % str(_main.call("run_command", "map 215")))
+	var ok: bool = await _wait(func() -> bool: return _level_is("215") and _settled(), 300.0)
+	_check(ok and _main.get("_mission") != null and _active() == "MAP.215",
+		"mission 1 is back inside its scene with MAP.215 active (%s)" % _zone_line())
+	if not ok or _main.get("_mission") == null:
+		return
+	var left: int = int(_main.get("_objectives_left"))
+	_check(left == left_before - 1, "%d objectives left, [M3] still counted" % left)
+	var objs: Array = _objective_records()
+	_check(objs.size() >= left, "MAP.215 carries %d objective records for the %d left"
+		% [objs.size(), left])
+	for e in objs:
+		if int(_main.get("_objectives_left")) <= 0:
+			break
+		# The trigger the chain hangs off first — walking onto the objective
+		# record itself does nothing, it is the end of the chain.
+		var t = _trigger_for(int(e.file_off))
+		if t != null:
+			await _drive_record(t)
+			if _main.get("_current_level") != null:
+				_main.get("_current_level").action.on_player_activate(
+					int(t.file_off), (_main.get("player") as Node3D).global_position)
+				for f in 20:
+					await get_tree().physics_frame
+		else:
+			await _drive_record(e)
+		print("[mission-e2e] objective @%05x (act %02x) driven from %s → %d left"
+			% [int(e.file_off), int(e.link_act_type),
+			   "trigger @%05x (act %02x)" % [int(t.file_off), int(t.link_act_type)] if t != null
+				else "the record itself", int(_main.get("_objectives_left"))])
+	_check(int(_main.get("_objectives_left")) == 0,
+		"MAP.215's objectives take the counter to zero (%d left)" % int(_main.get("_objectives_left")))
+	_check(_main.get("_mission") != null and _active() == "MAP.215",
+		"the mission was finished INSIDE the scene, in zone %s" % _active())
+	# _finish_mission_if_done holds the banner back 2.5 s so the last radio
+	# line is read first, then MISSION COMPLETE with the next mission behind it.
+	ok = await _wait(func() -> bool: return _main.get("_game_over") != null, 20.0)
+	_check(ok, "MISSION COMPLETE shows for mission 1")
+	_check(String(_main.get("_game_over_next")) == "MAP.220",
+		"the next mission waiting behind it is %s" % str(_main.get("_game_over_next")))
+	_check(int(_main.get("_mission_ended_key")) == 210,
+		"mission 210 is marked won (%d)" % int(_main.get("_mission_ended_key")))
+	# The banner would load MAP.220 by itself after 6 s; the run has more to
+	# walk, so it is taken down here (which also stops that timer).
+	_main.call("_dismiss_end_screen")
+	await _wait(func() -> bool: return _main.get("_game_over") == null, 10.0)
 
 ## --- Step 6: saves ------------------------------------------------------
 ## What _interior_save_load did to MAP.214, for the per-map run of the

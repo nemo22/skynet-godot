@@ -121,6 +121,9 @@ var _requested_root: String = ""         # what SkynetPaths asked for
 var _fp: String = ""                     # data fingerprint (memo)
 var _hires_ok: int = -1                  # MDMDHRES.BSA present: -1 unknown
 var _readers: Dictionary = {}            # archive → BSAReader, during import_all
+## start → PackedInt32Array of the maps that mission scene holds, read
+## from its sidecar once (mission_maps).
+var _mission_maps: Dictionary = {}
 var _importing: bool = false
 var _lock_msec: int = 0
 var _trash_task: int = -1
@@ -1242,6 +1245,51 @@ func mission_starts() -> PackedInt32Array:
 	return MissionScene.STARTS if SkynetPaths.game != "shock" \
 		else PackedInt32Array()
 
+## The mission scene the campaign mission `key` is baked as: the number of
+## the map it BEGINS on, -1 when this game bakes none for it.
+##
+## DOS numbers a mission by the decade its maps sit in — main._mission_key_for
+## answers in those numbers, and mission 5 is the 25x maps — but a mission
+## does not always begin on the round number: mission 5 starts in the sub
+## pens of MAP.252 and its world MAP.250 is two doorways away (Skynet.exe's
+## mission table 0x34846). The scene is filed under the START, so the two
+## numberings have to meet somewhere, and this is the one place they do —
+## asking for MISSION.250.scn instead baked a second, stray scene of a
+## mission that begins nowhere, which did not hold MAP.252.
+func mission_start_of(key: int) -> int:
+	if key < 0:
+		return -1
+	for s in mission_starts():
+		if (int(s) / 10) * 10 == (key / 10) * 10:
+			return int(s)
+	return -1
+
+## Every DOS map the mission scene of mission `key` holds — its zones and
+## the re-authored variants of its worlds (MissionScene.baked_maps, the
+## census's own list, read from the sidecar and kept). Empty when the
+## mission has no baked scene.
+func mission_maps(key: int) -> PackedInt32Array:
+	var start: int = mission_start_of(key)
+	if start < 0:
+		return PackedInt32Array()
+	if not _mission_maps.has(start):
+		_mission_maps[start] = MissionScene.baked_maps(start)
+	return _mission_maps[start]
+
+## Is `map_name` one of the maps of mission `key`? The one answer to
+## "which mission does this map belong to", which a map number cannot give
+## alone — see MissionScene.baked_maps. False when nothing is baked yet,
+## and the caller then falls back to the map's own number.
+func mission_holds(key: int, map_name: String) -> bool:
+	var sfx: String = map_name.get_extension()
+	if not sfx.is_valid_int():
+		return false
+	var num: int = int(sfx)
+	for n in mission_maps(key):
+		if int(n) == num:
+			return true
+	return false
+
 ## Bake MISSION.<start>.scn when it is missing, stale or not this
 ## installation's, and answer where it is ("" when it cannot be had).
 ## `shared` is the census's parsed-map cache: a caller doing several
@@ -1271,6 +1319,7 @@ func build_mission_scene(start: int, shared: Dictionary = {}) -> String:
 		misses += 1
 		print("[mission] %d: baking MISSION.%03d.scn — %s" % [start, start, stale])
 		p = MissionScene.save(start, bsa, shared)
+		_mission_maps.erase(start)        # the sidecar's map list is new
 	if mine:
 		bsa.close()
 	if p.is_empty() or not FileAccess.file_exists(p):
