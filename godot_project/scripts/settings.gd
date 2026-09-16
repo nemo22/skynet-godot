@@ -87,6 +87,10 @@ func apply_aa() -> void:
 var difficulty: int = MED
 var detail: int = HIGH
 var reverse_stereo: bool = false
+## Flips the mouse's vertical look axis — the DOS CONTROL CONFIGURATION
+## screen has no box for this (all 17 are spoken for), so it is the
+## port's own addition, off by default like the rest of them.
+var invert_y: bool = false
 var resolution: int = RES_NATIVE
 var window_mode: int = WIN_WINDOWED
 var window_size: int = 0                # index into available_sizes()
@@ -140,6 +144,7 @@ func _ready() -> void:
 		difficulty = clampi(int(cfg.get_value("game", "difficulty", MED)), LOW, HIGH)
 		detail = clampi(int(cfg.get_value("video", "detail", HIGH)), LOW, HIGH)
 		reverse_stereo = bool(cfg.get_value("audio", "reverse_stereo", false))
+		invert_y = bool(cfg.get_value("game", "invert_y", false))
 		resolution = clampi(int(cfg.get_value("video", "resolution", RES_NATIVE)), 0, RES_MAX)
 		msaa = clampi(int(cfg.get_value("video", "msaa", 0)), 0, MSAA_NAMES.size() - 1)
 		window_mode = clampi(int(cfg.get_value("video", "window_mode", WIN_WINDOWED)),
@@ -160,6 +165,7 @@ func save() -> void:
 	cfg.set_value("game", "difficulty", difficulty)
 	cfg.set_value("video", "detail", detail)
 	cfg.set_value("audio", "reverse_stereo", reverse_stereo)
+	cfg.set_value("game", "invert_y", invert_y)
 	cfg.set_value("video", "resolution", resolution)
 	cfg.set_value("video", "msaa", msaa)
 	cfg.set_value("video", "window_mode", window_mode)
@@ -271,6 +277,11 @@ func apply_resolution() -> void:
 func set_reverse_stereo(on: bool) -> void:
 	reverse_stereo = on
 	save()
+
+func set_invert_y(on: bool) -> void:
+	invert_y = on
+	save()
+	print("[settings] invert mouse Y %s" % ("ON" if invert_y else "OFF"))
 
 # --- what the difficulty actually does --------------------------------
 ## Multiplier on an enemy's rate of fire (LOW enemies shoot a quarter as

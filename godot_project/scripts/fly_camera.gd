@@ -708,12 +708,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			cycle_throwable(1)          # 0 cycles the thrown item
 	elif event is InputEventMouseMotion and _captured and vehicle == VEH_JEEP:
 		# In the jeep the mouse moves the gun crosshair; the keys drive.
+		var jy: float = event.relative.y * (-1.0 if Settings.invert_y else 1.0)
 		_aim_yaw = clampf(_aim_yaw - event.relative.x * mouse_sensitivity, -JEEP_AIM_YAW, JEEP_AIM_YAW)
-		_aim_pitch = clampf(_aim_pitch - event.relative.y * mouse_sensitivity, JEEP_AIM_PITCH_DOWN, JEEP_AIM_PITCH_UP)
+		_aim_pitch = clampf(_aim_pitch - jy * mouse_sensitivity, JEEP_AIM_PITCH_DOWN, JEEP_AIM_PITCH_UP)
 		_pitch = 0.0
 	elif event is InputEventMouseMotion and _captured:
+		var my: float = event.relative.y * (-1.0 if Settings.invert_y else 1.0)
 		_yaw -= event.relative.x * mouse_sensitivity
-		_pitch = clamp(_pitch - event.relative.y * mouse_sensitivity, -1.5, 1.5)
+		_pitch = clamp(_pitch - my * mouse_sensitivity, -1.5, 1.5)
 
 func _physics_process(delta: float) -> void:
 	# --- look ---------------------------------------------------------
