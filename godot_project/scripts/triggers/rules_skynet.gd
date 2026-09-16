@@ -430,7 +430,12 @@ static func mover_params(act: int) -> Dictionary:
 		"jump":
 			speed = 0.0                         # instant
 		"rot":
-			speed = ROT_SPEED
+			# …and a monitor's half turn is instant, like a jump: its
+			# handler has no rate in it at all (see above — the whole 1024
+			# goes on in one tick and the bit comes down on the way out).
+			# Only the slots with NO angle turn at a rate, and that is the
+			# continuous one.
+			speed = ROT_SPEED if limit == 0 else 0.0
 	return {"family": fam, "axis": clampi(p4, 0, 2), "p4": p4, "span": span,
 		"sign": sign, "speed": speed}
 

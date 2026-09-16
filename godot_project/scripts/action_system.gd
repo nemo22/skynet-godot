@@ -1356,6 +1356,30 @@ func _step_mover(off: int, e: MapFile.Entity, delta: float) -> void:
 			speed = float(m["p4"]) * SLIDE_SPEED_SCALE
 		"jump":
 			speed = 1.0e9                        # instant (0x137ad0)
+		"rot":
+			# A WALL MONITOR — and its handler is nine instructions long.
+			# The action table at 0x59e00 gives every act eight bytes (the
+			# handler pointer, then p4 and p6), and only 0x36/0x37/0x38
+			# point at v1.01 0x138577: it reads p4 and p6, does
+			# `add eax, edx / and eax, 0x7ff` on the entity's 11-bit Euler
+			# component — the WHOLE half turn in a single tick — and leaves
+			# through `and byte [esi+0x12], 0xfe`, clearing its own enable
+			# bit. There is no travel, no rate and no per-tick step
+			# anywhere in it.
+			#
+			# The panels are flat and two-sided with a different picture on
+			# each face, so that instant half turn IS the screen changing:
+			# switched on, switched off, a different readout. Turning it at
+			# the swing rate instead showed the player a polygon revolving
+			# on its axis for two seconds (playtest 2026-09-16: "flipuje sa,
+			# ako keby sa rotovala"). The 11-bit mask makes +1024
+			# self-inverse, which is what the direction flip below does.
+			#
+			# A rot slot with NO angle (0x39-0x3e) is a different handler
+			# and a real rotation — the radar dish, the globe, the sky dome
+			# — and it never reaches here (the continuous branch above
+			# returns first).
+			speed = 1.0e9
 		_:
 			speed = SWING_SPEED
 	var target: float = span if m["dir"] > 0.0 else 0.0
