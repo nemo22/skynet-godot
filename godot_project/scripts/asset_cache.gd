@@ -16,6 +16,7 @@
 ##   converted/fx/T358_000.res        FramePack of a sprite's cel frames
 ##   converted/shape/BIGDOOR.res      ConcavePolygonShape3D (shared)
 ##   converted/maps/MAP.210.level.scn the level itself, as a Godot scene
+##   converted/maps/MAP.210.triggers.json  its generated trigger graph
 ##
 ## Where the cache lives: `<game dir>/converted/` next to the gamedata
 ## directory in a release (SkynetPaths.converted_dir — a portable
@@ -50,6 +51,7 @@ const FramePack  := preload("res://scripts/loaders/frame_pack.gd")
 const MapScene   := preload("res://scripts/editor/map_scene.gd")
 const LevelScene := preload("res://scripts/level_scene.gd")
 const MissionScene := preload("res://scripts/mission_scene.gd")
+const TriggerGraph := preload("res://scripts/triggers/trigger_graph.gd")
 
 ## Bump whenever a loader changes its output.
 ## 10 (2026-09-14): animation frames share their materials, materials
@@ -69,8 +71,9 @@ const KINDS: PackedStringArray = ["tex", "mesh", "frames", "terrain", "sfx",
 ## Folders of KINDS that hold whole SCENES, saved and checked by their own
 ## code (level_scene.gd, mission_scene.gd) rather than served by fetch().
 const SCENE_KINDS: PackedStringArray = ["maps", "missions"]
-## File kinds a wipe deletes inside those folders.
-const WIPE_EXTS: PackedStringArray = ["res", "scn", "txt", "tmp"]
+## File kinds a wipe deletes inside those folders (json = the generated
+## trigger graphs, scripts/triggers/trigger_graph.gd).
+const WIPE_EXTS: PackedStringArray = ["res", "scn", "txt", "tmp", "json"]
 const VERSION_FILE := "VERSION"
 const VERSION_MARKER := "skynet-godot-cache"
 const IMPORT_STAMP := "IMPORTED"
@@ -1211,6 +1214,47 @@ func map_scene(map_name: String) -> String:
 	misses += 1
 	return MapScene.save(map_name)
 
+## The MAP file the level loader would read: the archive entry, or an
+## edited map in mods/maps/ (level_loader.gd load_level). The import pass
+## keeps the archive open; on its own this opens one.
+func map_bytes(map_name: String) -> PackedByteArray:
+	var bytes := PackedByteArray()
+	var bsa: BSAReader = _readers.get(SkynetPaths.map_archive)
+	if bsa != null:
+		bytes = bsa.read(map_name)
+	else:
+		var mine := BSAReader.new()
+		if mine.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant):
+			bytes = mine.read(map_name)
+			mine.close()
+	var mod: String = SkynetPaths.mods_dir() + ("/maps/%s" % map_name.to_upper())
+	if FileAccess.file_exists(mod):
+		var mb := SkynetPaths.read_bytes(mod)
+		if not mb.is_empty():
+			bytes = mb
+	return bytes
+
+## The generated trigger graph of a map (scripts/triggers/trigger_graph.gd)
+## — converted/maps/MAP.NNN.triggers.json. Built BEFORE the level scene of
+## the same map in import_all: the graph is the description of the map's
+## behaviour and the scene is one presentation of it, so the graph is
+## never the older of the two. Data only, keyed by the same source hash as
+## the scene beside it, plus the graph version and a fingerprint of the
+## rules — a rules change rebuilds all of them in about a second without
+## touching a single mesh.
+func triggers(map_name: String) -> String:
+	if not enabled:
+		return ""
+	var bytes := map_bytes(map_name)
+	if bytes.is_empty():
+		return ""
+	var why: String = TriggerGraph.stale_reason(map_name, bytes)
+	if why.is_empty():
+		hits += 1
+		return TriggerGraph.json_path(map_name)
+	misses += 1
+	return TriggerGraph.save(map_name, bytes)
+
 ## Bake the level scene for `map_name` (scripts/level_scene.gd) —
 ## terrain, static geometry with its collision and the occluders. Loading
 ## the map writes it as a side effect, so this just makes the loader run.
@@ -1350,6 +1394,43 @@ func mission_scene(start: int) -> PackedScene:
 	return ResourceLoader.load(p, "PackedScene",
 		ResourceLoader.CACHE_MODE_REUSE) as PackedScene
 
+## Only the trigger graphs (`--import-triggers`). A change to
+## scripts/triggers/rules_*.gd moves the rules fingerprint and makes every
+## graph stale while leaving every mesh, texture, shape and scene exactly
+## where it is — so this is the whole rebuild after one, and it takes
+## about a second for the campaign. Returns how many are ready.
+func import_triggers(progress: Callable = Callable()) -> int:
+	if not enabled or _importing:
+		return 0
+	_importing = true
+	_open_readers()
+	var names: PackedStringArray = PackedStringArray()
+	var maps: BSAReader = _readers.get(SkynetPaths.map_archive)
+	if maps != null:
+		for e in maps.entries():
+			var mn: String = e.name.to_upper()
+			# Every MAP. entry, as import_all takes them: the archive holds
+			# a few whose suffix is not a number, and one that is not a map
+			# at all (those parse to nothing and are skipped).
+			if mn.begins_with("MAP."):
+				names.append(mn)
+	names.sort()
+	var t0 := Time.get_ticks_msec()
+	var ready_now: int = 0
+	var done: int = 0
+	for mn in names:
+		if not triggers(mn).is_empty():
+			ready_now += 1
+		done += 1
+		if progress.is_valid():
+			progress.call(done, names.size(), mn)
+	_close_readers()
+	_importing = false
+	trust_save()
+	print("[assets] %d of %d trigger graphs in %.2f s (%d built, %d already current)"
+		% [ready_now, done, (Time.get_ticks_msec() - t0) / 1000.0, misses, hits])
+	return ready_now
+
 ## Only the mission scenes (`--import-missions`). A mission bake needs
 ## nothing of the conversion but the level scenes of its own zones, and it
 ## asks for those itself — so this is the short way round for a change to
@@ -1461,6 +1542,10 @@ func import_all(progress: Callable = Callable(), map_scenes: bool = false) -> in
 			if mn.begins_with("MAP."):
 				if map_scenes:
 					jobs.append([mn, func() -> void: map_scene(mn)])
+				# The trigger graph first: it is the DESCRIPTION of the
+				# map's behaviour and the level scene one presentation of
+				# it, so the graph is never the older of the two.
+				jobs.append([mn + " (triggers)", func() -> void: triggers(mn)])
 				jobs.append([mn + " (level)", func() -> void: level_scene(mn)])
 	# The missions come last: one holds INSTANCES of the level scenes above
 	# (scripts/mission_scene.gd), so every zone it stands on has to be baked

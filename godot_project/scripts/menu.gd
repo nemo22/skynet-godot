@@ -285,6 +285,14 @@ func _maybe_import() -> void:
 		var n: int = await Assets.import_missions()
 		get_tree().quit(0 if n == want else 1)
 		return
+	# `--import-triggers`: rebuild only the generated trigger graphs
+	# (converted/maps/MAP.NNN.triggers.json). A change to the trigger rules
+	# makes every one of them stale and no geometry at all, so this is the
+	# whole rebuild after one — seconds, not minutes.
+	if "--import-triggers" in args:
+		var graphs: int = Assets.import_triggers()
+		get_tree().quit(0 if graphs > 0 else 1)
+		return
 	# `--level-scene=MAP.210`: bake one level scene (the world in Godot
 	# format) and quit. The editor dock uses this.
 	for a in args:

@@ -3249,7 +3249,7 @@ func _switch_phase(target: String, marker_set: int) -> void:
 		# worked out from it when the new records are there.
 		var snap: Dictionary = _zone_snapshot(from)
 		_zone_state[from] = snap
-		carry = {"name": from, "map": lvl.map, "snap": snap}
+		carry = {"name": from, "map": _phase_source_map(from, lvl), "snap": snap}
 		_free_zone_level(entry)
 	elif _zone_state.has(from):
 		# A world not walked back into since a save was loaded: what the
@@ -3678,6 +3678,29 @@ static func _same_behaviour(sm: LevelLoader.MapFile.MapFile, s, dm: LevelLoader.
 	if not LevelLoader.ActionSystem.starts_chain(s):
 		return true
 	return _chain_signature(sm, s) == _chain_signature(dm, d)
+
+## The records a PHASE SWITCH carries from: `from` as the MAP file has
+## them, never the live copy the world has been played on.
+##
+## _same_behaviour compares the act byte and the state byte of the two
+## maps, and both have to be the PARSED ones or the comparison is about
+## the wrong thing: play retires a cue's act to 0xFF, swaps a water
+## valve's 0xd9/0xda, cuts a finished path's link and flips a state bit on
+## everything the player switched — exactly the entities whose state the
+## carry exists to bring across. The per-map runtime always re-parsed
+## (_import_variant_state), and so does the phase switch after a save;
+## only the live edge handed over the level's own mutated records, so an
+## entity that had been used on MAP.210 no longer looked like itself on
+## MAP.216 and was "kept fresh" instead of carried — and a retired hint
+## could stand where the variant has an objective. (Step 0 of the trigger
+## graph plan; `lvl` is the fallback for a map that cannot be re-read,
+## which is better than carrying nothing.)
+func _phase_source_map(from: String, lvl) -> LevelLoader.MapFile.MapFile:
+	var parsed: LevelLoader.MapFile.MapFile = _parse_map(from)
+	if parsed != null:
+		return parsed
+	push_warning("[mission] %s cannot be read again — the phase carries its live records" % from)
+	return lvl.map if lvl != null else null
 
 ## `map_name` parsed fresh, the way LevelLoader reads it (the archive entry,
 ## or an edited map in mods/maps/), or null.

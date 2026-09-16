@@ -22,6 +22,10 @@ func _ready() -> void:
 		preload("res://tools/border_census.gd").run(String(cli["borders"]))
 	if cli.has("variants"):
 		preload("res://tools/variant_census.gd").run(String(cli["variants"]))
+	if cli.has("triggers"):
+		# --triggers=215 (every node of the map) or --triggers=all (one
+		# line per map plus its warnings, and the totals).
+		preload("res://scripts/triggers/trigger_dump.gd").run(String(cli["triggers"]))
 	if cli.has("mission"):
 		preload("res://tools/mission_census.gd").run(String(cli["mission"]), out_dir)
 	if cli.has("modelshot"):

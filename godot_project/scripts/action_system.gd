@@ -55,161 +55,57 @@ signal water_level_requested(value: float, absolute: bool)
 
 const MapFile := preload("res://scripts/loaders/map_file.gd")
 const PickupData := preload("res://scripts/pickup_data.gd")
+## What each action id MEANS now lives on its own, next to the generated
+## trigger graph that reads the same rows (scripts/triggers/rules_skynet.gd,
+## M3 step 1). The tables below are those rows by reference, so every
+## caller of ActionSystem.MOVER_TABLE / SOUND_ONESHOT / WATER_ACTS / the
+## ACT_* bands still finds them here and nothing about play changes.
+## Future Shock runs SkyNET's table at run time as it always has (its own
+## rules_shock.gd is used by the graph alone, and is informational).
+const Rules := preload("res://scripts/triggers/rules_skynet.gd")
 
-## Mover ids → [family, p4, p6] from the 0x59b00 table's per-slot
-## config dword (+4 low u16, +6 high u16). Families by handler body
-## (disassembled 2026-08-30 with tools/x86dis.py):
-##   "slide"   0x137a28 (0x3f-0x7e): translate along DOS axis p4 (0=X,
-##             1=Y, 2=Z) by p6 units at 70 u/s (140 when p6 >= 0x800);
-##             the act parity flips at the limit → next trigger reverses.
-##             BIGDOOR 0x41/0x42 = the two gate leaves sliding apart.
-##   "swing"   0x137c6b (0x8d-92, 0xa5-ac, 0xc1-c6): rotate about axis
-##             p4 by p6 11-bit units at 512/s (90°/s). 210DOOR0/1.
-##   "jump"    0x137ad0 (0x30-35): instant translate by SIGNED p6.
-##   "slide5f" 0x137d41: p4 speed base, p6<<4 travel (as before).
-##   "rot"     turn about one axis: with an angle (0x36-0x38, 1024 =
-##             180 deg) a half turn that stops and reverses — the
-##             wall monitors are flat two-sided panels and the turn
-##             IS the picture change ("tam mala zbehnúť animácia
-##             alebo sa vymeniť obraz"); with no angle (0x39-0x3e)
-##             a continuous rotator (radar dish, globe, sky dome).
-##   0xbd-0xc0 (0x137b33/0x137bce, disassembled 2026-09-06): diagonal
-##             slides (x and z by the same step, the second pair x
-##             negated) — but their table limit word is 0, so the step
-##             is cancelled on the first tick: they flip their parity,
-##             clear their bit and never move. A zero slide here.
-const MOVER_TABLE: Dictionary = {
-	0x30: ["jump", 0, 512], 0x31: ["jump", 0, 65024],
-	0x32: ["jump", 1, 512], 0x33: ["jump", 1, 65024],
-	0x34: ["jump", 2, 512], 0x35: ["jump", 2, 65024],
-	0x36: ["rot", 0, 1024], 0x37: ["rot", 1, 1024], 0x38: ["rot", 2, 1024],
-	0x39: ["rot", 0, 0], 0x3a: ["rot", 0, 0], 0x3b: ["rot", 1, 0],
-	0x3c: ["rot", 1, 0], 0x3d: ["rot", 2, 0], 0x3e: ["rot", 2, 0],
-	0x3f: ["slide", 0, 64], 0x40: ["slide", 0, 64], 0x41: ["slide", 0, 128],
-	0x42: ["slide", 0, 128], 0x43: ["slide", 0, 256], 0x44: ["slide", 0, 256],
-	0x45: ["slide", 0, 512], 0x46: ["slide", 0, 512], 0x59: ["slide", 1, 64],
-	0x5a: ["slide", 1, 64], 0x5b: ["slide", 1, 128], 0x5c: ["slide", 1, 128],
-	0x5d: ["slide", 1, 256], 0x5e: ["slide", 1, 256],
-	0x5f: ["slide5f", 316, 128], 0x61: ["slide", 1, 512],
-	0x62: ["slide", 1, 512], 0x63: ["slide", 1, 2048],
-	0x64: ["slide", 1, 2048], 0x65: ["slide", 1, 2560],
-	0x66: ["slide", 1, 2560], 0x67: ["slide", 1, 24], 0x68: ["slide", 1, 24],
-	0x69: ["slide", 1, 768], 0x6a: ["slide", 1, 768], 0x6b: ["slide", 1, 480],
-	0x6c: ["slide", 1, 480], 0x6d: ["slide", 1, 378], 0x6e: ["slide", 1, 378],
-	0x6f: ["slide", 1, 1024], 0x70: ["slide", 1, 1024],
-	0x71: ["slide", 1, 1520], 0x72: ["slide", 1, 1520],
-	0x73: ["slide", 2, 64], 0x74: ["slide", 2, 64], 0x75: ["slide", 2, 128],
-	0x76: ["slide", 2, 128], 0x77: ["slide", 2, 256], 0x78: ["slide", 2, 256],
-	0x79: ["slide", 2, 512], 0x7a: ["slide", 2, 512], 0x7b: ["slide", 2, 640],
-	0x7c: ["slide", 2, 640], 0x7d: ["slide", 2, 384], 0x7e: ["slide", 2, 384],
-	0x8d: ["swing", 0, 256], 0x8e: ["swing", 0, 256], 0x8f: ["swing", 0, 512],
-	0x90: ["swing", 0, 512], 0x91: ["swing", 0, 1024],
-	0x92: ["swing", 0, 1024],
-	# 0xa5/0xa6 belong to the SLIDE handler (0x138287 in v1.01, p4=1
-	# p6=688), not to the rotator: they are the LIFT — MAP.233's 231EL
-	# rises 688 units to the Cyberdyne roof. The port had them swinging,
-	# so the elevator only turned on the spot ("ten výťah sa iba otáča",
-	# playtest 2026-09-12).
-	0xa5: ["slide", 1, 688], 0xa6: ["slide", 1, 688],
-	0xa7: ["swing", 1, 256], 0xa8: ["swing", 1, 256],
-	0xa9: ["swing", 1, 512], 0xaa: ["swing", 1, 512],
-	0xab: ["swing", 1, 1024], 0xac: ["swing", 1, 1024],
-	0xbd: ["slide", 0, 0], 0xbe: ["slide", 0, 0],
-	0xbf: ["slide", 0, 0], 0xc0: ["slide", 0, 0],
-	0xc1: ["swing", 2, 256], 0xc2: ["swing", 2, 256],
-	0xc3: ["swing", 2, 512], 0xc4: ["swing", 2, 512],
-	0xc5: ["swing", 2, 1024], 0xc6: ["swing", 2, 1024],
-}
+## Every table and band below is scripts/triggers/rules_skynet.gd's row
+## set, by reference: the tables moved there with their notes (M3 step 1)
+## and nothing about play changed. Bodies of the handlers, the mover
+## families and the provenance of each id are documented there.
+const MOVER_TABLE: Dictionary = Rules.MOVER_TABLE
+const SOUND_ONESHOT: Dictionary = Rules.SOUND_ONESHOT
+const WATER_ACTS: Dictionary = Rules.WATER_ACTS
 
-const ACT_DESTRUCT_A: int = 0x18
-const ACT_DESTRUCT_B: int = 0x19
-## Demolition (handler 0x1378bf, decoded 2026-09-05): when a chain
-## enables the entity, the handler sets its HP to 1 if it has none and
-## calls ObjHit with HP + 1 — the object dies through the normal
-## destruction path (blast, drop, sound). Stacked crates go with the
-## one shot (MAP.213), the PC and chair with their desk (MAP.461), the
-## fence ring with its NODE00 gate (MAP.280), the bridge rails with the
-## button (MAP.260). 243 entities in 56 maps.
-const ACT_DEMOLISH: int = 0x1B
-## Light handlers (0x137700.., disassembled 2026-09-06) — chains drive
-## the variant-2 map lights: 0x01 toggles the light (XOR of the enable
-## word's sign bit, one-shot), 0x02 flickers it while its bit is set
-## (a random toggle about every other tick), 0x03 strobes (toggle every
-## tick), 0x0d-0x0f fade UP by (act-12)/4 of the intensity per trigger,
-## 0x10-0x12 fade DOWN by the same. 0x0a/0x0c are `ret` (nothing).
-const ACT_LIGHT_TOGGLE: int = 0x01
-const ACT_LIGHT_FLICKER: int = 0x02
-const ACT_LIGHT_STROBE: int = 0x03
-const ACT_LIGHT_FADE_UP_FIRST: int = 0x0D
-const ACT_LIGHT_FADE_DOWN_LAST: int = 0x12
+const ACT_DESTRUCT_A: int = Rules.ACT_DESTRUCT_A
+const ACT_DESTRUCT_B: int = Rules.ACT_DESTRUCT_B
+const ACT_DEMOLISH: int = Rules.ACT_DEMOLISH
+const ACT_LIGHT_TOGGLE: int = Rules.ACT_LIGHT_TOGGLE
+const ACT_LIGHT_FLICKER: int = Rules.ACT_LIGHT_FLICKER
+const ACT_LIGHT_STROBE: int = Rules.ACT_LIGHT_STROBE
+const ACT_LIGHT_FADE_UP_FIRST: int = Rules.ACT_LIGHT_FADE_UP_FIRST
+const ACT_LIGHT_FADE_DOWN_LAST: int = Rules.ACT_LIGHT_FADE_DOWN_LAST
 const LIGHT_FX_TICK: float = 1.0 / 20.0
-const ACT_PROX_GATE: int = 0xEF     # 60-unit player-proximity gate
-const ACT_PROX_CHAIN_A: int = 0xF1  # radius 256 (table +4)
-const ACT_PROX_CHAIN_B: int = 0xF2  # radius 1024 (table +4)
-const ACT_TELEPORT: int = 0xF0
-const ACT_VOICE: int = 0xED         # voice line (VOICE.PRS id at sub+2, 0x137dfd)
-## Message / mission-progress acts, split exactly as the DOS handler
-## table does (0x59b00). Only the OBJECTIVE band moves the counter that
-## ends a mission — treating the hints as objectives (the port did until
-## 2026-09-03) makes missions end at the first flavour line.
-const ACT_HINT_FIRST: int = 0x1C    # [G1].. handler 0x13779d, message only
-const ACT_HINT_LAST: int = 0x25
-const ACT_OBJECTIVE_FIRST: int = 0x26   # [M1].. handler 0x1377d0, counter--
-const ACT_FAIL: int = 0x2B          # handler 0x13782d: MISSION FAILED now
-## Countdown relay (v1.01 handler 0x138038, disassembled 2026-09-11):
-## while enabled, once the objective counter is above zero and equal to
-## the table word (1 for 0x2C), flip the chain from itself, then off.
-const ACT_RELAY: int = 0x2C
-const RELAY_AT: int = 1
-## Spawn point (v1.01 0x129642 → 0x12960b): reveal the robot
-## SpawnEnemiesInit (0x129500) built hidden at this sprite.
-const ACT_SPAWN: int = 0xF3
-## Water movers (0xd6-0xda, handler 0x121160): [DOS delta in units, the
-## act this one turns into]. Delta 0 = the level goes to the entity's own
-## Y. DOS Y grows downward, so a NEGATIVE delta raises the surface — the
-## port flips the sign when it emits the target. 0xd9/0xda swap their own
-## act byte, so they raise and lower in turn (MAP.254's valve maze).
-const WATER_ACTS: Dictionary = {
-	0xd6: [0, 0], 0xd7: [-170, 0], 0xd8: [140, 0],
-	0xd9: [-112, 0xda], 0xda: [112, 0xd9],
-}
+const ACT_PROX_GATE: int = Rules.ACT_PROX_GATE      # 60-unit player-proximity gate
+const ACT_PROX_CHAIN_A: int = Rules.ACT_PROX_CHAIN_A  # radius 256 (table +4)
+const ACT_PROX_CHAIN_B: int = Rules.ACT_PROX_CHAIN_B  # radius 1024 (table +4)
+const ACT_TELEPORT: int = Rules.ACT_TELEPORT
+const ACT_VOICE: int = Rules.ACT_VOICE
+const ACT_HINT_FIRST: int = Rules.ACT_HINT_FIRST
+const ACT_HINT_LAST: int = Rules.ACT_HINT_LAST
+const ACT_OBJECTIVE_FIRST: int = Rules.ACT_OBJECTIVE_FIRST
+const ACT_FAIL: int = Rules.ACT_FAIL
+const ACT_RELAY: int = Rules.ACT_RELAY
+const RELAY_AT: int = Rules.RELAY_AT
+const ACT_SPAWN: int = Rules.ACT_SPAWN
 var _water_nodes: Array = []      # entities with a water act
 
-## One-shot play-sound-and-disable nodes (handler 0x137dbd) — chains
-## route through these to give doors/gates their sounds. The table's
-## per-slot +4 word is the sound id (0..125, the 0x4ff00 sound table).
-## The id→.RAW filename mapping is phase 4 (sound-table extraction);
-## until then these nodes just self-disable so chains don't dangle.
-const SOUND_ONESHOT: Dictionary = {
-	0xdb: 40, 0xdc: 41, 0xdd: 42, 0xde: 43, 0xdf: 44, 0xe0: 45,
-	0xe1: 46, 0xe2: 47, 0xe3: 77, 0xe4: 93, 0xe5: 95, 0xe6: 109,
-	0xe7: 110, 0xe8: 111, 0xe9: 112, 0xea: 113, 0xeb: 114,
-}
-
-## Movement tuning. The DOS handlers step 0x46/0x8c angle units per
-## tick (~35 Hz) through a <<4 fixed-point accumulator — ≈153/306
-## units/s (27°/54° per second). Slide analogously from its p4 base.
-## TODO: calibrate against DOSBox once doors are visibly moving.
-const SWING_SPEED: float = 512.0         # 11-bit units/s (0x137c6b: 0x200/s)
-const SLIDE_SPEED_SLOW: float = 70.0     # units/s (0x137a28: 0x46/s)
-const SLIDE_SPEED_FAST: float = 140.0    # units/s when p6 >= 0x800
-const ROT_SPEED: float = 153.0           # continuous rotators
-const SLIDE_SPEED_SCALE: float = 2.2     # 0x5f slide speed = p4 * this (units/s)
-const PROX_GATE_RADIUS: float = 60.0     # 0xEF (Skynet.exe 0x137e2e)
-## Use key reach for wall buttons / levers the crosshair is not on.
-const USE_REACH: float = 130.0
-## Added to the DOS 60-unit gate radius: the DOS player stands where the
-## port's capsule cannot (a gate mesh's origin is inside its collider), and
-## MAP data places gates 32..79 units from the doorway sprite they guard.
-const PLAYER_RADIUS: float = 26.0
-## A 0xF0 doorway sprite is also armed by the player touching it directly
-## (handler 0x137881: "player touch arms state bit 0"); interior return
-## exits rely on this as much as on their chained 0xEF gate.
-const TELEPORT_TOUCH_RADIUS: float = 90.0
-## Vertical window for every proximity test — stacked interior floors put
-## gates directly above/below each other.
-const PROX_VERTICAL_WINDOW: float = 512.0
-const DESTRUCT_DAMAGE_PER_STAGE: float = 16.0  # handler 0x120433 stage step
+const SWING_SPEED: float = Rules.SWING_SPEED
+const SLIDE_SPEED_SLOW: float = Rules.SLIDE_SPEED_SLOW
+const SLIDE_SPEED_FAST: float = Rules.SLIDE_SPEED_FAST
+const ROT_SPEED: float = Rules.ROT_SPEED
+const SLIDE_SPEED_SCALE: float = Rules.SLIDE_SPEED_SCALE
+const PROX_GATE_RADIUS: float = Rules.PROX_GATE_RADIUS
+const USE_REACH: float = Rules.USE_REACH
+const PLAYER_RADIUS: float = Rules.PLAYER_RADIUS
+const TELEPORT_TOUCH_RADIUS: float = Rules.TELEPORT_TOUCH_RADIUS
+const PROX_VERTICAL_WINDOW: float = Rules.PROX_VERTICAL_WINDOW
+const DESTRUCT_DAMAGE_PER_STAGE: float = Rules.DESTRUCT_DAMAGE_PER_STAGE
 
 ## Where this level's zone stands in the world (LevelLoader.Level.origin).
 ## Every record here holds DOS coordinates, i.e. ZONE-LOCAL Godot ones —

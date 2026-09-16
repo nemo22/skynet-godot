@@ -306,6 +306,54 @@ func _check_carried(spoil: Dictionary, what: String) -> void:
 			"%s: the object hit before keeps its hit points (%s, carried %.0f, the map's own %.0f)"
 			% [what, str(hp.get(off, "?")), float(spoil["hp"]), own])
 
+## Step 0 of the trigger-graph plan, one half: MAP.210's jeep is the hint
+## [G1] where MAP.217's is the objective [M3], on the same entity in the
+## same place. Fire the hint here — the eight 0xEF gates round the jeep
+## answer the use key together, as they do in play — so the phase edges
+## that follow have a RETIRED cue (act 0xFF) to carry, which is what used
+## to land on MAP.217's objective and cost the mission its ending.
+func _fire_jeep_hint() -> void:
+	var lvl = _main.get("_current_level")
+	var jeep = _record_named("HUMMERTK")
+	if lvl == null or lvl.action == null or jeep == null:
+		print("[mission-e2e] note: MAP.210's jeep is not here to fire")
+		return
+	var left: int = int(_main.get("_objectives_left"))
+	_check(jeep.link_act_type == 0x1C, "MAP.210's jeep is the hint [G1] (act %02x)" % jeep.link_act_type)
+	var at := Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z)) + (lvl.origin as Vector3)
+	lvl.action.press_use()
+	lvl.action.tick(0.016, at, at)
+	await get_tree().physics_frame
+	_check(jeep.link_act_type == 0xFF and int(_main.get("_objectives_left")) == left,
+		"the gates fire it: retired on MAP.210, and the objective counter has not moved (%d)" % left)
+
+## Step 0's other half, asked of the code rather than of the world: the
+## records a phase switch carries FROM are the map's own, as the file has
+## them. The live copy the runtime plays on has retired acts, swapped
+## water valves, cut path links and flipped state bits in it, and
+## _same_behaviour compares exactly those two bytes.
+func _check_phase_source_map() -> void:
+	var live = _main.call("_parse_map", "MAP.210")
+	if live == null:
+		print("[mission-e2e] note: MAP.210 cannot be read — the carry source check is skipped")
+		return
+	var jeep_off: int = -1
+	for e in live.entities:
+		if (e.flags & 3) == 1 and MapFile.entity_name(live, e) == "HUMMERTK":
+			jeep_off = e.file_off
+			break
+	if jeep_off < 0:
+		print("[mission-e2e] note: MAP.210 has no jeep record to check")
+		return
+	# Spoil the copy the way play spoils a level's records…
+	live.entities_by_off[jeep_off].link_act_type = 0xFF
+	live.entities_by_off[jeep_off].state_byte |= 1
+	# …and ask for the source a phase switch would carry from.
+	var src = _main.call("_phase_source_map", "MAP.210", null)
+	var rec = src.entities_by_off.get(jeep_off) if src != null else null
+	_check(rec != null and int(rec.link_act_type) == 0x1C and (int(rec.state_byte) & 1) == 0,
+		"a phase carries MAP.210's records as the MAP file has them, not as play left them")
+
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	# THE DEFAULT is what this suite plays (step 8): Settings.mission_scenes
@@ -367,6 +415,7 @@ func _run() -> void:
 	var left_before: int = int(_main.get("_objectives_left"))
 	_check(key_before == 210 and left_before > 0,
 		"mission key %d, %d objectives left" % [key_before, left_before])
+	_check_phase_source_map()
 
 	# The baked doorway table says where the hatch leads.
 	var hatch: Node3D = _portal("Portal_MAP_210_0cabb")
@@ -533,6 +582,7 @@ func _run() -> void:
 		spoil_216 = await _spoil_shared("MAP.216")
 		_check(not String(spoil_216["dent"]).is_empty(),
 			"MAP.210 has a damaged object MAP.216 shares (%s)" % spoil_216["dent"])
+		await _fire_jeep_hint()
 	if ok:
 		# The cargo box of the transport: the DOS gate is at eye height
 		# behind the boarded door (playtest 2026-09-15). Placed exactly as
@@ -607,6 +657,12 @@ func _run() -> void:
 		var jeep217 = _record_named("HUMMERTK")
 		_check(jeep217 != null and jeep217.link_act_type == 0x28,
 			"the jeep on MAP.217 carries the [M3] objective act 28")
+		# Step 0: the hint fired two phases back on MAP.210 retired THAT
+		# map's copy of this entity. Nothing of it may stand here.
+		var cue217: Node = _main.get("_current_level").behaviour.node(jeep217.file_off) \
+			if jeep217 != null and _main.get("_current_level").behaviour != null else null
+		_check(cue217 != null and not bool(cue217.get("spent")),
+			"MAP.217's jeep arrives live: MAP.210's retired hint did not cross the phases")
 		if not spoil_217.is_empty():
 			_check_carried(spoil_217, "MAP.216 → MAP.217")
 		if jeep217 != null:
