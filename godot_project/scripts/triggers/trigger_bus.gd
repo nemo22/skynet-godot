@@ -28,6 +28,9 @@
 ##   fail       {}                 act 0x2B
 ##   voice      {voice}            VOICE.PRS line id
 ##   sound      {sound}            one-shot sound id (0x4ff00 table)
+##   loop       {loop}             an 0xEE ambient loop started (it runs
+##                                 while its bit is up, so it is announced
+##                                 on the rise and not again)
 ##   exit       {map, set, back}   0xF0 map change
 ##   move       {family, axis, travel, speed}
 ##                                 a mover set going, and the travel this

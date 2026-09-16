@@ -1991,7 +1991,7 @@ func _on_use_pressed(pos: Vector3) -> void:
 		var a = _current_level.action
 		a.press_use()                       # (also for scripted presses)
 		if not a.activate_teleport(pos, _eye_position()):
-			a.use_nearby(pos)
+			a.use_nearby(pos, _eye_position())
 
 ## --- Radiation (DOS RadInit 0x13b149 / dose 0x13b1e0) ----------------
 ## Marker type 4 is a RADIATION SOURCE, not an extraction zone: the u16

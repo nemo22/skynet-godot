@@ -138,9 +138,6 @@ var _teleport_pos: PackedVector3Array = PackedVector3Array()
 var _parsed_act: Dictionary = {}
 var _parsed_link: Dictionary = {}
 var _light_ents: Array = []       # variant-2 lights with a light act
-## Message/objective entities no chain points at: the player's own to
-## trigger with the use key (see setup).
-var _use_msgs: Array = []
 ## file_off → OmniLight3D placed by main (_place_map_lights); a light
 ## act flips the record and this node follows.
 var map_lights: Dictionary = {}
@@ -182,6 +179,9 @@ var _prox_latched: Dictionary = {} # file_off → true while player inside
 ## sweeps by phase, so it remembers the arming instead.
 var _armed: Dictionary = {}       # file_off → armed earlier this tick
 var _touch_latched: Dictionary = {} # teleport file_off → player touching
+## Gates whose chain the key has already walked on the way to a doorway —
+## one walk per gate per level instance (see _use_exit).
+var _exit_walked: Dictionary = {}
 var _teleport_fired: bool = false   # one map change per level instance
 ## The use key's first frame. DOS 0x137e2e opens with `cmp [0x2c7f], 1`
 ## — ACTIVATE went down this very frame — and only then flips every live
@@ -253,19 +253,6 @@ func setup(map: MapFile.MapFile) -> void:
 			_teleport_pos.append(_dos_pos(e))
 		elif (e.flags & 3) == 2 and is_light_act(act):
 			_light_ents.append(e)
-		elif act >= ACT_HINT_FIRST and act <= ACT_FAIL:
-			# A HINT that no chain points at is the player's to fire with
-			# the use key (MAP.280's doorway sprite). Objectives and the
-			# fail act are NOT: they keep to their chains. On 2026-09-07 the
-			# rule covered objectives too, because MAP.252's 24PCTURE looked
-			# like mission 5's only one — it is not. Mission 5's [M1]
-			# ("Made it!") is the jeep, HUMMERTK on MAP.250, fired by the
-			# eight 0xEF gates around it; the picture in the cabin was a
-			# shortcut that finished the mission the moment the player
-			# looked at the wall he starts beside (the --solve run proved
-			# it: "use 24PCTURE", PASS after one second).
-			if act < ACT_OBJECTIVE_FIRST and not _is_chain_target(map, e):
-				_use_msgs.append(e)
 		elif act == ACT_RELAY:
 			_relays.append(e)
 		elif WATER_ACTS.has(act):
@@ -308,12 +295,18 @@ static func swing_basis(euler: Vector3, axis_i: int, delta: float) -> Basis:
 		_: e.z += delta
 	return euler_basis(e.x, e.y, e.z)
 
-## Does any other entity's chain point at `e`?
-static func _is_chain_target(map: MapFile.MapFile, e: MapFile.Entity) -> bool:
-	for o in map.entities:
-		if o != e and o.link_next > 0 and o.link_next == e.file_off:
-			return true
-	return false
+## The one rule of the port's own the owner kept (2026-09-15): a NAMED
+## variant-1 mesh whose state byte carries bit 3 is a wall button, and it
+## answers the use key instead of the player walking past it. DOS knows no
+## such thing — its 0xEF/0xF1/0xF2 handlers all measure the player and
+## fire — but a panel you brush past and set off by accident reads as a
+## bug, so these come off the proximity sweep (tick) and go on the key
+## (use_nearby, or the crosshair ray through an ActionTarget).
+## (An UNNAMED variant-1 record with the same state byte is an invisible
+## floor trigger — MAP.231's elevator call points sit at the back wall of
+## the cab, state 0x09, no mesh at all — and stays on the sweep.)
+static func is_wall_button(e: MapFile.Entity) -> bool:
+	return (e.flags & 3) == 1 and (e.state_byte & 8) != 0 and e.name_index >= 0
 
 static func is_light_act(act: int) -> bool:
 	return act == ACT_LIGHT_TOGGLE or act == ACT_LIGHT_FLICKER or act == ACT_LIGHT_STROBE \
@@ -491,20 +484,53 @@ func on_player_hit(file_off: int, damage: float) -> bool:
 ## shoot-or-use switches while leaving HP-gated objects (generators,
 ## bit2) to real damage.
 ##
-## zone-local ↔ world: `player_pos` is a WORLD position. Nothing here
-## measures with it yet — the caller has already picked the entity — so
-## there is nothing to translate; it stays world for whatever does.
-func on_player_activate(file_off: int, player_pos: Vector3 = Vector3.INF) -> bool:
+## zone-local ↔ world: `player_pos` (the feet) and `eye` are WORLD
+## positions and are taken into the records' zone-local space for the
+## measure below; `player_pos` goes on unchanged to whatever needs it.
+## Vector3.INF for either means "no measure" — the caller has picked both
+## the entity and the place, and says so (TriggerEquiv.activate, the
+## solver).
+func on_player_activate(file_off: int, player_pos: Vector3 = Vector3.INF,
+		eye: Vector3 = Vector3.INF) -> bool:
 	var e: MapFile.Entity = _map.entities_by_off.get(file_off) \
 		if _map != null else null
 	if e == null or _spent.has(file_off):
 		return false
+	# A PROXIMITY record is measured wherever the key reaches it. Its DOS
+	# handler runs for a player inside the radius the slot carries and for
+	# no one else (0x1386a0 for the 0xEF, 0x138223 for the 0xF1/0xF2), and
+	# that holds whichever way the port's key arrived — the proximity sweep
+	# in tick(), use_nearby, or the crosshair ray. Without it the key
+	# operated a gate from anywhere the ray could see it, 600 units away
+	# (M3 step 4: port_use_reach).
+	#
+	# A WALL BUTTON is the exception, and it is the whole of the owner's
+	# kept rule: it answers the key INSTEAD of proximity, so proximity is
+	# not its measure — what limits it is the crosshair that found it.
+	# MAP.210's base doors are opened by a BUTTON01 three hundred units up
+	# a tower wall, which no proximity radius in the original reaches.
+	# Records that are not proximity types keep the port's aim-and-press
+	# rule as it was: the ray is all they have ever had.
+	if player_pos.is_finite() and not is_wall_button(e) and (gate_runs(e)
+			or e.link_act_type == ACT_PROX_CHAIN_A
+			or e.link_act_type == ACT_PROX_CHAIN_B):
+		var from: Vector3 = (eye if eye.is_finite() else player_pos) - zone_origin
+		if not _within(_dos_pos(e), from, _prox_radius(e)):
+			return false
 	# Levers, buttons and proximity gates (0xEF/0xF1/0xF2) are use-key
 	# operated in DOS — the tower lever opens the base gate — even
 	# though their state byte carries no "act on hit" bit.
+	#
+	# A CUE no chain points at used to be in this list as well: a hint the
+	# player could read by pressing the key at it (MAP.280's doorway
+	# sprite), narrowed on 2026-09-07 to keep objectives out of it after
+	# MAP.252's picture finished mission 5 from the cabin wall. The owner
+	# retired the whole rule on 2026-09-15 — DOS has no use-key path to a
+	# cue at all, and his own DOS run of mission 5 reaches neither the
+	# picture nor the hint beside it. They are unreachable there too.
 	var usable: bool = (e.state_byte & 2) != 0 \
 		or gate_runs(e) or e.link_act_type == ACT_PROX_CHAIN_A \
-		or e.link_act_type == ACT_PROX_CHAIN_B or _use_msgs.has(e)
+		or e.link_act_type == ACT_PROX_CHAIN_B
 	if not usable:
 		return false
 	# 0xF1/0xF2 are one-shot in DOS (they clear their own bit 0 when they
@@ -545,14 +571,40 @@ func _chain_teleport(start: MapFile.Entity) -> MapFile.Entity:
 		cur = _map.entities_by_off.get(cur.link_next)
 	return null
 
-## Use-key on an exit gate: flip the chain once so the exit (and the
-## door sound on the way) arms, then fire it.
+## Use-key on a gate whose chain ends in a doorway.
+##
+## DOS has one path here and it is the ordinary one. The 0xEF handler
+## calls ObjFlipLink (v1.01 0x139caa); the walk toggles bit 0 of every
+## node on the way — the door sound, the leaves, the doorway itself — and
+## the 0xF0 handler (v1.01 0x138081) runs on the next dispatch, writes the
+## target map and marker set, asks for the map change (`or [0x30a50],
+## 0x20`) and clears its OWN bit 0 inline (`and byte [esi+edi+5], 0xfe`).
+## It never retires its act and holds no latch of its own; what makes it
+## once per level is the frame loop, which tests that request before the
+## next entity sweep and tears the level down.
+##
+## Two things the port has and DOS has not meet here. TOUCHING a doorway
+## arms it (see tick), so the exit's bit can be up before the key is
+## pressed and the walk would take it back DOWN — the exit would never
+## fire. And the port's map change is a fade, so the level lives on with
+## the player still standing in the gate. So: walk the chain ONCE per
+## level instance, which is DOS's single walk and everything on it (the
+## door sound above all), then leave the exit enabled as that walk leaves
+## it and take it.
+##
+## Guarding the walk on the EXIT's own bit was what lost the chain:
+## standing in the doorway had already armed it, so the key went straight
+## through in silence (M3 step 4 read that as exit_chain_skipped, 148 of
+## its failures). The guard is this gate's own — not _prox_latched, which
+## a spawn inside the gate pre-sets (arm_proximity) and which would then
+## swallow the very first walk in the truck interiors.
 func _use_exit(gate: MapFile.Entity, t: MapFile.Entity) -> bool:
 	if _teleport_fired:
 		return false
-	if (t.state_byte & 1) == 0:
+	if not _exit_walked.has(gate.file_off):
+		_exit_walked[gate.file_off] = true
 		_flip_link(gate)
-		_prox_latched[gate.file_off] = true
+	t.state_byte |= 1
 	return _fire_teleport(t)
 
 func _fire_teleport(t: MapFile.Entity) -> bool:
@@ -722,11 +774,8 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 		# player (handlers 0x137e2e and 0x1379c4); the radii differ.
 		# MAP.220's mission objective hangs off an 0xF2 button 1024 units
 		# from the road, which is how that jeep mission ends.
-		if (e.flags & 3) == 1 and (e.state_byte & 8) != 0 and e.name_index >= 0:
-			continue                         # wall button: use key only
-		# (An UNNAMED variant-1 gate with the same state byte is an
-		# invisible floor trigger — MAP.231's elevator call points sit
-		# at the back wall of the cab, state 0x09, no mesh at all.)
+		if is_wall_button(e):
+			continue                         # the key or the crosshair, not the walk
 		if _spent.has(e.file_off):
 			continue
 		var epos: Vector3 = _prox_pos[pi]
@@ -852,13 +901,24 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 	if not _armed.is_empty():
 		_armed.clear()
 
-## Use key: fire an armed exit the player stands in. Returns true when
+## Use key: take the doorway the player is standing at. Returns true when
 ## a map change was requested (one per level instance). `eye`: where the
-## 0xEF gate below measures from — the camera, as DOS 0x137e2e does; the
+## 0xEF gate below measures from — the camera, as DOS 0x1386a0 does; the
 ## feet when not given (tests). MAP.210's cargo box is sealed and boarded
 ## with the key at its rear wall: the gate inside is 91-97 u from the feet
 ## there, over the 86 u reach, but 23-42 u from the eye (playtest
-## 2026-09-15: "nedá sa ísť do nákladného auta").
+## 2026-09-15: "the cargo truck cannot be entered").
+##
+## THE GATE FIRST. DOS knows one way through a door — an 0xEF gate whose
+## chain ends in the 0xF0 — and it plays that chain on the way. A doorway
+## the player merely TOUCHED is the port's own fallback (see tick), and
+## taking it first is what silenced the gates: the exit was already armed,
+## so the key went through without the door ever sounding.
+##
+## Both reaches are the handlers' own now. The gate is the 0xEF measure,
+## 60 units from the eye plus the 26-unit pad the port's capsule needs;
+## the doorway is the touch radius that armed it, not that radius plus a
+## gate's on top of it (M3 step 4 read the extra 60 as port_use_reach).
 ##
 ## zone-local ↔ world: both arrive as WORLD positions and are taken into
 ## the records' zone-local space here.
@@ -867,31 +927,31 @@ func activate_teleport(player_pos: Vector3, eye: Vector3 = Vector3.INF) -> bool:
 	var from_eye: Vector3 = (eye - zone_origin) if eye.is_finite() else here
 	if _teleport_fired:
 		return false
-	for ti in _teleports.size():
-		var e: MapFile.Entity = _teleports[ti]
-		if (e.state_byte & 1) == 0:
-			continue
-		var epos: Vector3 = _teleport_pos[ti]
-		if not _within_touch(epos, here, TELEPORT_TOUCH_RADIUS + PROX_GATE_RADIUS):
-			continue
-		if not _reachable(here, epos):
-			continue                         # a closed door leaf is in the way
-		return _fire_teleport(e)
-	# Standing in an ENABLED exit gate whose chain has not flipped (the
-	# spawn pre-latched it, e.g. the truck interiors start beside their
-	# DOOR): the use key goes through anyway.
 	for gi in _prox.size():
 		var g: MapFile.Entity = _prox[gi]
 		if g.link_act_type != ACT_PROX_GATE or _spent.has(g.file_off):
 			continue
 		var gpos: Vector3 = _prox_pos[gi]
+		# Distance and nothing else, as the handler does it: the 0xEF
+		# handler casts no ray, and the key's own sweep in tick() casts
+		# none either. A ray here refused MAP.241's doorway gate from 38
+		# units away, where the map's own geometry stands between the
+		# sprite and the floor the player is on.
 		if not _within(gpos, from_eye, _prox_radius(g)):
-			continue
-		if not _reachable(here, gpos):
 			continue
 		var t: MapFile.Entity = _chain_teleport(g)
 		if t != null:
 			return _use_exit(g, t)
+	for ti in _teleports.size():
+		var e: MapFile.Entity = _teleports[ti]
+		if (e.state_byte & 1) == 0:
+			continue
+		var epos: Vector3 = _teleport_pos[ti]
+		if not _within_touch(epos, here, TELEPORT_TOUCH_RADIUS):
+			continue
+		if not _reachable(here, epos):
+			continue                         # a closed door leaf is in the way
+		return _fire_teleport(e)
 	return false
 
 ## Nothing solid between the player and `target` (a doorway sprite sits
@@ -924,32 +984,45 @@ func _reachable(from_local: Vector3, target_local: Vector3) -> bool:
 	return false
 
 ## Use key with nothing activatable under the crosshair: operate the
-## nearest wall button / lever the player stands at. DOS fires these by
-## proximity (0xEF/0xF1/0xF2); the port keeps them on the key but does
-## not demand precise aim at a small panel.
+## nearest WALL BUTTON the player stands at (is_wall_button — the one
+## invented rule the owner kept, 2026-09-15). Those are the records tick()
+## takes off the proximity sweep, so this and the crosshair ray are the
+## only ways they run at all.
 ##
-## zone-local ↔ world: `player_pos` is a WORLD position; the records it is
-## measured against are zone-local, so the comparison runs in that space
-## and the world position goes on unchanged to on_player_activate.
-func use_nearby(player_pos: Vector3) -> bool:
+## Nothing else is reached from here any more. Until 2026-09-16 this swept
+## every variant-1 proximity record and every unchained cue within 130
+## units of the FEET — a hand reach the port invented, three times the
+## radius of the handler it was standing in for. So the key opened a gate
+## from well outside the 60 units DOS measures, which is most of what the
+## step-4 verifier called port_use_reach (157 of its failures). A gate is
+## the key's, but on the handler's own terms: press_use sets the edge and
+## tick() fires every gate within its radius OF THE EYE.
+##
+## Measured as the record's own handler measures it: 3D, from the eye, at
+## the radius the slot carries (_prox_radius — 60 + the port's 26-unit
+## capsule pad for an 0xEF, the +4 word for an 0xF1/0xF2).
+##
+## zone-local ↔ world: both arrive as WORLD positions and are taken into
+## the records' zone-local space here; the world position goes on
+## unchanged to on_player_activate.
+func use_nearby(player_pos: Vector3, eye: Vector3 = Vector3.INF) -> bool:
 	var here: Vector3 = player_pos - zone_origin
+	var from_eye: Vector3 = (eye - zone_origin) if eye.is_finite() else here
 	var best: MapFile.Entity = null
-	var best_d: float = USE_REACH
-	for e in _prox + _use_msgs:
-		if _spent.has(e.file_off):
+	var best_d: float = INF
+	for pi in _prox.size():
+		var e: MapFile.Entity = _prox[pi]
+		if _spent.has(e.file_off) or not is_wall_button(e):
 			continue
-		if (e.flags & 3) != 1 and not _use_msgs.has(e):
+		var epos: Vector3 = _prox_pos[pi]
+		var d: float = epos.distance_to(from_eye)
+		if d > _prox_radius(e) or d >= best_d:
 			continue
-		var epos := Vector3(float(e.x), -float(e.y), -float(e.z))
-		if not _within(epos, here, USE_REACH):
-			continue
-		var d: float = epos.distance_to(here)
-		if d < best_d:
-			best_d = d
-			best = e
+		best_d = d
+		best = e
 	if best == null:
 		return false
-	return on_player_activate(best.file_off, player_pos)
+	return on_player_activate(best.file_off, player_pos, eye)
 
 ## Called right after the player is placed: latch every gate and doorway
 ## the spawn point already lies inside, so a return exit that drops the

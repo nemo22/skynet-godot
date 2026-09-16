@@ -44,7 +44,9 @@ const AIData := preload("res://scripts/enemy_ai_data.gd")
 const FORMAT: String = "skynet.triggers"
 ## Bump when the SHAPE of the graph changes (every saved graph is then
 ## rebuilt). A change to the rules alone moves rules_hash instead.
-const GRAPH_VERSION: int = 1
+## 2 (2026-09-16): the simulation reads the `spent` flag a demolition
+## leaves behind, so a second activation no longer promises a second kill.
+const GRAPH_VERSION: int = 2
 ## No real chain is anywhere near this long; a crafted one stops here.
 const WALK_LIMIT: int = 256
 ## AI state 11 = a vehicle that drives a marker path (v1.01 0x127400).
@@ -409,16 +411,13 @@ static func _modes(ctx: Dictionary, id: int) -> Array:
 			# "act on death" bit alone is not a gate.
 			var bits: int = e.state_byte & 6
 			if bits == 0 or bits == 6:
-				out.append_array(_templates(rule))
+				if wall_button:
+					out.append(_button_mode(rule))
+				else:
+					out.append_array(_templates(rule))
 		"prox_chain":
 			if wall_button:
-				out.append({
-					"mode": "use_key", "origin": "eye", "metric": "3d",
-					"radius": float(rule["p4"]), "pad": 0.0,
-					"requires": "bit0", "edge": "key-down", "rearm": "chain",
-					"latch": "none", "prov": "port",
-					"note": "a named wall button with state bit 3: the key, not walking past it (the owner's choice)",
-				})
+				out.append(_button_mode(rule))
 			else:
 				out.append_array(_templates(rule))
 		"exit":
@@ -441,6 +440,34 @@ static func _modes(ctx: Dictionary, id: int) -> Array:
 	if ctx["incoming"].has(id):
 		out.append({"mode": "chain", "prov": "dos"})
 	return out
+
+## The port's one surviving invented rule, as a mode: a NAMED variant-1
+## mesh with state bit 3 is a wall button, and it answers the use key
+## instead of the player walking past it (the owner's ruling, 2026-09-15).
+## "Instead of proximity" is the whole of it, so a proximity radius is not
+## what limits it: what does is the crosshair ray that finds the mesh
+## (fly_camera._try_activate, RulesSkynet.USE_RAY). Before 2026-09-16 the
+## 0xEF buttons were given the DOS gate measure instead, which said the
+## key could not reach a panel the port has always let a player press —
+## MAP.210's base doors hang off one three hundred units up a tower wall.
+## Everything but the measure is the record's own DOS row — what the
+## handler wants of its enable bit, and whether a chain has to re-arm it —
+## because the port moved WHERE the player has to be, not what the handler
+## does when it runs.
+static func _button_mode(rule: Dictionary) -> Dictionary:
+	var base: Array = _templates(rule)
+	var m: Dictionary = (base[0] as Dictionary).duplicate(true) if not base.is_empty() \
+		else {"requires": "bit0", "rearm": "chain"}
+	m["mode"] = "use_key"
+	m["origin"] = "eye"
+	m["metric"] = "3d"
+	m["radius"] = RulesSkynet.USE_RAY
+	m["pad"] = 0.0
+	m["edge"] = "key-down"
+	m["latch"] = "none"
+	m["prov"] = "port"
+	m["note"] = "a named wall button with state bit 3: the key at whatever the crosshair reaches, not walking past it (the owner's choice)"
+	return m
 
 ## The rule's own templates, with "chain" left to the caller.
 static func _templates(rule: Dictionary) -> Array:
@@ -720,8 +747,15 @@ static func _edge(ctx: Dictionary, id: int, st: Dictionary, fx: Array) -> void:
 		"spawn":
 			fx.append("spawn@%05x" % id)
 		"demolish":
-			fx.append("demolish@%05x" % id)
-			st["spent"][id] = true
+			# ObjHit with HP + 1 (handler 0x1378bf): the prop is GONE, and a
+			# second enable of the same node finds nothing left to kill —
+			# action_system._demolish refuses a record it has already spent.
+			# The simulation carried the flag and never read it back, so
+			# every one of these promised a second death (M3 step 4 read
+			# that as demolish_once).
+			if not st["spent"].has(id):
+				fx.append("demolish@%05x" % id)
+				st["spent"][id] = true
 		"destructible":
 			var n: int = int(st["stage"].get(id, 0)) + 1
 			st["stage"][id] = n

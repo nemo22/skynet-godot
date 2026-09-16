@@ -85,6 +85,14 @@ const SHOT_MAX: int = 3
 const SHOT_WEAPON: int = 2
 ## How far outside a radius the negative check stands.
 const OUTSIDE_PAD: float = 20.0
+## Where a player puts himself to press a WALL BUTTON: in front of it, at
+## the same measure a gate is answered from. The button's own mode reaches
+## as far as the crosshair does (600 units) and that is right for what the
+## key can do, but it is no guide to where to stand — searching straight
+## out to it found the ground under a panel three hundred units up a tower
+## wall, from where the only view of the panel is the tower.
+const BUTTON_STAND: Dictionary = {"origin": "eye", "metric": "3d",
+	"radius": Rules.PROX_GATE_RADIUS, "pad": Rules.PLAYER_RADIUS}
 ## Floor search: directions round the node, and the fractions of the
 ## radius to try them at (nearest first — the DOS player stood at the
 ## thing, not at the edge of its reach).
@@ -124,6 +132,9 @@ var _snap: Dictionary = {}
 ## point inside two of them proves nothing about either (the ring of
 ## gates round MAP.210's jeep is eight of them within a few feet).
 var _prox_world: Array = []
+## …and where this map's doorways are, for the same reason: a place where
+## NOTHING may happen has to be outside their touch measure too.
+var _exit_world: Array = []
 var _limit: int = 0                      # --verify-limit: nodes per map
 var _only_ids: Dictionary = {}           # --verify-nodes=0bb44,075cb
 
@@ -275,6 +286,10 @@ func _verify_map(name: String) -> void:
 		_prox_world.append([int(pe.file_off),
 			(level.action._prox_pos[pi] as Vector3) + (level.origin as Vector3),
 			level.action._prox_radius(pe)])
+	_exit_world = []
+	for ti in (level.action._teleports as Array).size():
+		_exit_world.append((level.action._teleport_pos[ti] as Vector3)
+			+ (level.origin as Vector3))
 	_snap = _pristine(level, graph, _snapshot(level))
 	var snap: Dictionary = _snap
 	var nodes: Array = (graph.get("nodes", []) as Array).duplicate()
@@ -405,6 +420,7 @@ func _reset(level, snap: Dictionary) -> void:
 	a._touch_latched.clear()
 	a._armed.clear()
 	a._edge_done.clear()
+	a._exit_walked.clear()
 	a._use_edge = false
 	a._teleport_fired = false
 	a._light_live.clear()
@@ -493,7 +509,7 @@ func _check_node(level, graph: Dictionary, node: Dictionary) -> void:
 		"prox_enter":
 			await _check_prox(level, node, num, id, act, kind, mode)
 		"touch_arm":
-			await _check_exit(level, node, num, id, act, kind, mode)
+			await _check_exit(level, graph, node, num, id, act, kind, mode)
 		"shot_each", "shot_death":
 			await _check_shot(level, node, num, id, act, kind, how)
 		"counter":
@@ -518,12 +534,24 @@ func _check_use(level, node: Dictionary, num: int, id: int, act: int,
 	# The runtime takes THOSE off the proximity sweep altogether (walking
 	# past a button must not press it) and leaves them to the crosshair, so
 	# a key pressed at the floor beside one does nothing at all. The graph
-	# gives them the plain DOS gate mode, which is a divergence of its own
-	# and is what the rows say.
+	# says the same of them since 2026-09-16 (trigger_graph._button_mode).
 	var gate: bool = kind == "prox_gate" and not _is_wall_button(level, id)
 	var aim: Vector3 = ep if gate else _aim_point(level, id)
-	var spot: Dictionary = _stand_in(level, ep, mode,
-		0.0 if gate else Rules.USE_REACH, id)
+	# A button is pressed from in FRONT of it, so the search starts at the
+	# DOS gate measure and only widens to the hand's reach when there is
+	# nowhere that near to stand. The mode's own 600 units are how far the
+	# crosshair carries, not where a player would put himself — searching
+	# straight out to it found the ground under a panel three hundred units
+	# up a tower, from where the view of it is the tower.
+	var spot: Dictionary = _stand_in(level, ep, mode if gate else BUTTON_STAND, 0.0, id)
+	if not gate and not bool(spot["ok"]):
+		# Nowhere in front of it: widen to the hand's reach, and ask for a
+		# clear line while doing it — the key gets to a button by being
+		# LOOKED at. (Asking for the crosshair's own answer instead — a
+		# floor whose first collider along the line is this very mesh, the
+		# search a shot uses — put a hundred and thirty of these out of
+		# reach that the running game presses perfectly well.)
+		spot = _stand_in(level, ep, mode, Rules.USE_REACH, id, true)
 	if not bool(spot["ok"]):
 		_row(num, id, act, kind, "use", UNREACHABLE, String(spot["why"]))
 		return
@@ -638,14 +666,23 @@ func _walk_in(level, from: Vector3, to: Vector3, ep: Vector3) -> PackedStringArr
 	return TriggerEquiv.tokens(heard)
 
 # --- exits (0xF0) ------------------------------------------------------
-func _check_exit(level, node: Dictionary, num: int, id: int, act: int,
-		kind: String, mode: Dictionary) -> void:
+func _check_exit(level, graph: Dictionary, node: Dictionary, num: int, id: int,
+		act: int, kind: String, mode: Dictionary) -> void:
 	var ep: Vector3 = _epos(level, id)
 	# The key only reaches a doorway the player can SEE: ActionSystem
 	# _reachable rays the sprite, and a shut door leaf blocks all four of
 	# its lines. A doorway with no such place to stand is not a failure —
 	# it is a door that has not been opened yet.
-	var spot: Dictionary = _stand_in(level, ep, mode, 0.0, -1, true)
+	#
+	# …and, where the map leaves room for it, a place no GATE reaches
+	# either (the `alone` argument — the exit's own id is in no proximity
+	# row, so every one of them counts). The key is one key: standing in an
+	# 0xEF gate whose chain ends in this very doorway, it walks that chain
+	# first (action_system.activate_teleport) and the door sounds on the
+	# way, which is right for the gate and more than this node promises.
+	# Where there is nowhere else to stand the spot is taken anyway and
+	# marked shared, as the gates' own checks do.
+	var spot: Dictionary = _stand_in(level, ep, mode, 0.0, id, true)
 	if not bool(spot["ok"]):
 		_row(num, id, act, kind, "exit", UNREACHABLE, String(spot["why"]))
 		return
@@ -658,11 +695,28 @@ func _check_exit(level, node: Dictionary, num: int, id: int, act: int,
 	# 2. The key takes it. The crosshair ray is aimed at the floor: an
 	#    exit is a sprite with no collider, and a mesh behind it would
 	#    answer the key instead (fly_camera._try_activate).
+	# Put him back on the spot first. A doorway's reach IS the radius that
+	# armed it (90 units), so there is no slack in it, and the body does
+	# not stay where it is put: the controller settles it over the floor
+	# point, and three frames of that carried him 33 units off a doorway
+	# the search had him 77 from. That is the test moving, not the game.
 	var got: PackedStringArray = await _record_around(level, func() -> void:
+		_drv.place(spot["feet"])
 		_drv.face(ep)
 		_drv.look(main.player.rotation.y, -1.0)
 		_drv.activate())
 	var why: String = _why(TriggerEquiv.compare(node.get("first", []), got))
+	# There is one key. Where the only floor inside this doorway's measure
+	# is also inside an 0xEF GATE whose chain ends in this very doorway,
+	# that gate is what the key operates — DOS's own way through a door,
+	# and the port takes it first (action_system.activate_teleport). What
+	# the game then did is the GATE's row of the graph, sound and all, so
+	# that is what it is measured against.
+	if not why.is_empty() and bool(spot.get("shared", false)):
+		var by_gate: Array = _gate_chaining_to(level, graph, id)
+		if not by_gate.is_empty():
+			var alt: String = _why(TriggerEquiv.compare(by_gate, got))
+			why = "" if alt.is_empty() else _join(alt, "a gate covers this doorway")
 	if not why.is_empty():
 		var blocked: bool = not level.action._reachable(
 			main.player.global_position - level.origin, ep - level.origin)
@@ -672,7 +726,18 @@ func _check_exit(level, node: Dictionary, num: int, id: int, act: int,
 		var asked := PackedStringArray()
 		for e in _exit_seen:
 			asked.append("%d/%d" % [int(e[0]), int(e[1])])
-		_row(num, id, act, kind, "exit", FAIL, _join(_join(why,
+		# …and how far the FEET really were when the key went down, the way
+		# the doorway measures them (2D with a vertical window): a spot the
+		# search believed in and the running game then measured out of it —
+		# the controller settles the body over the floor point before the
+		# press — is told apart from a doorway that is simply shut.
+		var feet: Vector3 = main.player.global_position
+		var flat: float = Vector2(feet.x - ep.x, feet.z - ep.z).length()
+		var put: Vector3 = spot["feet"]
+		_row(num, id, act, kind, "exit", FAIL, _join(_join(_join(why,
+			"the feet were %.0f u from it (put at %.0f), reach %.0f"
+				% [flat, Vector2(put.x - ep.x, put.z - ep.z).length(),
+				   Rules.TELEPORT_TOUCH_RADIUS]),
 			"the line to it is blocked" if blocked else ""),
 			("it asked for " + " ".join(asked)) if not asked.is_empty() else ""))
 		return
@@ -912,6 +977,20 @@ func _alone_at(feet: Vector3, mine: int) -> bool:
 			return false
 	return true
 
+## Is this place outside every DOORWAY's touch measure (the port's 2D
+## radius with a vertical window, action_system._within_touch)? A spot
+## that says "nothing may happen here" cannot be one where the player is
+## standing in a door: the key takes THAT, and rightly — it is the
+## doorway's own rule, not the trigger being checked.
+func _clear_of_doorways(feet: Vector3) -> bool:
+	for p in _exit_world:
+		var at: Vector3 = p
+		if absf(feet.y - at.y) > Rules.PROX_VERTICAL_WINDOW:
+			continue
+		if Vector2(feet.x - at.x, feet.z - at.z).length() <= Rules.TELEPORT_TOUCH_RADIUS:
+			return false
+	return true
+
 ## …and one just outside it, for the checks that say nothing must happen
 ## there.
 func _stand_out(level, ep: Vector3, mode: Dictionary, alone: int = -1) -> Dictionary:
@@ -929,6 +1008,8 @@ func _stand_out(level, ep: Vector3, mode: Dictionary, alone: int = -1) -> Dictio
 				continue                          # still inside: not the place
 			if alone >= 0 and not _alone_at(feet, -1):
 				continue                          # inside somebody else's reach
+			if alone >= 0 and not _clear_of_doorways(feet):
+				continue                          # standing IN a doorway
 			if _fits(feet):
 				return {"ok": true, "feet": feet, "why": ""}
 	return {"ok": false, "feet": Vector3.INF, "why": "nowhere outside it to stand"}
@@ -1025,6 +1106,25 @@ func _shooting_spot(level, id: int, aim: Vector3) -> Dictionary:
 						return {"ok": true, "feet": feet, "why": ""}
 					c = (c as Node).get_parent()
 	return {"ok": false, "feet": Vector3.INF, "why": "no line of fire to it"}
+
+## The graph's `first` for an 0xEF gate the player is standing in whose
+## chain ends in doorway `id` — what the key really does here. Empty when
+## no such gate is in reach of where he stands now.
+func _gate_chaining_to(level, graph: Dictionary, id: int) -> Array:
+	var a = level.action
+	var eye: Vector3 = _drv.eye()
+	for pi in (a._prox as Array).size():
+		var g = a._prox[pi]
+		if g.link_act_type != Rules.ACT_PROX_GATE:
+			continue
+		if eye.distance_to((a._prox_pos[pi] as Vector3) + (level.origin as Vector3)) \
+				> a._prox_radius(g):
+			continue
+		var t = a._chain_teleport(g)
+		if t == null or t.file_off != id:
+			continue
+		return (TriggerEquiv.node_of(graph, g.file_off) as Dictionary).get("first", [])
+	return []
 
 ## The port's one surviving invented rule (rules_skynet._modes): a named
 ## variant-1 mesh with state bit 3 answers the use key, not the walk.
@@ -1148,35 +1248,31 @@ static func xfail_key(num: int, id: int) -> String:
 ## lock keeps (trigger_lock.hygiene): numbers, hex ids, the kind names
 ## the rules module has and a tag out of the list below, nothing else.
 ## What a pinned failure is, in one word:
-##   exit_chain_skipped    a gate whose chain ends in a doorway takes the
-##                         doorway without walking the chain, because
-##                         standing there had already armed it by touch —
-##                         the door sound and everything else on the way
-##                         is lost (ActionSystem._use_exit)
-##   port_use_reach        the key still fires it from outside the DOS
-##                         measure: use_nearby's 130 units, or
-##                         activate_teleport's 90 + 60
 ##   destruct_stage_count  the graph promises one damage stage per enable;
 ##                         the object's TRANSFRM.PRS entry has fewer (or
-##                         none at all, and DOS does nothing either)
+##                         none at all, and DOS does nothing either). Act
+##                         0x18 is in here twice over: it ramps four
+##                         stages a second while its bit is up and neither
+##                         side models that yet (rules_skynet, step 5g)
+##   port_use_reach        the key still fires it from outside the DOS
+##                         measure
 ##   second_activation     the first activation agrees and the second does
 ##                         not
 ##   chain_silent          nothing happened at all where the graph says
-##                         something should
+##                         something should — the row carries how far the
+##                         eye really was
 ##   chain_short           the chain did less than the walk says
 ##   chain_extra           …or more
 ##   path_window           a marker-path vehicle only picks its path up
 ##                         inside the DOS five-cell actor window, which
 ##                         the graph does not model
-##   demolish_once         act 0x1B kills the prop once; the graph counts
-##                         a second kill
-##   loop_no_handler       the graph emits an 0xEE ambient loop and the
-##                         runtime's SoundLoop node has no handler
-##   button_walk           a wall button answered the walk, not the key
+## Gone with M3 step 5b (2026-09-16): exit_chain_skipped (a gate whose
+## chain ends in a doorway walks that chain now), demolish_once (the
+## simulation reads its own spent flag), loop_no_handler (the SoundLoop
+## node has a handler), button_walk (never seen).
 const XFAIL_TAGS: PackedStringArray = [
-	"exit_chain_skipped", "port_use_reach", "destruct_stage_count",
-	"second_activation", "chain_silent", "chain_short", "chain_extra",
-	"path_window", "demolish_once", "loop_no_handler", "button_walk",
+	"port_use_reach", "destruct_stage_count", "second_activation",
+	"chain_silent", "chain_short", "chain_extra", "path_window",
 ]
 
 static func hygiene(text: String) -> PackedStringArray:

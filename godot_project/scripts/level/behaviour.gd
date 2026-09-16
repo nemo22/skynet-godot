@@ -153,6 +153,11 @@ func flip(start_id: int) -> Array:
 		out.append([id, s])
 		if (s & 1) != 0 and node != null and node.has_method("fire"):
 			_fire(node)
+		elif (s & 1) == 0 and node != null and node.has_method("silence"):
+			# A LEVEL kind runs for as long as its bit is up (the 0xEE
+			# ambient loops), so the flip that takes the bit away is what
+			# ends it — there is no handler of its own to notice.
+			node.call("silence")
 		if _is_actor(id):
 			break                                    # the walk stops AT an actor
 		var next: Array = _next_ids(id, node, rec)
@@ -202,9 +207,16 @@ func _fire(n: Node) -> void:
 	n.call("fire")
 	if not was_spent:
 		_announce_fire(n)
-	var s: int = state_of(n) & ~1
-	set_state(n, s)
-	_mirror(id_of(n), s)
+	# What the handler does to its own record afterwards is the rules
+	# module's row (rules_skynet, `on_fire`): a CUE clears its own enable
+	# bit — or retires its act byte — the way its DOS handler does, while a
+	# LEVEL kind whose row says "none" keeps the bit and runs on. The 0xEE
+	# ambient loop is the second sort: cleared here, a second flip of the
+	# same chain would read as a fresh rise and start it all over again.
+	if String(Rules.rule_for(act_of(n)).get("on_fire", "clear")) != "none":
+		var s: int = state_of(n) & ~1
+		set_state(n, s)
+		_mirror(id_of(n), s)
 	if "spent" in n and bool(n.get("spent")):
 		_retire(id_of(n))
 
@@ -219,6 +231,10 @@ func _announce_fire(n: Node) -> void:
 	match kind:
 		"sound_cue":
 			bus.announce_effect(id, "sound", {"sound": int(n.get("sound_id"))})
+		"sound_loop":
+			# The scriptless-era node keeps its data in metadata (the bake
+			# writes it there), so the id comes off the meta.
+			bus.announce_effect(id, "loop", {"loop": int(n.get_meta("sound_id", -1))})
 		"voice":
 			bus.announce_effect(id, "voice", {"voice": int(n.get("voice_id"))})
 		"hint":

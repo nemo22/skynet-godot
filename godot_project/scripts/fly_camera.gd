@@ -2042,8 +2042,15 @@ func _try_activate() -> void:
 	while n != null and not n.has_method("activate"):
 		n = n.get_parent()
 	if n != null:
-		n.activate()
-		return
+		# A target that says it did NOTHING with the key must not swallow
+		# the press: every mesh of the map is an action target, so looking
+		# a little down at a doorway put the crosshair on the floor plate
+		# the player stands on and the gate beside him never heard the key
+		# (2026-09-16). One that reports nothing at all (a parked vehicle)
+		# counts as having taken it, as it always did.
+		var did: Variant = n.call("activate")
+		if not (did is bool) or bool(did):
+			return
 	use_pressed.emit(global_position)
 
 ## Where the DOS engine has the player when it measures a distance to him

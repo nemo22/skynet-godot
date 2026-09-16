@@ -53,6 +53,8 @@ static func token(row: Dictionary) -> String:
 			return "voice%d" % int(p.get("voice", 0))
 		"sound":
 			return "snd%d" % int(p.get("sound", 0))
+		"loop":
+			return "loop%d" % int(p.get("loop", 0))
 		"exit":
 			return "exit%s/%d" % ["back" if bool(p.get("back", false))
 				else str(int(p.get("map", 0))), int(p.get("set", 0))]

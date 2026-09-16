@@ -1,4 +1,6 @@
-[gd_scene format=3]
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/level/sound_loop.gd" id="1"]
 
 [node name="SoundLoop" type="AudioStreamPlayer3D"]
 attenuation_model = 1
@@ -7,3 +9,4 @@ max_db = 0.0
 volume_db = -10.0
 max_distance = 5000.0
 autoplay = true
+script = ExtResource("1")

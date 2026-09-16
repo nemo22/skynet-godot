@@ -1,9 +1,9 @@
 # generated - rewrite with --accept-lock, check with --verify-graph
 # ids are lower hex offsets, act bytes upper hex; keywords, numbers and hashes only
 format skynet.triggers.lock 1
-graph 1
+graph 2
 game skynet
-rules c825aa853d9e6c2b
+rules 482b893e7f2031e4
 maps 122
 nodes 4763
 chains 3538
@@ -128,7 +128,7 @@ map 210 src f08342679600abde nodes 116 chains 87 warn even_fan_in:6
 210 07fcb EF use:eye/3d/r60+26/always/nolatch chain[07fcb* 07fa7:DB 07f83:F0] first[snd40 exit214/0] second[-] 4f971edd
 210 0808b A9 chain chain[0808b 07d0f:E3 093a2:E0] first[-] second[-] 1f4a68e9
 210 08824 00 - chain[08824] first[-] second[-] bc124674
-210 0886b EF use:eye/3d/r60+26/always/nolatch chain[0886b* 088e2:E1 08947:32 07f53:DD] first[snd46 snd42 move@08947:jumpY-512] second[snd46 snd42 move@08947:jumpY+512] 41ee89c0
+210 0886b EF use:eye/3d/r600/always/nolatch chain[0886b* 088e2:E1 08947:32 07f53:DD] first[snd46 snd42 move@08947:jumpY-512] second[snd46 snd42 move@08947:jumpY+512] 4b78b00e
 210 088e2 E1 chain chain[088e2 08947:32 07f53:DD] first[-] second[-] bdeeba6d
 210 08947 32 chain chain[08947 07f53:DD] first[-] second[-] cd6eb0ad
 210 08981 00 - chain[08981] first[-] second[-] f4864475
@@ -141,9 +141,9 @@ map 210 src f08342679600abde nodes 116 chains 87 warn even_fan_in:6
 210 09402 EE chain chain[09402] first[-] second[-] 980da0ed
 210 09430 EE - chain[09430] first[-] second[-] 0f3ccdff
 210 09454 EE - chain[09454] first[-] second[-] 30a4584f
-210 094a8 EF use:eye/3d/r60+26/always/nolatch chain[094a8* 07d49:AA 0808b:A9 07d0f:E3 093a2:E0] first[snd77 snd45 move@07d49:swingY-512 move@0808b:swingY+512] second[snd77 snd45 move@07d49:swingY+512 move@0808b:swingY-512] 97cf0ff4
-210 094f9 EF use:eye/3d/r60+26/always/nolatch chain[094f9* 07f00:01 093d2:E0] first[light_toggle@07f00 snd45] second[light_toggle@07f00 snd45] e736c98a
-210 09551 EF use:eye/3d/r60+26/always/nolatch chain[09551* 0935b:E0 078f7:42 07991:41 079cb:E3 077c3:1D 07643:ED] first[snd45 snd77 hint1 voice21029 move@078f7:slideX-128 move@07991:slideX+128] second[snd45 snd77 voice21029 move@078f7:slideX+128 move@07991:slideX-128] 5197f246
+210 094a8 EF use:eye/3d/r600/always/nolatch chain[094a8* 07d49:AA 0808b:A9 07d0f:E3 093a2:E0] first[snd77 snd45 move@07d49:swingY-512 move@0808b:swingY+512] second[snd77 snd45 move@07d49:swingY+512 move@0808b:swingY-512] 6537714f
+210 094f9 EF use:eye/3d/r600/always/nolatch chain[094f9* 07f00:01 093d2:E0] first[light_toggle@07f00 snd45] second[light_toggle@07f00 snd45] 1fe2e5d3
+210 09551 EF use:eye/3d/r600/always/nolatch chain[09551* 0935b:E0 078f7:42 07991:41 079cb:E3 077c3:1D 07643:ED] first[snd45 snd77 hint1 voice21029 move@078f7:slideX-128 move@07991:slideX+128] second[snd45 snd77 voice21029 move@078f7:slideX+128 move@07991:slideX-128] 6c92c2dc
 210 09862 00 - chain[09862] first[-] second[-] fa48fa93
 210 09892 00 - chain[09892] first[-] second[-] 0169942e
 210 098d9 00 - chain[098d9] first[-] second[-] cb3177c0
@@ -230,30 +230,30 @@ map 213 src fff982a43c9abf77 nodes 37 chains 27
 213 0268f 00 - chain[0268f] first[-] second[-] 815aec77
 213 0298e 00 - chain[0298e] first[-] second[-] a957195e
 213 029be 1B chain chain[029be] first[-] second[-] f0f7634a
-213 029ee EF death:hp50/never chain[029ee* 029be:1B] first[demolish@029be] second[demolish@029be] 894ed259
+213 029ee EF death:hp50/never chain[029ee* 029be:1B] first[demolish@029be] second[-] a03069ca
 213 02a1e 00 - chain[02a1e] first[-] second[-] 8c0ac2d5
 213 02a4e 00 - chain[02a4e] first[-] second[-] 60a7f197
 213 02a7e 1B chain chain[02a7e] first[-] second[-] 2ef64fd9
-213 02aae EF death:hp50/never chain[02aae* 02a7e:1B] first[demolish@02a7e] second[demolish@02a7e] 1301ff06
+213 02aae EF death:hp50/never chain[02aae* 02a7e:1B] first[demolish@02a7e] second[-] 3e752429
 213 02ade 00 - chain[02ade] first[-] second[-] b56451fc
 213 02b0e 1B chain chain[02b0e] first[-] second[-] 5c7c66c4
-213 02b3e EF death:hp50/never chain[02b3e* 02b0e:1B] first[demolish@02b0e] second[demolish@02b0e] df4e76ad
+213 02b3e EF death:hp50/never chain[02b3e* 02b0e:1B] first[demolish@02b0e] second[-] e533246d
 213 02b6e 00 - chain[02b6e 02b9e:1B] first[-] second[-] c9d73a2c
 213 02b9e 1B chain chain[02b9e] first[-] second[-] f38e1af9
 213 02bce 1B chain chain[02bce] first[-] second[-] 27b2e577
-213 02bfe EF death:hp50/never chain[02bfe* 02bce:1B] first[demolish@02bce] second[demolish@02bce] 450aa843
+213 02bfe EF death:hp50/never chain[02bfe* 02bce:1B] first[demolish@02bce] second[-] 14401f08
 213 02c2e 00 - chain[02c2e] first[-] second[-] dcaccbca
 213 02c5e 00 - chain[02c5e] first[-] second[-] b504b88d
 213 03035 00 - chain[03035] first[-] second[-] e8e482f7
-213 03065 EF death:hp50/never chain[03065* 03095:1B] first[demolish@03095] second[demolish@03095] 1594cc59
+213 03065 EF death:hp50/never chain[03065* 03095:1B] first[demolish@03095] second[-] 0b90b586
 213 03095 1B chain chain[03095] first[-] second[-] a8717fab
 213 030c5 1B chain chain[030c5] first[-] second[-] 0ffb8e85
-213 030f5 EF death:hp50/never chain[030f5* 030c5:1B] first[demolish@030c5] second[demolish@030c5] c6c3dc21
+213 030f5 EF death:hp50/never chain[030f5* 030c5:1B] first[demolish@030c5] second[-] b0e8c444
 213 0340c 00 - chain[0340c] first[-] second[-] e33ebfa0
 213 0343c 1B chain chain[0343c] first[-] second[-] 05724101
-213 0346c EF death:hp50/never chain[0346c* 0349c:1B] first[demolish@0349c] second[demolish@0349c] a1ca007f
+213 0346c EF death:hp50/never chain[0346c* 0349c:1B] first[demolish@0349c] second[-] 6bbac2f9
 213 0349c 1B chain chain[0349c] first[-] second[-] fdcf0e0d
-213 034cc EF death:hp50/never chain[034cc* 0343c:1B] first[demolish@0343c] second[demolish@0343c] 37871ebf
+213 034cc EF death:hp50/never chain[034cc* 0343c:1B] first[demolish@0343c] second[-] a00b9349
 213 034fc 00 - chain[034fc] first[-] second[-] cb2ce2e4
 213 03db7 EF use:eye/3d/r60+26/always/nolatch chain[03db7* 03ddb:DC 03dff:F0] first[snd41 exitback/13] second[-] dc89bb84
 213 03ddb DC chain chain[03ddb 03dff:F0] first[-] second[-] 1d4e3c65
@@ -274,13 +274,13 @@ map 214 src 5b9cf430d550657e nodes 35 chains 23
 214 03026 DB chain chain[03026 03002:F0] first[-] second[-] d33cb3a4
 214 0304a EF use:eye/3d/r60+26/always/nolatch chain[0304a* 03026:DB 03002:F0] first[snd40 exit217/14] second[-] 9fcd9cd8
 214 03163 5C chain chain[03163 02986:DC] first[-] second[-] 0f753424
-214 031b4 EF use:eye/3d/r60+26/always/nolatch chain[031b4* 02a16:E0 03163:5C 02986:DC] first[snd45 snd41 move@03163:slideY-128] second[snd45 snd41 move@03163:slideY+128] bde9e8b4
-214 03223 EF use:eye/3d/r60+26/always/nolatch chain[03223* 02a46:E0 02a76:A9 029b6:E3] first[snd45 snd77 move@02a76:swingY+512] second[snd45 snd77 move@02a76:swingY-512] 1d35e3ce
+214 031b4 EF use:eye/3d/r600/always/nolatch chain[031b4* 02a16:E0 03163:5C 02986:DC] first[snd45 snd41 move@03163:slideY-128] second[snd45 snd41 move@03163:slideY+128] 776997fb
+214 03223 EF use:eye/3d/r600/always/nolatch chain[03223* 02a46:E0 02a76:A9 029b6:E3] first[snd45 snd77 move@02a76:swingY+512] second[snd45 snd77 move@02a76:swingY-512] 5868f1d2
 214 033ba DC chain chain[033ba 035e6:5C] first[-] second[-] 8a21b706
 214 03461 E0 chain chain[03461 03620:5C 033ba:DC 035e6:5C] first[-] second[-] 6e445fbe
 214 035e6 5C chain chain[035e6] first[-] second[-] 2828f3ce
 214 03620 5C chain chain[03620 033ba:DC 035e6:5C] first[-] second[-] 11680260
-214 0365a EF use:eye/3d/r60+26/always/nolatch chain[0365a* 03461:E0 03620:5C 033ba:DC 035e6:5C] first[snd45 snd41 move@03620:slideY-128 move@035e6:slideY-128] second[snd45 snd41 move@03620:slideY+128 move@035e6:slideY+128] 916c67e5
+214 0365a EF use:eye/3d/r600/always/nolatch chain[0365a* 03461:E0 03620:5C 033ba:DC 035e6:5C] first[snd45 snd41 move@03620:slideY-128 move@035e6:slideY-128] second[snd45 snd41 move@03620:slideY+128 move@035e6:slideY+128] 42ec65f3
 214 036a8 00 - chain[036a8] first[-] second[-] a50794a6
 214 036ef 00 - chain[036ef] first[-] second[-] f5d74f72
 214 0371f 00 - chain[0371f] first[-] second[-] b2c5424b
@@ -301,13 +301,13 @@ map 215 src 65d0c8ae4db77c3d nodes 36 chains 17 warn even_fan_in:1
 215 02b7c F2 prox:eye/3d/r1024/onchain/latch chain[02b7c 02de9:F0] first[exit217/18] second[-] 1ee64737
 215 02bb6 EE - chain[02bb6] first[-] second[-] b1a3ec51
 215 02de9 F0 touch:feet/2dw/r90/w512,chain chain[02de9] first[exit217/18] second[-] c9545b78
-215 02e54 EF use:eye/3d/r60+26/always/nolatch chain[02e54* 02f55:6E 02fc9:DC] first[snd41 move@02f55:slideY-378] second[snd41 move@02f55:slideY+378] 7654fcb3
-215 02e8e EF use:eye/3d/r60+26/always/nolatch chain[02e8e* 02f55:6E 02fc9:DC] first[snd41 move@02f55:slideY-378] second[snd41 move@02f55:slideY+378] c558e5b3
+215 02e54 EF use:eye/3d/r600/always/nolatch chain[02e54* 02f55:6E 02fc9:DC] first[snd41 move@02f55:slideY-378] second[snd41 move@02f55:slideY+378] bc12d95d
+215 02e8e EF use:eye/3d/r600/always/nolatch chain[02e8e* 02f55:6E 02fc9:DC] first[snd41 move@02f55:slideY-378] second[snd41 move@02f55:slideY+378] dac9f1aa
 215 02f55 6E chain chain[02f55 02fc9:DC] first[-] second[-] 0175ee72
-215 02f8f EF use:eye/3d/r60+26/always/nolatch chain[02f8f* 047f0:70 04719:70 031c9:E3 03515:5C 041a7:27 048e3:ED] first[snd77 obj1 voice21039 move@047f0:slideY-1024 move@04719:slideY-1024 move@03515:slideY-128] second[snd77 voice21039 move@047f0:slideY+1024 move@04719:slideY+1024 move@03515:slideY+128] 45eb6e4a
+215 02f8f EF use:eye/3d/r600/always/nolatch chain[02f8f* 047f0:70 04719:70 031c9:E3 03515:5C 041a7:27 048e3:ED] first[snd77 obj1 voice21039 move@047f0:slideY-1024 move@04719:slideY-1024 move@03515:slideY-128] second[snd77 voice21039 move@047f0:slideY+1024 move@04719:slideY+1024 move@03515:slideY+128] db92e5e5
 215 02fc9 DC chain chain[02fc9] first[-] second[-] cfbdeb6c
 215 03003 5B chain chain[03003 02fc9:DC] first[-] second[-] 86007999
-215 0303d EF use:eye/3d/r60+26/always/nolatch chain[0303d* 036f2:E0 03003:5B 02fc9:DC] first[snd45 snd41 move@03003:slideY+128] second[snd45 snd41 move@03003:slideY-128] f0b74f63
+215 0303d EF use:eye/3d/r600/always/nolatch chain[0303d* 036f2:E0 03003:5B 02fc9:DC] first[snd45 snd41 move@03003:slideY+128] second[snd45 snd41 move@03003:slideY-128] 652c3dda
 215 03077 43 chain chain[03077 03291:E3 03335:26 048bf:ED] first[-] second[-] 5f7f9284
 215 030b1 78 chain chain[030b1 03077:43 03291:E3 03335:26 048bf:ED] first[-] second[-] 5e97f699
 215 030eb 44 chain chain[030eb 030b1:78 03077:43 03291:E3 03335:26 048bf:ED] first[-] second[-] 717e108c
@@ -374,7 +374,7 @@ map 216 src 7987b16dd1926c5d nodes 109 chains 84 warn unreachable:1,even_fan_in:
 216 0808b A9 chain chain[0808b 07d0f:E3 093a2:E0] first[-] second[-] 1f4a68e9
 216 08736 00 - chain[08736] first[-] second[-] 587e18b5
 216 08824 2D - chain[08824] first[-] second[-] f66cdea8
-216 0886b EF use:eye/3d/r60+26/always/nolatch chain[0886b* 088e2:E1 08947:32 07f53:DD] first[snd46 snd42 move@08947:jumpY-512] second[snd46 snd42 move@08947:jumpY+512] 41ee89c0
+216 0886b EF use:eye/3d/r600/always/nolatch chain[0886b* 088e2:E1 08947:32 07f53:DD] first[snd46 snd42 move@08947:jumpY-512] second[snd46 snd42 move@08947:jumpY+512] 4b78b00e
 216 088e2 E1 chain chain[088e2 08947:32 07f53:DD] first[-] second[-] bdeeba6d
 216 08947 32 chain chain[08947 07f53:DD] first[-] second[-] cd6eb0ad
 216 08981 00 - chain[08981] first[-] second[-] f4864475
@@ -387,9 +387,9 @@ map 216 src 7987b16dd1926c5d nodes 109 chains 84 warn unreachable:1,even_fan_in:
 216 09402 EE chain chain[09402] first[-] second[-] 980da0ed
 216 09430 EE - chain[09430] first[-] second[-] 0f3ccdff
 216 09454 EE - chain[09454] first[-] second[-] 30a4584f
-216 094a8 EF use:eye/3d/r60+26/always/nolatch chain[094a8* 07d49:AA 0808b:A9 07d0f:E3 093a2:E0] first[snd77 snd45 move@07d49:swingY-512 move@0808b:swingY+512] second[snd77 snd45 move@07d49:swingY+512 move@0808b:swingY-512] 97cf0ff4
-216 094f9 EF use:eye/3d/r60+26/always/nolatch chain[094f9* 07f00:01 093d2:E0] first[light_toggle@07f00 snd45] second[light_toggle@07f00 snd45] e736c98a
-216 09551 EF use:eye/3d/r60+26/always/nolatch chain[09551* 0935b:E0 078f7:42 07991:41 079cb:E3] first[snd45 snd77 move@078f7:slideX-128 move@07991:slideX+128] second[snd45 snd77 move@078f7:slideX+128 move@07991:slideX-128] e4286c0c
+216 094a8 EF use:eye/3d/r600/always/nolatch chain[094a8* 07d49:AA 0808b:A9 07d0f:E3 093a2:E0] first[snd77 snd45 move@07d49:swingY-512 move@0808b:swingY+512] second[snd77 snd45 move@07d49:swingY+512 move@0808b:swingY-512] 6537714f
+216 094f9 EF use:eye/3d/r600/always/nolatch chain[094f9* 07f00:01 093d2:E0] first[light_toggle@07f00 snd45] second[light_toggle@07f00 snd45] 1fe2e5d3
+216 09551 EF use:eye/3d/r600/always/nolatch chain[09551* 0935b:E0 078f7:42 07991:41 079cb:E3] first[snd45 snd77 move@078f7:slideX-128 move@07991:slideX+128] second[snd45 snd77 move@078f7:slideX+128 move@07991:slideX-128] b8c74aff
 216 09862 00 - chain[09862] first[-] second[-] fa48fa93
 216 09892 00 - chain[09892] first[-] second[-] 0169942e
 216 098d9 00 - chain[098d9] first[-] second[-] cb3177c0
@@ -478,7 +478,7 @@ map 217 src 9d57c0cdbbe1ba85 nodes 99 chains 77 warn even_fan_in:2
 217 08190 1F chain chain[08190 0813c:ED] first[-] second[-] c66b5569
 217 08736 00 - chain[08736] first[-] second[-] 587e18b5
 217 08824 00 - chain[08824] first[-] second[-] bc124674
-217 0886b EF use:eye/3d/r60+26/always/nolatch chain[0886b* 088e2:E1 08947:32 07f53:DD] first[snd46 snd42 move@08947:jumpY-512] second[snd46 snd42 move@08947:jumpY+512] 41ee89c0
+217 0886b EF use:eye/3d/r600/always/nolatch chain[0886b* 088e2:E1 08947:32 07f53:DD] first[snd46 snd42 move@08947:jumpY-512] second[snd46 snd42 move@08947:jumpY+512] 4b78b00e
 217 088e2 E1 chain chain[088e2 08947:32 07f53:DD] first[-] second[-] bdeeba6d
 217 08947 32 chain chain[08947 07f53:DD] first[-] second[-] cd6eb0ad
 217 08981 00 - chain[08981] first[-] second[-] f4864475
@@ -490,9 +490,9 @@ map 217 src 9d57c0cdbbe1ba85 nodes 99 chains 77 warn even_fan_in:2
 217 093d2 E0 chain chain[093d2] first[-] second[-] 9b1ae7ff
 217 09430 EE - chain[09430] first[-] second[-] 0f3ccdff
 217 09454 EE - chain[09454] first[-] second[-] 30a4584f
-217 094a8 EF use:eye/3d/r60+26/always/nolatch chain[094a8* 07d49:AA 0808b:A9 07d0f:E3 093a2:E0] first[snd77 snd45 move@07d49:swingY-512 move@0808b:swingY+512] second[snd77 snd45 move@07d49:swingY+512 move@0808b:swingY-512] 97cf0ff4
-217 094f9 EF use:eye/3d/r60+26/always/nolatch chain[094f9* 07f00:01 093d2:E0] first[light_toggle@07f00 snd45] second[light_toggle@07f00 snd45] e736c98a
-217 09551 EF use:eye/3d/r60+26/always/nolatch chain[09551* 0935b:E0 078f7:42 07991:41 079cb:E3] first[snd45 snd77 move@078f7:slideX-128 move@07991:slideX+128] second[snd45 snd77 move@078f7:slideX+128 move@07991:slideX-128] e4286c0c
+217 094a8 EF use:eye/3d/r600/always/nolatch chain[094a8* 07d49:AA 0808b:A9 07d0f:E3 093a2:E0] first[snd77 snd45 move@07d49:swingY-512 move@0808b:swingY+512] second[snd77 snd45 move@07d49:swingY+512 move@0808b:swingY-512] 6537714f
+217 094f9 EF use:eye/3d/r600/always/nolatch chain[094f9* 07f00:01 093d2:E0] first[light_toggle@07f00 snd45] second[light_toggle@07f00 snd45] 1fe2e5d3
+217 09551 EF use:eye/3d/r600/always/nolatch chain[09551* 0935b:E0 078f7:42 07991:41 079cb:E3] first[snd45 snd77 move@078f7:slideX-128 move@07991:slideX+128] second[snd45 snd77 move@078f7:slideX+128 move@07991:slideX-128] b8c74aff
 217 09862 00 - chain[09862] first[-] second[-] fa48fa93
 217 09892 00 - chain[09892] first[-] second[-] 0169942e
 217 098d9 00 - chain[098d9] first[-] second[-] cb3177c0
@@ -649,7 +649,7 @@ map 220 src 0a90f1f029ea4273 nodes 137 chains 111 warn unreachable:1
 220 0e102 00 chain chain[0e102] first[-] second[-] 02b91337
 220 0e126 00 chain chain[0e126 0e102:00] first[-] second[-] 39a96d33
 220 0e31e 3B - chain[0e31e] first[-] second[-] 68c2f01b
-220 0e46b EF use:eye/3d/r60+26/always/nolatch chain[0e46b* 0eb7d:E0 0e4a5:42 0e50f:41 0e549:E3] first[snd45 snd77 move@0e4a5:slideX-128 move@0e50f:slideX+128] second[snd45 snd77 move@0e4a5:slideX+128 move@0e50f:slideX-128] 2994b37a
+220 0e46b EF use:eye/3d/r600/always/nolatch chain[0e46b* 0eb7d:E0 0e4a5:42 0e50f:41 0e549:E3] first[snd45 snd77 move@0e4a5:slideX-128 move@0e50f:slideX+128] second[snd45 snd77 move@0e4a5:slideX+128 move@0e50f:slideX-128] 4ee0fee5
 220 0e4a5 42 chain chain[0e4a5 0e50f:41 0e549:E3] first[-] second[-] 7e7d348d
 220 0e50f 41 chain chain[0e50f 0e549:E3] first[-] second[-] f0bad084
 220 0e549 E3 chain chain[0e549] first[-] second[-] a31dd886
@@ -666,7 +666,7 @@ map 220 src 0a90f1f029ea4273 nodes 137 chains 111 warn unreachable:1
 220 0ec8f EF use:eye/3d/r60+26/always/nolatch chain[0ec8f* 0ec6b:DB 0ec47:F0] first[snd40 exit213/0] second[-] 77a156d0
 220 0ecb3 00 - chain[0ecb3] first[-] second[-] e8c39473
 220 0ed96 31 path chain[0ed96 0e5ef:00 0e583:00 0e126:00 0e102:00] first[path@0ed96] second[-] 4d060efb
-220 0ee48 EF use:eye/3d/r60+26/always/nolatch chain[0ee48* 0f2c1:01 0ee82:E0] first[light_toggle@0f2c1 snd45] second[light_toggle@0f2c1 snd45] a941e628
+220 0ee48 EF use:eye/3d/r600/always/nolatch chain[0ee48* 0f2c1:01 0ee82:E0] first[light_toggle@0f2c1 snd45] second[light_toggle@0f2c1 snd45] 72cbeea2
 220 0ee82 E0 chain chain[0ee82] first[-] second[-] b8edf80f
 220 0eeec 00 - chain[0eeec] first[-] second[-] af704bfb
 220 0ef56 E3 chain chain[0ef56 0f1f7:E0] first[-] second[-] 6d620870
@@ -674,13 +674,13 @@ map 220 src 0a90f1f029ea4273 nodes 137 chains 111 warn unreachable:1
 220 0efd8 AA chain chain[0efd8 0f714:A9 0ef56:E3 0f1f7:E0] first[-] second[-] eb266347
 220 0f012 00 - chain[0f012] first[-] second[-] 9a5b014e
 220 0f042 00 - chain[0f042] first[-] second[-] 5b701862
-220 0f1bd EF use:eye/3d/r60+26/always/nolatch chain[0f1bd* 0efd8:AA 0f714:A9 0ef56:E3 0f1f7:E0] first[snd77 snd45 move@0efd8:swingY-512 move@0f714:swingY+512] second[snd77 snd45 move@0efd8:swingY+512 move@0f714:swingY-512] d7147685
+220 0f1bd EF use:eye/3d/r600/always/nolatch chain[0f1bd* 0efd8:AA 0f714:A9 0ef56:E3 0f1f7:E0] first[snd77 snd45 move@0efd8:swingY-512 move@0f714:swingY+512] second[snd77 snd45 move@0efd8:swingY+512 move@0f714:swingY-512] 4d9a8939
 220 0f1f7 E0 chain chain[0f1f7] first[-] second[-] 2fce2ed8
 220 0f2c1 01 chain chain[0f2c1 0ee82:E0] first[-] second[-] 109173d8
 220 0f35c EE - chain[0f35c] first[-] second[-] c79527cc
 220 0f380 32 chain chain[0f380 0f4be:DD] first[-] second[-] 778bbaf3
 220 0f3ba E1 chain chain[0f3ba 0f380:32 0f4be:DD] first[-] second[-] e1e43e1a
-220 0f3f4 EF use:eye/3d/r60+26/always/nolatch chain[0f3f4* 0f3ba:E1 0f380:32 0f4be:DD] first[snd46 snd42 move@0f380:jumpY-512] second[snd46 snd42 move@0f380:jumpY+512] a1aa0a55
+220 0f3f4 EF use:eye/3d/r600/always/nolatch chain[0f3f4* 0f3ba:E1 0f380:32 0f4be:DD] first[snd46 snd42 move@0f380:jumpY-512] second[snd46 snd42 move@0f380:jumpY+512] 12975919
 220 0f42e 00 - chain[0f42e] first[-] second[-] e5eaf972
 220 0f4be DD chain chain[0f4be] first[-] second[-] 68696502
 220 0f4f8 F0 touch:feet/2dw/r90/w512,chain chain[0f4f8] first[exit214/0] second[-] c6bb1099
@@ -986,9 +986,9 @@ map 231 src d6f361d067e71cdd nodes 112 chains 57 warn unreachable:2,even_fan_in:
 231 03273 01 chain chain[03273 03296:01 04152:01 0553d:01 041d5:5B 0420f:5B 04249:5B 03f8e:EE 02e6c:EE 03f6a:EE 03c6d:F3 02c30:F3 02c78:F3 04dc0:F3 02c54:F3 03c49:F3] first[-] second[-] 39357fec
 231 03296 01 chain chain[03296 04152:01 0553d:01 041d5:5B 0420f:5B 04249:5B 03f8e:EE 02e6c:EE 03f6a:EE 03c6d:F3 02c30:F3 02c78:F3 04dc0:F3 02c54:F3 03c49:F3] first[-] second[-] 885988b5
 231 032b9 5C chain chain[032b9 06ad4:DB] first[-] second[-] a0dfa344
-231 03a11 EF use:eye/3d/r60+26/always/nolatch chain[03a11* 03f22:E3 03f46:E1 043d3:71] first[snd77 snd46 move@043d3:slideY+1520] second[snd77 snd46 move@043d3:slideY-1520] f26a8e54
-231 03a4b EF use:eye/3d/r60+26/always/nolatch chain[03a4b* 03efe:E1 03eda:E3 043d3:71] first[snd46 snd77 move@043d3:slideY+1520] second[snd46 snd77 move@043d3:slideY-1520] 8d854591
-231 03a85 EF use:eye/3d/r60+26/always/nolatch chain[03a85* 03eb6:E1 03e92:E3 043d3:71] first[snd46 snd77 move@043d3:slideY+1520] second[snd46 snd77 move@043d3:slideY-1520] e62b97e0
+231 03a11 EF use:eye/3d/r600/always/nolatch chain[03a11* 03f22:E3 03f46:E1 043d3:71] first[snd77 snd46 move@043d3:slideY+1520] second[snd77 snd46 move@043d3:slideY-1520] eedb2ce7
+231 03a4b EF use:eye/3d/r600/always/nolatch chain[03a4b* 03efe:E1 03eda:E3 043d3:71] first[snd46 snd77 move@043d3:slideY+1520] second[snd46 snd77 move@043d3:slideY-1520] 5cc5850c
+231 03a85 EF use:eye/3d/r600/always/nolatch chain[03a85* 03eb6:E1 03e92:E3 043d3:71] first[snd46 snd77 move@043d3:slideY+1520] second[snd46 snd77 move@043d3:slideY-1520] b873c2d0
 231 03b95 EF use:eye/3d/r60+26/always/nolatch chain[03b95* 03c25:DB 03c01:F0] first[snd40 exit230/12] second[-] d13a6c6d
 231 03bb9 EF use:eye/3d/r60+26/always/nolatch chain[03bb9* 03c25:DB 03c01:F0] first[snd40 exit230/12] second[-] 1a5c9485
 231 03bdd EF use:eye/3d/r60+26/always/nolatch chain[03bdd* 03c25:DB 03c01:F0] first[snd40 exit230/12] second[-] 03ded8ec
@@ -1020,7 +1020,7 @@ map 231 src d6f361d067e71cdd nodes 112 chains 57 warn unreachable:2,even_fan_in:
 231 049c5 E2 chain chain[049c5 06906:E8 048ed:EE 04ade:01 0315b:01 0412f:01 0317e:01 031a1:01 031c4:01 054f7:01 054d4:01 05ea0:01 0551a:01 05c68:01 04012:01 0322d:01 0320a:01 03273:01 03296:01 04152:01 0553d:01 041d5:5B 0420f:5B 04249:5B 03f8e:EE 02e6c:EE 03f6a:EE 03c6d:F3 02c30:F3 02c78:F3 04dc0:F3 02c54:F3 03c49:F3] first[-] second[-] 9d9ffaef
 231 04a30 00 - chain[04a30] first[-] second[-] 7361f98d
 231 04a6a 00 - chain[04a6a] first[-] second[-] 6e5d2711
-231 04aa4 1B death:hp64/never chain[04aa4] first[demolish@04aa4] second[demolish@04aa4] 35a35360
+231 04aa4 1B death:hp64/never chain[04aa4] first[demolish@04aa4] second[-] 56788aa3
 231 04ade 01 chain chain[04ade 0315b:01 0412f:01 0317e:01 031a1:01 031c4:01 054f7:01 054d4:01 05ea0:01 0551a:01 05c68:01 04012:01 0322d:01 0320a:01 03273:01 03296:01 04152:01 0553d:01 041d5:5B 0420f:5B 04249:5B 03f8e:EE 02e6c:EE 03f6a:EE 03c6d:F3 02c30:F3 02c78:F3 04dc0:F3 02c54:F3 03c49:F3] first[-] second[-] e8292454
 231 04b01 00 death:hp64/never chain[04b01] first[-] second[-] b015bacb
 231 04b75 00 - chain[04b75] first[-] second[-] b0891a10
@@ -1066,8 +1066,8 @@ map 231 src d6f361d067e71cdd nodes 112 chains 57 warn unreachable:2,even_fan_in:
 231 05df9 00 - chain[05df9] first[-] second[-] e61d8e6c
 231 05ea0 01 chain chain[05ea0 0551a:01 05c68:01 04012:01 0322d:01 0320a:01 03273:01 03296:01 04152:01 0553d:01 041d5:5B 0420f:5B 04249:5B 03f8e:EE 02e6c:EE 03f6a:EE 03c6d:F3 02c30:F3 02c78:F3 04dc0:F3 02c54:F3 03c49:F3] first[-] second[-] a7414d8c
 231 06782 00 - chain[06782] first[-] second[-] 560167dd
-231 067b2 EF use:eye/3d/r60+26/always/nolatch chain[067b2* 06842:37 0689a:E8 03dd4:E0 032b9:5C 06ad4:DB] first[snd111 snd45 snd40 move@06842:rotY+1024 move@032b9:slideY-128] second[snd111 snd45 snd40 move@06842:rotY-1024 move@032b9:slideY+128] 07568523
-231 067e2 EF use:eye/3d/r60+26/always/nolatch chain[067e2* 03db0:E0 03df8:37 06812:37 068e2:E8] first[snd45 snd111 move@03df8:rotY+1024 move@06812:rotY+1024] second[snd45 snd111 move@03df8:rotY-1024 move@06812:rotY-1024] d93caf57
+231 067b2 EF use:eye/3d/r600/always/nolatch chain[067b2* 06842:37 0689a:E8 03dd4:E0 032b9:5C 06ad4:DB] first[snd111 snd45 snd40 move@06842:rotY+1024 move@032b9:slideY-128] second[snd111 snd45 snd40 move@06842:rotY-1024 move@032b9:slideY+128] f7dc8a5a
+231 067e2 EF use:eye/3d/r600/always/nolatch chain[067e2* 03db0:E0 03df8:37 06812:37 068e2:E8] first[snd45 snd111 move@03df8:rotY+1024 move@06812:rotY+1024] second[snd45 snd111 move@03df8:rotY-1024 move@06812:rotY-1024] 2b743f7b
 231 06812 37 chain chain[06812 068e2:E8] first[-] second[-] 059f49e5
 231 06842 37 chain chain[06842 0689a:E8 03dd4:E0 032b9:5C 06ad4:DB] first[-] second[-] 88ca42e5
 231 0689a E8 chain chain[0689a 03dd4:E0 032b9:5C 06ad4:DB] first[-] second[-] 1ac57363
@@ -1082,7 +1082,7 @@ map 232 src 70a3667fd935a804 nodes 152 chains 72 warn unreachable:7,even_fan_in:
 232 031c4 37 chain chain[031c4 04bb7:26] first[-] second[-] 15e08bdf
 232 031fe E1 chain chain[031fe 031c4:37 04bb7:26] first[-] second[-] 38875ffe
 232 03222 37 chain chain[03222] first[-] second[-] 98bdd04d
-232 0325c EF use:eye/3d/r60+26/always/nolatch chain[0325c* 031fe:E1 031c4:37 04bb7:26] first[snd46 obj0 move@031c4:rotY+1024] second[snd46 move@031c4:rotY-1024] b1e33bb0
+232 0325c EF use:eye/3d/r600/always/nolatch chain[0325c* 031fe:E1 031c4:37 04bb7:26] first[snd46 obj0 move@031c4:rotY+1024] second[snd46 move@031c4:rotY-1024] e3ed5e2d
 232 03326 26 chain chain[03326] first[-] second[-] 3cfde0ff
 232 03360 26 chain chain[03360] first[-] second[-] 89d77037
 232 0339a 26 chain chain[0339a] first[-] second[-] c9b715b8
@@ -1114,10 +1114,10 @@ map 232 src 70a3667fd935a804 nodes 152 chains 72 warn unreachable:7,even_fan_in:
 232 03b11 00 - chain[03b11] first[-] second[-] c5cf87f3
 232 03b4b 02 - chain[03b4b] first[-] second[-] 8ac965a4
 232 03b91 DB chain chain[03b91] first[-] second[-] 4d3c1e32
-232 03bb5 EF use:eye/3d/r60+26/always/nolatch chain[03bb5* 037b6:E0 0376e:DB 04ee4:5C] first[snd45 snd40 move@04ee4:slideY-128] second[snd45 snd40 move@04ee4:slideY+128] 432dd573
-232 03bef EF use:eye/3d/r60+26/always/nolatch chain[03bef* 03792:E0 0376e:DB 04ee4:5C] first[snd45 snd40 move@04ee4:slideY-128] second[snd45 snd40 move@04ee4:slideY+128] c6828631
-232 03c29 EF use:eye/3d/r60+26/always/nolatch chain[03c29* 037da:E0 03c9d:5C 03b91:DB] first[snd45 snd40 move@03c9d:slideY-128] second[snd45 snd40 move@03c9d:slideY+128] 0bd406eb
-232 03c63 EF use:eye/3d/r60+26/always/nolatch chain[03c63* 037fe:E0 03c9d:5C 03b91:DB] first[snd45 snd40 move@03c9d:slideY-128] second[snd45 snd40 move@03c9d:slideY+128] 8cdab7c0
+232 03bb5 EF use:eye/3d/r600/always/nolatch chain[03bb5* 037b6:E0 0376e:DB 04ee4:5C] first[snd45 snd40 move@04ee4:slideY-128] second[snd45 snd40 move@04ee4:slideY+128] c34c7049
+232 03bef EF use:eye/3d/r600/always/nolatch chain[03bef* 03792:E0 0376e:DB 04ee4:5C] first[snd45 snd40 move@04ee4:slideY-128] second[snd45 snd40 move@04ee4:slideY+128] 18c961ff
+232 03c29 EF use:eye/3d/r600/always/nolatch chain[03c29* 037da:E0 03c9d:5C 03b91:DB] first[snd45 snd40 move@03c9d:slideY-128] second[snd45 snd40 move@03c9d:slideY+128] ab00e33e
+232 03c63 EF use:eye/3d/r600/always/nolatch chain[03c63* 037fe:E0 03c9d:5C 03b91:DB] first[snd45 snd40 move@03c9d:slideY-128] second[snd45 snd40 move@03c9d:slideY+128] e472ebf6
 232 03c9d 5C chain chain[03c9d 03b91:DB] first[-] second[-] 81d0e1aa
 232 03cfb EF use:eye/3d/r60+26/always/nolatch chain[03cfb* 036fa:1F 034ca:ED] first[hint3 voice23031] second[voice23031] 192f2adb
 232 03ee5 E0 - chain[03ee5 04270:5C] first[-] second[-] a627c320
@@ -1126,7 +1126,7 @@ map 232 src 70a3667fd935a804 nodes 152 chains 72 warn unreachable:7,even_fan_in:
 232 0435e 1B - chain[0435e] first[-] second[-] c74e3f34
 232 04398 1B - chain[04398] first[-] second[-] 2b1deb21
 232 0443d E1 chain chain[0443d 0449b:37 033f8:26] first[-] second[-] 1431dc1f
-232 04461 EF use:eye/3d/r60+26/always/nolatch chain[04461* 0443d:E1 0449b:37 033f8:26] first[snd46 obj0 move@0449b:rotY+1024] second[snd46 move@0449b:rotY-1024] 0e8ca0fc
+232 04461 EF use:eye/3d/r600/always/nolatch chain[04461* 0443d:E1 0449b:37 033f8:26] first[snd46 obj0 move@0449b:rotY+1024] second[snd46 move@0449b:rotY-1024] e19042f7
 232 0449b 37 chain chain[0449b 033f8:26] first[-] second[-] 2e43da76
 232 044d5 37 chain chain[044d5] first[-] second[-] 8d2efe87
 232 0450f 37 chain chain[0450f 047e0:37] first[-] second[-] 4748cef4
@@ -1144,16 +1144,16 @@ map 232 src 70a3667fd935a804 nodes 152 chains 72 warn unreachable:7,even_fan_in:
 232 048ce EE chain chain[048ce 04ae5:3B 047a6:37 0450f:37 047e0:37] first[-] second[-] 7f2b137b
 232 048f2 37 chain chain[048f2 0339a:26] first[-] second[-] b956df69
 232 0492c 37 chain chain[0492c 03360:26] first[-] second[-] 1af03263
-232 04966 EF use:eye/3d/r60+26/always/nolatch chain[04966* 04862:E1 0492c:37 03360:26] first[snd46 obj0 move@0492c:rotY+1024] second[snd46 move@0492c:rotY-1024] 433e4149
-232 049a0 EF use:eye/3d/r60+26/always/nolatch chain[049a0* 04886:E1 048f2:37 0339a:26] first[snd46 obj0 move@048f2:rotY+1024] second[snd46 move@048f2:rotY-1024] fe65d40e
+232 04966 EF use:eye/3d/r600/always/nolatch chain[04966* 04862:E1 0492c:37 03360:26] first[snd46 obj0 move@0492c:rotY+1024] second[snd46 move@0492c:rotY-1024] 8f489dd4
+232 049a0 EF use:eye/3d/r600/always/nolatch chain[049a0* 04886:E1 048f2:37 0339a:26] first[snd46 obj0 move@048f2:rotY+1024] second[snd46 move@048f2:rotY-1024] 2c51dd59
 232 049da 37 chain chain[049da 03326:26] first[-] second[-] f87400cb
-232 04a14 EF use:eye/3d/r60+26/always/nolatch chain[04a14* 048aa:E1 049da:37 03326:26] first[snd46 obj0 move@049da:rotY+1024] second[snd46 move@049da:rotY-1024] 638eacad
-232 04a4e EF use:eye/3d/r60+26/always/nolatch,chain chain[04a4e* 033d4:E1 04a88:37 048ce:EE 04ae5:3B 047a6:37 0450f:37 047e0:37] first[snd46 move@04a88:rotY+1024 spin@04ae5 move@047a6:rotY+1024 move@0450f:rotY+1024 move@047e0:rotY+1024] second[snd46 loop67 move@04a88:rotY-1024 move@047a6:rotY-1024 move@0450f:rotY-1024 move@047e0:rotY-1024] db648059
+232 04a14 EF use:eye/3d/r600/always/nolatch chain[04a14* 048aa:E1 049da:37 03326:26] first[snd46 obj0 move@049da:rotY+1024] second[snd46 move@049da:rotY-1024] 092e1af5
+232 04a4e EF use:eye/3d/r600/always/nolatch,chain chain[04a4e* 033d4:E1 04a88:37 048ce:EE 04ae5:3B 047a6:37 0450f:37 047e0:37] first[snd46 move@04a88:rotY+1024 spin@04ae5 move@047a6:rotY+1024 move@0450f:rotY+1024 move@047e0:rotY+1024] second[snd46 loop67 move@04a88:rotY-1024 move@047a6:rotY-1024 move@0450f:rotY-1024 move@047e0:rotY-1024] caa7736b
 232 04a88 37 chain chain[04a88 048ce:EE 04ae5:3B 047a6:37 0450f:37 047e0:37] first[-] second[-] f519782e
 232 04ae5 3B chain chain[04ae5 047a6:37 0450f:37 047e0:37] first[-] second[-] be6e9856
 232 04b1f E1 chain chain[04b1f 04c39:37 044d5:37] first[-] second[-] 62411c09
-232 04b43 EF use:eye/3d/r60+26/always/nolatch chain[04b43* 04b1f:E1 04c39:37 044d5:37] first[snd46 move@04c39:rotY+1024 move@044d5:rotY+1024] second[snd46 move@04c39:rotY-1024 move@044d5:rotY-1024] c4beb96f
-232 04b7d EF use:eye/3d/r60+26/always/nolatch chain[04b7d* 04c15:E1 03432:37 04bf1:EE 03222:37] first[snd46 move@03432:rotY+1024 move@03222:rotY+1024] second[snd46 loop66 move@03432:rotY-1024 move@03222:rotY-1024] da315722
+232 04b43 EF use:eye/3d/r600/always/nolatch chain[04b43* 04b1f:E1 04c39:37 044d5:37] first[snd46 move@04c39:rotY+1024 move@044d5:rotY+1024] second[snd46 move@04c39:rotY-1024 move@044d5:rotY-1024] d163d967
+232 04b7d EF use:eye/3d/r600/always/nolatch chain[04b7d* 04c15:E1 03432:37 04bf1:EE 03222:37] first[snd46 move@03432:rotY+1024 move@03222:rotY+1024] second[snd46 loop66 move@03432:rotY-1024 move@03222:rotY-1024] 849751f7
 232 04bb7 26 chain chain[04bb7] first[-] second[-] ba1b3eb9
 232 04bf1 EE chain chain[04bf1 03222:37] first[-] second[-] 68ac6371
 232 04c15 E1 chain chain[04c15 03432:37 04bf1:EE 03222:37] first[-] second[-] c6bc0705
@@ -1162,8 +1162,8 @@ map 232 src 70a3667fd935a804 nodes 152 chains 72 warn unreachable:7,even_fan_in:
 232 04d90 DB chain chain[04d90] first[-] second[-] 2e24162c
 232 04db4 DB chain chain[04db4 04e70:5C 04dd8:E0] first[-] second[-] b0b1102b
 232 04dd8 E0 chain chain[04dd8] first[-] second[-] f5545cf1
-232 04dfc EF use:eye/3d/r60+26/always/nolatch chain[04dfc* 04db4:DB 04e70:5C 04dd8:E0] first[snd40 snd45 move@04e70:slideY-128] second[snd40 snd45 move@04e70:slideY+128] 5a620cf9
-232 04e36 EF use:eye/3d/r60+26/always/nolatch chain[04e36* 04db4:DB 04e70:5C 04dd8:E0] first[snd40 snd45 move@04e70:slideY-128] second[snd40 snd45 move@04e70:slideY+128] 7cf83b0b
+232 04dfc EF use:eye/3d/r600/always/nolatch chain[04dfc* 04db4:DB 04e70:5C 04dd8:E0] first[snd40 snd45 move@04e70:slideY-128] second[snd40 snd45 move@04e70:slideY+128] 833b5c4c
+232 04e36 EF use:eye/3d/r600/always/nolatch chain[04e36* 04db4:DB 04e70:5C 04dd8:E0] first[snd40 snd45 move@04e70:slideY-128] second[snd40 snd45 move@04e70:slideY+128] a8d04b3d
 232 04e70 5C chain chain[04e70 04dd8:E0] first[-] second[-] 6de05f2d
 232 04eaa 5C chain chain[04eaa 04d90:DB] first[-] second[-] 001956dd
 232 04ee4 5C chain chain[04ee4] first[-] second[-] b6807a37
@@ -1195,18 +1195,18 @@ map 232 src 70a3667fd935a804 nodes 152 chains 72 warn unreachable:7,even_fan_in:
 232 05839 26 chain chain[05839] first[-] second[-] 01c14335
 232 0585d E1 chain chain[0585d 058df:37 05815:26] first[-] second[-] bbf047f0
 232 05881 E1 chain chain[05881 05953:37 05839:26] first[-] second[-] 69ace03c
-232 058a5 EF use:eye/3d/r60+26/always/nolatch chain[058a5* 0585d:E1 058df:37 05815:26] first[snd46 obj0 move@058df:rotY+1024] second[snd46 move@058df:rotY-1024] ac32d22a
+232 058a5 EF use:eye/3d/r600/always/nolatch chain[058a5* 0585d:E1 058df:37 05815:26] first[snd46 obj0 move@058df:rotY+1024] second[snd46 move@058df:rotY-1024] 682fe612
 232 058df 37 chain chain[058df 05815:26] first[-] second[-] 86b52a96
-232 05919 EF use:eye/3d/r60+26/always/nolatch chain[05919* 05881:E1 05953:37 05839:26] first[snd46 obj0 move@05953:rotY+1024] second[snd46 move@05953:rotY-1024] c7fe4123
+232 05919 EF use:eye/3d/r600/always/nolatch chain[05919* 05881:E1 05953:37 05839:26] first[snd46 obj0 move@05953:rotY+1024] second[snd46 move@05953:rotY-1024] ee11e1a5
 232 05953 37 chain chain[05953 05839:26] first[-] second[-] 4867dca2
-232 0598d 2C counter:at1 chain[0598d 05ba7:20 04f42:F3 04f66:F3 04f8a:F3 036b2:F3 04612:F3 04636:F3 0465a:F3 03512:1B 034a6:ED] first[hint4 spawn@04f42 spawn@04f66 spawn@04f8a spawn@036b2 spawn@04612 spawn@04636 spawn@0465a demolish@03512 voice23032] second[spawn@04f42 spawn@04f66 spawn@04f8a spawn@036b2 spawn@04612 spawn@04636 spawn@0465a demolish@03512 voice23032] 2d79ec57
+232 0598d 2C counter:at1 chain[0598d 05ba7:20 04f42:F3 04f66:F3 04f8a:F3 036b2:F3 04612:F3 04636:F3 0465a:F3 03512:1B 034a6:ED] first[hint4 spawn@04f42 spawn@04f66 spawn@04f8a spawn@036b2 spawn@04612 spawn@04636 spawn@0465a demolish@03512 voice23032] second[spawn@04f42 spawn@04f66 spawn@04f8a spawn@036b2 spawn@04612 spawn@04636 spawn@0465a voice23032] 5644bacf
 232 059c7 00 - chain[059c7] first[-] second[-] 8070f2f3
 232 05a01 DB chain chain[05a01] first[-] second[-] 84736c9c
 232 05a25 5C chain chain[05a25 05a01:DB] first[-] second[-] aefa01db
-232 05a5f EF use:eye/3d/r60+26/always/nolatch chain[05a5f* 04fe8:E0 05a25:5C 05a01:DB] first[snd45 snd40 move@05a25:slideY-128] second[snd45 snd40 move@05a25:slideY+128] ec71ca4b
-232 05a99 EF use:eye/3d/r60+26/always/nolatch chain[05a99* 0500c:E0 05a25:5C 05a01:DB] first[snd45 snd40 move@05a25:slideY-128] second[snd45 snd40 move@05a25:slideY+128] a3ba87cc
-232 05ad3 EF use:eye/3d/r60+26/always/nolatch chain[05ad3* 05054:E0 04eaa:5C 04d90:DB] first[snd45 snd40 move@04eaa:slideY-128] second[snd45 snd40 move@04eaa:slideY+128] 9ed748ab
-232 05b0d EF use:eye/3d/r60+26/always/nolatch chain[05b0d* 05030:E0 04eaa:5C 04d90:DB] first[snd45 snd40 move@04eaa:slideY-128] second[snd45 snd40 move@04eaa:slideY+128] fb2c797d
+232 05a5f EF use:eye/3d/r600/always/nolatch chain[05a5f* 04fe8:E0 05a25:5C 05a01:DB] first[snd45 snd40 move@05a25:slideY-128] second[snd45 snd40 move@05a25:slideY+128] 7b31892b
+232 05a99 EF use:eye/3d/r600/always/nolatch chain[05a99* 0500c:E0 05a25:5C 05a01:DB] first[snd45 snd40 move@05a25:slideY-128] second[snd45 snd40 move@05a25:slideY+128] 92d2c58d
+232 05ad3 EF use:eye/3d/r600/always/nolatch chain[05ad3* 05054:E0 04eaa:5C 04d90:DB] first[snd45 snd40 move@04eaa:slideY-128] second[snd45 snd40 move@04eaa:slideY+128] 8897bea7
+232 05b0d EF use:eye/3d/r600/always/nolatch chain[05b0d* 05030:E0 04eaa:5C 04d90:DB] first[snd45 snd40 move@04eaa:slideY-128] second[snd45 snd40 move@04eaa:slideY+128] 5d4a05e5
 232 05ba7 20 chain chain[05ba7 04f42:F3 04f66:F3 04f8a:F3 036b2:F3 04612:F3 04636:F3 0465a:F3 03512:1B 034a6:ED] first[-] second[-] 72fb060d
 232 05c71 E1 chain chain[05c71 0605e:37] first[-] second[-] 21f567cc
 232 05dc1 37 chain chain[05dc1 0456c:1B] first[-] second[-] e47d0793
@@ -1216,12 +1216,12 @@ map 232 src 70a3667fd935a804 nodes 152 chains 72 warn unreachable:7,even_fan_in:
 232 05f18 E1 chain chain[05f18 05f76:37 05ed0:26] first[-] second[-] dad68263
 232 05f3c 37 chain chain[05f3c 05eac:26] first[-] second[-] 02dbb404
 232 05f76 37 chain chain[05f76 05ed0:26] first[-] second[-] 5174b73d
-232 05fb0 EF use:eye/3d/r60+26/always/nolatch chain[05fb0* 05f18:E1 05f76:37 05ed0:26] first[snd46 obj0 move@05f76:rotY+1024] second[snd46 move@05f76:rotY-1024] 0ccc8011
-232 05fea EF use:eye/3d/r60+26/always/nolatch chain[05fea* 05ef4:E1 05f3c:37 05eac:26] first[snd46 obj0 move@05f3c:rotY+1024] second[snd46 move@05f3c:rotY-1024] cbb537b7
-232 06024 EF use:eye/3d/r60+26/always/nolatch chain[06024* 05c71:E1 0605e:37] first[snd46 move@0605e:rotY+1024] second[snd46 move@0605e:rotY-1024] be0b7b98
+232 05fb0 EF use:eye/3d/r600/always/nolatch chain[05fb0* 05f18:E1 05f76:37 05ed0:26] first[snd46 obj0 move@05f76:rotY+1024] second[snd46 move@05f76:rotY-1024] f197eb6b
+232 05fea EF use:eye/3d/r600/always/nolatch chain[05fea* 05ef4:E1 05f3c:37 05eac:26] first[snd46 obj0 move@05f3c:rotY+1024] second[snd46 move@05f3c:rotY-1024] 0247144b
+232 06024 EF use:eye/3d/r600/always/nolatch chain[06024* 05c71:E1 0605e:37] first[snd46 move@0605e:rotY+1024] second[snd46 move@0605e:rotY-1024] 76d138d8
 232 0605e 37 chain chain[0605e] first[-] second[-] 799b1ec5
 232 06098 E1 chain chain[06098 05dc1:37 0456c:1B] first[-] second[-] ff6bfd6d
-232 060bc EF use:eye/3d/r60+26/always/nolatch chain[060bc* 0690c:E8 06098:E1 05dc1:37 0456c:1B] first[snd111 snd46 demolish@0456c move@05dc1:rotY+1024] second[snd111 snd46 demolish@0456c move@05dc1:rotY-1024] e0a78e26
+232 060bc EF use:eye/3d/r600/always/nolatch chain[060bc* 0690c:E8 06098:E1 05dc1:37 0456c:1B] first[snd111 snd46 demolish@0456c move@05dc1:rotY+1024] second[snd111 snd46 move@05dc1:rotY-1024] a19f5f97
 232 062c7 00 - chain[062c7] first[-] second[-] 3a06ead6
 232 062f7 00 - chain[062f7] first[-] second[-] da73d868
 232 06327 00 - chain[06327] first[-] second[-] d78f3a1e
@@ -1247,7 +1247,7 @@ map 233 src acab04cb2f3fc358 nodes 54 chains 34 warn unreachable:8,even_fan_in:3
 233 03665 23 chain chain[03665 02b7c:ED] first[-] second[-] 6a1de33d
 233 0381f EF use:eye/3d/r60+26/always/nolatch chain[0381f* 03665:23 02b7c:ED] first[hint7 voice23035] second[voice23035] 4c4ea763
 233 03b7d ED chain chain[03b7d] first[-] second[-] 1ac3da9a
-233 03c01 EF use:eye/3d/r60+26/always/nolatch chain[03c01* 04148:E1 04124:E3 03ce9:A6] first[snd46 snd77 move@03ce9:slideY-688] second[snd46 snd77 move@03ce9:slideY+688] 6ef6c1b9
+233 03c01 EF use:eye/3d/r600/always/nolatch chain[03c01* 04148:E1 04124:E3 03ce9:A6] first[snd46 snd77 move@03ce9:slideY-688] second[snd46 snd77 move@03ce9:slideY+688] 5199a76a
 233 03ce9 A6 chain chain[03ce9] first[-] second[-] 1833253a
 233 03d23 EF use:eye/3d/r60+26/always/nolatch chain[03d23* 03d8f:DB 03db3:F0] first[snd40 exit235/0] second[-] 7c3fb6f1
 233 03d47 EF use:eye/3d/r60+26/always/nolatch chain[03d47* 03d8f:DB 03db3:F0] first[snd40 exit235/0] second[-] fbdd7b89
@@ -1281,11 +1281,11 @@ map 233 src acab04cb2f3fc358 nodes 54 chains 34 warn unreachable:8,even_fan_in:3
 233 04fe7 00 - chain[04fe7] first[-] second[-] 15a055c7
 233 050a7 00 - chain[050a7] first[-] second[-] ef643aaa
 233 0516e 02 - chain[0516e] first[-] second[-] 8209e443
-233 054be EF use:eye/3d/r60+26/always/nolatch chain[054be* 05616:E1 055f2:E4 04f4d:5C] first[snd46 snd93 move@04f4d:slideY-128] second[snd46 snd93 move@04f4d:slideY+128] c3204ece
-233 054f8 EF use:eye/3d/r60+26/always/nolatch chain[054f8* 05616:E1 055f2:E4 04f4d:5C] first[snd46 snd93 move@04f4d:slideY-128] second[snd46 snd93 move@04f4d:slideY+128] 2ff60b99
+233 054be EF use:eye/3d/r600/always/nolatch chain[054be* 05616:E1 055f2:E4 04f4d:5C] first[snd46 snd93 move@04f4d:slideY-128] second[snd46 snd93 move@04f4d:slideY+128] 5079a013
+233 054f8 EF use:eye/3d/r600/always/nolatch chain[054f8* 05616:E1 055f2:E4 04f4d:5C] first[snd46 snd93 move@04f4d:slideY-128] second[snd46 snd93 move@04f4d:slideY+128] 2ff13907
 233 055f2 E4 chain chain[055f2 04f4d:5C] first[-] second[-] 60a9539d
 233 05616 E1 chain chain[05616 055f2:E4 04f4d:5C] first[-] second[-] 5b07ea02
-233 05fe6 EF use:eye/3d/r60+26/always/nolatch chain[05fe6*] first[-] second[-] 4bec615e
+233 05fe6 EF use:eye/3d/r600/always/nolatch chain[05fe6*] first[-] second[-] d29dddbe
 map 234 src 0e8d643f91c2895d nodes 86 chains 71 warn unreachable:1,even_fan_in:3
 234 0659c 00 - chain[0659c] first[-] second[-] 2f9ddc5b
 234 066d3 1C chain chain[066d3] first[-] second[-] 7cad2a24
@@ -1523,8 +1523,8 @@ map 239 src 70eae1827c956bca nodes 61 chains 51
 239 05dfc 33 chain chain[05dfc 05ce3:33 060cc:33 060a8:33] first[-] second[-] 0dd5f132
 239 05e20 33 chain chain[05e20 05dfc:33 05ce3:33 060cc:33 060a8:33] first[-] second[-] bbf79d33
 239 05e4e EB chain chain[05e4e 05e20:33 05dfc:33 05ce3:33 060cc:33 060a8:33] first[-] second[-] d31b6d37
-239 05ea2 EF use:eye/3d/r60+26/always/nolatch chain[05ea2*] first[-] second[-] 1a7184c9
-239 05f02 EF use:eye/3d/r60+26/always/nolatch chain[05f02*] first[-] second[-] a0588ecf
+239 05ea2 EF use:eye/3d/r600/always/nolatch chain[05ea2*] first[-] second[-] cd128f46
+239 05f02 EF use:eye/3d/r600/always/nolatch chain[05f02*] first[-] second[-] f838e306
 239 05f32 1B - chain[05f32] first[-] second[-] fd971eae
 239 05f62 1B - chain[05f62] first[-] second[-] 8888a1fd
 239 05fa9 1B - chain[05fa9] first[-] second[-] b0089b7c
@@ -2051,15 +2051,15 @@ map 251 src 6820d19ff21bea00 nodes 17 chains 12 warn unreachable:1
 251 0332b 00 - chain[0332b] first[-] second[-] 2ccab009
 251 037fe ED chain chain[037fe] first[-] second[-] 3dc6fa5a
 map 252 src 66cd18dbcde736dc nodes 48 chains 28 warn unreachable:2
-252 025c3 EF use:eye/3d/r60+26/always/nolatch chain[025c3* 04308:1B 042d8:1B 02987:8E 0485d:E4] first[demolish@04308 demolish@042d8 snd93 move@02987:swingX-256] second[demolish@04308 demolish@042d8 snd93 move@02987:swingX+256] 757727ca
+252 025c3 EF use:eye/3d/r60+26/always/nolatch chain[025c3* 04308:1B 042d8:1B 02987:8E 0485d:E4] first[demolish@04308 demolish@042d8 snd93 move@02987:swingX-256] second[snd93 move@02987:swingX+256] a18d5558
 252 0260a EF use:eye/3d/r60+26/always/nolatch chain[0260a* 040a8:AA 047e5:EA] first[snd113 move@040a8:swingY-512] second[snd113 move@040a8:swingY+512] ca0959fb
-252 02786 EF use:eye/3d/r60+26/always/nolatch chain[02786* 0429e:1B] first[demolish@0429e] second[demolish@0429e] 96142308
+252 02786 EF use:eye/3d/r60+26/always/nolatch chain[02786* 0429e:1B] first[demolish@0429e] second[-] fd5bec2c
 252 027fd EF use:eye/3d/r60+26/always/nolatch chain[027fd* 04057:A9 04809:EA] first[snd113 move@04057:swingY+512] second[snd113 move@04057:swingY-512] 64418ebf
 252 0282d E0 chain chain[0282d] first[-] second[-] a37ec837
-252 02874 EF use:eye/3d/r60+26/always/nolatch chain[02874* 04250:1B] first[demolish@04250] second[demolish@04250] 22a8b46d
+252 02874 EF use:eye/3d/r60+26/always/nolatch chain[02874* 04250:1B] first[demolish@04250] second[-] c2c13122
 252 02987 8E chain chain[02987 0485d:E4] first[-] second[-] 93c07798
 252 02a15 EF use:eye/3d/r60+26/always/nolatch chain[02a15*] first[-] second[-] fa2922fa
-252 02a45 EF use:eye/3d/r60+26/always/nolatch chain[02a45* 043de:1B 04418:1B 04452:1B 039c0:02] first[demolish@043de demolish@04418 demolish@04452 light_flicker@039c0] second[demolish@043de demolish@04418 demolish@04452] 6b4db9e2
+252 02a45 EF use:eye/3d/r60+26/always/nolatch chain[02a45* 043de:1B 04418:1B 04452:1B 039c0:02] first[demolish@043de demolish@04418 demolish@04452 light_flicker@039c0] second[-] 34a48481
 252 02c08 00 - chain[02c08] first[-] second[-] c95b2216
 252 02c4f 00 - chain[02c4f] first[-] second[-] 4225a32b
 252 02cdf 00 - chain[02cdf] first[-] second[-] fb0433d7
@@ -2075,7 +2075,7 @@ map 252 src 66cd18dbcde736dc nodes 48 chains 28 warn unreachable:2
 252 0362d EF use:eye/3d/r60+26/always/nolatch chain[0362d* 03651:EA 03675:F0] first[snd113 exit253/0] second[-] f1d9bf81
 252 03651 EA chain chain[03651 03675:F0] first[-] second[-] 001cde38
 252 03675 F0 touch:feet/2dw/r90/w512,chain chain[03675] first[exit253/0] second[-] ef3311ce
-252 0391d EF use:eye/3d/r60+26/always/nolatch chain[0391d*] first[-] second[-] 821dbdcf
+252 0391d EF use:eye/3d/r600/always/nolatch chain[0391d*] first[-] second[-] ca9284eb
 252 0399d 02 - chain[0399d] first[-] second[-] 7dca2e59
 252 039c0 02 chain chain[039c0] first[-] second[-] 73293f6f
 252 03a06 02 chain chain[03a06] first[-] second[-] c60d141f
@@ -2119,7 +2119,7 @@ map 254 src 83ba15c318611c86 nodes 92 chains 53 warn unreachable:1,even_fan_in:2
 254 039a0 EF use:eye/3d/r60+26/always/nolatch chain[039a0*] first[-] second[-] 73ef1416
 254 03af0 F0 touch:feet/2dw/r90/w512 chain[03af0] first[exit250/0] second[-] f9eac22f
 254 03b14 EE - chain[03b14] first[-] second[-] 2331c3ea
-254 03e07 EF use:eye/3d/r60+26/always/nolatch chain[03e07* 03eff:E2 0509d:5D] first[snd47 move@0509d:slideY+256] second[snd47 move@0509d:slideY-256] 44dfc938
+254 03e07 EF use:eye/3d/r600/always/nolatch chain[03e07* 03eff:E2 0509d:5D] first[snd47 move@0509d:slideY+256] second[snd47 move@0509d:slideY-256] 326dd410
 254 03ecf 5D chain chain[03ecf] first[-] second[-] 6e182d21
 254 03eff E2 chain chain[03eff 0509d:5D] first[-] second[-] 676663d2
 254 04011 EE - chain[04011] first[-] second[-] cc22636c
@@ -2132,31 +2132,31 @@ map 254 src 83ba15c318611c86 nodes 92 chains 53 warn unreachable:1,even_fan_in:2
 254 04d59 EE - chain[04d59] first[-] second[-] 23aaeb09
 254 04d7d EE - chain[04d7d] first[-] second[-] 72fb93b1
 254 04ff8 EE - chain[04ff8] first[-] second[-] 8f4ace50
-254 0501c EF use:eye/3d/r60+26/always/nolatch chain[0501c* 050cd:E2 04bf1:5D] first[snd47 move@04bf1:slideY+256] second[snd47 move@04bf1:slideY-256] 09ea3341
+254 0501c EF use:eye/3d/r600/always/nolatch chain[0501c* 050cd:E2 04bf1:5D] first[snd47 move@04bf1:slideY+256] second[snd47 move@04bf1:slideY-256] 012d8652
 254 0509d 5D chain chain[0509d] first[-] second[-] cc43e34f
 254 050cd E2 chain chain[050cd 04bf1:5D] first[-] second[-] 10f2b02a
 254 051f7 ED chain chain[051f7] first[-] second[-] 2175a9f4
-254 0521b EF use:eye/3d/r60+26/always/nolatch chain[0521b* 05255:E2 04059:5D] first[snd47 move@04059:slideY+256] second[snd47 move@04059:slideY-256] f0df87e9
+254 0521b EF use:eye/3d/r600/always/nolatch chain[0521b* 05255:E2 04059:5D] first[snd47 move@04059:slideY+256] second[snd47 move@04059:slideY-256] 995005c0
 254 05255 E2 chain chain[05255 04059:5D] first[-] second[-] f9218e9b
 254 0529c F1 prox:eye/3d/r256/onchain/latch chain[0529c 052d6:1D 051f7:ED] first[hint1 voice25029] second[-] 39c21d0c
 254 052d6 1D chain chain[052d6 051f7:ED] first[-] second[-] 6c5c05b9
 254 05364 EE - chain[05364] first[-] second[-] c330275e
 254 05388 EE - chain[05388] first[-] second[-] a4acb14c
 254 053ac E2 chain chain[053ac 065af:DA 0624a:E9] first[-] second[-] 8f8ccc81
-254 053d0 EF use:eye/3d/r60+26/always/nolatch chain[053d0* 06515:78 063b9:5D 064a1:5B 053ac:E2 065af:DA 0624a:E9] first[snd47 water+112 snd112 move@06515:slideZ-256 move@063b9:slideY+256 move@064a1:slideY+128] second[snd47 water-112 snd112 move@06515:slideZ+256 move@063b9:slideY-256 move@064a1:slideY-128] 405e0cae
+254 053d0 EF use:eye/3d/r600/always/nolatch chain[053d0* 06515:78 063b9:5D 064a1:5B 053ac:E2 065af:DA 0624a:E9] first[snd47 water+112 snd112 move@06515:slideZ-256 move@063b9:slideY+256 move@064a1:slideY+128] second[snd47 water-112 snd112 move@06515:slideZ+256 move@063b9:slideY-256 move@064a1:slideY-128] a1686c45
 254 0543a 5D chain chain[0543a 06467:5B 066b4:E2 065af:DA 0624a:E9] first[-] second[-] 258758e2
 254 05474 77 chain chain[05474 0543a:5D 06467:5B 066b4:E2 065af:DA 0624a:E9] first[-] second[-] 583e92dd
 254 054de E2 chain chain[054de 065af:DA 0624a:E9] first[-] second[-] 79cb4bac
-254 05502 EF use:eye/3d/r60+26/always/nolatch chain[05502* 064db:43 05f34:5D 063f3:5B 054de:E2 065af:DA 0624a:E9] first[snd47 water+112 snd112 move@064db:slideX+256 move@05f34:slideY+256 move@063f3:slideY+128] second[snd47 water-112 snd112 move@064db:slideX-256 move@05f34:slideY-256 move@063f3:slideY-128] dac5c497
+254 05502 EF use:eye/3d/r600/always/nolatch chain[05502* 064db:43 05f34:5D 063f3:5B 054de:E2 065af:DA 0624a:E9] first[snd47 water+112 snd112 move@064db:slideX+256 move@05f34:slideY+256 move@063f3:slideY+128] second[snd47 water-112 snd112 move@064db:slideX-256 move@05f34:slideY-256 move@063f3:slideY-128] 28a3a37a
 254 0553c EF use:eye/3d/r60+26/always/nolatch chain[0553c* 0562c:E2 05608:F0] first[snd47 exit250/92] second[-] 1252d016
 254 05608 F0 touch:feet/2dw/r90/w512,chain chain[05608] first[exit250/92] second[-] f19a4c1f
 254 0562c E2 chain chain[0562c 05608:F0] first[-] second[-] 10e4f779
 254 056bc EE - chain[056bc] first[-] second[-] 5881d301
 254 056e0 EE - chain[056e0] first[-] second[-] 963e28ed
-254 05728 EF use:eye/3d/r60+26/always/nolatch chain[05728* 058b0:E2 03ecf:5D] first[snd47 move@03ecf:slideY+256] second[snd47 move@03ecf:slideY-256] c0b2b5cc
+254 05728 EF use:eye/3d/r600/always/nolatch chain[05728* 058b0:E2 03ecf:5D] first[snd47 move@03ecf:slideY+256] second[snd47 move@03ecf:slideY-256] 6334b2ea
 254 058b0 E2 chain chain[058b0 03ecf:5D] first[-] second[-] aa5d3b83
 254 05986 EE - chain[05986] first[-] second[-] 80ffeae6
-254 059aa EF use:eye/3d/r60+26/always/nolatch chain[059aa* 05ad2:E2 05a72:5D] first[snd47 move@05a72:slideY+256] second[snd47 move@05a72:slideY-256] 708c4104
+254 059aa EF use:eye/3d/r600/always/nolatch chain[059aa* 05ad2:E2 05a72:5D] first[snd47 move@05a72:slideY+256] second[snd47 move@05a72:slideY-256] 6170bc1e
 254 05a72 5D chain chain[05a72] first[-] second[-] 301109cc
 254 05ad2 E2 chain chain[05ad2 05a72:5D] first[-] second[-] 88ceb517
 254 05d0f EE - chain[05d0f] first[-] second[-] 3a4982b5
@@ -2167,8 +2167,8 @@ map 254 src 83ba15c318611c86 nodes 92 chains 53 warn unreachable:1,even_fan_in:2
 254 06226 EE - chain[06226] first[-] second[-] 2bf32187
 254 0624a E9 chain chain[0624a] first[-] second[-] 5728b766
 254 062f1 E2 chain chain[062f1 065af:DA 0624a:E9] first[-] second[-] 4d724cfc
-254 06315 EF use:eye/3d/r60+26/always/nolatch chain[06315* 05474:77 0543a:5D 06467:5B 066b4:E2 065af:DA 0624a:E9] first[snd47 water+112 snd112 move@05474:slideZ+256 move@0543a:slideY+256 move@06467:slideY+128] second[snd47 water-112 snd112 move@05474:slideZ-256 move@0543a:slideY-256 move@06467:slideY-128] d07070a7
-254 0634f EF use:eye/3d/r60+26/always/nolatch chain[0634f* 06772:44 06738:5D 0642d:5B 062f1:E2 065af:DA 0624a:E9] first[snd47 water+112 snd112 move@06772:slideX-256 move@06738:slideY+256 move@0642d:slideY+128] second[snd47 water-112 snd112 move@06772:slideX+256 move@06738:slideY-256 move@0642d:slideY-128] 95e53b84
+254 06315 EF use:eye/3d/r600/always/nolatch chain[06315* 05474:77 0543a:5D 06467:5B 066b4:E2 065af:DA 0624a:E9] first[snd47 water+112 snd112 move@05474:slideZ+256 move@0543a:slideY+256 move@06467:slideY+128] second[snd47 water-112 snd112 move@05474:slideZ-256 move@0543a:slideY-256 move@06467:slideY-128] 9922d5e3
+254 0634f EF use:eye/3d/r600/always/nolatch chain[0634f* 06772:44 06738:5D 0642d:5B 062f1:E2 065af:DA 0624a:E9] first[snd47 water+112 snd112 move@06772:slideX-256 move@06738:slideY+256 move@0642d:slideY+128] second[snd47 water-112 snd112 move@06772:slideX+256 move@06738:slideY-256 move@0642d:slideY-128] 5bedc37c
 254 063b9 5D chain chain[063b9 064a1:5B 053ac:E2 065af:DA 0624a:E9] first[-] second[-] bd84df37
 254 063f3 5B chain chain[063f3 054de:E2 065af:DA 0624a:E9] first[-] second[-] d93de03c
 254 0642d 5B chain chain[0642d 062f1:E2 065af:DA 0624a:E9] first[-] second[-] 81370fb6
@@ -2193,7 +2193,7 @@ map 254 src 83ba15c318611c86 nodes 92 chains 53 warn unreachable:1,even_fan_in:2
 254 078a5 EE - chain[078a5] first[-] second[-] a17cd3f8
 254 0797b 02 - chain[0797b] first[-] second[-] d4540796
 254 07db2 EE - chain[07db2] first[-] second[-] 04d1b19a
-254 07e1e EF use:eye/3d/r60+26/always/nolatch chain[07e1e* 07e58:5B 07fed:E2 092cd:D7 09868:1E 092a9:ED 08057:E9] first[snd47 water-170 hint2 voice25030 snd112 move@07e58:slideY+128] second[snd47 water-170 voice25030 snd112 move@07e58:slideY-128] 11bda8c8
+254 07e1e EF use:eye/3d/r600/always/nolatch chain[07e1e* 07e58:5B 07fed:E2 092cd:D7 09868:1E 092a9:ED 08057:E9] first[snd47 water-170 hint2 voice25030 snd112 move@07e58:slideY+128] second[snd47 water-170 voice25030 snd112 move@07e58:slideY-128] 948c0384
 254 07e58 5B chain chain[07e58 07fed:E2 092cd:D7 09868:1E 092a9:ED 08057:E9] first[-] second[-] 8235ffec
 254 07fed E2 chain chain[07fed 092cd:D7 09868:1E 092a9:ED 08057:E9] first[-] second[-] b14c93df
 254 08057 E9 chain chain[08057] first[-] second[-] df593ece
@@ -2502,13 +2502,13 @@ map 270 src 990b5a0e0f0f0b6c nodes 143 chains 138 warn unreachable:41
 270 08137 1C - chain[08137] first[-] second[-] d9ea5975
 270 081a3 EF use:eye/3d/r60+26/always/nolatch chain[081a3*] first[-] second[-] 78be89de
 270 0838d BF - chain[0838d] first[-] second[-] 287e6387
-270 083f7 EF use:eye/3d/r60+26/always/nolatch chain[083f7*] first[-] second[-] 0dd9db75
+270 083f7 EF use:eye/3d/r600/always/nolatch chain[083f7*] first[-] second[-] 199be58b
 270 08457 5C - chain[08457] first[-] second[-] ccc7c6ee
 270 08539 F0 touch:feet/2dw/r90/w512 chain[08539] first[exit283/12] second[-] 1ec04fe3
 270 0855d DB - chain[0855d] first[-] second[-] 9142bcc7
 270 08581 E3 - chain[08581] first[-] second[-] 3c3e9fce
-270 085bb EF use:eye/3d/r60+26/always/nolatch chain[085bb*] first[-] second[-] 295dcddc
-270 085f5 EF use:eye/3d/r60+26/always/nolatch chain[085f5*] first[-] second[-] fa0abfc3
+270 085bb EF use:eye/3d/r600/always/nolatch chain[085bb*] first[-] second[-] 26d40d1d
+270 085f5 EF use:eye/3d/r600/always/nolatch chain[085f5*] first[-] second[-] 42e86ba3
 270 0862f 00 - chain[0862f] first[-] second[-] 96808006
 270 0865f 00 - chain[0865f] first[-] second[-] 0b59039a
 270 0868f 00 - chain[0868f] first[-] second[-] f9961884
@@ -2518,8 +2518,8 @@ map 270 src 990b5a0e0f0f0b6c nodes 143 chains 138 warn unreachable:41
 270 087a7 5E - chain[087a7] first[-] second[-] 7e2f1ae7
 270 087e1 DB - chain[087e1] first[-] second[-] 6d8b3e56
 270 08805 E3 - chain[08805] first[-] second[-] e06f8fec
-270 0883f EF use:eye/3d/r60+26/always/nolatch chain[0883f*] first[-] second[-] 080ce997
-270 08879 EF use:eye/3d/r60+26/always/nolatch chain[08879*] first[-] second[-] a7c40bcc
+270 0883f EF use:eye/3d/r600/always/nolatch chain[0883f*] first[-] second[-] cfa4fb1d
+270 08879 EF use:eye/3d/r600/always/nolatch chain[08879*] first[-] second[-] 3cf264e0
 270 08913 EF use:eye/3d/r60+26/always/nolatch chain[08913*] first[-] second[-] 88501dc0
 270 0894d EF use:eye/3d/r60+26/always/nolatch chain[0894d*] first[-] second[-] 8c6773a0
 270 08987 EF use:eye/3d/r60+26/always/nolatch chain[08987*] first[-] second[-] feb24ae8
@@ -2530,7 +2530,7 @@ map 270 src 990b5a0e0f0f0b6c nodes 143 chains 138 warn unreachable:41
 270 08af5 00 - chain[08af5] first[-] second[-] 9765ab84
 270 08b25 00 - chain[08b25] first[-] second[-] 4ef2c10c
 270 08b55 45 - chain[08b55] first[-] second[-] 7b1e2a1c
-270 08bbf EF use:eye/3d/r60+26/always/nolatch chain[08bbf*] first[-] second[-] 64264c19
+270 08bbf EF use:eye/3d/r600/always/nolatch chain[08bbf*] first[-] second[-] 5307ea1a
 270 08cb9 E3 - chain[08cb9] first[-] second[-] 5a18144b
 270 08d9b EF use:eye/3d/r60+26/always/nolatch chain[08d9b*] first[-] second[-] 6e65e8de
 270 08e07 EF use:eye/3d/r60+26/always/nolatch chain[08e07*] first[-] second[-] ce5d56d0
@@ -2540,11 +2540,11 @@ map 270 src 990b5a0e0f0f0b6c nodes 143 chains 138 warn unreachable:41
 270 08edf F0 touch:feet/2dw/r90/w512 chain[08edf] first[exit281/16] second[-] 27f810d8
 270 08f03 1C - chain[08f03] first[-] second[-] 6bf719cb
 270 08f27 EF use:eye/3d/r60+26/always/nolatch chain[08f27*] first[-] second[-] fbb7fa57
-270 09173 EF use:eye/3d/r60+26/always/nolatch chain[09173*] first[-] second[-] a5ed480b
-270 091ad EF use:eye/3d/r60+26/always/nolatch chain[091ad*] first[-] second[-] 3c73bc82
-270 091e7 EF use:eye/3d/r60+26/always/nolatch chain[091e7*] first[-] second[-] 50e6192b
-270 09221 EF use:eye/3d/r60+26/always/nolatch chain[09221*] first[-] second[-] 77d0b631
-270 0925b EF use:eye/3d/r60+26/always/nolatch chain[0925b*] first[-] second[-] b436c906
+270 09173 EF use:eye/3d/r600/always/nolatch chain[09173*] first[-] second[-] fd03325b
+270 091ad EF use:eye/3d/r600/always/nolatch chain[091ad*] first[-] second[-] 0670ead9
+270 091e7 EF use:eye/3d/r600/always/nolatch chain[091e7*] first[-] second[-] 33d63039
+270 09221 EF use:eye/3d/r600/always/nolatch chain[09221*] first[-] second[-] eb062c2a
+270 0925b EF use:eye/3d/r600/always/nolatch chain[0925b*] first[-] second[-] 50860f9e
 270 092c5 E0 - chain[092c5] first[-] second[-] 2be4f23a
 270 092ff E0 - chain[092ff] first[-] second[-] cccb8db5
 270 09339 E0 - chain[09339] first[-] second[-] ddd2113d
@@ -2556,8 +2556,8 @@ map 270 src 990b5a0e0f0f0b6c nodes 143 chains 138 warn unreachable:41
 270 0958d DB - chain[0958d] first[-] second[-] 483748e8
 270 095b1 F0 touch:feet/2dw/r90/w512 chain[095b1] first[exit283/10] second[-] d3aa746d
 270 0961d E3 - chain[0961d] first[-] second[-] ff308700
-270 09687 EF use:eye/3d/r60+26/always/nolatch chain[09687*] first[-] second[-] 350e868c
-270 096c1 EF use:eye/3d/r60+26/always/nolatch chain[096c1*] first[-] second[-] f18c2071
+270 09687 EF use:eye/3d/r600/always/nolatch chain[09687*] first[-] second[-] 5a88dd46
+270 096c1 EF use:eye/3d/r600/always/nolatch chain[096c1*] first[-] second[-] fc9f1a57
 270 096fb 00 - chain[096fb] first[-] second[-] c43ac3b5
 270 0972b 00 - chain[0972b] first[-] second[-] d91caf8c
 270 0975b 00 - chain[0975b] first[-] second[-] b541373d
@@ -2573,9 +2573,9 @@ map 270 src 990b5a0e0f0f0b6c nodes 143 chains 138 warn unreachable:41
 270 09959 43 - chain[09959] first[-] second[-] 8f56e265
 270 09a53 EF use:eye/3d/r60+26/always/nolatch chain[09a53*] first[-] second[-] b5c525fe
 270 09a77 1C - chain[09a77] first[-] second[-] 87d7a3e1
-270 09b13 EF use:eye/3d/r60+26/always/nolatch chain[09b13*] first[-] second[-] 86849ff7
+270 09b13 EF use:eye/3d/r600/always/nolatch chain[09b13*] first[-] second[-] 78a0522a
 270 09bdd E3 - chain[09bdd] first[-] second[-] df8f68de
-270 09c17 EF use:eye/3d/r60+26/always/nolatch chain[09c17*] first[-] second[-] 1f790fea
+270 09c17 EF use:eye/3d/r600/always/nolatch chain[09c17*] first[-] second[-] a050ce2c
 270 09c51 5B - chain[09c51] first[-] second[-] ee50014e
 270 09cbb BE - chain[09cbb] first[-] second[-] 6a739f63
 270 09cf5 5C - chain[09cf5] first[-] second[-] 82678fdd
@@ -2653,13 +2653,13 @@ map 272 src 1c332a25f353a0dd nodes 129 chains 88 warn unreachable:2,even_fan_in:
 272 08137 1C - chain[08137 081a3:EF*] first[-] second[-] a5e2c3f0
 272 081a3 EF use:eye/3d/r60+26/always/nolatch,chain chain[081a3*] first[-] second[-] 8d3b62a0
 272 0838d BF chain chain[0838d] first[-] second[-] c3974406
-272 083f7 EF use:eye/3d/r60+26/always/nolatch chain[083f7*] first[-] second[-] 0dd9db75
+272 083f7 EF use:eye/3d/r600/always/nolatch chain[083f7*] first[-] second[-] 199be58b
 272 08457 5C chain chain[08457] first[-] second[-] bc27ec8f
 272 08539 F0 touch:feet/2dw/r90/w512,chain chain[08539] first[exit283/12] second[-] e987fa52
 272 0855d DB chain chain[0855d 08539:F0] first[-] second[-] ca15cea9
 272 08581 E3 chain chain[08581 08733:43] first[-] second[-] f97d3ac4
-272 085bb EF use:eye/3d/r60+26/always/nolatch chain[085bb* 08581:E3 08733:43] first[snd77 move@08733:slideX+256] second[snd77 move@08733:slideX-256] 6df3af5d
-272 085f5 EF use:eye/3d/r60+26/always/nolatch chain[085f5* 08581:E3 08733:43] first[snd77 move@08733:slideX+256] second[snd77 move@08733:slideX-256] 5a2aa804
+272 085bb EF use:eye/3d/r600/always/nolatch chain[085bb* 08581:E3 08733:43] first[snd77 move@08733:slideX+256] second[snd77 move@08733:slideX-256] 53c7a40a
+272 085f5 EF use:eye/3d/r600/always/nolatch chain[085f5* 08581:E3 08733:43] first[snd77 move@08733:slideX+256] second[snd77 move@08733:slideX-256] 2d686699
 272 0862f 00 - chain[0862f] first[-] second[-] 96808006
 272 0865f 00 - chain[0865f] first[-] second[-] 0b59039a
 272 0868f 00 - chain[0868f] first[-] second[-] f9961884
@@ -2669,8 +2669,8 @@ map 272 src 1c332a25f353a0dd nodes 129 chains 88 warn unreachable:2,even_fan_in:
 272 087a7 5E chain chain[087a7] first[-] second[-] 13573dcd
 272 087e1 DB chain chain[087e1 087a7:5E] first[-] second[-] e3754009
 272 08805 E3 - chain[08805] first[-] second[-] e06f8fec
-272 0883f EF use:eye/3d/r60+26/always/nolatch chain[0883f* 087e1:DB 087a7:5E] first[snd40 move@087a7:slideY-256] second[snd40 move@087a7:slideY+256] ab564284
-272 08879 EF use:eye/3d/r60+26/always/nolatch chain[08879* 087e1:DB 087a7:5E] first[snd40 move@087a7:slideY-256] second[snd40 move@087a7:slideY+256] 4e469232
+272 0883f EF use:eye/3d/r600/always/nolatch chain[0883f* 087e1:DB 087a7:5E] first[snd40 move@087a7:slideY-256] second[snd40 move@087a7:slideY+256] 761fe9df
+272 08879 EF use:eye/3d/r600/always/nolatch chain[08879* 087e1:DB 087a7:5E] first[snd40 move@087a7:slideY-256] second[snd40 move@087a7:slideY+256] 7b088b97
 272 08913 EF use:eye/3d/r60+26/always/nolatch chain[08913* 08a59:DB 08a35:F0] first[snd40 exit281/10] second[-] 69b540a6
 272 0894d EF use:eye/3d/r60+26/always/nolatch chain[0894d* 08a59:DB 08a35:F0] first[snd40 exit281/10] second[-] 13aa5daf
 272 08987 EF use:eye/3d/r60+26/always/nolatch chain[08987* 08a59:DB 08a35:F0] first[snd40 exit281/10] second[-] d3d7161a
@@ -2681,7 +2681,7 @@ map 272 src 1c332a25f353a0dd nodes 129 chains 88 warn unreachable:2,even_fan_in:
 272 08af5 00 - chain[08af5] first[-] second[-] 9765ab84
 272 08b25 00 - chain[08b25] first[-] second[-] 4ef2c10c
 272 08b55 45 chain chain[08b55] first[-] second[-] 28c79414
-272 08bbf EF use:eye/3d/r60+26/always/nolatch chain[08bbf* 08cb9:E3 08b55:45] first[snd77 move@08b55:slideX+512] second[snd77 move@08b55:slideX-512] 89e88895
+272 08bbf EF use:eye/3d/r600/always/nolatch chain[08bbf* 08cb9:E3 08b55:45] first[snd77 move@08b55:slideX+512] second[snd77 move@08b55:slideX-512] e1c87c0a
 272 08cb9 E3 chain chain[08cb9 08b55:45] first[-] second[-] cab89362
 272 08d9b EF use:eye/3d/r60+26/always/nolatch chain[08d9b* 08f03:1C] first[hint0] second[-] 888cb3c5
 272 08e07 EF use:eye/3d/r60+26/always/nolatch chain[08e07* 08f03:1C] first[hint0] second[-] 7375dd5e
@@ -2691,11 +2691,11 @@ map 272 src 1c332a25f353a0dd nodes 129 chains 88 warn unreachable:2,even_fan_in:
 272 08edf F0 touch:feet/2dw/r90/w512,chain chain[08edf] first[exit281/16] second[-] e575ec3f
 272 08f03 1C chain chain[08f03] first[-] second[-] 8a00bb17
 272 08f27 EF use:eye/3d/r60+26/always/nolatch chain[08f27* 08f03:1C] first[hint0] second[-] f55a738b
-272 09173 EF use:eye/3d/r60+26/always/nolatch chain[09173* 09295:00] first[-] second[-] e87d7596
-272 091ad EF use:eye/3d/r60+26/always/nolatch chain[091ad* 092c5:E0 09cf5:5C] first[snd45 move@09cf5:slideY-128] second[snd45 move@09cf5:slideY+128] e12c3fc1
-272 091e7 EF use:eye/3d/r60+26/always/nolatch chain[091e7* 092ff:E0 09cbb:BE] first[snd45 move@09cbb:slideX-0] second[snd45 move@09cbb:slideX+0] 32465033
-272 09221 EF use:eye/3d/r60+26/always/nolatch chain[09221* 09373:E0 08457:5C] first[snd45 move@08457:slideY-128] second[snd45 move@08457:slideY+128] 1bca7dbc
-272 0925b EF use:eye/3d/r60+26/always/nolatch chain[0925b* 09339:E0 0838d:BF] first[snd45 move@0838d:slideX+0] second[snd45 move@0838d:slideX-0] 3b71b511
+272 09173 EF use:eye/3d/r600/always/nolatch chain[09173* 09295:00] first[-] second[-] 137f0cdf
+272 091ad EF use:eye/3d/r600/always/nolatch chain[091ad* 092c5:E0 09cf5:5C] first[snd45 move@09cf5:slideY-128] second[snd45 move@09cf5:slideY+128] baaaf8f8
+272 091e7 EF use:eye/3d/r600/always/nolatch chain[091e7* 092ff:E0 09cbb:BE] first[snd45 move@09cbb:slideX-0] second[snd45 move@09cbb:slideX+0] 46b4eee9
+272 09221 EF use:eye/3d/r600/always/nolatch chain[09221* 09373:E0 08457:5C] first[snd45 move@08457:slideY-128] second[snd45 move@08457:slideY+128] f917ff5a
+272 0925b EF use:eye/3d/r600/always/nolatch chain[0925b* 09339:E0 0838d:BF] first[snd45 move@0838d:slideX+0] second[snd45 move@0838d:slideX-0] e2f4f3b0
 272 09295 00 chain chain[09295] first[-] second[-] 17b95d18
 272 092c5 E0 chain chain[092c5 09cf5:5C] first[-] second[-] 71e08caa
 272 092ff E0 chain chain[092ff 09cbb:BE] first[-] second[-] 585556b6
@@ -2708,8 +2708,8 @@ map 272 src 1c332a25f353a0dd nodes 129 chains 88 warn unreachable:2,even_fan_in:
 272 0958d DB chain chain[0958d 095b1:F0] first[-] second[-] 34e030d5
 272 095b1 F0 touch:feet/2dw/r90/w512,chain chain[095b1] first[exit283/10] second[-] 3421025a
 272 0961d E3 chain chain[0961d 09959:43] first[-] second[-] 71859129
-272 09687 EF use:eye/3d/r60+26/always/nolatch chain[09687* 0961d:E3 09959:43] first[snd77 move@09959:slideX+256] second[snd77 move@09959:slideX-256] 8dc55686
-272 096c1 EF use:eye/3d/r60+26/always/nolatch chain[096c1* 0961d:E3 09959:43] first[snd77 move@09959:slideX+256] second[snd77 move@09959:slideX-256] 4db0e624
+272 09687 EF use:eye/3d/r600/always/nolatch chain[09687* 0961d:E3 09959:43] first[snd77 move@09959:slideX+256] second[snd77 move@09959:slideX-256] 51697747
+272 096c1 EF use:eye/3d/r600/always/nolatch chain[096c1* 0961d:E3 09959:43] first[snd77 move@09959:slideX+256] second[snd77 move@09959:slideX-256] 16939131
 272 096fb 00 - chain[096fb] first[-] second[-] c43ac3b5
 272 0972b 00 - chain[0972b] first[-] second[-] d91caf8c
 272 0975b 00 - chain[0975b] first[-] second[-] b541373d
@@ -2725,9 +2725,9 @@ map 272 src 1c332a25f353a0dd nodes 129 chains 88 warn unreachable:2,even_fan_in:
 272 09959 43 chain chain[09959] first[-] second[-] 767eb5fe
 272 09a53 EF use:eye/3d/r60+26/always/nolatch chain[09a53* 09a77:1C] first[hint0] second[-] ca0d86b1
 272 09a77 1C chain chain[09a77] first[-] second[-] 53a17b58
-272 09b13 EF use:eye/3d/r60+26/always/nolatch chain[09b13* 09bdd:E3 09c51:5B] first[snd77 move@09c51:slideY+128] second[snd77 move@09c51:slideY-128] 77f731de
+272 09b13 EF use:eye/3d/r600/always/nolatch chain[09b13* 09bdd:E3 09c51:5B] first[snd77 move@09c51:slideY+128] second[snd77 move@09c51:slideY-128] a4fd4264
 272 09bdd E3 chain chain[09bdd 09c51:5B] first[-] second[-] 87b00724
-272 09c17 EF use:eye/3d/r60+26/always/nolatch chain[09c17* 09bdd:E3 09c51:5B] first[snd77 move@09c51:slideY+128] second[snd77 move@09c51:slideY-128] b46f6c81
+272 09c17 EF use:eye/3d/r600/always/nolatch chain[09c17* 09bdd:E3 09c51:5B] first[snd77 move@09c51:slideY+128] second[snd77 move@09c51:slideY-128] 300f0bce
 272 09c51 5B chain chain[09c51] first[-] second[-] 502fd8f6
 272 09cbb BE chain chain[09cbb] first[-] second[-] 4630c6ba
 272 09cf5 5C chain chain[09cf5] first[-] second[-] a28609b0
@@ -2783,7 +2783,7 @@ map 280 src b03f14ccfe73ec8d nodes 266 chains 108 warn unreachable:3,even_fan_in
 280 0723f EF use:eye/3d/r60+26/always/nolatch chain[0723f* 0721b:DC 07263:F0] first[snd41 exit284/12] second[-] b413b712
 280 07263 F0 touch:feet/2dw/r90/w512,chain chain[07263] first[exit284/12] second[-] d9fb7dc8
 280 07287 DC chain chain[07287 06702:F3 06584:F3 06560:F3 076dd:5C] first[-] second[-] d692005a
-280 072f3 EF use:eye/3d/r60+26/always/nolatch chain[072f3* 07287:DC 06702:F3 06584:F3 06560:F3 076dd:5C] first[snd41 spawn@06702 spawn@06584 spawn@06560 move@076dd:slideY-128] second[snd41 spawn@06702 spawn@06584 spawn@06560 move@076dd:slideY+128] 088f227d
+280 072f3 EF use:eye/3d/r600/always/nolatch chain[072f3* 07287:DC 06702:F3 06584:F3 06560:F3 076dd:5C] first[snd41 spawn@06702 spawn@06584 spawn@06560 move@076dd:slideY-128] second[snd41 spawn@06702 spawn@06584 spawn@06560 move@076dd:slideY+128] e9bdba17
 280 0732d F3 chain chain[0732d 06696:F3] first[-] second[-] 50671a18
 280 07561 EF use:eye/3d/r60+26/always/nolatch chain[07561* 07777:F3 0677a:F3 0732d:F3 06696:F3] first[spawn@07777 spawn@0677a spawn@0732d spawn@06696] second[spawn@07777 spawn@0677a spawn@0732d spawn@06696] d64b2dec
 280 075e3 EE - chain[075e3] first[-] second[-] c1448c2b
@@ -2804,7 +2804,7 @@ map 280 src b03f14ccfe73ec8d nodes 266 chains 108 warn unreachable:3,even_fan_in
 280 07d5c EE - chain[07d5c] first[-] second[-] 2322517e
 280 07e0e 1C chain chain[07e0e 0c9c0:ED] first[-] second[-] 2ba17db7
 280 07e32 EF use:eye/3d/r60+26/always/nolatch chain[07e32* 07e0e:1C 0c9c0:ED] first[hint0 voice28028] second[voice28028] 610eb8d8
-280 07e86 EF use:eye/3d/r60+26/always/nolatch chain[07e86* 07ec0:00 0cb56:1B] first[demolish@0cb56] second[demolish@0cb56] 1baa66c5
+280 07e86 EF use:eye/3d/r600/always/nolatch chain[07e86* 07ec0:00 0cb56:1B] first[demolish@0cb56] second[-] 7e3ad96c
 280 07ec0 00 chain chain[07ec0 0cb56:1B] first[-] second[-] 8b1053a6
 280 07efa 5C chain chain[07efa 0924e:F3 0922a:F3 09206:F3] first[-] second[-] 966dbc7c
 280 07f88 F3 chain chain[07f88 07fac:F3 07fd0:F3 06a78:F3 06a9c:F3 06ac0:F3] first[-] second[-] 8f68b3bd
@@ -2813,7 +2813,7 @@ map 280 src b03f14ccfe73ec8d nodes 266 chains 108 warn unreachable:3,even_fan_in
 280 081c5 F0 touch:feet/2dw/r90/w512,chain chain[081c5] first[exit283/12] second[-] 072f4257
 280 081e9 DB chain chain[081e9 081c5:F0] first[-] second[-] 81aeddd6
 280 0820d E3 chain chain[0820d 083bf:43 07aca:F3 07aa6:F3 07a82:F3] first[-] second[-] 8e1bc3e5
-280 08281 EF use:eye/3d/r60+26/always/nolatch chain[08281* 0820d:E3 083bf:43 07aca:F3 07aa6:F3 07a82:F3] first[snd77 spawn@07aca spawn@07aa6 spawn@07a82 move@083bf:slideX+256] second[snd77 spawn@07aca spawn@07aa6 spawn@07a82 move@083bf:slideX-256] 1bf0e01a
+280 08281 EF use:eye/3d/r600/always/nolatch chain[08281* 0820d:E3 083bf:43 07aca:F3 07aa6:F3 07a82:F3] first[snd77 spawn@07aca spawn@07aa6 spawn@07a82 move@083bf:slideX+256] second[snd77 spawn@07aca spawn@07aa6 spawn@07a82 move@083bf:slideX-256] d90984c0
 280 082bb 00 - chain[082bb] first[-] second[-] d76f4943
 280 082eb 00 - chain[082eb] first[-] second[-] 99406e4c
 280 0831b 00 - chain[0831b] first[-] second[-] 322213ec
@@ -2826,8 +2826,8 @@ map 280 src b03f14ccfe73ec8d nodes 266 chains 108 warn unreachable:3,even_fan_in
 280 08544 61 chain chain[08544] first[-] second[-] 03786f38
 280 0857e DB chain chain[0857e 08544:61] first[-] second[-] ba7a6e09
 280 085a2 E3 - chain[085a2] first[-] second[-] 4067e0bc
-280 085dc EF use:eye/3d/r60+26/always/nolatch chain[085dc* 0857e:DB 08544:61] first[snd40 move@08544:slideY+512] second[snd40 move@08544:slideY-512] 6f15f7d8
-280 08616 EF use:eye/3d/r60+26/always/nolatch chain[08616* 0857e:DB 08544:61] first[snd40 move@08544:slideY+512] second[snd40 move@08544:slideY-512] d7721538
+280 085dc EF use:eye/3d/r600/always/nolatch chain[085dc* 0857e:DB 08544:61] first[snd40 move@08544:slideY+512] second[snd40 move@08544:slideY-512] a9f5812e
+280 08616 EF use:eye/3d/r600/always/nolatch chain[08616* 0857e:DB 08544:61] first[snd40 move@08544:slideY+512] second[snd40 move@08544:slideY-512] db7cda8b
 280 086e0 1B chain chain[086e0] first[-] second[-] b4efc9ae
 280 08740 1B chain chain[08740 086e0:1B] first[-] second[-] 643cacdc
 280 0877a EF use:eye/3d/r60+26/always/nolatch chain[0877a* 088c0:DB 0889c:F0] first[snd40 exit281/10] second[-] 7a773940
@@ -2838,16 +2838,16 @@ map 280 src b03f14ccfe73ec8d nodes 266 chains 108 warn unreachable:3,even_fan_in
 280 0889c F0 touch:feet/2dw/r90/w512,chain chain[0889c] first[exit281/10] second[-] 555c3e6e
 280 088c0 DB chain chain[088c0 0889c:F0] first[-] second[-] b0fb9357
 280 08980 E2 chain chain[08980] first[-] second[-] ea234dde
-280 089a4 EF use:eye/3d/r60+26/always/nolatch chain[089a4* 09056:EF* 09104:74 08980:E2] first[snd47 move@09104:slideZ-64] second[snd47 move@09104:slideZ+64] aae9e003
-280 089de EF use:eye/3d/r60+26/always/nolatch chain[089de* 08980:E2] first[snd47] second[snd47] bfa77dbe
-280 08a18 EF use:eye/3d/r60+26/always/nolatch chain[08a18* 08bae:EF* 0913e:73 09090:73 09104:74 08980:E2] first[snd47 move@0913e:slideZ+64 move@09090:slideZ+64 move@09104:slideZ-64] second[snd47 move@0913e:slideZ-64 move@09090:slideZ-64 move@09104:slideZ+64] afe6e969
-280 08a52 EF use:eye/3d/r60+26/always/nolatch chain[08a52* 08fd4:F3 08980:E2] first[spawn@08fd4 snd47] second[spawn@08fd4 snd47] 6d825c97
-280 08a8c EF use:eye/3d/r60+26/always/nolatch chain[08a8c* 08bae:EF* 0913e:73 09090:73 09104:74 08980:E2] first[snd47 move@0913e:slideZ+64 move@09090:slideZ+64 move@09104:slideZ-64] second[snd47 move@0913e:slideZ-64 move@09090:slideZ-64 move@09104:slideZ+64] fa6dfa0c
-280 08ac6 EF use:eye/3d/r60+26/always/nolatch chain[08ac6* 08b00:EF* 0913e:73 09090:73 09104:74 08980:E2] first[snd47 move@0913e:slideZ+64 move@09090:slideZ+64 move@09104:slideZ-64] second[snd47 move@0913e:slideZ-64 move@09090:slideZ-64 move@09104:slideZ+64] af925918
-280 08b00 EF use:eye/3d/r60+26/always/nolatch,chain chain[08b00* 0913e:73 09090:73 09104:74 08980:E2] first[snd47 move@0913e:slideZ+64 move@09090:slideZ+64 move@09104:slideZ-64] second[snd47 move@0913e:slideZ-64 move@09090:slideZ-64 move@09104:slideZ+64] f76d4c29
-280 08b3a EF use:eye/3d/r60+26/always/nolatch chain[08b3a* 09090:73 09104:74 08980:E2] first[snd47 move@09090:slideZ+64 move@09104:slideZ-64] second[snd47 move@09090:slideZ-64 move@09104:slideZ+64] 8f4bcd8c
-280 08b74 EF use:eye/3d/r60+26/always/nolatch chain[08b74* 090ca:74 08980:E2] first[snd47 move@090ca:slideZ-64] second[snd47 move@090ca:slideZ+64] a519513a
-280 08bae EF use:eye/3d/r60+26/always/nolatch,chain chain[08bae* 0913e:73 09090:73 09104:74 08980:E2] first[snd47 move@0913e:slideZ+64 move@09090:slideZ+64 move@09104:slideZ-64] second[snd47 move@0913e:slideZ-64 move@09090:slideZ-64 move@09104:slideZ+64] 9dad3c7e
+280 089a4 EF use:eye/3d/r600/always/nolatch chain[089a4* 09056:EF* 09104:74 08980:E2] first[snd47 move@09104:slideZ-64] second[snd47 move@09104:slideZ+64] 906dbd40
+280 089de EF use:eye/3d/r600/always/nolatch chain[089de* 08980:E2] first[snd47] second[snd47] 450a10fc
+280 08a18 EF use:eye/3d/r600/always/nolatch chain[08a18* 08bae:EF* 0913e:73 09090:73 09104:74 08980:E2] first[snd47 move@0913e:slideZ+64 move@09090:slideZ+64 move@09104:slideZ-64] second[snd47 move@0913e:slideZ-64 move@09090:slideZ-64 move@09104:slideZ+64] ae2b0ca6
+280 08a52 EF use:eye/3d/r600/always/nolatch chain[08a52* 08fd4:F3 08980:E2] first[spawn@08fd4 snd47] second[spawn@08fd4 snd47] 3e4b5281
+280 08a8c EF use:eye/3d/r600/always/nolatch chain[08a8c* 08bae:EF* 0913e:73 09090:73 09104:74 08980:E2] first[snd47 move@0913e:slideZ+64 move@09090:slideZ+64 move@09104:slideZ-64] second[snd47 move@0913e:slideZ-64 move@09090:slideZ-64 move@09104:slideZ+64] 6fe33cb6
+280 08ac6 EF use:eye/3d/r600/always/nolatch chain[08ac6* 08b00:EF* 0913e:73 09090:73 09104:74 08980:E2] first[snd47 move@0913e:slideZ+64 move@09090:slideZ+64 move@09104:slideZ-64] second[snd47 move@0913e:slideZ-64 move@09090:slideZ-64 move@09104:slideZ+64] c69aab93
+280 08b00 EF use:eye/3d/r600/always/nolatch,chain chain[08b00* 0913e:73 09090:73 09104:74 08980:E2] first[snd47 move@0913e:slideZ+64 move@09090:slideZ+64 move@09104:slideZ-64] second[snd47 move@0913e:slideZ-64 move@09090:slideZ-64 move@09104:slideZ+64] 119ca6e4
+280 08b3a EF use:eye/3d/r600/always/nolatch chain[08b3a* 09090:73 09104:74 08980:E2] first[snd47 move@09090:slideZ+64 move@09104:slideZ-64] second[snd47 move@09090:slideZ-64 move@09104:slideZ+64] 517db7de
+280 08b74 EF use:eye/3d/r600/always/nolatch chain[08b74* 090ca:74 08980:E2] first[snd47 move@090ca:slideZ-64] second[snd47 move@090ca:slideZ+64] 235134f5
+280 08bae EF use:eye/3d/r600/always/nolatch,chain chain[08bae* 0913e:73 09090:73 09104:74 08980:E2] first[snd47 move@0913e:slideZ+64 move@09090:slideZ+64 move@09104:slideZ-64] second[snd47 move@0913e:slideZ-64 move@09090:slideZ-64 move@09104:slideZ+64] 9ab57d6e
 280 08cc0 EE - chain[08cc0] first[-] second[-] 4436c068
 280 08dde EF use:eye/3d/r60+26/always/nolatch chain[08dde* 08e02:DC 08e26:F0] first[snd41 exit284/16] second[-] e5632e46
 280 08e02 DC chain chain[08e02 08e26:F0] first[-] second[-] 3a8429ad
@@ -2862,8 +2862,8 @@ map 280 src b03f14ccfe73ec8d nodes 266 chains 108 warn unreachable:3,even_fan_in
 280 08fb0 F3 chain chain[08fb0 0bb27:F3 0aef6:5C] first[-] second[-] a8af6358
 280 08fd4 F3 chain chain[08fd4 08980:E2] first[-] second[-] 389634e0
 280 08ff8 E3 - chain[08ff8 096cf:00 09709:00 0c7f3:27] first[-] second[-] d4b2a7b7
-280 0901c EF use:eye/3d/r60+26/always/nolatch chain[0901c* 08b00:EF* 0913e:73 09090:73 09104:74 08980:E2] first[snd47 move@0913e:slideZ+64 move@09090:slideZ+64 move@09104:slideZ-64] second[snd47 move@0913e:slideZ-64 move@09090:slideZ-64 move@09104:slideZ+64] 1a4acd43
-280 09056 EF use:eye/3d/r60+26/always/nolatch,chain chain[09056* 09104:74 08980:E2] first[snd47 move@09104:slideZ-64] second[snd47 move@09104:slideZ+64] 1b74f54a
+280 0901c EF use:eye/3d/r600/always/nolatch chain[0901c* 08b00:EF* 0913e:73 09090:73 09104:74 08980:E2] first[snd47 move@0913e:slideZ+64 move@09090:slideZ+64 move@09104:slideZ-64] second[snd47 move@0913e:slideZ-64 move@09090:slideZ-64 move@09104:slideZ+64] 46f4818c
+280 09056 EF use:eye/3d/r600/always/nolatch,chain chain[09056* 09104:74 08980:E2] first[snd47 move@09104:slideZ-64] second[snd47 move@09104:slideZ+64] 623ac5c8
 280 09090 73 chain chain[09090 09104:74 08980:E2] first[-] second[-] 20236894
 280 090ca 74 chain chain[090ca 08980:E2] first[-] second[-] 6ce09f6d
 280 09104 74 chain chain[09104 08980:E2] first[-] second[-] c03f9a8b
@@ -2875,7 +2875,7 @@ map 280 src b03f14ccfe73ec8d nodes 266 chains 108 warn unreachable:3,even_fan_in
 280 0922a F3 chain chain[0922a 09206:F3] first[-] second[-] b8967a88
 280 0924e F3 chain chain[0924e 0922a:F3 09206:F3] first[-] second[-] 34d8fac9
 280 092c6 45 chain chain[092c6 09c0b:F3 09be7:F3 09c2f:F3 07a5e:F3 0781f:F3 077fb:F3] first[-] second[-] f053e40b
-280 093fb EF use:eye/3d/r60+26/always/nolatch chain[093fb* 09495:E3 092c6:45 09c0b:F3 09be7:F3 09c2f:F3 07a5e:F3 0781f:F3 077fb:F3] first[snd77 spawn@09c0b spawn@09be7 spawn@09c2f spawn@07a5e spawn@0781f spawn@077fb move@092c6:slideX+512] second[snd77 spawn@09c0b spawn@09be7 spawn@09c2f spawn@07a5e spawn@0781f spawn@077fb move@092c6:slideX-512] ae934eb2
+280 093fb EF use:eye/3d/r600/always/nolatch chain[093fb* 09495:E3 092c6:45 09c0b:F3 09be7:F3 09c2f:F3 07a5e:F3 0781f:F3 077fb:F3] first[snd77 spawn@09c0b spawn@09be7 spawn@09c2f spawn@07a5e spawn@0781f spawn@077fb move@092c6:slideX+512] second[snd77 spawn@09c0b spawn@09be7 spawn@09c2f spawn@07a5e spawn@0781f spawn@077fb move@092c6:slideX-512] 8522e4b3
 280 09495 E3 chain chain[09495 092c6:45 09c0b:F3 09be7:F3 09c2f:F3 07a5e:F3 0781f:F3 077fb:F3] first[-] second[-] 2d791a76
 280 0961f EE - chain[0961f] first[-] second[-] 151ff56e
 280 096cf 00 chain chain[096cf 09709:00 0c7f3:27] first[-] second[-] e2578946
@@ -2892,11 +2892,11 @@ map 280 src b03f14ccfe73ec8d nodes 266 chains 108 warn unreachable:3,even_fan_in
 280 09be7 F3 chain chain[09be7 09c2f:F3 07a5e:F3 0781f:F3 077fb:F3] first[-] second[-] e51cc9fd
 280 09c0b F3 chain chain[09c0b 09be7:F3 09c2f:F3 07a5e:F3 0781f:F3 077fb:F3] first[-] second[-] f8302d89
 280 09c2f F3 chain chain[09c2f 07a5e:F3 0781f:F3 077fb:F3] first[-] second[-] d25ef79f
-280 09ca7 EF use:eye/3d/r60+26/always/nolatch chain[09ca7* 09dc9:00 09fdb:F3 09fb7:F3 09f93:F3] first[spawn@09fdb spawn@09fb7 spawn@09f93] second[spawn@09fdb spawn@09fb7 spawn@09f93] abcf2a3c
-280 09ce1 EF use:eye/3d/r60+26/always/nolatch chain[09ce1* 09e03:E0 0b850:5C 0924e:F3 0922a:F3 09206:F3] first[snd45 spawn@0924e spawn@0922a spawn@09206 move@0b850:slideY-128] second[snd45 spawn@0924e spawn@0922a spawn@09206 move@0b850:slideY+128] fce0e952
-280 09d1b EF use:eye/3d/r60+26/always/nolatch chain[09d1b* 09e3d:E0 0c910:1B] first[snd45 demolish@0c910] second[snd45 demolish@0c910] 36f5b3fc
-280 09d55 EF use:eye/3d/r60+26/always/nolatch chain[09d55* 09eb1:E0 07efa:5C 0924e:F3 0922a:F3 09206:F3] first[snd45 spawn@0924e spawn@0922a spawn@09206 move@07efa:slideY-128] second[snd45 spawn@0924e spawn@0922a spawn@09206 move@07efa:slideY+128] cebaf6ae
-280 09d8f EF use:eye/3d/r60+26/always/nolatch chain[09d8f* 09e77:E0 07f88:F3 07fac:F3 07fd0:F3 06a78:F3 06a9c:F3 06ac0:F3] first[snd45 spawn@07f88 spawn@07fac spawn@07fd0 spawn@06a78 spawn@06a9c spawn@06ac0] second[snd45 spawn@07f88 spawn@07fac spawn@07fd0 spawn@06a78 spawn@06a9c spawn@06ac0] 0628b15b
+280 09ca7 EF use:eye/3d/r600/always/nolatch chain[09ca7* 09dc9:00 09fdb:F3 09fb7:F3 09f93:F3] first[spawn@09fdb spawn@09fb7 spawn@09f93] second[spawn@09fdb spawn@09fb7 spawn@09f93] a72c261a
+280 09ce1 EF use:eye/3d/r600/always/nolatch chain[09ce1* 09e03:E0 0b850:5C 0924e:F3 0922a:F3 09206:F3] first[snd45 spawn@0924e spawn@0922a spawn@09206 move@0b850:slideY-128] second[snd45 spawn@0924e spawn@0922a spawn@09206 move@0b850:slideY+128] 68daa704
+280 09d1b EF use:eye/3d/r600/always/nolatch chain[09d1b* 09e3d:E0 0c910:1B] first[snd45 demolish@0c910] second[snd45] e27038e7
+280 09d55 EF use:eye/3d/r600/always/nolatch chain[09d55* 09eb1:E0 07efa:5C 0924e:F3 0922a:F3 09206:F3] first[snd45 spawn@0924e spawn@0922a spawn@09206 move@07efa:slideY-128] second[snd45 spawn@0924e spawn@0922a spawn@09206 move@07efa:slideY+128] ed32e383
+280 09d8f EF use:eye/3d/r600/always/nolatch chain[09d8f* 09e77:E0 07f88:F3 07fac:F3 07fd0:F3 06a78:F3 06a9c:F3 06ac0:F3] first[snd45 spawn@07f88 spawn@07fac spawn@07fd0 spawn@06a78 spawn@06a9c spawn@06ac0] second[snd45 spawn@07f88 spawn@07fac spawn@07fd0 spawn@06a78 spawn@06a9c spawn@06ac0] 637382d4
 280 09dc9 00 chain chain[09dc9 09fdb:F3 09fb7:F3 09f93:F3] first[-] second[-] b4dc440f
 280 09e03 E0 chain chain[09e03 0b850:5C 0924e:F3 0922a:F3 09206:F3] first[-] second[-] f554f548
 280 09e3d E0 chain chain[09e3d 0c910:1B] first[-] second[-] c8444c78
@@ -2917,7 +2917,7 @@ map 280 src b03f14ccfe73ec8d nodes 266 chains 108 warn unreachable:3,even_fan_in
 280 0a3c6 DB chain chain[0a3c6 0a3ea:F0] first[-] second[-] 825026f1
 280 0a3ea F0 touch:feet/2dw/r90/w512,chain chain[0a3ea] first[exit283/10] second[-] 2a2f5990
 280 0a456 E3 chain chain[0a456 0a758:43 0b368:F3 0b344:F3 0b320:F3] first[-] second[-] 1427f13f
-280 0a4fa EF use:eye/3d/r60+26/always/nolatch chain[0a4fa* 0a456:E3 0a758:43 0b368:F3 0b344:F3 0b320:F3] first[snd77 spawn@0b368 spawn@0b344 spawn@0b320 move@0a758:slideX+256] second[snd77 spawn@0b368 spawn@0b344 spawn@0b320 move@0a758:slideX-256] 5320ae44
+280 0a4fa EF use:eye/3d/r600/always/nolatch chain[0a4fa* 0a456:E3 0a758:43 0b368:F3 0b344:F3 0b320:F3] first[snd77 spawn@0b368 spawn@0b344 spawn@0b320 move@0a758:slideX+256] second[snd77 spawn@0b368 spawn@0b344 spawn@0b320 move@0a758:slideX-256] 0a416241
 280 0a534 00 - chain[0a534] first[-] second[-] 102c48e4
 280 0a564 00 - chain[0a564] first[-] second[-] 12b2fcbd
 280 0a594 00 - chain[0a594] first[-] second[-] 378e72d6
@@ -2934,9 +2934,9 @@ map 280 src b03f14ccfe73ec8d nodes 266 chains 108 warn unreachable:3,even_fan_in
 280 0a85c 1B chain chain[0a85c 0a822:1B 0844d:1B 084b7:1B 06f5e:1B 06f24:1B 0704c:1B 070b6:1B 08740:1B 086e0:1B] first[-] second[-] 006c4676
 280 0a926 1B chain chain[0a926 0a85c:1B 0a822:1B 0844d:1B 084b7:1B 06f5e:1B 06f24:1B 0704c:1B 070b6:1B 08740:1B 086e0:1B] first[-] second[-] 5e2a0eb2
 280 0a990 1B chain chain[0a990 0a926:1B 0a85c:1B 0a822:1B 0844d:1B 084b7:1B 06f5e:1B 06f24:1B 0704c:1B 070b6:1B 08740:1B 086e0:1B] first[-] second[-] 67ffa080
-280 0aa42 EF death:hp10500/never chain[0aa42* 0a990:1B 0a926:1B 0a85c:1B 0a822:1B 0844d:1B 084b7:1B 06f5e:1B 06f24:1B 0704c:1B 070b6:1B 08740:1B 086e0:1B] first[demolish@0a990 demolish@0a926 demolish@0a85c demolish@0a822 demolish@0844d demolish@084b7 demolish@06f5e demolish@06f24 demolish@0704c demolish@070b6 demolish@08740 demolish@086e0] second[demolish@0a990 demolish@0a926 demolish@0a85c demolish@0a822 demolish@0844d demolish@084b7 demolish@06f5e demolish@06f24 demolish@0704c demolish@070b6 demolish@08740 demolish@086e0] a5325dd3
+280 0aa42 EF death:hp10500/never chain[0aa42* 0a990:1B 0a926:1B 0a85c:1B 0a822:1B 0844d:1B 084b7:1B 06f5e:1B 06f24:1B 0704c:1B 070b6:1B 08740:1B 086e0:1B] first[demolish@0a990 demolish@0a926 demolish@0a85c demolish@0a822 demolish@0844d demolish@084b7 demolish@06f5e demolish@06f24 demolish@0704c demolish@070b6 demolish@08740 demolish@086e0] second[-] f062d8ba
 280 0aa7c DC chain chain[0aa7c 08f8c:F3 08fb0:F3 0bb27:F3 0aef6:5C] first[-] second[-] 39d9dff8
-280 0aaa0 EF use:eye/3d/r60+26/always/nolatch chain[0aaa0* 0aa7c:DC 08f8c:F3 08fb0:F3 0bb27:F3 0aef6:5C] first[snd41 spawn@08f8c spawn@08fb0 spawn@0bb27 move@0aef6:slideY-128] second[snd41 spawn@08f8c spawn@08fb0 spawn@0bb27 move@0aef6:slideY+128] cf58fe41
+280 0aaa0 EF use:eye/3d/r600/always/nolatch chain[0aaa0* 0aa7c:DC 08f8c:F3 08fb0:F3 0bb27:F3 0aef6:5C] first[snd41 spawn@08f8c spawn@08fb0 spawn@0bb27 move@0aef6:slideY-128] second[snd41 spawn@08f8c spawn@08fb0 spawn@0bb27 move@0aef6:slideY+128] 3fd5b723
 280 0aada F3 chain chain[0aada 0aafe:F3 0b05a:F3 09f6f:F3] first[-] second[-] 72b95726
 280 0aafe F3 chain chain[0aafe 0b05a:F3 09f6f:F3] first[-] second[-] 4aceffd9
 280 0adda EF use:eye/3d/r60+26/always/nolatch chain[0adda* 0aada:F3 0aafe:F3 0b05a:F3 09f6f:F3] first[spawn@0aada spawn@0aafe spawn@0b05a spawn@09f6f] second[spawn@0aada spawn@0aafe spawn@0b05a spawn@09f6f] fffce06c
@@ -2944,11 +2944,11 @@ map 280 src b03f14ccfe73ec8d nodes 266 chains 108 warn unreachable:3,even_fan_in
 280 0aef6 5C chain chain[0aef6] first[-] second[-] 330d950c
 280 0af60 EF use:eye/3d/r60+26/always/nolatch chain[0af60* 0af84:1C 0c954:1C] first[hint0 hint0] second[-] e6e87c6a
 280 0af84 1C chain chain[0af84 0c954:1C] first[-] second[-] 0dbc9c4f
-280 0aff0 EF use:eye/3d/r60+26/always/nolatch chain[0aff0* 0b190:E3 0b204:5B] first[snd77 move@0b204:slideY+128] second[snd77 move@0b204:slideY-128] c53283e8
+280 0aff0 EF use:eye/3d/r600/always/nolatch chain[0aff0* 0b190:E3 0b204:5B] first[snd77 move@0b204:slideY+128] second[snd77 move@0b204:slideY-128] 753f678c
 280 0b05a F3 chain chain[0b05a 09f6f:F3] first[-] second[-] 2cb2c5f6
 280 0b126 EE - chain[0b126] first[-] second[-] bcba637e
 280 0b190 E3 chain chain[0b190 0b204:5B] first[-] second[-] 7aa2441a
-280 0b1ca EF use:eye/3d/r60+26/always/nolatch chain[0b1ca* 0b190:E3 0b204:5B] first[snd77 move@0b204:slideY+128] second[snd77 move@0b204:slideY-128] 2a6e799a
+280 0b1ca EF use:eye/3d/r600/always/nolatch chain[0b1ca* 0b190:E3 0b204:5B] first[snd77 move@0b204:slideY+128] second[snd77 move@0b204:slideY-128] 21c97c43
 280 0b204 5B chain chain[0b204] first[-] second[-] 4cf3febd
 280 0b2d8 F3 chain chain[0b2d8 091e2:F3] first[-] second[-] 69864f7b
 280 0b2fc F3 chain chain[0b2fc 09b63:F3 0b2d8:F3 091e2:F3] first[-] second[-] 19448938
@@ -3049,7 +3049,7 @@ map 281 src ca33dda6575daf5a nodes 208 chains 90 warn unreachable:5,even_fan_in:
 281 03709 F3 chain chain[03709] first[-] second[-] dbb261c6
 281 0372d F3 chain chain[0372d 03709:F3] first[-] second[-] 9e6ff81c
 281 03751 F3 chain chain[03751 0372d:F3 03709:F3] first[-] second[-] 318fc9e3
-281 0386e EF use:eye/3d/r60+26/always/nolatch chain[0386e* 038a8:DB 0363f:5E 03a92:F3 03ab6:F3 03ada:F3] first[snd40 spawn@03a92 spawn@03ab6 spawn@03ada move@0363f:slideY-256] second[snd40 spawn@03a92 spawn@03ab6 spawn@03ada move@0363f:slideY+256] cd39222e
+281 0386e EF use:eye/3d/r600/always/nolatch chain[0386e* 038a8:DB 0363f:5E 03a92:F3 03ab6:F3 03ada:F3] first[snd40 spawn@03a92 spawn@03ab6 spawn@03ada move@0363f:slideY-256] second[snd40 spawn@03a92 spawn@03ab6 spawn@03ada move@0363f:slideY+256] 499ecc20
 281 038a8 DB chain chain[038a8 0363f:5E 03a92:F3 03ab6:F3 03ada:F3] first[-] second[-] 92d8e0ae
 281 03a92 F3 chain chain[03a92 03ab6:F3 03ada:F3] first[-] second[-] ac001307
 281 03ab6 F3 chain chain[03ab6 03ada:F3] first[-] second[-] a7bc1e65
@@ -3063,7 +3063,7 @@ map 281 src ca33dda6575daf5a nodes 208 chains 90 warn unreachable:5,even_fan_in:
 281 03d5a DB chain chain[03d5a 03d7e:F0] first[-] second[-] e73910aa
 281 03d7e F0 touch:feet/2dw/r90/w512,chain chain[03d7e] first[exit282/14] second[-] 9e087ee0
 281 03dea E3 chain chain[03dea 03afe:5E] first[-] second[-] a35fe2a3
-281 03e24 EF use:eye/3d/r60+26/always/nolatch chain[03e24* 03dea:E3 03afe:5E] first[snd77 move@03afe:slideY-256] second[snd77 move@03afe:slideY+256] 409dfc38
+281 03e24 EF use:eye/3d/r600/always/nolatch chain[03e24* 03dea:E3 03afe:5E] first[snd77 move@03afe:slideY-256] second[snd77 move@03afe:slideY+256] 4c788d61
 281 03e8e 00 - chain[03e8e] first[-] second[-] e2c1a0ba
 281 03eee 00 chain chain[03eee 0326f:00 03203:00 0324b:00 03227:00 031df:00 097a8:00] first[-] second[-] 1da6763d
 281 03f12 00 chain chain[03f12 03eee:00 0326f:00 03203:00 0324b:00 03227:00 031df:00 097a8:00] first[-] second[-] 67de5f8b
@@ -3073,9 +3073,9 @@ map 281 src ca33dda6575daf5a nodes 208 chains 90 warn unreachable:5,even_fan_in:
 281 0415e 00 chain chain[0415e 0413a:00 05c6f:00 05c4b:00 05a1b:00 07758:00 07680:00 077a0:00 0777c:00 077c4:00 0765c:00 07638:00 07614:00 075f0:00 075cc:00 059f7:00 059d3:00 059af:00 03f36:00 03f5a:00 03f12:00 03eee:00 0326f:00 03203:00 0324b:00 03227:00 031df:00 097a8:00] first[-] second[-] 637ba6ac
 281 04182 00 chain chain[04182 0415e:00 0413a:00 05c6f:00 05c4b:00 05a1b:00 07758:00 07680:00 077a0:00 0777c:00 077c4:00 0765c:00 07638:00 07614:00 075f0:00 075cc:00 059f7:00 059d3:00 059af:00 03f36:00 03f5a:00 03f12:00 03eee:00 0326f:00 03203:00 0324b:00 03227:00 031df:00 097a8:00] first[-] second[-] 3464d7ee
 281 041a6 00 chain chain[041a6 04182:00 0415e:00 0413a:00 05c6f:00 05c4b:00 05a1b:00 07758:00 07680:00 077a0:00 0777c:00 077c4:00 0765c:00 07638:00 07614:00 075f0:00 075cc:00 059f7:00 059d3:00 059af:00 03f36:00 03f5a:00 03f12:00 03eee:00 0326f:00 03203:00 0324b:00 03227:00 031df:00 097a8:00] first[-] second[-] c66c0b29
-281 041ca EF use:eye/3d/r60+26/always/nolatch chain[041ca* 04204:E1 04262:5E 033c7:E3] first[snd46 snd77 move@04262:slideY-256] second[snd46 snd77 move@04262:slideY+256] 12c57633
+281 041ca EF use:eye/3d/r600/always/nolatch chain[041ca* 04204:E1 04262:5E 033c7:E3] first[snd46 snd77 move@04262:slideY-256] second[snd46 snd77 move@04262:slideY+256] 739647b5
 281 04204 E1 chain chain[04204 04262:5E 033c7:E3] first[-] second[-] edfeeda9
-281 04228 EF use:eye/3d/r60+26/always/nolatch chain[04228* 04204:E1 04262:5E 033c7:E3] first[snd46 snd77 move@04262:slideY-256] second[snd46 snd77 move@04262:slideY+256] eb59eade
+281 04228 EF use:eye/3d/r600/always/nolatch chain[04228* 04204:E1 04262:5E 033c7:E3] first[snd46 snd77 move@04262:slideY-256] second[snd46 snd77 move@04262:slideY+256] 7a3e822b
 281 04262 5E chain chain[04262 033c7:E3] first[-] second[-] ed8c8718
 281 0429c E2 chain chain[0429c] first[-] second[-] 7af7763c
 281 04306 AA chain chain[04306 0429c:E2] first[-] second[-] 0ba81b2b
@@ -3094,14 +3094,14 @@ map 281 src ca33dda6575daf5a nodes 208 chains 90 warn unreachable:5,even_fan_in:
 281 04a36 00 - chain[04a36] first[-] second[-] a47e9610
 281 04a70 00 - chain[04a70] first[-] second[-] b1a042ec
 281 04aaa E0 chain chain[04aaa 04e73:F3 04990:F3 04c3b:F3 049fc:5E] first[-] second[-] 06198d48
-281 04ae4 EF use:eye/3d/r60+26/always/nolatch chain[04ae4* 04aaa:E0 04e73:F3 04990:F3 04c3b:F3 049fc:5E] first[snd45 spawn@04e73 spawn@04990 spawn@04c3b move@049fc:slideY-256] second[snd45 spawn@04e73 spawn@04990 spawn@04c3b move@049fc:slideY+256] a0e5efe6
+281 04ae4 EF use:eye/3d/r600/always/nolatch chain[04ae4* 04aaa:E0 04e73:F3 04990:F3 04c3b:F3 049fc:5E] first[snd45 spawn@04e73 spawn@04990 spawn@04c3b move@049fc:slideY-256] second[snd45 spawn@04e73 spawn@04990 spawn@04c3b move@049fc:slideY+256] 18000aa9
 281 04b1e 00 - chain[04b1e] first[-] second[-] 569476ca
 281 04bd0 02 - chain[04bd0] first[-] second[-] cc5a037a
 281 04bf3 F3 chain chain[04bf3 04e97:F3 0512f:01 049fc:5E] first[-] second[-] 0a454c11
 281 04c17 F3 chain chain[04c17 04bf3:F3 04e97:F3 0512f:01 049fc:5E] first[-] second[-] 108142db
 281 04c3b F3 chain chain[04c3b 049fc:5E] first[-] second[-] 0cba99b6
-281 04c5f EF use:eye/3d/r60+26/always/nolatch chain[04c5f* 04cd3:E3 050a1:F3 0507d:F3 05059:F3 0512f:01 049fc:5E] first[snd77 spawn@050a1 spawn@0507d spawn@05059 light_toggle@0512f move@049fc:slideY-256] second[snd77 spawn@050a1 spawn@0507d spawn@05059 light_toggle@0512f move@049fc:slideY+256] 5f215c5d
-281 04c99 EF use:eye/3d/r60+26/always/nolatch chain[04c99* 04956:E3 04c17:F3 04bf3:F3 04e97:F3 0512f:01 049fc:5E] first[snd77 spawn@04c17 spawn@04bf3 spawn@04e97 light_toggle@0512f move@049fc:slideY-256] second[snd77 spawn@04c17 spawn@04bf3 spawn@04e97 light_toggle@0512f move@049fc:slideY+256] 8a40669a
+281 04c5f EF use:eye/3d/r600/always/nolatch chain[04c5f* 04cd3:E3 050a1:F3 0507d:F3 05059:F3 0512f:01 049fc:5E] first[snd77 spawn@050a1 spawn@0507d spawn@05059 light_toggle@0512f move@049fc:slideY-256] second[snd77 spawn@050a1 spawn@0507d spawn@05059 light_toggle@0512f move@049fc:slideY+256] 087eb227
+281 04c99 EF use:eye/3d/r600/always/nolatch chain[04c99* 04956:E3 04c17:F3 04bf3:F3 04e97:F3 0512f:01 049fc:5E] first[snd77 spawn@04c17 spawn@04bf3 spawn@04e97 light_toggle@0512f move@049fc:slideY-256] second[snd77 spawn@04c17 spawn@04bf3 spawn@04e97 light_toggle@0512f move@049fc:slideY+256] 2974c168
 281 04cd3 E3 chain chain[04cd3 050a1:F3 0507d:F3 05059:F3 0512f:01 049fc:5E] first[-] second[-] 812707f9
 281 04e15 5E chain chain[04e15] first[-] second[-] 992b754e
 281 04e4f F3 - chain[04e4f] first[-] second[-] 06e563e6
@@ -3109,7 +3109,7 @@ map 281 src ca33dda6575daf5a nodes 208 chains 90 warn unreachable:5,even_fan_in:
 281 04e97 F3 chain chain[04e97 0512f:01 049fc:5E] first[-] second[-] 9d56f7fe
 281 04edf 00 - chain[04edf] first[-] second[-] b18b9bbb
 281 04f79 E0 chain chain[04f79 03751:F3 0372d:F3 03709:F3] first[-] second[-] cb103730
-281 04fb3 EF use:eye/3d/r60+26/always/nolatch chain[04fb3* 04f79:E0 03751:F3 0372d:F3 03709:F3] first[snd45 spawn@03751 spawn@0372d spawn@03709] second[snd45 spawn@03751 spawn@0372d spawn@03709] 1c4e6882
+281 04fb3 EF use:eye/3d/r600/always/nolatch chain[04fb3* 04f79:E0 03751:F3 0372d:F3 03709:F3] first[snd45 spawn@03751 spawn@0372d spawn@03709] second[snd45 spawn@03751 spawn@0372d spawn@03709] ce068ba7
 281 05059 F3 chain chain[05059 0512f:01 049fc:5E] first[-] second[-] 73b27a0b
 281 0507d F3 chain chain[0507d 05059:F3 0512f:01 049fc:5E] first[-] second[-] 1eec6473
 281 050a1 F3 chain chain[050a1 0507d:F3 05059:F3 0512f:01 049fc:5E] first[-] second[-] 087b3275
@@ -3119,13 +3119,13 @@ map 281 src ca33dda6575daf5a nodes 208 chains 90 warn unreachable:5,even_fan_in:
 281 05176 F0 touch:feet/2dw/r90/w512,chain chain[05176] first[exit283/14] second[-] 42abea09
 281 0519a DB chain chain[0519a 05176:F0] first[-] second[-] 7d9c7b9a
 281 05206 E0 chain chain[05206 04e15:5E] first[-] second[-] 6e2b6610
-281 05240 EF use:eye/3d/r60+26/always/nolatch chain[05240* 05206:E0 04e15:5E] first[snd45 move@04e15:slideY-256] second[snd45 move@04e15:slideY+256] 83826ed9
+281 05240 EF use:eye/3d/r600/always/nolatch chain[05240* 05206:E0 04e15:5E] first[snd45 move@04e15:slideY-256] second[snd45 move@04e15:slideY+256] 8c302dc7
 281 0527a 00 - chain[0527a] first[-] second[-] d8da8946
 281 052b4 00 - chain[052b4] first[-] second[-] fee1d8f8
 281 052ee 00 - chain[052ee] first[-] second[-] dbcbc7f3
 281 05328 00 - chain[05328] first[-] second[-] 81f465c1
 281 054a6 E0 chain chain[054a6 05e1f:AA 05de5:E2] first[-] second[-] f4205d1e
-281 0551d EF use:eye/3d/r60+26/always/nolatch chain[0551d* 054a6:E0 05e1f:AA 05de5:E2] first[snd45 snd47 move@05e1f:swingY-512] second[snd45 snd47 move@05e1f:swingY+512] 46014ae6
+281 0551d EF use:eye/3d/r600/always/nolatch chain[0551d* 054a6:E0 05e1f:AA 05de5:E2] first[snd45 snd47 move@05e1f:swingY-512] second[snd45 snd47 move@05e1f:swingY+512] c2da5d36
 281 05883 F0 touch:feet/2dw/r90/w512,chain chain[05883] first[exit280/24] second[-] 1ffe974d
 281 058a7 DB chain chain[058a7 05883:F0] first[-] second[-] 1f68e949
 281 058cb EF use:eye/3d/r60+26/always/nolatch chain[058cb* 058a7:DB 05883:F0] first[snd40 exit280/24] second[-] 8fd3ce74
@@ -3133,7 +3133,7 @@ map 281 src ca33dda6575daf5a nodes 208 chains 90 warn unreachable:5,even_fan_in:
 281 059d3 00 chain chain[059d3 059af:00 03f36:00 03f5a:00 03f12:00 03eee:00 0326f:00 03203:00 0324b:00 03227:00 031df:00 097a8:00] first[-] second[-] ef26e584
 281 059f7 00 chain chain[059f7 059d3:00 059af:00 03f36:00 03f5a:00 03f12:00 03eee:00 0326f:00 03203:00 0324b:00 03227:00 031df:00 097a8:00] first[-] second[-] a1031f3e
 281 05a1b 00 chain chain[05a1b 07758:00 07680:00 077a0:00 0777c:00 077c4:00 0765c:00 07638:00 07614:00 075f0:00 075cc:00 059f7:00 059d3:00 059af:00 03f36:00 03f5a:00 03f12:00 03eee:00 0326f:00 03203:00 0324b:00 03227:00 031df:00 097a8:00] first[-] second[-] f7786da4
-281 05b3b EF shot:always chain[05b3b* 05b75:E1 063ea:1B 04662:F3 0463e:F3 0461a:F3 06372:F3 0634e:F3 0632a:F3 0455a:F3 0457e:F3 045a2:F3 06632:F3 0660e:F3 065ea:F3] first[snd46 demolish@063ea spawn@04662 spawn@0463e spawn@0461a spawn@06372 spawn@0634e spawn@0632a spawn@0455a spawn@0457e spawn@045a2 spawn@06632 spawn@0660e spawn@065ea] second[snd46 demolish@063ea spawn@04662 spawn@0463e spawn@0461a spawn@06372 spawn@0634e spawn@0632a spawn@0455a spawn@0457e spawn@045a2 spawn@06632 spawn@0660e spawn@065ea] 93ceb987
+281 05b3b EF shot:always chain[05b3b* 05b75:E1 063ea:1B 04662:F3 0463e:F3 0461a:F3 06372:F3 0634e:F3 0632a:F3 0455a:F3 0457e:F3 045a2:F3 06632:F3 0660e:F3 065ea:F3] first[snd46 demolish@063ea spawn@04662 spawn@0463e spawn@0461a spawn@06372 spawn@0634e spawn@0632a spawn@0455a spawn@0457e spawn@045a2 spawn@06632 spawn@0660e spawn@065ea] second[snd46 spawn@04662 spawn@0463e spawn@0461a spawn@06372 spawn@0634e spawn@0632a spawn@0455a spawn@0457e spawn@045a2 spawn@06632 spawn@0660e spawn@065ea] 42c7f9ee
 281 05b75 E1 chain chain[05b75 063ea:1B 04662:F3 0463e:F3 0461a:F3 06372:F3 0634e:F3 0632a:F3 0455a:F3 0457e:F3 045a2:F3 06632:F3 0660e:F3 065ea:F3] first[-] second[-] 5f26c58c
 281 05bdf E4 chain chain[05bdf 05ef4:F3 05eac:F3 0669e:F3 0667a:F3 06656:F3] first[-] second[-] e11a7b8f
 281 05c03 EE - chain[05c03] first[-] second[-] d2b11cd4
@@ -3141,9 +3141,9 @@ map 281 src ca33dda6575daf5a nodes 208 chains 90 warn unreachable:5,even_fan_in:
 281 05c4b 00 chain chain[05c4b 05a1b:00 07758:00 07680:00 077a0:00 0777c:00 077c4:00 0765c:00 07638:00 07614:00 075f0:00 075cc:00 059f7:00 059d3:00 059af:00 03f36:00 03f5a:00 03f12:00 03eee:00 0326f:00 03203:00 0324b:00 03227:00 031df:00 097a8:00] first[-] second[-] 6cf62580
 281 05c6f 00 chain chain[05c6f 05c4b:00 05a1b:00 07758:00 07680:00 077a0:00 0777c:00 077c4:00 0765c:00 07638:00 07614:00 075f0:00 075cc:00 059f7:00 059d3:00 059af:00 03f36:00 03f5a:00 03f12:00 03eee:00 0326f:00 03203:00 0324b:00 03227:00 031df:00 097a8:00] first[-] second[-] 248a9f4d
 281 05cc3 E1 chain chain[05cc3 0309d:F3 03079:F3 030c1:61 02f0a:F3] first[-] second[-] 87a8cee7
-281 05cfd EF use:eye/3d/r60+26/always/nolatch chain[05cfd* 05cc3:E1 0309d:F3 03079:F3 030c1:61 02f0a:F3] first[snd46 spawn@0309d spawn@03079 spawn@02f0a move@030c1:slideY+512] second[snd46 spawn@0309d spawn@03079 spawn@02f0a move@030c1:slideY-512] 38293cc4
-281 05d37 EF use:eye/3d/r60+26/always/nolatch chain[05d37* 05c27:E0 04306:AA 0429c:E2] first[snd45 snd47 move@04306:swingY-512] second[snd45 snd47 move@04306:swingY+512] 855a1da7
-281 05d71 EF use:eye/3d/r60+26/always/nolatch chain[05d71* 05dab:E1 07d17:F3 07400:F3 07562:5D] first[snd46 spawn@07d17 spawn@07400 move@07562:slideY+256] second[snd46 spawn@07d17 spawn@07400 move@07562:slideY-256] 8a2dc7c9
+281 05cfd EF use:eye/3d/r600/always/nolatch chain[05cfd* 05cc3:E1 0309d:F3 03079:F3 030c1:61 02f0a:F3] first[snd46 spawn@0309d spawn@03079 spawn@02f0a move@030c1:slideY+512] second[snd46 spawn@0309d spawn@03079 spawn@02f0a move@030c1:slideY-512] 6b9390d3
+281 05d37 EF use:eye/3d/r600/always/nolatch chain[05d37* 05c27:E0 04306:AA 0429c:E2] first[snd45 snd47 move@04306:swingY-512] second[snd45 snd47 move@04306:swingY+512] 8744d9de
+281 05d71 EF use:eye/3d/r600/always/nolatch chain[05d71* 05dab:E1 07d17:F3 07400:F3 07562:5D] first[snd46 spawn@07d17 spawn@07400 move@07562:slideY+256] second[snd46 spawn@07d17 spawn@07400 move@07562:slideY-256] 90b25512
 281 05dab E1 chain chain[05dab 07d17:F3 07400:F3 07562:5D] first[-] second[-] 4d1f7ccf
 281 05de5 E2 chain chain[05de5] first[-] second[-] 91f552c1
 281 05e1f AA chain chain[05e1f 05de5:E2] first[-] second[-] 99caad36
@@ -3155,7 +3155,7 @@ map 281 src ca33dda6575daf5a nodes 208 chains 90 warn unreachable:5,even_fan_in:
 281 06372 F3 chain chain[06372 0634e:F3 0632a:F3 0455a:F3 0457e:F3 045a2:F3 06632:F3 0660e:F3 065ea:F3] first[-] second[-] f867a020
 281 063ea 1B chain chain[063ea 04662:F3 0463e:F3 0461a:F3 06372:F3 0634e:F3 0632a:F3 0455a:F3 0457e:F3 045a2:F3 06632:F3 0660e:F3 065ea:F3] first[-] second[-] 6c5a72e7
 281 06424 F0 touch:feet/2dw/r90/w512,chain chain[06424] first[exit284/18] second[-] 6641bcaa
-281 0658c EF use:eye/3d/r60+26/always/nolatch chain[0658c* 06772:E1 05f18:62 05bdf:E4 05ef4:F3 05eac:F3 0669e:F3 0667a:F3 06656:F3] first[snd46 snd93 spawn@05ef4 spawn@05eac spawn@0669e spawn@0667a spawn@06656 move@05f18:slideY-512] second[snd46 snd93 spawn@05ef4 spawn@05eac spawn@0669e spawn@0667a spawn@06656 move@05f18:slideY+512] d567b03e
+281 0658c EF use:eye/3d/r600/always/nolatch chain[0658c* 06772:E1 05f18:62 05bdf:E4 05ef4:F3 05eac:F3 0669e:F3 0667a:F3 06656:F3] first[snd46 snd93 spawn@05ef4 spawn@05eac spawn@0669e spawn@0667a spawn@06656 move@05f18:slideY-512] second[snd46 snd93 spawn@05ef4 spawn@05eac spawn@0669e spawn@0667a spawn@06656 move@05f18:slideY+512] b1c662eb
 281 065c6 EE - chain[065c6] first[-] second[-] ad7a521b
 281 065ea F3 chain chain[065ea] first[-] second[-] fa6894fa
 281 0660e F3 chain chain[0660e 065ea:F3] first[-] second[-] ff4e2816
@@ -3174,11 +3174,11 @@ map 281 src ca33dda6575daf5a nodes 208 chains 90 warn unreachable:5,even_fan_in:
 281 06b90 DB chain chain[06b90 06b6c:F0] first[-] second[-] b1416f62
 281 06bb4 00 - chain[06bb4] first[-] second[-] 3a5a2307
 281 0729e EE - chain[0729e] first[-] second[-] 71c77866
-281 072c2 EF use:eye/3d/r60+26/always/nolatch chain[072c2* 0745e:E1 072fc:5E 07498:E3] first[snd46 snd77 move@072fc:slideY-256] second[snd46 snd77 move@072fc:slideY+256] 218fb3b9
+281 072c2 EF use:eye/3d/r600/always/nolatch chain[072c2* 0745e:E1 072fc:5E 07498:E3] first[snd46 snd77 move@072fc:slideY-256] second[snd46 snd77 move@072fc:slideY+256] d9baafdf
 281 072fc 5E chain chain[072fc 07498:E3] first[-] second[-] c39fdb04
 281 073dc F3 - chain[073dc 07400:F3 07562:5D] first[-] second[-] e7d209dd
 281 07400 F3 chain chain[07400 07562:5D] first[-] second[-] 88e945f7
-281 07424 EF use:eye/3d/r60+26/always/nolatch chain[07424* 0745e:E1 072fc:5E 07498:E3] first[snd46 snd77 move@072fc:slideY-256] second[snd46 snd77 move@072fc:slideY+256] f802e616
+281 07424 EF use:eye/3d/r600/always/nolatch chain[07424* 0745e:E1 072fc:5E 07498:E3] first[snd46 snd77 move@072fc:slideY-256] second[snd46 snd77 move@072fc:slideY+256] 0ee118bc
 281 0745e E1 chain chain[0745e 072fc:5E 07498:E3] first[-] second[-] 6aa17f02
 281 07498 E3 chain chain[07498] first[-] second[-] a9b68f6a
 281 074d2 5C - chain[074d2] first[-] second[-] 52f001db
@@ -3194,9 +3194,9 @@ map 281 src ca33dda6575daf5a nodes 208 chains 90 warn unreachable:5,even_fan_in:
 281 077a0 00 chain chain[077a0 0777c:00 077c4:00 0765c:00 07638:00 07614:00 075f0:00 075cc:00 059f7:00 059d3:00 059af:00 03f36:00 03f5a:00 03f12:00 03eee:00 0326f:00 03203:00 0324b:00 03227:00 031df:00 097a8:00] first[-] second[-] 59c7d47d
 281 077c4 00 chain chain[077c4 0765c:00 07638:00 07614:00 075f0:00 075cc:00 059f7:00 059d3:00 059af:00 03f36:00 03f5a:00 03f12:00 03eee:00 0326f:00 03203:00 0324b:00 03227:00 031df:00 097a8:00] first[-] second[-] 7eb21cfb
 281 07818 19 shot:always chain[07818] first[break@07818:1] second[break@07818:2] 7471c126
-281 07b05 EF use:eye/3d/r60+26/always/nolatch chain[07b05* 07bd6:E1 07b62:5E] first[snd46 move@07b62:slideY-256] second[snd46 move@07b62:slideY+256] 777cc717
+281 07b05 EF use:eye/3d/r600/always/nolatch chain[07b05* 07bd6:E1 07b62:5E] first[snd46 move@07b62:slideY-256] second[snd46 move@07b62:slideY+256] 4a317aaf
 281 07b62 5E chain chain[07b62] first[-] second[-] 63cb408b
-281 07b9c EF use:eye/3d/r60+26/always/nolatch chain[07b9c* 07bd6:E1 07b62:5E] first[snd46 move@07b62:slideY-256] second[snd46 move@07b62:slideY+256] b58b1e1a
+281 07b9c EF use:eye/3d/r600/always/nolatch chain[07b9c* 07bd6:E1 07b62:5E] first[snd46 move@07b62:slideY-256] second[snd46 move@07b62:slideY+256] 4f6bc359
 281 07bd6 E1 chain chain[07bd6 07b62:5E] first[-] second[-] fc6ec2d2
 281 07c10 EF use:eye/3d/r60+26/always/nolatch chain[07c10* 07c58:DB 07c34:F0] first[snd40 exit285/10] second[-] 52856494
 281 07c34 F0 touch:feet/2dw/r90/w512,chain chain[07c34] first[exit285/10] second[-] 7811d8ca
@@ -3225,8 +3225,8 @@ map 281 src ca33dda6575daf5a nodes 208 chains 90 warn unreachable:5,even_fan_in:
 281 09640 DB chain chain[09640 09664:F0] first[-] second[-] 5cb965a0
 281 09664 F0 touch:feet/2dw/r90/w512,chain chain[09664] first[exit286/0] second[-] 64d48637
 281 097a8 00 chain chain[097a8] first[-] second[-] 3434583e
-281 097fc EF use:eye/3d/r60+26/always/nolatch chain[097fc* 04204:E1 04262:5E 033c7:E3] first[snd46 snd77 move@04262:slideY-256] second[snd46 snd77 move@04262:slideY+256] 97f49a66
-281 09836 EF use:eye/3d/r60+26/always/nolatch chain[09836* 0745e:E1 072fc:5E 07498:E3] first[snd46 snd77 move@072fc:slideY-256] second[snd46 snd77 move@072fc:slideY+256] e9a5da98
+281 097fc EF use:eye/3d/r600/always/nolatch chain[097fc* 04204:E1 04262:5E 033c7:E3] first[snd46 snd77 move@04262:slideY-256] second[snd46 snd77 move@04262:slideY+256] a8fb55d3
+281 09836 EF use:eye/3d/r600/always/nolatch chain[09836* 0745e:E1 072fc:5E 07498:E3] first[snd46 snd77 move@072fc:slideY-256] second[snd46 snd77 move@072fc:slideY+256] 84400307
 map 282 src dd503081025e76da nodes 76 chains 72
 282 025e7 00 - chain[025e7] first[-] second[-] ac08e9c5
 282 0273e DB chain chain[0273e 02762:F0] first[-] second[-] 735a5b2e
@@ -3273,7 +3273,7 @@ map 282 src dd503081025e76da nodes 76 chains 72
 282 037cd 00 - chain[037cd] first[-] second[-] e372b42c
 282 03923 00 - chain[03923] first[-] second[-] 6e6e7293
 282 03953 EF death:hp50/never chain[03953*] first[-] second[-] 8772b80b
-282 039d7 EF death:hp75/never chain[039d7* 03a07:1B] first[demolish@03a07] second[demolish@03a07] 34948b0f
+282 039d7 EF death:hp75/never chain[039d7* 03a07:1B] first[demolish@03a07] second[-] 90c6e82b
 282 03a07 1B chain chain[03a07] first[-] second[-] 7107cbef
 282 03b54 EF death:hp75/never chain[03b54*] first[-] second[-] 3222379a
 282 03ce6 00 - chain[03ce6] first[-] second[-] 60eb0dd7
@@ -3325,12 +3325,12 @@ map 283 src 1d840c3192a603d1 nodes 71 chains 28 warn unreachable:1,even_fan_in:1
 283 02ca8 F3 chain chain[02ca8 02cf0:F3 026ed:F3 02711:F3 02c84:F3] first[-] second[-] b1612419
 283 02ccc F3 chain chain[02ccc 02ca8:F3 02cf0:F3 026ed:F3 02711:F3 02c84:F3] first[-] second[-] cb225941
 283 02cf0 F3 chain chain[02cf0 026ed:F3 02711:F3 02c84:F3] first[-] second[-] 12af3e60
-283 02d14 EF use:eye/3d/r60+26/always/nolatch chain[02d14* 03604:DE 03726:00 036ec:C3] first[snd43 move@036ec:swingZ+512] second[snd43 move@036ec:swingZ-512] 2910240b
+283 02d14 EF use:eye/3d/r600/always/nolatch chain[02d14* 03604:DE 03726:00 036ec:C3] first[snd43 move@036ec:swingZ+512] second[snd43 move@036ec:swingZ-512] 88c8e9cc
 283 02d4e DE chain chain[02d4e 034d4:F3 03cb5:F3 03c91:F3 03cd9:F3] first[-] second[-] b09a5b04
-283 02d88 EF use:eye/3d/r60+26/always/nolatch chain[02d88* 02d4e:DE 034d4:F3 03cb5:F3 03c91:F3 03cd9:F3] first[snd43 spawn@034d4 spawn@03cb5 spawn@03c91 spawn@03cd9] second[snd43 spawn@034d4 spawn@03cb5 spawn@03c91 spawn@03cd9] ccdcb2dc
+283 02d88 EF use:eye/3d/r600/always/nolatch chain[02d88* 02d4e:DE 034d4:F3 03cb5:F3 03c91:F3 03cd9:F3] first[snd43 spawn@034d4 spawn@03cb5 spawn@03c91 spawn@03cd9] second[snd43 spawn@034d4 spawn@03cb5 spawn@03c91 spawn@03cd9] 054942cc
 283 02dc2 90 chain chain[02dc2 036b2:90] first[-] second[-] 12317936
 283 02dfc C4 chain chain[02dfc 02dc2:90 036b2:90] first[-] second[-] 9c6a51e1
-283 02e36 EF use:eye/3d/r60+26/always/nolatch chain[02e36* 02c18:DE 038da:DE 037ca:6E 03d69:F3 03db1:F3 03d8d:F3] first[snd43 snd43 spawn@03d69 spawn@03db1 spawn@03d8d move@037ca:slideY-378] second[snd43 snd43 spawn@03d69 spawn@03db1 spawn@03d8d move@037ca:slideY+378] edf44bbd
+283 02e36 EF use:eye/3d/r600/always/nolatch chain[02e36* 02c18:DE 038da:DE 037ca:6E 03d69:F3 03db1:F3 03d8d:F3] first[snd43 snd43 spawn@03d69 spawn@03db1 spawn@03d8d move@037ca:slideY-378] second[snd43 snd43 spawn@03d69 spawn@03db1 spawn@03d8d move@037ca:slideY+378] 1e236329
 283 02eb8 73 chain chain[02eb8 03c49:F3 03c6d:F3 03c25:F3 02ccc:F3 02ca8:F3 02cf0:F3 026ed:F3 02711:F3 02c84:F3] first[-] second[-] 27168c45
 283 02f3a EF use:eye/3d/r60+26/always/nolatch chain[02f3a* 02f82:DB 02f5e:F0] first[snd40 exit281/14] second[-] c033eba7
 283 02f5e F0 touch:feet/2dw/r90/w512,chain chain[02f5e] first[exit281/14] second[-] 6f68e5ba
@@ -3345,24 +3345,24 @@ map 283 src 1d840c3192a603d1 nodes 71 chains 28 warn unreachable:1,even_fan_in:1
 283 03396 EE - chain[03396] first[-] second[-] 5630a49e
 283 033ba EF shot:always chain[033ba* 0351c:DE 03834:74 02eb8:73 03c49:F3 03c6d:F3 03c25:F3 02ccc:F3 02ca8:F3 02cf0:F3 026ed:F3 02711:F3 02c84:F3] first[snd43 spawn@03c49 spawn@03c6d spawn@03c25 spawn@02ccc spawn@02ca8 spawn@02cf0 spawn@026ed spawn@02711 spawn@02c84 move@03834:slideZ-64 move@02eb8:slideZ+64] second[snd43 spawn@03c49 spawn@03c6d spawn@03c25 spawn@02ccc spawn@02ca8 spawn@02cf0 spawn@026ed spawn@02711 spawn@02c84 move@03834:slideZ+64 move@02eb8:slideZ-64] 579347ee
 283 03424 01 - chain[03424] first[-] second[-] c7263eb2
-283 0349a EF use:eye/3d/r60+26/always/nolatch chain[0349a* 02c18:DE 038da:DE 037ca:6E 03d69:F3 03db1:F3 03d8d:F3] first[snd43 snd43 spawn@03d69 spawn@03db1 spawn@03d8d move@037ca:slideY-378] second[snd43 snd43 spawn@03d69 spawn@03db1 spawn@03d8d move@037ca:slideY+378] e699be6d
+283 0349a EF use:eye/3d/r600/always/nolatch chain[0349a* 02c18:DE 038da:DE 037ca:6E 03d69:F3 03db1:F3 03d8d:F3] first[snd43 snd43 spawn@03d69 spawn@03db1 spawn@03d8d move@037ca:slideY-378] second[snd43 snd43 spawn@03d69 spawn@03db1 spawn@03d8d move@037ca:slideY+378] 212e0183
 283 034d4 F3 chain chain[034d4 03cb5:F3 03c91:F3 03cd9:F3] first[-] second[-] 4e4db21d
 283 0351c DE chain chain[0351c 03834:74 02eb8:73 03c49:F3 03c6d:F3 03c25:F3 02ccc:F3 02ca8:F3 02cf0:F3 026ed:F3 02711:F3 02c84:F3] first[-] second[-] 60877d78
 283 03556 DE chain chain[03556 02759:F3 02b7d:F3 02735:F3] first[-] second[-] 5d758ee2
 283 03590 DE chain chain[03590 03678:C3 02dfc:C4 02dc2:90 036b2:90] first[-] second[-] e725d6ac
 283 035ca DE chain chain[035ca 028c1:8F] first[-] second[-] 497752a8
 283 03604 DE chain chain[03604 03726:00 036ec:C3] first[-] second[-] 7bc3bcf9
-283 0363e EF use:eye/3d/r60+26/always/nolatch chain[0363e* 03556:DE 02759:F3 02b7d:F3 02735:F3] first[snd43 spawn@02759 spawn@02b7d spawn@02735] second[snd43 spawn@02759 spawn@02b7d spawn@02735] f4202fe5
+283 0363e EF use:eye/3d/r600/always/nolatch chain[0363e* 03556:DE 02759:F3 02b7d:F3 02735:F3] first[snd43 spawn@02759 spawn@02b7d spawn@02735] second[snd43 spawn@02759 spawn@02b7d spawn@02735] 372d058f
 283 03678 C3 chain chain[03678 02dfc:C4 02dc2:90 036b2:90] first[-] second[-] 000e9037
 283 036b2 90 chain chain[036b2] first[-] second[-] 82d78058
 283 036ec C3 chain chain[036ec] first[-] second[-] 2e6eebc5
 283 03726 00 chain chain[03726 036ec:C3] first[-] second[-] 3c7f0d67
-283 03790 EF use:eye/3d/r60+26/always/nolatch chain[03790* 038da:DE 037ca:6E 03d69:F3 03db1:F3 03d8d:F3] first[snd43 spawn@03d69 spawn@03db1 spawn@03d8d move@037ca:slideY-378] second[snd43 spawn@03d69 spawn@03db1 spawn@03d8d move@037ca:slideY+378] 806573fc
+283 03790 EF use:eye/3d/r600/always/nolatch chain[03790* 038da:DE 037ca:6E 03d69:F3 03db1:F3 03d8d:F3] first[snd43 spawn@03d69 spawn@03db1 spawn@03d8d move@037ca:slideY-378] second[snd43 spawn@03d69 spawn@03db1 spawn@03d8d move@037ca:slideY+378] 10fff1e7
 283 037ca 6E chain chain[037ca 03d69:F3 03db1:F3 03d8d:F3] first[-] second[-] 2e74feeb
 283 03834 74 chain chain[03834 02eb8:73 03c49:F3 03c6d:F3 03c25:F3 02ccc:F3 02ca8:F3 02cf0:F3 026ed:F3 02711:F3 02c84:F3] first[-] second[-] 80fdb53f
 283 038da DE chain chain[038da 037ca:6E 03d69:F3 03db1:F3 03d8d:F3] first[-] second[-] a56811e8
-283 03914 EF use:eye/3d/r60+26/always/nolatch chain[03914* 03590:DE 03678:C3 02dfc:C4 02dc2:90 036b2:90] first[snd43 move@03678:swingZ+512 move@02dfc:swingZ-512 move@02dc2:swingX-512 move@036b2:swingX-512] second[snd43 move@03678:swingZ-512 move@02dfc:swingZ+512 move@02dc2:swingX+512 move@036b2:swingX+512] 9285597a
-283 0394e EF use:eye/3d/r60+26/always/nolatch chain[0394e* 035ca:DE 028c1:8F] first[snd43 move@028c1:swingX+512] second[snd43 move@028c1:swingX-512] 637c2272
+283 03914 EF use:eye/3d/r600/always/nolatch chain[03914* 03590:DE 03678:C3 02dfc:C4 02dc2:90 036b2:90] first[snd43 move@03678:swingZ+512 move@02dfc:swingZ-512 move@02dc2:swingX-512 move@036b2:swingX-512] second[snd43 move@03678:swingZ-512 move@02dfc:swingZ+512 move@02dc2:swingX+512 move@036b2:swingX+512] 378bc48a
+283 0394e EF use:eye/3d/r600/always/nolatch chain[0394e* 035ca:DE 028c1:8F] first[snd43 move@028c1:swingX+512] second[snd43 move@028c1:swingX-512] e6c8f1a1
 283 03c25 F3 chain chain[03c25 02ccc:F3 02ca8:F3 02cf0:F3 026ed:F3 02711:F3 02c84:F3] first[-] second[-] 0e3ff90e
 283 03c49 F3 chain chain[03c49 03c6d:F3 03c25:F3 02ccc:F3 02ca8:F3 02cf0:F3 026ed:F3 02711:F3 02c84:F3] first[-] second[-] f6a9d97a
 283 03c6d F3 chain chain[03c6d 03c25:F3 02ccc:F3 02ca8:F3 02cf0:F3 026ed:F3 02711:F3 02c84:F3] first[-] second[-] 10db7e56
@@ -3469,11 +3469,11 @@ map 286 src 88214a745c69a004 nodes 62 chains 41
 286 03c3e 61 chain chain[03c3e] first[-] second[-] c0fc04fb
 286 03e04 EF use:eye/3d/r60+26/always/nolatch chain[03e04* 04ef5:F3] first[spawn@04ef5] second[spawn@04ef5] 0cb911ba
 286 03ec4 E1 chain chain[03ec4 03c3e:61] first[-] second[-] 1887919b
-286 03efe EF use:eye/3d/r60+26/always/nolatch chain[03efe* 03ec4:E1 03c3e:61] first[snd46 move@03c3e:slideY+512] second[snd46 move@03c3e:slideY-512] 2046598d
+286 03efe EF use:eye/3d/r600/always/nolatch chain[03efe* 03ec4:E1 03c3e:61] first[snd46 move@03c3e:slideY+512] second[snd46 move@03c3e:slideY-512] aaa5b0d9
 286 03f38 E1 chain chain[03f38 04281:61] first[-] second[-] dcc885ba
-286 03f72 EF use:eye/3d/r60+26/always/nolatch chain[03f72* 03f38:E1 04281:61] first[snd46 move@04281:slideY+512] second[snd46 move@04281:slideY-512] 1b899f4f
+286 03f72 EF use:eye/3d/r600/always/nolatch chain[03f72* 03f38:E1 04281:61] first[snd46 move@04281:slideY+512] second[snd46 move@04281:slideY-512] fa7eb7ae
 286 03fac E1 chain chain[03fac 02f1f:61] first[-] second[-] 759b0cd9
-286 03fe6 EF use:eye/3d/r60+26/always/nolatch chain[03fe6* 03fac:E1 02f1f:61] first[snd46 move@02f1f:slideY+512] second[snd46 move@02f1f:slideY-512] 9e526a2e
+286 03fe6 EF use:eye/3d/r600/always/nolatch chain[03fe6* 03fac:E1 02f1f:61] first[snd46 move@02f1f:slideY+512] second[snd46 move@02f1f:slideY-512] b280e708
 286 04020 EE - chain[04020] first[-] second[-] c0dff43e
 286 040b0 EE - chain[040b0] first[-] second[-] 896d878a
 286 0417a 00 - chain[0417a] first[-] second[-] 7ed66359
@@ -3526,7 +3526,7 @@ map 292 src 14ea733c5c31388f nodes 36 chains 23
 292 036e1 A9 chain chain[036e1 0342c:26 0282d:E0 0428c:ED] first[-] second[-] bbc22459
 292 03728 EF use:eye/3d/r60+26/always/nolatch chain[03728* 036e1:A9 0342c:26 0282d:E0 0428c:ED] first[obj0 snd45 voice24038 move@036e1:swingY+512] second[snd45 voice24038 move@036e1:swingY-512] 2b16030f
 292 03786 1B chain chain[03786 0345c:20 04268:ED] first[-] second[-] a621d7c9
-292 0391d EF use:eye/3d/r60+26/always/nolatch chain[0391d* 03786:1B 0345c:20 04268:ED] first[demolish@03786 hint4 voice24032] second[demolish@03786 voice24032] ef07a090
+292 0391d EF use:eye/3d/r600/always/nolatch chain[0391d* 03786:1B 0345c:20 04268:ED] first[demolish@03786 hint4 voice24032] second[voice24032] d35ada54
 292 04057 AA chain chain[04057 04216:EA] first[-] second[-] aa280dda
 292 040a8 AA chain chain[040a8 041f2:EA] first[-] second[-] f5b7bfaf
 292 041f2 EA chain chain[041f2] first[-] second[-] fb4b0a2f
@@ -3543,7 +3543,7 @@ map 293 src 4109050883138c2e nodes 12 chains 5
 293 02f5e EF use:eye/3d/r60+26/always/nolatch chain[02f5e* 02f0d:A9 031f5:EA] first[snd113 move@02f0d:swingY+512] second[snd113 move@02f0d:swingY-512] c2ae1d3c
 293 0301c EF use:eye/3d/r60+26/always/nolatch chain[0301c* 02e96:AA 03219:EA] first[snd113 move@02e96:swingY-512] second[snd113 move@02e96:swingY+512] 88f3ae5d
 293 03040 AA chain chain[03040 031ad:EA] first[-] second[-] c331415b
-293 03122 EF use:eye/3d/r60+26/always/nolatch chain[03122* 03040:AA 031ad:EA] first[snd113 move@03040:swingY-512] second[snd113 move@03040:swingY+512] 984d9835
+293 03122 EF use:eye/3d/r600/always/nolatch chain[03122* 03040:AA 031ad:EA] first[snd113 move@03040:swingY-512] second[snd113 move@03040:swingY+512] 73920b96
 293 031ad EA chain chain[031ad] first[-] second[-] 3628fbef
 293 031f5 EA chain chain[031f5] first[-] second[-] 15fc6591
 293 03219 EA chain chain[03219] first[-] second[-] 0c69934b
@@ -3553,7 +3553,7 @@ map 340 src 38aaa217f55bcd0e nodes 10 chains 8
 340 03fb0 00 - chain[03fb0] first[-] second[-] 7769740d
 340 04040 EF use:eye/3d/r60+26/always/nolatch chain[04040*] first[-] second[-] 0306e3a1
 340 04070 1B chain chain[04070] first[-] second[-] d28a7ba1
-340 040c4 EF death:hp50/never chain[040c4* 04070:1B] first[demolish@04070] second[demolish@04070] 90c8515c
+340 040c4 EF death:hp50/never chain[040c4* 04070:1B] first[demolish@04070] second[-] 43e15bb1
 340 04274 00 - chain[04274] first[-] second[-] 2bee9191
 340 044e1 00 - chain[044e1] first[-] second[-] 35998072
 340 045e9 EF use:eye/3d/r60+26/always/nolatch chain[045e9* 034b9:DF 0462d:F0] first[snd44 exitback/40] second[-] 39780d22
@@ -3701,7 +3701,7 @@ map 352 src 14b717cb4b21c2b5 nodes 13 chains 9
 352 04bf6 DF chain chain[04bf6 06592:F0] first[-] second[-] e0984a6e
 352 05fdf DF chain chain[05fdf 06826:AA] first[-] second[-] a0a04ff5
 352 0609f 00 - chain[0609f] first[-] second[-] d09d64a0
-352 060ff EF death:hp50/never chain[060ff* 067ae:1B] first[demolish@067ae] second[demolish@067ae] 3fc8737d
+352 060ff EF death:hp50/never chain[060ff* 067ae:1B] first[demolish@067ae] second[-] 136d5bb9
 352 06153 EF use:eye/3d/r60+26/always/nolatch chain[06153* 05fdf:DF 06826:AA] first[snd44 move@06826:swingY-512] second[snd44 move@06826:swingY+512] bb1da62a
 352 062ea 00 - chain[062ea] first[-] second[-] 97f2f881
 352 0631a 00 - chain[0631a] first[-] second[-] a5916710
@@ -3748,7 +3748,7 @@ map 355 src 2437190617782014 nodes 13 chains 10
 map 356 src 6e2f6691b859b474 nodes 9 chains 6
 356 03af0 00 - chain[03af0] first[-] second[-] 5b4c1a8e
 356 04bf6 DF chain chain[04bf6 05f7f:F0] first[-] second[-] 4783f3e0
-356 05cec EF death:hp202/never chain[05cec* 05d7c:1B 05d4c:00] first[demolish@05d7c] second[demolish@05d7c] 5e80b96f
+356 05cec EF death:hp202/never chain[05cec* 05d7c:1B 05d4c:00] first[demolish@05d7c] second[-] 93847b0c
 356 05d1c 00 - chain[05d1c] first[-] second[-] 4f6206fd
 356 05d4c 00 chain chain[05d4c] first[-] second[-] 607cdd5b
 356 05d7c 1B chain chain[05d7c 05d4c:00] first[-] second[-] ef8a305c
@@ -3813,14 +3813,14 @@ map 461 src b839fc1e625ec923 nodes 42 chains 25
 461 029c0 DF chain chain[029c0 0490f:A9] first[-] second[-] 0e2eb778
 461 02e04 DF chain chain[02e04 047ed:A9] first[-] second[-] d1662be9
 461 03409 DF chain chain[03409 03ec9:F0] first[-] second[-] 3a36b1f2
-461 03529 EF death:hp50/never chain[03529* 03797:1B] first[demolish@03797] second[demolish@03797] ca37f852
-461 03559 EF death:hp50/never chain[03559* 044da:1B 037de:1B] first[demolish@044da demolish@037de] second[demolish@044da demolish@037de] 242fb593
-461 03589 EF death:hp19/never chain[03589* 0380e:1B] first[demolish@0380e] second[demolish@0380e] 085ef074
-461 035d0 EF death:hp19/never chain[035d0* 0383e:1B] first[demolish@0383e] second[demolish@0383e] a80f7f28
-461 03660 EF death:hp75/never chain[03660* 038fe:1B] first[demolish@038fe] second[demolish@038fe] 12f174b3
-461 036a7 EF death:hp75/never chain[036a7* 04463:1B] first[demolish@04463] second[demolish@04463] 8090b957
-461 03707 EF death:hp19/never chain[03707* 0392e:1B] first[demolish@0392e] second[demolish@0392e] c57a7918
-461 03737 EF death:hp19/never chain[03737* 044aa:1B 039be:1B] first[demolish@044aa demolish@039be] second[demolish@044aa demolish@039be] e7a326fd
+461 03529 EF death:hp50/never chain[03529* 03797:1B] first[demolish@03797] second[-] 8f73cd49
+461 03559 EF death:hp50/never chain[03559* 044da:1B 037de:1B] first[demolish@044da demolish@037de] second[-] 4176f433
+461 03589 EF death:hp19/never chain[03589* 0380e:1B] first[demolish@0380e] second[-] 81a1c3ea
+461 035d0 EF death:hp19/never chain[035d0* 0383e:1B] first[demolish@0383e] second[-] 49747f55
+461 03660 EF death:hp75/never chain[03660* 038fe:1B] first[demolish@038fe] second[-] 23a2ad98
+461 036a7 EF death:hp75/never chain[036a7* 04463:1B] first[demolish@04463] second[-] 779a53c5
+461 03707 EF death:hp19/never chain[03707* 0392e:1B] first[demolish@0392e] second[-] 32deacc6
+461 03737 EF death:hp19/never chain[03737* 044aa:1B 039be:1B] first[demolish@044aa demolish@039be] second[-] ced5ed80
 461 03767 EF death:hp19/never chain[03767*] first[-] second[-] 14a91f8e
 461 03797 1B chain chain[03797] first[-] second[-] a2f01f1d
 461 037de 1B chain chain[037de] first[-] second[-] 557b89c0
@@ -4030,12 +4030,12 @@ map 469 src de7cad6bc61e7416 nodes 20 chains 17
 map 470 src 7468046ee66e6138 nodes 31 chains 27
 470 028ed DF chain chain[028ed 03bf9:F0] first[-] second[-] 5ee5e6d5
 470 02f42 EF death:hp100/never chain[02f42*] first[-] second[-] e0a4b6be
-470 02f89 EF death:hp8/never chain[02f89* 03def:1B] first[demolish@03def] second[demolish@03def] 6a4d1803
+470 02f89 EF death:hp8/never chain[02f89* 03def:1B] first[demolish@03def] second[-] 956bec52
 470 02fb9 00 - chain[02fb9] first[-] second[-] e4008e37
 470 02fe9 00 - chain[02fe9] first[-] second[-] 59f13690
-470 03019 EF death:hp8/never chain[03019* 03e36:1B] first[demolish@03e36] second[demolish@03e36] 203a66b7
+470 03019 EF death:hp8/never chain[03019* 03e36:1B] first[demolish@03e36] second[-] fafcb8b1
 470 03137 00 - chain[03137] first[-] second[-] 0f6e8001
-470 03167 EF death:hp8/never chain[03167* 03e66:1B] first[demolish@03e66] second[demolish@03e66] c092afd3
+470 03167 EF death:hp8/never chain[03167* 03e66:1B] first[demolish@03e66] second[-] 6a028907
 470 03197 00 - chain[03197] first[-] second[-] 2d03152b
 470 031c7 00 - chain[031c7] first[-] second[-] 8ab7a546
 470 031f7 00 - chain[031f7] first[-] second[-] 3ca8be85
@@ -4087,7 +4087,7 @@ map 472 src d8b23584eaf94c5b nodes 22 chains 15
 472 02c6c DF chain chain[02c6c 041d3:AA] first[-] second[-] 727e97f1
 472 02e6a 00 - chain[02e6a 03ee4:1B] first[-] second[-] 32de0d29
 472 02ee1 EF death:hp100/never chain[02ee1*] first[-] second[-] 96542a11
-472 02f28 DF death:hp8/never chain[02f28 03f14:1B] first[snd44 demolish@03f14] second[snd44 demolish@03f14] 68bad607
+472 02f28 DF death:hp8/never chain[02f28 03f14:1B] first[snd44 demolish@03f14] second[snd44] 21514a27
 472 02f58 00 - chain[02f58 03f44:1B] first[-] second[-] 78cef681
 472 02f88 00 - chain[02f88 03f74:1B] first[-] second[-] b0b8a11a
 472 03316 00 - chain[03316] first[-] second[-] c9494d05
@@ -4253,10 +4253,10 @@ map 585 src 5312df19120fad8b nodes 12 chains 11
 map 586 src 5b566165ad8b4f76 nodes 23 chains 20
 586 0260a EF use:eye/3d/r60+26/always/nolatch chain[0260a* 03a2d:DF 0316c:F0] first[snd44 exitback/86] second[-] 150720a7
 586 0316c F0 touch:feet/2dw/r90/w512,chain chain[0316c] first[exitback/86] second[-] c83c0c51
-586 0366d EF death:hp20/never chain[0366d* 0369d:1B] first[demolish@0369d] second[demolish@0369d] c458da0d
+586 0366d EF death:hp20/never chain[0366d* 0369d:1B] first[demolish@0369d] second[-] 541b7813
 586 0369d 1B chain chain[0369d] first[-] second[-] 2604a263
 586 036cd 1B chain chain[036cd] first[-] second[-] 6d3d6aff
-586 036fd EF death:hp20/never chain[036fd* 036cd:1B] first[demolish@036cd] second[demolish@036cd] e07a599e
+586 036fd EF death:hp20/never chain[036fd* 036cd:1B] first[demolish@036cd] second[-] 4b137241
 586 0372d 00 - chain[0372d] first[-] second[-] 8380e48a
 586 0375d 00 - chain[0375d] first[-] second[-] bd92f17e
 586 0378d 00 - chain[0378d] first[-] second[-] e993f9a7
@@ -4466,7 +4466,7 @@ map 597 src b42dc304b93cb531 nodes 31 chains 30
 map 598 src 9590738b11c7f21f nodes 23 chains 21
 598 0257c DF chain chain[0257c 031ef:F0] first[-] second[-] bdd47db4
 598 02a07 EF death:hp75/never chain[02a07*] first[-] second[-] e649596d
-598 02a7e EF death:hp100/never chain[02a7e* 03213:1B] first[demolish@03213] second[demolish@03213] 489ed766
+598 02a7e EF death:hp100/never chain[02a7e* 03213:1B] first[demolish@03213] second[-] e25cd762
 598 02ac5 00 - chain[02ac5] first[-] second[-] d2ffd379
 598 02b0c 00 - chain[02b0c] first[-] second[-] 707ec878
 598 02b53 00 - chain[02b53] first[-] second[-] 91735482
@@ -4888,7 +4888,7 @@ map 696 src 7842c9941c3c3252 nodes 10 chains 10
 696 08366 00 - chain[08366] first[-] second[-] 51f9d453
 696 08396 00 - chain[08396] first[-] second[-] 0f1967ff
 696 08cdf 00 - chain[08cdf] first[-] second[-] 61aae337
-696 0abef EF use:eye/3d/r60+26/always/nolatch chain[0abef*] first[-] second[-] d84629cd
+696 0abef EF use:eye/3d/r600/always/nolatch chain[0abef*] first[-] second[-] d417e152
 696 0ac1f 00 - chain[0ac1f] first[-] second[-] 290f0841
 696 0ac4f 00 - chain[0ac4f] first[-] second[-] d4ec6f87
 696 0ac7f 00 - chain[0ac7f] first[-] second[-] 06ebfce4

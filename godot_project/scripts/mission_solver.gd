@@ -77,16 +77,20 @@ const PROGRESS_MSEC: int = 5000
 const RETAKE: int = 3
 const SETTLE_MAX: float = 6.0
 const BUCKET: float = 256.0
+## How near a WALL BUTTON the solver stands before it presses the key
+## (ActionSystem.USE_REACH) — the one record the key reaches without a
+## proximity measure of its own (ActionSystem.is_wall_button).
 const USE_REACH: float = 130.0      # ActionSystem.USE_REACH
 ## The use key is also the CROSSHAIR: fly_camera._try_activate rays this
 ## far from the eye and operates whatever mesh it hits, so a button across
 ## a room is pressed by looking at it — the hand reach above is only for
 ## the key pressed with nothing under the crosshair (ActionSystem.use_nearby).
 const ACTIVATE_RAY: float = 600.0
-## How far from an ARMED exit the use key still takes it — activate_teleport's
-## TELEPORT_TOUCH_RADIUS + PROX_GATE_RADIUS (a gate chain arms it; touching
-## is only one way to).
-const EXIT_REACH: float = 150.0
+## How far from an ARMED exit the use key still takes it —
+## activate_teleport's TELEPORT_TOUCH_RADIUS, the same radius that arms the
+## doorway by touch (2026-09-16: it used to be that plus a gate's 60, which
+## reached further than anything in the original did).
+const EXIT_REACH: float = 90.0
 const V_WINDOW: float = 512.0       # ActionSystem.PROX_VERTICAL_WINDOW
 const DIRS: Array = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1),
 	Vector2i(1, 1), Vector2i(1, -1), Vector2i(-1, 1), Vector2i(-1, -1)]
@@ -721,6 +725,37 @@ func _nearest(ep: Vector3, reach: float, vwin: float = V_WINDOW) -> int:
 
 # --- What a player there can fire ------------------------------------------
 
+## A spot the player can walk to from which a PROXIMITY record is in reach
+## — 3D, from the eye, the way its own handler measures him
+## (ActionSystem.on_player_activate / tick). The plain _reach_point below
+## measures horizontally inside a 512-unit vertical window, which is the
+## doorways' rule and far too generous for these: MAP.210's tower lever
+## stands 295 units over the ground at its foot, and the run pressed it
+## from down there, through the crosshair, from outside anything the
+## original measures.
+##
+## The cell's own eye, so what the solver proves is what the key does. A
+## sweep toward the record (as _reach_point does for a doorway) is not
+## worth it here: these sit on walls and the last few units are up, not
+## along the floor.
+func _reach_eye(ep: Vector3, reach: float) -> Vector3:
+	var best: Vector3 = Vector3.INF
+	var bd: float = reach
+	var r: int = int(ceil((reach + _cell) / BUCKET))
+	var bx: int = floori(ep.x / BUCKET)
+	var bz: int = floori(ep.z / BUCKET)
+	for dx in range(-r, r + 1):
+		for dz in range(-r, r + 1):
+			var arr = _bucket.get(Vector2i(bx + dx, bz + dz))
+			if arr == null:
+				continue
+			for i in arr:
+				var d: float = (_pos[i] + Vector3(0.0, EYE + LIFT, 0.0)).distance_to(ep)
+				if d < bd:
+					bd = d
+					best = _pos[i]
+	return best
+
 ## A spot the player can walk to within `reach` of `ep`: a reachable cell
 ## if one is close enough, otherwise the cell nearest the target and then
 ## as far toward it as the capsule sweeps. A player walks up to a door; he
@@ -790,30 +825,35 @@ func _candidates(a, name: String, shoot: bool) -> Array:
 		# ring MAP.217's jeep is what the solver did for [M3], and mission 1
 		# could not be finished; a player presses the key there.
 		var gate: bool = e.link_act_type == 0xEF and not use_only
-		var at: Vector3 = _reach_point(_epos(e), USE_REACH if use_only else a._prox_radius(e))
+		# Where to stand. A gate or a lever is measured by its own handler,
+		# 3D from the EYE (ActionSystem.on_player_activate since
+		# 2026-09-16), so the spot has to satisfy that and not merely be
+		# near in plan: MAP.210's tower levers stand three hundred units
+		# over the ground at their foot. A WALL BUTTON is the exception the
+		# owner kept — the key answers it instead of proximity — so for one
+		# of those the reach is the hand's and then the crosshair's.
+		var reach: float = a._prox_radius(e)
+		var at: Vector3 = _reach_point(_epos(e), USE_REACH) if use_only \
+			else _reach_eye(_epos(e), reach)
 		var kind: String = "use" if use_only else ("use-gate" if gate else "walk-in")
-		if at == Vector3.INF and (e.flags & 3) == 1:
-			# Out of the hand's reach and out of the gate's radius — but a
-			# BUTTON on the wall is operated by LOOKING at it (ACTIVATE_RAY:
-			# the ray walks up to the mesh's own node and activates it,
-			# whatever its act). MAP.214's BUTTON01, the one that opens the
-			# doors to MAP.215 and so to mission 1's [M1] and [M2], sits 163
-			# units off round a wall corner: no cell of the flood is within
-			# 130 of it, and plenty of them can see it.
+		if at == Vector3.INF and use_only:
+			# Out of the hand's reach — but a BUTTON on the wall is operated
+			# by LOOKING at it (ACTIVATE_RAY: the ray walks up to the mesh's
+			# own node and activates it, whatever its act). MAP.214's
+			# BUTTON01, the one that opens the doors to MAP.215 and so to
+			# mission 1's [M1] and [M2], sits 163 units off round a wall
+			# corner: no cell of the flood is within 130 of it, and plenty of
+			# them can see it.
 			var seen: int = _shooting_spot(a, e.file_off, _aim_point(a, e.file_off, e), ACTIVATE_RAY)
 			if seen >= 0:
 				at = _pos[seen]
-				kind = "use"
 		if at != Vector3.INF:
 			out.append({"kind": kind, "off": e.file_off, "key": k,
 				"at": at, "what": _ename(a, e)})
-	for e in a._use_msgs:
-		var k: String = "u%05x" % e.file_off
-		if _done.has(name + ":" + k) or a._spent.has(e.file_off):
-			continue
-		var at: Vector3 = _reach_point(_epos(e), USE_REACH)
-		if at != Vector3.INF:
-			out.append({"kind": "use", "off": e.file_off, "key": k, "at": at, "what": _ename(a, e)})
+	# (A cue no chain points at used to be listed here too, as something the
+	# key could read. The owner retired that port rule on 2026-09-15 and
+	# ActionSystem no longer keeps the list — DOS has no use-key path to a
+	# cue, so the solver has none either.)
 	return out
 
 func _perform(a, name: String, act: Dictionary) -> void:
@@ -826,7 +866,8 @@ func _perform(a, name: String, act: Dictionary) -> void:
 	await _frames(3)
 	match String(act["kind"]):
 		"use":
-			a.on_player_activate(int(act["off"]), main.player.global_position)
+			a.on_player_activate(int(act["off"]), main.player.global_position,
+				main._eye_position())
 		"use-gate":
 			# The action system's own use edge, not main's — that one would
 			# take a doorway the press happens to stand in as well, and the

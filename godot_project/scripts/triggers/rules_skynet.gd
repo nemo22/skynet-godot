@@ -214,8 +214,16 @@ const TELEPORT_TOUCH_RADIUS: float = 90.0
 ## Vertical window for the port's own 2D tests — stacked interior floors
 ## put doorways directly above/below each other.
 const PROX_VERTICAL_WINDOW: float = 512.0
-## Use key reach for wall buttons / levers the crosshair is not on.
+## Use key reach for a wall button the crosshair is not on
+## (ActionSystem.use_nearby's fallback, and where the checks stand).
 const USE_REACH: float = 130.0
+## …and how far the CROSSHAIR itself reaches (fly_camera._try_activate's
+## ray). That is a wall button's real measure, and the owner's kept rule
+## says so: it answers the key instead of proximity, so a proximity radius
+## is not what limits it — MAP.210's base doors are opened by a button
+## three hundred units up a tower wall, which no radius in the original
+## would reach.
+const USE_RAY: float = 600.0
 const DESTRUCT_DAMAGE_PER_STAGE: float = 16.0  # handler 0x120433 stage step
 
 # ---------------------------------------------------------------------
@@ -366,9 +374,10 @@ static func rules_hash() -> String:
 		# The per-RECORD rules (rule_for_record) are rules too: a change to
 		# one has to rebuild every stored graph, like a change to a row.
 		parts.append("notalight=%s" % JSON.stringify(NOT_A_LIGHT))
-		parts.append("r=%.1f/%.1f/%.1f/%.1f/%.1f/%.1f"
+		parts.append("r=%.1f/%.1f/%.1f/%.1f/%.1f/%.1f/%.1f"
 			% [PROX_GATE_RADIUS, PROX_CHAIN_A_RADIUS, PROX_CHAIN_B_RADIUS,
-			   PLAYER_RADIUS, TELEPORT_TOUCH_RADIUS, PROX_VERTICAL_WINDOW])
+			   PLAYER_RADIUS, TELEPORT_TOUCH_RADIUS, PROX_VERTICAL_WINDOW,
+			   USE_RAY])
 		_hash = ";".join(parts).sha256_text().substr(0, 16)
 	return _hash
 
@@ -464,10 +473,20 @@ static func _build() -> Dictionary:
 		r[a] = _row("inert", {"prov": "dos", "on_fire": "none",
 			"note": "empty handler slot; 0xfe/0xff are what DOS writes into a spent act byte"})
 	# --- Destruction ---------------------------------------------------
+	# 0x18 and 0x19 are NOT the same handler, and neither the graph nor the
+	# runtime tells them apart yet (M3 step 4, 2026-09-16). 0x19 clears its
+	# own bit at entry, so it is one damage stage per enable — which is what
+	# both rows say here. 0x18 does not: it carries p4 = 4 and RAMPS four
+	# stages a second for as long as its bit is up, which is the machine
+	# chewing through a wall rather than a single blow. Implementing that
+	# belongs with the destructibles (migration step 5g); until then this
+	# note is the record of it, and 0x18's rows in the lock are 0x19's.
 	for a in [ACT_DESTRUCT_A, ACT_DESTRUCT_B]:
 		r[a] = _row("destructible", {"dos": "0x120433", "prov": "dos",
-			"note": "one TRANSFRM.PRS damage stage per enable; the %.0f points a stage is the port's step"
-				% DESTRUCT_DAMAGE_PER_STAGE})
+			"note": "one TRANSFRM.PRS damage stage per enable; the %.0f points a stage is the port's step%s"
+				% [DESTRUCT_DAMAGE_PER_STAGE,
+				   " (0x18 really ramps p4 = 4 stages a second while enabled, and only 0x19 clears its bit at entry — not modelled yet, see step 5g)"
+					if a == ACT_DESTRUCT_A else ""]})
 	r[ACT_DEMOLISH] = _row("demolish", {"dos": "0x1378bf", "prov": "dos",
 		"note": "variant 1 only: hp = max(hp, 1) then ObjHit(hp + 1)"})
 	# --- Messages, objectives, the counter -----------------------------
