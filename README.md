@@ -31,7 +31,10 @@ the original dialog art.
 ## What works
 
 - **The campaign** — all eight missions, the DOS mission scripts, the
-  objective counter, briefings with the original art and voice lines.
+  objective counter, briefings with the original art and voice lines. A
+  mission is held as *one* scene — its outdoor world and every interior
+  it reaches — so a doorway moves you instead of loading the next map,
+  and what you left behind is still there when you come back.
 - **The world** as the original drew it: DOS heightmap terrain, the
   entity meshes, billboard sprites, palette-accurate textures, the night
   sky with the moon, the dusk dome on missions 5–8.
@@ -95,6 +98,7 @@ Platform notes:
 | `--join=ADDRESS[:PORT]` | join one |
 | `--import` | build the asset cache and quit |
 | `--solve[=SECONDS]` | let the solver play the mission and report |
+| `--no-mission-scene` | play the campaign a map at a time, the old way |
 | `--screenshot=FILE` | save a frame and quit (for automation) |
 
 ## Building from source
@@ -114,13 +118,18 @@ SkyNET Maps dock), so the editor can open the converted map scenes. The export
 plugin in `addons/skynet_maps/export_filter.gd` leaves that cache, local
 mods and the developer tooling out of every build.
 
-The project has three headless test suites that run the real game code:
+The project has four headless test suites that run the real game code:
 
 ```sh
 godot --headless --path godot_project res://scenes/action_smoke_test.tscn
 godot --headless --path godot_project res://scenes/game_smoke_test.tscn
+godot --headless --path godot_project res://scenes/mission_smoke_test.tscn
 godot --headless --path godot_project res://scenes/net_smoke_test.tscn
 ```
+
+The mission suite plays a campaign mission inside its own scene; the game
+suite plays the same mission a map at a time, so both runtimes stay
+covered.
 
 ## How this was made
 

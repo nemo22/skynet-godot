@@ -7,6 +7,13 @@
 ## mover, GENER0 HP-depletion chain, TRANSFRM.PRS car damage stages,
 ## DISH rotator, and the 0xEF gate → 0xF0 teleport pair. Exits with a
 ## non-zero code on failure.
+##
+## Nothing here boots the game scene — every level is loaded straight from
+## LevelLoader and every mission scene is inspected as data — so which
+## runtime Settings.mission_scenes picks never reaches this suite. The two
+## that do boot Main choose for themselves: game_smoke_test puts the flag
+## down to keep testing the per-map runtime, mission_smoke_test plays the
+## default.
 
 extends Node
 
@@ -1103,6 +1110,13 @@ func _run_level_scene_checks() -> void:
 ## scene — its zones on the +X grid, its doorways as portals and the
 ## re-authored world as phases.
 func _run_mission_scene_checks() -> void:
+	# Step 8 of the M2 plan: a mission scene is how the campaign is played
+	# now. Asked of a FRESH Settings node — one that never entered the tree
+	# and so never read settings.cfg — because what ships is the initialiser,
+	# and a file on this machine can say anything.
+	var fresh: Node = load("res://scripts/settings.gd").new()
+	_check(bool(fresh.mission_scenes), "mission scenes are the shipped default")
+	fresh.free()
 	var mp: String = MissionScene.scene_path(210)
 	_check(not mp.is_empty(), "the cache has a place for mission scenes")
 	if mp.is_empty():

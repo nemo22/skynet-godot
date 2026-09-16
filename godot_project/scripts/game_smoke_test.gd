@@ -47,6 +47,14 @@ func _settled() -> bool:
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	# THE PER-MAP RUNTIME is what this suite is written against: every exit
+	# below is a level change, and the state it checks is the per-map overlay.
+	# Mission scenes are the default since step 8 of the M2 plan, so the flag
+	# goes DOWN here — in memory only, a test must not write the player's own
+	# settings file — and mission_smoke_test.gd is the suite that plays the
+	# same mission the new way. The runtime is chosen when the first level
+	# starts, so this has to happen before Main is built.
+	Settings.mission_scenes = false
 	SkynetPaths.selected_map = "MAP.210"
 	_main = MainScene.instantiate()
 	add_child(_main)
@@ -73,6 +81,10 @@ func _run() -> void:
 	var lvl = _main.get("_current_level")
 	_check(player.global_position.distance_to(lvl.player_start) < 1000.0,
 		"player spawned at the map's start marker")
+	# The fallback this whole suite rides on: with the flag down there is no
+	# mission scene and the map stands at the DOS origin on its own.
+	_check(_main.get("_mission") == null and (lvl.origin as Vector3) == Vector3.ZERO,
+		"the flag down: MAP.210 is up on its own, at the origin")
 
 	# --- 1b. DOS enemy AI wiring: scripts animate, turrets get segments,
 	# something moves within 3 s of physics ---

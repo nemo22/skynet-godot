@@ -26,6 +26,11 @@
 ## same session as a v0.3 per-map save plays inside the scene, and the
 ## mission save plays in the per-map runtime with the flag down.
 ##
+## Last (step 8, the flag is the DEFAULT now): everything the mission
+## scenes do not cover still finds the per-map runtime on its own —
+## Future Shock, a network game, `--no-mission-scene`, and a loose map no
+## mission holds.
+##
 ##   godot --headless --path . res://scenes/mission_smoke_test.tscn
 
 extends Node
@@ -303,10 +308,19 @@ func _check_carried(spoil: Dictionary, what: String) -> void:
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
-	# The runtime is picked when the level starts, so the flag goes up
-	# before Main is built. Set in memory only — a test must not write the
-	# player's own settings file.
-	Settings.mission_scenes = true
+	# THE DEFAULT is what this suite plays (step 8): Settings.mission_scenes
+	# ships on, and nothing on the command line turns it on here. The live
+	# value is only put back where the shipped default has it in case a
+	# settings.cfg on this machine says otherwise — a run must not depend on
+	# whoever last played, and a test must never WRITE that file. The runtime
+	# is picked when the first level starts, so this happens before Main is
+	# built.
+	var fresh: Node = load("res://scripts/settings.gd").new()
+	_check(bool(fresh.mission_scenes), "mission scenes are the shipped default")
+	fresh.free()
+	if not Settings.mission_scenes:
+		print("[mission-e2e] note: this machine's settings.cfg chose mission scenes off — the run uses the default")
+		Settings.mission_scenes = true
 	SkynetPaths.selected_map = "MAP.210"
 	_main = MainScene.instantiate()
 	add_child(_main)
@@ -719,7 +733,55 @@ func _run() -> void:
 			ok = await _go(250, 0, "250", 300.0)
 			_check(ok and _active() == "MAP.250",
 				"and the way back leads into the harbour zone (%s)" % _zone_line())
+
+	# --- 11. What still takes the PER-MAP runtime (step 8) --------------
+	# The flag is the default now, so everything the mission scenes do not
+	# cover has to find the old runtime by itself. Last in the suite: the
+	# loose map below hands its mission over for good (_mission_scene_off).
+	await _fallback_checks()
 	_finish()
+
+## The automatic fallbacks, with the flag UP. Each is a rule of
+## main._mission_scenes_on or main._want_mission_scene; the network game
+## itself is net_smoke_test's, and Future Shock's own data is not loaded
+## here — the gate it fails is.
+func _fallback_checks() -> void:
+	_check(bool(Settings.mission_scenes), "the suite played the default (the flag is up)")
+	# Future Shock: its campaign is the 01x-19x maps and MissionScene.STARTS
+	# is SkyNET's, so it bakes no mission scene and is refused the runtime.
+	var was_game: String = SkynetPaths.game
+	SkynetPaths.game = "shock"
+	var shock_none: bool = Assets.mission_starts().is_empty() \
+		and Assets.mission_start_of(210) < 0
+	var shock_off: bool = not bool(_main.call("_mission_scenes_on"))
+	SkynetPaths.game = was_game
+	_check(shock_none, "Future Shock bakes no mission scenes")
+	_check(shock_off, "…and is refused the mission-scene runtime")
+	_check(bool(_main.call("_mission_scenes_on")), "SkyNET has it back")
+	# A network game is one arena for everyone and has no mission at all.
+	Net.active = true
+	var net_off: bool = not bool(_main.call("_mission_scenes_on"))
+	Net.active = false
+	_check(net_off, "a network game is refused it whatever the setting says")
+	# `--no-mission-scene`: one run put back on the per-map runtime.
+	var cli: Dictionary = _main.get("_cli")
+	cli["no-mission-scene"] = true
+	var cli_off: bool = not bool(_main.call("_mission_scenes_on"))
+	cli.erase("no-mission-scene")
+	_check(cli_off, "--no-mission-scene turns it off for a run")
+	# A loose map: no mission scene is filed for the 60x arenas, and nothing
+	# the census walked holds MAP.603.
+	_check(Assets.mission_start_of(600) < 0,
+		"no mission scene is filed for a loose map's own decade")
+	_check(not Assets.mission_holds(250, "MAP.603"),
+		"and the mission being played does not hold it either")
+	var ok: bool = await _main.call("_change_level", "MAP.603", false, false)
+	ok = ok and await _wait(func() -> bool: return _level_is("603") and _settled(), 240.0)
+	_check(ok, "MAP.603 loads")
+	if ok:
+		var lvl = _main.get("_current_level")
+		_check(_main.get("_mission") == null and (lvl.origin as Vector3) == Vector3.ZERO,
+			"a loose map takes the per-map runtime, at the DOS origin")
 
 ## --- Step 7: the mission ends where it is played ------------------------
 

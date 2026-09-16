@@ -114,11 +114,22 @@ var dynamic_lights: bool = false
 ## MISSION SCENES (docs/m2_mission_scene_plan.md): a campaign mission is
 ## played inside one baked scene that holds every map it reaches, so a
 ## doorway MOVES the player instead of unloading the world and loading the
-## next file. Off while the per-map runtime is still the shipped one; the
-## `--mission-scene` switch forces it on for a single run. Deathmatch,
-## Future Shock, loose maps and any mission without a baked scene keep the
-## per-map path whatever this says.
-var mission_scenes: bool = false
+## next file. This is how the campaign is played now (2026-09-16); the
+## per-map runtime it replaced is still in the build and `--no-mission-scene`
+## puts a single run back on it, which is how the two are compared.
+## Deathmatch, Future Shock, loose maps and any mission without a baked
+## scene keep the per-map path whatever this says — main._mission_scenes_on
+## and main._want_mission_scene are the whole of that rule.
+var mission_scenes: bool = true
+## Did someone CHOOSE the line above, or is it just what a build wrote?
+## No screen offers the switch, so only set_mission_scenes records a choice
+## — and the settings file of anyone who played while the runtime was being
+## built (steps 4-7, before 2026-09-16) carries `mission_scenes=false`
+## because that was the default then, not because they asked for it.
+## Reading such a file back would leave exactly the people who tested the
+## new runtime on the old one, so a stored value without this beside it is
+## the old default and the build's own wins.
+var mission_scenes_chosen: bool = false
 ## The running game applies these at once (main.gd listens), not on the
 ## next map.
 signal hires_weapons_changed(on: bool)
@@ -143,9 +154,11 @@ func set_texture_filter(on: bool) -> void:
 	texture_filter_changed.emit(on)
 
 ## Takes effect on the next mission (the runtime is chosen when a level
-## starts) — nothing is torn down under the player.
+## starts) — nothing is torn down under the player. This is the only way a
+## stored value becomes a choice (mission_scenes_chosen).
 func set_mission_scenes(on: bool) -> void:
 	mission_scenes = on
+	mission_scenes_chosen = true
 	save()
 	print("[settings] mission scenes %s" % ("ON" if on else "OFF"))
 
@@ -165,7 +178,9 @@ func _ready() -> void:
 		hires_weapons = bool(cfg.get_value("video", "hires_weapons", false))
 		texture_filter = bool(cfg.get_value("video", "texture_filter", false))
 		dynamic_lights = bool(cfg.get_value("video", "dynamic_lights", false))
-		mission_scenes = bool(cfg.get_value("game", "mission_scenes", false))
+		mission_scenes_chosen = bool(cfg.get_value("game", "mission_scenes_chosen", false))
+		if mission_scenes_chosen:
+			mission_scenes = bool(cfg.get_value("game", "mission_scenes", true))
 	get_tree().root.size_changed.connect(apply_resolution)
 	get_window().content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
 	apply_window()
@@ -185,6 +200,7 @@ func save() -> void:
 	cfg.set_value("video", "texture_filter", texture_filter)
 	cfg.set_value("video", "dynamic_lights", dynamic_lights)
 	cfg.set_value("game", "mission_scenes", mission_scenes)
+	cfg.set_value("game", "mission_scenes_chosen", mission_scenes_chosen)
 	cfg.save(CFG_PATH)
 
 ## The multiplier on the DOS gamma.

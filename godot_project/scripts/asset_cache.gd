@@ -1239,6 +1239,18 @@ func level_scene(map_name: String) -> String:
 func mission_scene_path(start: int) -> String:
 	return MissionScene.scene_path(start)
 
+## Is there a mission scene for `start` on disk at all? The cheap half of
+## MissionScene.stale_reason — no archive is opened and no map is hashed —
+## for the one caller that has to know BEFORE it blocks: main._begin_mission_level
+## puts a notice on the black screen when the first start of a mission still
+## has to bake its scene (import_all does all eight, so only a cache an older
+## build left behind ever gets there).
+func mission_scene_baked(start: int) -> bool:
+	if not enabled or start < 0:
+		return false
+	var p := MissionScene.scene_path(start)
+	return not p.is_empty() and FileAccess.file_exists(p)
+
 ## The campaign missions a mission scene is baked for. Future Shock keeps
 ## the per-map runtime (docs/m2_mission_scene_plan.md).
 func mission_starts() -> PackedInt32Array:

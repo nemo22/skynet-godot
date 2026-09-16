@@ -33,8 +33,9 @@
 ## controller itself; the route it prints is what to walk with --walk when
 ## the controller and the sweeps disagree.
 ##
-## MISSION SCENES (--mission-scene). With the whole mission standing as one
-## scene, a doorway is no longer a level change: the player is MOVED to the
+## MISSION SCENES (the default; `--no-mission-scene` solves the old way).
+## With the whole mission standing as one scene, a doorway is no longer a
+## level change: the player is MOVED to the
 ## zone next door, which stands off on the +X grid with its records still in
 ## their own DOS coordinates. Nothing here changes but where things are —
 ## `_zone` is the active zone's origin and `_epos` puts every record in the

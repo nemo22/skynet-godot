@@ -68,6 +68,13 @@ func _run() -> void:
 	if not ok:
 		return _finish()
 	_check(_main.get("_briefing_overlay") == null, "no briefing screen in a network game")
+	# Mission scenes are the campaign's runtime (Settings.mission_scenes, on
+	# by default since step 8) and a deathmatch is refused them: the arena is
+	# one map, the same one for everyone, and no mission is being played.
+	# Nothing above turns the setting off — the Net.active rule does it.
+	_check(bool(Settings.mission_scenes) and _main.get("_mission") == null
+		and (_main.get("_current_level").origin as Vector3) == Vector3.ZERO,
+		"a deathmatch takes the per-map runtime with the flag up")
 	_check(get_tree().get_nodes_in_group("enemy").is_empty(), "arena has no map enemies")
 	_check(Net.spawn_points.size() >= 10, "%d DM spawn sets (markers 10..29)" % Net.spawn_points.size())
 	_check(Net.pickups.size() >= 40, "%d pickups placed from NETLEVEL counts" % Net.pickups.size())

@@ -95,6 +95,8 @@ var _mission_done: bool = false
 ## Command-line switches after `--` (see _parse_cli): --map=, --pos=x,y,z,
 ## --yaw=deg, --pitch=deg, --noclip, --no-briefing, --screenshot=PATH,
 ## --shot-delay=sec, --quit-after-shot — the agent/automation interface.
+## --no-mission-scene / --mission-scene override Settings.mission_scenes for
+## one run (_mission_scenes_on).
 var _cli: Dictionary = {}
 var _campaign_maps: Array[String] = []   # ordered mission "main" maps
 var _mission_start_map: String = ""      # the campaign map the mission began on
@@ -810,10 +812,11 @@ func _begin_level(name: String) -> void:
 	await get_tree().process_frame
 	if gen != _level_gen:
 		return
-	# MISSION SCENES (Settings.mission_scenes / --mission-scene): the whole
+	# MISSION SCENES (Settings.mission_scenes, on by default): the whole
 	# mission comes up as one scene and this map is one zone of it. Falls
 	# back to the per-map path below when the mission has no baked scene or
-	# this map is not one of its zones (a phase variant, a hand-over).
+	# this map is not one of its zones (a phase variant, a hand-over), and
+	# `--no-mission-scene` sends the whole run down it.
 	if _want_mission_scene(name):
 		var in_scene: bool = await _begin_mission_level(name, gen)
 		if in_scene:
@@ -2606,12 +2609,14 @@ func _end_level_change() -> void:
 ## --- Mission scenes (step 4, docs/m2_mission_scene_plan.md) -----------
 ## A campaign mission is one baked scene (converted/missions/MISSION.NNN.scn,
 ## scripts/mission_scene.gd): the outdoor world at the origin and every
-## interior it reaches standing beside it on a +X grid. With the flag on,
-## a DOS map exit stops being a level change — the player is MOVED to the
-## target zone, which is already built and still holds whatever was done
-## in it. The per-map runtime above stays the default and is what every
-## other map, Future Shock, a network game and the phase variants still
-## use.
+## interior it reaches standing beside it on a +X grid. A DOS map exit stops
+## being a level change — the player is MOVED to the target zone, which is
+## already built and still holds whatever was done in it.
+##
+## This is the campaign's runtime (step 8, 2026-09-16). The per-map runtime
+## above is still the one every other map uses — Future Shock, a network
+## game, a loose map, a mission with no baked scene — and `--no-mission-scene`
+## gives a run of the campaign back to it.
 
 ## The mission scene under Main, and its zones by THE MAP THEY ARE IN:
 ##   "MAP.218" → {node: Zone_MAP_218, level: LevelLoader.Level or null,
@@ -2658,10 +2663,20 @@ var _zone_state: Dictionary = {}
 ## mission back to the per-map runtime and it keeps it to the end.
 var _mission_scene_off: int = -1
 
-## Is the mission-scene runtime allowed at all right now? A deathmatch,
-## Future Shock and the map browser keep the per-map path whatever the
-## setting says.
+## Is the mission-scene runtime allowed at all right now? It is how the
+## campaign is played (Settings.mission_scenes, on by default since
+## 2026-09-16), but a deathmatch, Future Shock and the map browser keep the
+## per-map path whatever the setting says — a network game is the same map
+## for everyone and has no mission, Future Shock bakes no mission scenes
+## (Assets.mission_starts), and a loose map is nobody's zone.
+##
+## `--no-mission-scene` puts a single run back on the per-map runtime, which
+## is what the older suites (game_smoke_test, action_smoke_test) and a
+## side-by-side comparison use; `--mission-scene` forces it on when the
+## player's settings file says off.
 func _mission_scenes_on() -> bool:
+	if _cli.has("no-mission-scene"):
+		return false
 	return (Settings.mission_scenes or _cli.has("mission-scene")) \
 		and not Net.active and _dm == null and SkynetPaths.game != "shock"
 
@@ -2686,7 +2701,25 @@ func _begin_mission_level(name: String, gen: int) -> bool:
 	# always the mission's own number: mission 5 is the 25x maps and starts
 	# on MAP.252 (Assets.mission_start_of).
 	var start: int = Assets.mission_start_of(key)
+	# A scene that has never been baked is built here, and that is tens of
+	# seconds with nothing on the screen but the fade's black. The notice
+	# goes up first and takes a frame to draw — the bake itself does not
+	# yield (see _show_baking).
+	var baking: bool = start >= 0 and not Assets.mission_scene_baked(start)
+	if baking:
+		await _show_baking(key)
+		if gen != _level_gen:
+			_hide_baking()
+			return false
+	var t_scene: int = Time.get_ticks_msec()
 	var packed: PackedScene = Assets.mission_scene(start) if start >= 0 else null
+	if baking:
+		_hide_baking()
+		var bake_ms: int = Time.get_ticks_msec() - t_scene
+		t0 += bake_ms                   # the bake is reported on its own
+		print("[mission] %d: %s (%.1f s)" % [key,
+			"its scene was baked on the way in" if packed != null
+				else "its scene would not bake", bake_ms / 1000.0])
 	if packed == null:
 		print("[mission] %d has no baked scene — the per-map runtime keeps it" % key)
 		_mission_scene_off = key
@@ -2773,6 +2806,48 @@ func _begin_mission_level(name: String, gen: int) -> bool:
 	print("[mission] %d up in %d ms (%d ms instancing the scene, %d zones, active %s)"
 		% [key, Time.get_ticks_msec() - t0, t_inst - t0, zones.size(), name])
 	return true
+
+## The one thing a level change has to SAY rather than do behind the black.
+##
+## Every mission scene is baked by the conversion (Assets.import_all bakes
+## all eight after the level scenes they stand on), so a normal install
+## never sees this. A cache an older build left behind, or one whose maps
+## moved under it, bakes the mission the first time it is played instead —
+## a minute of a black screen that would read as a hang. The notice says
+## what is happening, and that it happens once.
+##
+## It hangs on the fade's own CanvasLayer, above the black, and the frames
+## awaited here are the only chance it gets to draw: the bake that follows
+## is one long synchronous call.
+var _baking_note: Label = null
+func _show_baking(key: int) -> void:
+	if _fade == null:
+		_fade_to(1.0, 0.0)              # make the layer (already black)
+	if _baking_note == null:
+		_baking_note = Label.new()
+		_baking_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_baking_note.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		_baking_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_baking_note.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		_baking_note.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_baking_note.add_theme_color_override("font_color", Color(0.78, 0.82, 0.84))
+		var f: FontFile = _status_font if _status_font != null \
+			else _load_fnt("FONT0003.FNT", 2)
+		if f != null:
+			_baking_note.add_theme_font_override("font", f)
+			_baking_note.add_theme_font_size_override("font_size", f.fixed_size)
+		_fade.get_parent().add_child(_baking_note)
+	_baking_note.text = "PREPARING MISSION %d\n\nThis happens once." \
+		% maxi((key - 200) / 10, 1)
+	_baking_note.visible = true
+	print("[mission] %d: preparing its scene for the first time" % key)
+	# Two frames: one to lay the label out, one to put it on the screen.
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+func _hide_baking() -> void:
+	if _baking_note != null and is_instance_valid(_baking_note):
+		_baking_note.visible = false
 
 ## The per-map overlay's entries for the maps of this mission scene — its
 ## zones and every phase of its worlds — move into `_zone_state`, where

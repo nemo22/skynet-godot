@@ -18,6 +18,13 @@ var _issues: int = 0
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	# ONE MAP AT A TIME is what this audits: every map in the archive on its
+	# own, at the DOS origin, including the ones no mission reaches. Mission
+	# scenes are the campaign's runtime since step 8 of the M2 plan and would
+	# bring a mission's whole world up around each of its interiors, so the
+	# flag goes down here — in memory only, an audit must not write the
+	# player's settings file.
+	Settings.mission_scenes = false
 	_main = MainScene.instantiate()
 	add_child(_main)
 	_run()

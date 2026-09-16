@@ -25,6 +25,7 @@ const SKIP_DIRS: PackedStringArray = [
 const DEV_SCENES: PackedStringArray = [
 	"action_smoke_test",
 	"game_smoke_test",
+	"mission_smoke_test",
 	"net_smoke_test",
 	"map_dump",
 	"map_audit",
