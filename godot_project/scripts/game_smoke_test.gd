@@ -13,6 +13,7 @@ const MainScene := preload("res://scenes/main.tscn")
 const LevelLoader := preload("res://scripts/level_loader.gd")
 const SaveGame := preload("res://scripts/save_game.gd")
 const Enemy := preload("res://scripts/enemy.gd")
+const Projectile := preload("res://scripts/projectile.gd")
 
 var _fails: int = 0
 var _main: Node = null
@@ -932,7 +933,72 @@ func _check_jeep_ram() -> void:
 	player.set("health", 100.0)
 	player.set("god_mode", true)
 	player.set("noclip", false)
+	await _check_jeep_aim(player)
 	player.call("set_vehicle", 0)
+
+## The jeep's guns fire along the TURRET — the view the crosshair is drawn
+## on, which _drive builds at the end of the frame's move. The HELD
+## trigger is serviced inside _physics_process, BEFORE _drive: a view
+## rebuilt at the top of that step (the soldier's `_pitch`, 0 in the jeep)
+## sent every auto-fire bolt along a level axis while the crosshair sat
+## where the turret pointed — 12° of aim, 12° of miss (2026-09-16). The
+## rockets hid it, since the THROW key fires them from the input event.
+## Both are checked here: a shot has to leave the muzzle AT the point
+## under the crosshair (DOS's own rule, the aim bit at weapon record
+## +0x5c, 0x125dc3).
+func _check_jeep_aim(player: CharacterBody3D) -> void:
+	var cam: Camera3D = player.get("_cam")
+	if cam == null:
+		_check(false, "the jeep aim check has a camera")
+		return
+	player.set("_aim_yaw", deg_to_rad(9.0))
+	player.set("_aim_pitch", deg_to_rad(-12.0))
+	for _i in 6:
+		await get_tree().physics_frame
+	# The view AS DRAWN, and what the crosshair on its axis is resting on.
+	var eye: Vector3 = cam.global_position
+	var fwd: Vector3 = -cam.global_transform.basis.z
+	var space := player.get_world_3d().direct_space_state
+	var q := PhysicsRayQueryParameters3D.create(eye, eye + fwd * 20000.0)
+	q.collide_with_areas = true
+	q.exclude = [player.get_rid()]
+	var seen := space.intersect_ray(q)
+	_check(seen.has("position"), "the jeep's crosshair rests on something to shoot at")
+	if not seen.has("position"):
+		return
+	var cross: Vector3 = seen["position"]
+	# Every shot is caught and frozen where it left the muzzle.
+	var caught: Array = []
+	var on_child := func(n: Node) -> void:
+		if n.get_script() == Projectile:
+			n.process_mode = Node.PROCESS_MODE_DISABLED
+			caught.append(n)
+	child_entered_tree.connect(on_child)
+	for shot_case in [["plasma", 13, true], ["rockets", 14, false]]:
+		(player.get("_pools") as Dictionary)[10] = 2000
+		player.set("_veh_overheated", false)
+		player.set("_fire_cd", 0.0)
+		player.set("_weapon_idx", int(shot_case[1]))
+		caught.clear()
+		if bool(shot_case[2]):
+			player.set("ui_fire", true)          # the held trigger: inside the physics step
+			await get_tree().physics_frame
+		else:
+			player.call("_throw_secondary")      # the THROW key: from the input event
+			await get_tree().process_frame
+		if caught.is_empty():
+			_check(false, "the jeep's %s leave the muzzle" % shot_case[0])
+			continue
+		var bolt: Node3D = caught[0]
+		var err: float = rad_to_deg((cross - bolt.global_position).normalized()
+			.angle_to(bolt.get("_dir") as Vector3))
+		_check(err < 1.0, "the jeep's %s fly at the point under the crosshair (%.2f° off)"
+			% [shot_case[0], err])
+		for n in caught:
+			n.queue_free()
+	child_entered_tree.disconnect(on_child)
+	player.set("_aim_yaw", 0.0)
+	player.set("_aim_pitch", 0.0)
 
 ## MAP.248: the START BOX runs the IBEM64 girder into 248WALL. The wall
 ## is a 0x19 destructible with no HP of its own — the chain has to break

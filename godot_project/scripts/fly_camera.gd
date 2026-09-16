@@ -838,7 +838,27 @@ func _physics_process(delta: float) -> void:
 		_yaw -= ui_look.x * touch_look_speed * delta
 		_pitch = clampf(_pitch - ui_look.y * touch_look_speed * delta, -_pitch_max(), _pitch_max())
 	rotation.y = _yaw
-	if _cam != null:
+	# THE VIEW IS BUILT ONCE A FRAME, and the trigger below fires along the
+	# one the crosshair is drawn with. DOS builds its 3x3 view matrix
+	# (0x44579) in FUN_00117d99 and services the trigger twenty bytes
+	# later in the same iteration of the main loop (0x117a43 then
+	# 0x117a57), so FUN_00125caf rotates the muzzle offset and takes its
+	# forward from the very matrix the world and the reticle are about to
+	# be drawn with — a vehicle included, which changes nothing but the
+	# barrel flip.
+	#
+	# Here the soldier's and the gunship's view IS `_pitch` and is built
+	# on this line; the jeep's is the TURRET's, which _drive builds at the
+	# end of this frame's move (the aim, the cab's tilt, the bump).
+	# Writing `_pitch` over the turret here tore that in half: `_pitch` is
+	# 0 in the jeep, so every shot the HELD trigger sent (it is serviced
+	# below, before _drive) left along a LEVEL axis while the crosshair
+	# sat where the turret pointed — 10° of aim put the bolt 351 u off the
+	# crosshair at 2000 u, 25° put it 928 u off ("stale je strelba mimo
+	# oproti zameriavacu", 2026-09-16). The rockets looked right only
+	# because the THROW key fires them from the input event, outside this
+	# step, where the turret still stood as drawn.
+	if _cam != null and vehicle != VEH_JEEP:
 		_cam.rotation.x = _pitch
 	_flush_env_damage(delta)
 
@@ -1602,8 +1622,9 @@ func _fly(_delta: float, fwd_in: float, str_in: float) -> void:
 ## the record's offset `off` (x right, y DOWN, z ahead — MUZZLE) with
 ## MUZZLE_AHEAD added to z, plus the distance the player covers this frame
 ## (0x38c08 x dt: the walking / flying speed; the jeep keeps its speed
-## elsewhere), turned by the view matrix and added to the eye. `side`
-## flips x — a vehicle's barrels take turns.
+## elsewhere), turned by the view matrix (0x44579, the frame's own — a
+## vehicle uses no other) and added to the eye. `side` flips x — a
+## vehicle's barrels take turns (0x125e5e).
 func _muzzle_point(off: Vector3, side: float = 1.0) -> Vector3:
 	var b: Basis = _cam.global_transform.basis
 	var lead: float = 0.0
