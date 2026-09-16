@@ -835,8 +835,16 @@ func _turn_rate(delta: float) -> float:
 func _physics_process(delta: float) -> void:
 	# --- look ---------------------------------------------------------
 	if ui_look != Vector2.ZERO:
-		_yaw -= ui_look.x * touch_look_speed * delta
-		_pitch = clampf(_pitch - ui_look.y * touch_look_speed * delta, -_pitch_max(), _pitch_max())
+		if vehicle == VEH_JEEP:
+			# The touch look-stick lays on the turret, as the mouse does:
+			# in the jeep the view is the gun (see LOOK UP / LOOK DOWN).
+			_aim_yaw = clampf(_aim_yaw - ui_look.x * touch_look_speed * delta,
+				-JEEP_AIM_YAW, JEEP_AIM_YAW)
+			_aim_pitch = clampf(_aim_pitch - ui_look.y * touch_look_speed * delta,
+				JEEP_AIM_PITCH_DOWN, JEEP_AIM_PITCH_UP)
+		else:
+			_yaw -= ui_look.x * touch_look_speed * delta
+			_pitch = clampf(_pitch - ui_look.y * touch_look_speed * delta, -_pitch_max(), _pitch_max())
 	rotation.y = _yaw
 	# THE VIEW IS BUILT ONCE A FRAME, and the trigger below fires along the
 	# one the crosshair is drawn with. DOS builds its 3x3 view matrix
@@ -916,12 +924,21 @@ func _physics_process(delta: float) -> void:
 		if turn != 0.0:
 			str_in -= turn
 		_turn_ramp = 0.0                  # let go, and the ramp starts over
-	# LOOK UP / LOOK DOWN tilt the view (the mouse does it too).
+	# LOOK UP / LOOK DOWN tilt the view (the mouse does it too). In the
+	# jeep the view IS the turret, so the same keys raise and lower the
+	# GUN — DOS feeds one pair of view angles whether the soldier is on
+	# foot or in a seat, and the turret's own stops are what limits them.
+	# They used to drive `_pitch`, which the jeep ignores: a driver on the
+	# keyboard or on a phone could not aim up or down at all.
 	var tilt: float = 0.0
 	if Controls.is_pressed("look_up"):   tilt += 1.0
 	if Controls.is_pressed("look_down"): tilt -= 1.0
 	if tilt != 0.0:
-		_pitch = clampf(_pitch + tilt * KEY_LOOK_RATE * delta, -_pitch_max(), _pitch_max())
+		if vehicle == VEH_JEEP:
+			_aim_pitch = clampf(_aim_pitch + tilt * KEY_LOOK_RATE * delta,
+				JEEP_AIM_PITCH_DOWN, JEEP_AIM_PITCH_UP)
+		else:
+			_pitch = clampf(_pitch + tilt * KEY_LOOK_RATE * delta, -_pitch_max(), _pitch_max())
 	fwd_in = clampf(fwd_in + ui_move.y, -1.0, 1.0)
 	str_in = clampf(str_in + ui_move.x, -1.0, 1.0)
 
