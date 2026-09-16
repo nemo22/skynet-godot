@@ -19,6 +19,8 @@ const ImgFile    := preload("res://scripts/loaders/img_file.gd")
 const GAME_SCENE := "res://scenes/main.tscn"
 const SaveGame   := preload("res://scripts/save_game.gd")
 const FntFont    := preload("res://scripts/loaders/fnt_font.gd")
+## `--verify-graph` / `--accept-lock` (scripts/triggers/trigger_lock.gd).
+const TriggerLock := preload("res://scripts/triggers/trigger_lock.gd")
 ## FONT0003.FNT (8×8) ×2 — the DOS bitmap font for the NETMENU fields.
 var _net_font: FontFile = null
 
@@ -266,6 +268,35 @@ func _maybe_import() -> void:
 		SkynetPaths.selected_map = String(cli["map"]).strip_edges().to_upper()
 		# _ready is still adding children — switch scenes afterwards.
 		get_tree().change_scene_to_file.call_deferred(GAME_SCENE)
+		return
+	# `--verify-graph[=all|210,217]`: rebuild every shipped map's
+	# trigger graph and diff it against tests/rules/skynet.triggers.lock —
+	# the reviewed graph, pinned (scripts/triggers/trigger_lock.gd). Says
+	# which map, which node and how it moved, and quits non-zero when
+	# anything did. Reads no cache and writes nothing.
+	# `--accept-lock` rewrites the lock: a deliberate act, after reading
+	# what --verify-graph printed.
+	for a in args:
+		if a == "--verify-graph" or a.begins_with("--verify-graph="):
+			var res: Dictionary = TriggerLock.verify(
+				a.substr(15) if a.length() > 15 else "")
+			for line in (res["report"] as PackedStringArray):
+				print(line)
+			print("[lock] %d maps in %.2f s" % [int(res["checked"]),
+				float(res["ms"]) / 1000.0])
+			get_tree().quit(1 if int(res["fails"]) > 0 else 0)
+			return
+	if "--accept-lock" in args:
+		var w: Dictionary = TriggerLock.accept()
+		if bool(w["ok"]):
+			print("[lock] %d maps, %d nodes, %d chains, %d bytes in %.2f s"
+				% [int(w["maps"]), int(w["nodes"]), int(w["chains"]),
+				   int(w["bytes"]), float(w["ms"]) / 1000.0])
+			for m in (w["modded"] as PackedStringArray):
+				print("[lock] %s left unpinned — replaced outside the shipped data" % m)
+		else:
+			push_error("[lock] not written: %s" % String(w["why"]))
+		get_tree().quit(0 if bool(w["ok"]) else 1)
 		return
 	if not Assets.enabled:
 		return

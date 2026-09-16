@@ -18,6 +18,9 @@ extends EditorExportPlugin
 const SKIP_DIRS: PackedStringArray = [
 	"res://converted/",
 	"res://mods/",
+	# The pinned rules the tests check against (tests/rules/*.lock) — a
+	# development artefact, never read by a running game.
+	"res://tests/",
 ]
 
 ## scenes/<name>.tscn that only the tests and the developer's command

@@ -30,6 +30,8 @@ const LevelScene := preload("res://scripts/level_scene.gd")
 const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
 const MissionScene := preload("res://scripts/mission_scene.gd")
 const MissionCensus := preload("res://tools/mission_census.gd")
+const TriggerGraph := preload("res://scripts/triggers/trigger_graph.gd")
+const TriggerLock := preload("res://scripts/triggers/trigger_lock.gd")
 
 const CAMPAIGN: Array = [
 	"MAP.210", "MAP.220", "MAP.230", "MAP.240",
@@ -69,6 +71,7 @@ func _ready() -> void:
 	_run_map_writer_checks()
 	_run_level_scene_checks()
 	_run_mission_scene_checks()
+	_run_trigger_lock_checks()
 	print("[smoke] %s (%d failures)"
 		% ["ALL PASS" if _fails == 0 else "FAILED", _fails])
 	get_tree().quit(1 if _fails > 0 else 0)
@@ -314,6 +317,41 @@ func _run_behaviour_checks() -> void:
 			l217.action.press_use()
 			l217.action.tick(0.016, p1)
 			_check(seen == [2], "a second gate cannot fire the spent objective (%s)" % str(seen))
+
+	# The same eight gates, but from where the player actually stands: they
+	# ring the jeep about 90 units out, 39 to 78 units apart, and the DOS
+	# gate reaches 60 + 26. Walk up to the jeep and FOUR of them are inside
+	# it at once — an even number, all flipping the one [M3] record. If the
+	# flips were collected and the handlers run afterwards, four toggles
+	# would put the bit back where it started and mission 1 could never be
+	# finished. DOS runs each handler as ObjFlipLink flips it (the graph's
+	# even_fan_in warning on MAP.217 @075cb is exactly this spot), so the
+	# first flip counts the objective and retires the record to 0xFF and
+	# the other three flip something inert.
+	var ljeep: LevelLoader.Level = LevelLoader.new().load_level("MAP.217")
+	if ljeep != null and ljeep.behaviour != null:
+		var jeep = ljeep.map.entities_by_off.get(0x075cb)
+		_check(jeep != null and jeep.link_act_type == 0x28,
+			"MAP.217's jeep carries [M3] on @075cb")
+		if jeep != null:
+			var eye := Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z))
+			var reach: float = ActionSystem.PROX_GATE_RADIUS + ActionSystem.PLAYER_RADIUS
+			var inside: int = 0
+			for g in ljeep.action._prox:
+				if g.link_act_type == 0xEF and g.link_next == jeep.file_off \
+						and eye.distance_to(Vector3(float(g.x), -float(g.y), -float(g.z))) <= reach:
+					inside += 1
+			_check(inside >= 2, "%d of the eight gates are within %.0f u of the jeep (%s)"
+				% [inside, reach, "an even number — the cancelling case" if inside % 2 == 0 else "odd"])
+			var fired: Array = []
+			ljeep.behaviour.objective_complete.connect(func(i: int) -> void: fired.append(i))
+			ljeep.action.press_use()
+			ljeep.action.tick(0.016, eye - Vector3(0.0, 75.0, 0.0), eye)
+			_check(fired == [2], "%d gates flipping in one tick count [M3] once (%s)"
+				% [inside, str(fired)])
+			_check(jeep.link_act_type == 0xFF and (jeep.state_byte & 1) == 0,
+				"…and leave the record retired, not toggled back down (act %02x st %02x)"
+				% [jeep.link_act_type, jeep.state_byte])
 
 	# MAP.213: a crate with the "act on death" bit (state 04) chains to
 	# the crate stacked on it, whose act 0x1B means "demolished by the
@@ -1169,6 +1207,59 @@ func _run_mission_scene_checks() -> void:
 		"zone MAP.218 stands clear of the outdoor world, at x=%.0f"
 		% (z218.position.x if z218 != null else 0.0))
 	root.free()
+
+## M3 step 2 — the LOCK (docs plan §5 layer (a)). tests/rules/
+## skynet.triggers.lock holds the reviewed trigger graph of every shipped
+## map, one line per node. Rebuilding all 122 of them takes about a
+## second, so the whole thing runs here rather than a sample: a rules or
+## parser change that moves what any trigger DOES fails this suite
+## instead of turning up in play three missions later.
+func _run_trigger_lock_checks() -> void:
+	var text: String = TriggerLock.lock_text()
+	_check(not text.is_empty(), "the trigger lock is present")
+	if text.is_empty():
+		return
+	# Nothing but ids, act bytes, numbers, keywords and hashes: the file is
+	# committed to a public repository.
+	var dirty: PackedStringArray = TriggerLock.hygiene(text)
+	_check(dirty.is_empty(), "the lock holds only hex, numbers and keywords%s"
+		% ("" if dirty.is_empty() else " — " + ", ".join(dirty.slice(0, 3))))
+	# …and the check bites: an entity name, a quoted line of the game's
+	# own text and a path must each be refused.
+	var planted: int = 0
+	for line in ["217 07bb4 EF use:eye/3d/r60+26/always/nolatch chain[07bb4* BUTTON01:DB] first[-] second[-] 4f2a9c31",
+			"# the tower panel says \"ACCESS GRANTED\"",
+			"217 07bb4 EF use:eye/3d/r60+26/always/nolatch chain[07bb4] first[res://scripts] second[-] 4f2a9c31"]:
+		if not TriggerLock.hygiene(text + line + "\n").is_empty():
+			planted += 1
+	_check(planted == 3, "the hygiene check refuses a name, a quoted line and a path (%d of 3)" % planted)
+	# …and passes a Windows checkout, where git puts a carriage return in
+	# front of every newline.
+	_check(TriggerLock.hygiene(text.replace("\n", "\r\n")).is_empty(),
+		"the lock still reads clean with carriage returns in it")
+
+	var lock: Dictionary = TriggerLock.parse(text)
+	var head: Dictionary = lock["header"]
+	_check(String(head.get("format", "")) == TriggerLock.FORMAT
+		and int(head.get("lock_version", 0)) == TriggerLock.LOCK_VERSION
+		and int(head.get("graph_version", 0)) == TriggerGraph.GRAPH_VERSION
+		and String(head.get("game", "")) == TriggerGraph.current_game(),
+		"the lock's header is this build's (%s v%s, graph %s, %s)"
+		% [str(head.get("format", "?")), str(head.get("lock_version", "?")),
+		   str(head.get("graph_version", "?")), str(head.get("game", "?"))])
+	_check(String(head.get("rules_hash", "")) == String(
+		TriggerGraph.rules_for(TriggerGraph.current_game()).rules_hash()),
+		"the lock was written from these rules (%s)" % str(head.get("rules_hash", "?")))
+
+	# Every shipped map, rebuilt from its bytes and diffed line by line.
+	var res: Dictionary = TriggerLock.verify()
+	if int(res["fails"]) > 0:
+		for line in (res["report"] as PackedStringArray):
+			print("[smoke] %s" % line)
+	_check(int(res["fails"]) == 0 and int(res["checked"]) == int(head.get("maps", -1)),
+		"%d maps and %d nodes match the lock in %.2f s (%d unpinned)"
+		% [int(res["checked"]), int(head.get("nodes", 0)),
+		   float(res["ms"]) / 1000.0, int(res["unpinned"])])
 
 ## Walk a chain with ObjFlipLink's rules (follow link_next, stop at an
 ## actor flag or chain end) and return the first mover entity, or null.
