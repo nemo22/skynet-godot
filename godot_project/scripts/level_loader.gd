@@ -493,6 +493,10 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 	# the spawn sprites, the water and the lights are the branch's too
 	# (step 5d), and the water is the one of them that hands a height back
 	# out into world space, so the branch is told where its zone stands.
+	# The MOVERS are the branch's since step 5e, and the two ends meet in
+	# the entity loop below: it builds the mesh and register_node hands it
+	# to the record's own Mover, which moves it from then on — so this has
+	# to be in place before that loop runs.
 	level.action.behaviour = level.behaviour
 	level.behaviour.action = level.action
 	level.behaviour.zone_origin = origin
@@ -651,8 +655,9 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 			LevelScene.add_collision(mi, name.to_upper())
 		level.entities.add_child(mi)
 		if wants_action:
-			# Register after the transform is final — the mover base
-			# transform is captured here.
+			# Register after the transform is final — a mover's node takes
+			# where it stands now as the rest pose of its travel (step 5e,
+			# Behaviour.register_mover → Mover.adopt).
 			level.action.register_node(e, mi)
 			# Staged wrecks need a TRANSFRM.PRS template for the name; a
 			# 0x19 act without one (CARHIP2C via the defaults) just runs

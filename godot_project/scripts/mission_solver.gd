@@ -906,9 +906,10 @@ func _settle(a) -> void:
 	var t: float = 0.0
 	while t < SETTLE_MAX:
 		var moving: bool = false
-		for off in a._movers:
-			var e = a._map.entities_by_off.get(off)
-			if e != null and a.enabled(off) and String(a._movers[off]["family"]) != "rot":
+		# The movers are Behaviour nodes since step 5e, and each answers for
+		# itself: a rotator never stops and is not waited for.
+		for n in (a.behaviour.mover_nodes() if a.behaviour != null else []):
+			if bool(n.enabled()) and String(n.family_now()) != "rot":
 				moving = true
 				break
 		if not moving:

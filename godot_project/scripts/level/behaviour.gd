@@ -43,6 +43,13 @@
 ## plus the two things that are the LEVEL's rather than any one record's:
 ## the lamps main.gd placed for this map and the flicker clock they share.
 ##
+## Step 5e brought the MOVERS — the doors, the gates, the lifts and the
+## rotators (scripts/level/mover.gd). Each one steps its own travel and
+## remembers its own progress, and the mesh it moves is the one the level
+## loader built, handed to it at registration: that is what register_mover
+## is for, and being registered IS being on the sweep. A mover whose .3D
+## the archives do not hold has never moved, and still does not.
+##
 ## The `state` export on the nodes is the byte the MAP was AUTHORED with
 ## and stays that: nothing writes it at run time any more, so there is no
 ## second copy to disagree with the runtime. The one node-side mirror
@@ -54,12 +61,14 @@
 ## observer and nothing more: nothing below asks whether anything is
 ## listening and it behaves the same when the bus is null.
 ##
-## F2 runs class by class, so while action_system.gd still drives the
-## movers, the exits and the destructibles, their geometry in this branch
-## stays asleep (sleep_geometry). When the last class has moved, that
-## goes too — except for the proximity shapes, which sleep for good: a
-## trigger's measure is evaluated, never an Area3D overlap, so that the
-## running game, the verifier and the lock all measure one way (plan §2).
+## F2 runs class by class, so while the level loader still builds the same
+## meshes from the records, their geometry in this branch stays asleep
+## (sleep_geometry) — the movers' included: a Mover node drives the
+## loader's mesh and leaves its own Body hidden, or a map would show two of
+## every door. When the loader's half goes, that sleep goes with it —
+## except for the proximity shapes, which sleep for good: a trigger's
+## measure is evaluated, never an Area3D overlap, so that the running game,
+## the verifier and the lock all measure one way (plan §2).
 
 extends Node3D
 
@@ -94,11 +103,11 @@ var runtime: RefCounted = null
 ## is the normal case in a test that builds a branch by hand, and nothing
 ## below reads anything back.
 var bus: RefCounted = null
-## The classes that have not moved off the records yet — the movers, the
-## exits, the destructibles, the hit points and the per-tick bookkeeping
-## of a chain walk (scripts/action_system.gd). The proximity nodes reach
-## three things through it: whether a record is a spent wreck, the MAP
-## record's own read-only data, and the doorway a gate's chain ends in.
+## The classes that have not moved off the records yet — the exits, the
+## destructibles, the hit points and the per-tick bookkeeping of a chain
+## walk (scripts/action_system.gd). The proximity nodes reach three things
+## through it: whether a record is a spent wreck, the MAP record's own
+## read-only data, and the doorway a gate's chain ends in.
 ## Step 5h takes it away with the rest of ActionSystem; null is an
 ## ordinary state (a branch built by hand in a test) and the nodes fall
 ## back to what the bake wrote on them.
@@ -138,6 +147,12 @@ var _lights: Array = []
 var _spawns: Dictionary = {}          # file_off → its RawAction node
 ## The flicker clock every lamp of the map shares.
 var _light_fx_clock: float = 0.0
+
+## The movers with a mesh to move, in the order the MAP lists them — the
+## order ActionSystem's own dictionary was built in, which is the order the
+## level loader registers them. file_off → its Mover node; a mover whose
+## mesh the archives do not hold is not here and never runs.
+var _movers: Dictionary = {}
 
 func _ready() -> void:
 	_ensure_index()
@@ -187,6 +202,10 @@ func _ensure_index() -> void:
 				_prox_by_id[id_of(n)] = n
 				if bool(n.call("on_sweep")):
 					_prox.append(n)
+			elif n.has_method("mover_watch"):
+				# A mover joins its sweep when the loader hands it the mesh
+				# it moves (register_mover), not here.
+				n.set("branch", self)
 			elif n.has_method("sweep_class"):
 				n.set("branch", self)
 				match String(n.call("sweep_class")):
@@ -444,6 +463,94 @@ func prox_forget() -> void:
 	_use_edge = false
 	for t in _prox_by_id.values():
 		t.prox_forget()
+
+# ---------------------------------------------------------------------
+# The movers (step 5e)
+# ---------------------------------------------------------------------
+## The level loader has built the mesh of mover `e`: hand it to the record's
+## own node, which moves it from here on, and put that node on the sweep.
+## Being registered IS being on the sweep, exactly as it was when the same
+## call built a dictionary entry in ActionSystem — a mover whose .3D is
+## missing from the archives never reaches this and has never moved.
+func register_mover(e, node: Node3D) -> void:
+	_ensure_index()
+	var n: Node = _by_id.get(e.file_off)
+	if n == null or not n.has_method("mover_watch"):
+		push_warning("[behaviour] no Mover node for the mover @%05x" % e.file_off)
+		return
+	# The entity's raw 11-bit Euler triple: a swing advances one component
+	# of it and the basis is rebuilt from all three.
+	n.adopt(node, Vector3(float(e.off_x & 0x7FF), float(e.off_y & 0x7FF),
+		float(e.off_z & 0x7FF)))
+	_movers[e.file_off] = n
+
+## One tick of every mover. Run from the level's per-tick sweep
+## (ActionSystem.tick) in the place it has always held: after the lights,
+## before the proximity triggers — the movers carry the collision bodies
+## the player stands on, and a trigger he trips this tick must see them
+## where this tick left them.
+func mover_tick(delta: float) -> void:
+	_ensure_index()
+	for off in _movers:
+		_movers[off].mover_watch(delta)
+
+## The Mover node of entity `id` — one with a mesh to move — or null.
+func mover_node(id: int) -> Node:
+	_ensure_index()
+	return _movers.get(id)
+
+## Every one of them, in map order.
+func mover_nodes() -> Array:
+	_ensure_index()
+	return _movers.values()
+
+## Is the entity at `off` a mover (door/gate/lift/rotator) this level
+## actually moves? (Not to be confused with ActionSystem.is_mover, which
+## asks the same of an ACT byte and knows nothing of this map.)
+func has_mover(off: int) -> bool:
+	_ensure_index()
+	return _movers.has(off)
+
+## …and one that translates or swings as a solid piece, so its mesh gets
+## the DOS-style box collider rather than its trimesh (main.gd).
+func is_solid_mover(off: int) -> bool:
+	var n: Node = mover_node(off)
+	return n != null and bool(n.is_solid())
+
+## One line per mover — the console's `movers`.
+func mover_report() -> String:
+	_ensure_index()
+	var out: PackedStringArray = PackedStringArray()
+	for off in _movers:
+		out.append(String(_movers[off].report()))
+	return "\n".join(out) if out.size() > 0 else "no movers"
+
+## The map overlay's share of the movers: how far each has travelled and
+## which way it goes next. The shape is unchanged (step 5h moves the save
+## format itself), so an older save still reads.
+func mover_snapshot() -> Dictionary:
+	_ensure_index()
+	var out: Dictionary = {}
+	for off in _movers:
+		out[off] = _movers[off].snapshot()
+	return out
+
+## …and the way back. A mover the snapshot does not know is left where it
+## stands (a variant map carries only the records that match).
+func mover_restore(snap: Dictionary) -> void:
+	_ensure_index()
+	for off in snap:
+		var n: Node = _movers.get(off)
+		if n != null:
+			n.restore(snap[off] as Array)
+
+## Every mover that thinks it is in the middle of a run, told it is not —
+## what the verifier clears between two checks of the same map. Where a
+## mover STANDS is restore_state's business, not this.
+func mover_forget() -> void:
+	_ensure_index()
+	for off in _movers:
+		_movers[off].mover_forget()
 
 # ---------------------------------------------------------------------
 # The relays, the spawns, the water and the lights (step 5d)

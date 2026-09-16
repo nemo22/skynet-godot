@@ -462,7 +462,8 @@ func _run() -> void:
 		var open_after_load: int = 0
 		for e in lvl.map.entities:
 			if (e.flags & 3) == 1 and lvl.action.is_mover_off(e.file_off) and LevelLoader.MapFile.entity_name(lvl.map, e) == "BIGDOOR":
-				if float(lvl.action._movers[e.file_off]["progress"]) > 100.0:
+				# How far a leaf has slid is the mover node's own (step 5e).
+				if float(lvl.behaviour.mover_node(e.file_off).progress) > 100.0:
 					open_after_load += 1
 		_check(open_after_load == 2, "the opened base gate is still open after the load (%d leaves)" % open_after_load)
 
@@ -504,7 +505,7 @@ func _run() -> void:
 			var open_leaves: int = 0
 			for e in lvl.map.entities:
 				if (e.flags & 3) == 1 and lvl.action.is_mover_off(e.file_off) and LevelLoader.MapFile.entity_name(lvl.map, e) == "BIGDOOR":
-					if float(lvl.action._movers[e.file_off]["progress"]) > 100.0:
+					if float(lvl.behaviour.mover_node(e.file_off).progress) > 100.0:
 						open_leaves += 1
 			_check(open_leaves == 2, "MAP.216 inherits the open base gate from MAP.210 (%d leaves open)" % open_leaves)
 

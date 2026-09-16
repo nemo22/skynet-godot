@@ -387,9 +387,10 @@ static func rules_hash() -> String:
 
 ## What a mover act comes to: family, DOS axis, the span of the travel,
 ## the direction sign and the speed, all from MOVER_TABLE and the
-## constants above. The one answer for the runtime (ActionSystem
-## register_node / _step_mover, level_behaviour.mover_params) and for the
-## generated graph.
+## constants above. The one answer for the running game (each mover node
+## reads it at registration — scripts/level/mover.gd adopt) and for the
+## generated graph. level_behaviour.mover_params is the bake's own copy,
+## and builds nothing but the animation the editor plays.
 static func mover_params(act: int) -> Dictionary:
 	var cfg: Array = MOVER_TABLE[act]
 	var fam: String = String(cfg[0])
@@ -417,8 +418,11 @@ static func mover_params(act: int) -> Dictionary:
 			# trigger turns the panel back. Until 2026-09-16 this line gave
 			# them 2048 as well, and the graph read every monitor as a
 			# continuous rotator (spin@) while the runtime ran it as the
-			# 1024-unit half turn the table says (action_system._movers
-			# takes its limit straight from MOVER_TABLE).
+			# 1024-unit half turn the table says. Since step 5e the
+			# runtime reads its travel from HERE, so there is one answer;
+			# level_behaviour.mover_params, which builds the bake's own
+			# animation of the same travel, still says 2048 — and nothing
+			# plays that animation.
 			if limit == 0:
 				span = 2048.0
 	var speed: float = SWING_SPEED

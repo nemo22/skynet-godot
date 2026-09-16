@@ -630,8 +630,8 @@ static func _light_op(act: int) -> String:
 	return RulesSkynet.light_op(act)
 
 ## Travel, direction, speed and running time of a mover act — the same
-## numbers ActionSystem.register_node and _step_mover derive from the
-## same table (level_behaviour.mover_params).
+## numbers each mover node reads at registration, out of the same rules
+## module (scripts/level/mover.gd adopt).
 static func mover_effect(rules, act: int) -> Dictionary:
 	var p: Dictionary = rules.mover_params(act)
 	var dur: float = 0.0

@@ -422,12 +422,13 @@ func _reset(level, snap: Dictionary) -> void:
 	# work, not a snapshot's) — but the sprite is armed again, so the next
 	# check of it announces as it did the first time.
 	level.behaviour.raw_forget()
+	# …and that no mover is in the middle of a run (step 5e). Where each
+	# one STANDS came back with restore_state above.
+	level.behaviour.mover_forget()
 	a._touch_latched.clear()
 	a._armed.clear()
 	a._teleport_fired = false
 	a.objectives_left = int(snap["objectives"])
-	for off in a._movers:
-		(a._movers[off] as Dictionary)["running"] = false
 	var paths: Dictionary = snap["paths"]
 	for off in paths:
 		var v: Dictionary = a._path_vehicles.get(off, {})
@@ -895,14 +896,12 @@ func _record_around(level, doit: Callable) -> PackedStringArray:
 ## "second" and not the rest of the first. A continuous rotator (family
 ## rot with no angle in its slot) never arrives and is not waited for.
 func _settle(level) -> void:
-	var a = level.action
 	for _i in SETTLE_FRAMES:
 		var moving: bool = false
-		for off in a._movers:
-			var m: Dictionary = a._movers[off]
-			if String(m["family"]) == "rot" and float(m["limit"]) == 0.0:
+		for n in level.behaviour.mover_nodes():
+			if bool(n.spins()):
 				continue
-			if bool(m.get("running", false)):
+			if bool(n.running):
 				moving = true
 				break
 		if not moving:
@@ -1126,22 +1125,19 @@ func _epos(level, id: int) -> Vector3:
 ## and the direction flipped, as the DOS handlers leave them on arrival.
 ## "" when they all agree.
 func _mover_truth(level, want: Array) -> String:
-	var a = level.action
 	var bad := PackedStringArray()
 	for t in want:
 		var tok: String = String(t)
 		if not tok.begins_with("move@"):
 			continue
 		var id: int = tok.substr(5, 5).hex_to_int()
-		var m: Dictionary = a._movers.get(id, {})
-		if m.is_empty():
+		var n: Node = level.behaviour.mover_node(id)
+		if n == null:
 			bad.append("%05x is no mover here" % id)
 			continue
 		var travel: float = float(tok.split("+")[-1]) if tok.find("+") > 0 \
 			else -float(tok.split("-")[-1])
-		var span: float = absf(float(m["limit"]))
-		if String(m["family"]) == "slide5f":
-			span = absf(float(int(m["limit"]) << 4))
+		var span: float = float(n.span())
 		if absf(span - absf(travel)) > 0.5:
 			bad.append("%05x travels %.0f, not %.0f" % [id, span, absf(travel)])
 	return " ".join(bad)
@@ -1151,22 +1147,21 @@ func _mover_truth(level, want: Array) -> String:
 ## the bit must be down and the direction flipped. Continuous rotators
 ## never arrive and are left out.
 func _mover_settled(level, want: Array) -> String:
-	var a = level.action
 	var bad := PackedStringArray()
 	for t in want:
 		var tok: String = String(t)
 		if not tok.begins_with("move@"):
 			continue
 		var id: int = tok.substr(5, 5).hex_to_int()
-		var m: Dictionary = a._movers.get(id, {})
+		var n: Node = level.behaviour.mover_node(id)
 		var e = level.map.entities_by_off.get(id)
-		if m.is_empty() or e == null:
+		if n == null or e == null:
 			continue
-		if String(m["family"]) == "rot" and float(m["limit"]) == 0.0:
+		if bool(n.spins()):
 			continue
 		if level.triggers.enabled(id):
 			bad.append("%05x still enabled after its travel" % id)
-		elif float(m["dir"]) > 0.0:
+		elif float(n.dir) > 0.0:
 			bad.append("%05x did not flip its direction" % id)
 	return " ".join(bad)
 

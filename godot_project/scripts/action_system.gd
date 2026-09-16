@@ -27,7 +27,10 @@
 ## wall buttons — left in step 5c: they watch the player from their own
 ## nodes now, scripts/level/trigger.gd. The countdown relay 0x2C, the
 ## spawn sprites 0xF3, the water movers 0xd6-0xda and the map lights
-## 0x01-0x12 left in step 5d, onto scripts/level/raw_action.gd.)
+## 0x01-0x12 left in step 5d, onto scripts/level/raw_action.gd. The
+## MOVERS — every slide, swing, jump and rotator of the table above —
+## left in step 5e, onto scripts/level/mover.gd: each one steps its own
+## travel and moves the mesh this class registered for it.)
 ##
 ## Where the state lives: NOT here, and not in the parsed MapFile
 ## either. Since step 5a of docs/trigger_graph_plan.md every state byte,
@@ -36,8 +39,8 @@
 ## only thing that writes one; the records this sweeps are the DATA the
 ## map was authored with — position, radius, flags, hit points, the
 ## destruction table — and are read-only. What is still kept here is the
-## machinery of the classes that have not moved yet: mover progress,
-## damage stages, hit points, the latches of the sweeps.
+## machinery of the classes that have not moved yet: damage stages, hit
+## points, the latches of the sweeps.
 ##
 ## Reloading a map re-parses it and the runtime starts from the records
 ## again, which matches DOS (maps are always reloaded from disk; the Mst
@@ -57,10 +60,10 @@
 ## far: the chain walk itself (ObjFlipLink, now the trigger runtime's),
 ## the one-shot cues — sounds, voice lines, hints, objectives fire from
 ## their nodes — the PROXIMITY class, which watches the player and
-## answers the use key from its own nodes since step 5c, and the four
+## answers the use key from its own nodes since step 5c, the four
 ## classes that watch no player at all since step 5d (the relays, the
-## spawn sprites, the water and the lights). Still here: movers, exits,
-## destructibles, demolition, the path vehicles.
+## spawn sprites, the water and the lights), and the MOVERS since step
+## 5e. Still here: exits, destructibles, demolition, the path vehicles.
 
 extends RefCounted
 
@@ -134,7 +137,6 @@ const DESTRUCT_DAMAGE_PER_STAGE: float = Rules.DESTRUCT_DAMAGE_PER_STAGE
 var zone_origin: Vector3 = Vector3.ZERO
 var _map: MapFile.MapFile = null
 var _nodes: Dictionary = {}       # file_off → Node3D (visual, optional)
-var _movers: Dictionary = {}      # file_off → mover runtime state
 var _teleports: Array = []        # entities with act 0xF0
 ## Their world positions, index for index — tick() tests them every
 ## physics step, and the records never move.
@@ -149,8 +151,9 @@ var triggers: RefCounted = null
 ## fire from it (F2), the proximity class has run on it since step 5c —
 ## the key, the sweep and the wall buttons are all its nodes' work — and
 ## since step 5d so do the relays, the spawn sprites, the water and the
-## lights. This is how all of them are reached. Null is an ordinary state
-## — an ActionSystem built by hand has no branch and none of those.
+## lights, since step 5e the movers. This is how all of them are reached.
+## Null is an ordinary state — an ActionSystem built by hand has no
+## branch and none of those.
 var behaviour: Node = null
 ## The level's trigger event bus (scripts/triggers/trigger_bus.gd, M3
 ## step 3): every handler run below announces itself on it. An OBSERVER
@@ -259,31 +262,10 @@ func setup(map: MapFile.MapFile) -> void:
 		if (e.flags & 3) == 1 and e.hp > 0:
 			_hp[e.file_off] = float(e.hp)
 
-## 11-bit DOS Euler angles (pitch, yaw, roll — sub+0/+4/+8) → Godot basis:
-## Rz(-roll)·Rx(+pitch)·Ry(+yaw), the DOS matrix (FUN_0014e100) conjugated
-## by the Y/Z flip. Floats, so an animation can add a fraction.
-static func euler_basis(pitch: float, yaw: float, roll: float) -> Basis:
-	var b := Basis()
-	b = b.rotated(Vector3.UP, yaw * TAU / 2048.0)
-	b = b.rotated(Vector3.RIGHT, pitch * TAU / 2048.0)
-	b = b.rotated(Vector3.BACK, -roll * TAU / 2048.0)
-	return b
-
-## A swing/rot mover after `delta` 11-bit units about DOS axis `axis_i`
-## (0 pitch, 1 yaw, 2 roll). The DOS handler (0x137c6b) adds to ONE Euler
-## component of the entity and the renderer rebuilds the matrix from the
-## three — so the motion is neither a local nor a world rotation but the
-## Euler composition with that component advanced. The old
-## `base * Basis(axis, angle)` was right for yaw only: the two halves of
-## MAP.281's drawbridge (0xC3/0xC4, roll ±512) swung one down, one UP
-## (playtest, 2026-09-05: "ten druhý sa zle rotuje").
-static func swing_basis(euler: Vector3, axis_i: int, delta: float) -> Basis:
-	var e := euler
-	match axis_i:
-		0: e.x += delta
-		1: e.y += delta
-		_: e.z += delta
-	return euler_basis(e.x, e.y, e.z)
+## (The DOS geometry of a mover — the 11-bit Euler basis, the swing that
+## advances one of its three components, the world direction of a DOS axis
+## — went with the movers in step 5e: Mover.euler_basis, swing_basis,
+## dos_axis. The bake reads them from there.)
 
 ## (The wall-button rule — a NAMED variant-1 mesh with state bit 3
 ## answers the use key instead of the player walking past it — is the
@@ -332,27 +314,14 @@ static func is_destructible(act: int) -> bool:
 	return act == ACT_DESTRUCT_A or act == ACT_DESTRUCT_B
 
 ## Attach the visual node for an entity (movers, destructibles,
-## damageable meshes). Captures the mover's base transform.
+## damageable meshes). A MOVER's node is handed straight on to the
+## record's own Mover (step 5e, scripts/level/mover.gd): that node moves
+## it from here on, and takes the transform it was placed at as the rest
+## pose — so this is called with the transform already final.
 func register_node(e: MapFile.Entity, node: Node3D) -> void:
 	_nodes[e.file_off] = node
-	if is_mover(e.link_act_type):
-		var cfg: Array = MOVER_TABLE[e.link_act_type]
-		var limit: int = cfg[2]
-		if limit >= 0x8000: limit -= 0x10000        # signed i16
-		_movers[e.file_off] = {
-			"family": cfg[0],
-			"axis": clampi(int(cfg[1]), 0, 2),
-			"limit": float(limit),
-			"p4": int(cfg[1]),
-			# Slide/swing handlers step +p6 for odd act ids and -p6 for
-			# even ones (`and ebx,1` in 0x137a28/0x137c6b) — the two
-			# leaves of a gate carry 0x41 and 0x42 and part.
-			"sign": 1.0 if (e.link_act_type & 1) != 0 else -1.0,
-			"progress": 0.0,
-			"dir": 1.0,
-			"base": node.transform,
-			"euler": Vector3(float(e.off_x & 0x7FF), float(e.off_y & 0x7FF), float(e.off_z & 0x7FF)),
-		}
+	if behaviour != null and is_mover(e.link_act_type):
+		behaviour.register_mover(e, node)
 
 ## Register the damage-stage meshes for a destructible entity (built by
 ## the level loader from TRANSFRM.PRS; may be empty → vanish on kill).
@@ -362,38 +331,21 @@ func is_damageable_off(off: int) -> bool:
 		return false
 	return _hp.has(off) or _destr.has(off)
 
-## True when the entity at `off` is a mover (door/gate/lift/rotator).
 ## One line per mover: what it is, how far it has moved and which way —
-## the console's `movers`.
+## the console's `movers`. The movers are Behaviour nodes since step 5e
+## and each writes its own line; the three below are the way the rest of
+## the game still asks about one, and go straight through.
 func mover_report() -> String:
-	var out: PackedStringArray = PackedStringArray()
-	for off in _movers:
-		var m: Dictionary = _movers[off]
-		var e: MapFile.Entity = _map.entities_by_off.get(off) if _map != null else null
-		var nm: String = MapFile.entity_name(_map, e) if e != null else "?"
-		var span: float = absf(float(m["limit"]))
-		if String(m["family"]) == "slide5f":
-			span = absf(float(int(m["limit"]) << 4))
-		var n = _nodes.get(off)
-		var bx: String = "-"
-		if n != null and is_instance_valid(n) and n is Node3D:
-			var b: Basis = (n as Node3D).global_transform.basis
-			bx = "X%s Y%s" % [str(b.x.round()), str(b.y.round())]
-		out.append("@%05x %-8s %-7s act %02x state %02x progress %.0f/%.0f dir %+.0f sign %+.0f axis %d %s" % [
-			off, nm, String(m["family"]), act_of(off), state_of(off),
-			float(m["progress"]), span, float(m["dir"]), float(m.get("sign", 1.0)), int(m["axis"]), bx])
-	return "
-".join(out) if out.size() > 0 else "no movers"
+	return String(behaviour.mover_report()) if behaviour != null else "no movers"
 
+## True when the entity at `off` is a mover (door/gate/lift/rotator).
 func is_mover_off(off: int) -> bool:
-	return _movers.has(off)
+	return behaviour != null and bool(behaviour.has_mover(off))
 
 ## Movers that translate/swing as a solid piece (doors, gates, lifts) —
 ## they get a box collider; continuous rotators keep their trimesh.
 func is_solid_mover(off: int) -> bool:
-	if not _movers.has(off):
-		return false
-	return String(_movers[off]["family"]) in ["slide", "swing", "jump", "slide5f"]
+	return behaviour != null and bool(behaviour.is_solid_mover(off))
 
 func register_destructible(e: MapFile.Entity, stage_meshes: Array) -> void:
 	_destr[e.file_off] = {
@@ -659,16 +611,12 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 	if behaviour != null:
 		behaviour.light_tick(delta)
 	# Movers ------------------------------------------------------
-	for off in _movers:
-		var e: MapFile.Entity = _map.entities_by_off.get(off)
-		if e == null or not enabled(off):
-			# A chain took the bit away in the middle of a run: the mover
-			# stops where it stands and the next enable is a new run.
-			var stopped: Dictionary = _movers[off]
-			if bool(stopped.get("running", false)):
-				stopped["running"] = false
-			continue
-		_step_mover(off, e, delta)
+	# The doors, the gates, the lifts and the rotators step their own
+	# travel from their own nodes since step 5e (scripts/level/mover.gd) —
+	# here, where they have always run: before the proximity sweep, whose
+	# triggers must see the bodies where this tick left them.
+	if behaviour != null:
+		behaviour.mover_tick(delta)
 	# Proximity triggers ------------------------------------------
 	# The 0xEF gates, the 0xF1/0xF2 chain triggers and the wall buttons
 	# watch the player from their own nodes since step 5c
@@ -980,10 +928,10 @@ func save_state() -> Dictionary:
 	# variant map.
 	var bytes: Dictionary = triggers.snapshot() if triggers != null \
 		else {"states": {}, "acts": {}, "links": {}}
-	var movers: Dictionary = {}
-	for off in _movers:
-		var m: Dictionary = _movers[off]
-		movers[off] = [m["progress"], m["dir"]]
+	# How far each mover has travelled and which way it goes next — the
+	# movers' own since step 5e, and asked of them here so the snapshot's
+	# shape is unchanged (step 5h moves the save format itself).
+	var movers: Dictionary = behaviour.mover_snapshot() if behaviour != null else {}
 	var destr: Dictionary = {}
 	for off in _destr:
 		var d: Dictionary = _destr[off]
@@ -1033,16 +981,10 @@ func restore_state(snap: Dictionary) -> void:
 		for off in (snap.get("spawned", {}) as Dictionary):
 			behaviour.spawn_reveal(int(off))
 	Stats.hold_enemy_count = false
-	var movers: Dictionary = snap.get("movers", {})
-	for off in movers:
-		if not _movers.has(off):
-			continue
-		var m: Dictionary = _movers[off]
-		m["progress"] = float(movers[off][0])
-		m["dir"] = float(movers[off][1])
-		var mnode: Node3D = _nodes.get(off)
-		if mnode != null and is_instance_valid(mnode):
-			_apply_mover_transform(mnode, m)
+	# …and the movers back where the overlay left them, mesh and all: the
+	# nodes' own work since step 5e.
+	if behaviour != null:
+		behaviour.mover_restore(snap.get("movers", {}))
 	var destr: Dictionary = snap.get("destr", {})
 	for off in destr:
 		if not _destr.has(off):
@@ -1062,144 +1004,10 @@ func restore_state(snap: Dictionary) -> void:
 			node.visible = false
 			_disable_collision(node)
 
-## Advance one mover while its enable bit is set. On reaching either
-## end of its travel the DOS handler clears the enable bit and flips
-## the stored direction — the next chain flip runs it back.
-func _step_mover(off: int, e: MapFile.Entity, delta: float) -> void:
-	var m: Dictionary = _movers[off]
-	var node: Node3D = _nodes.get(off)
-	if node == null or not is_instance_valid(node):
-		return
-	var fam: String = m["family"]
-	if fam == "rot" and m["limit"] == 0.0:
-		# Continuous rotator — never stops while enabled. Only the acts
-		# whose handler carries NO angle spin like this: the radar DISH
-		# (0x3b), the GLOBE, MAP.232's sky dome.
-		if not bool(m.get("running", false)):
-			m["running"] = true
-			_say(off, "mover", "spin", {"family": fam,
-				"axis": int(m["axis"]), "speed": ROT_SPEED})
-		m["progress"] = fmod(m["progress"] + ROT_SPEED * delta, 2048.0)
-		_apply_mover_transform(node, m)
-		return
-	var limit: float = m["limit"]
-	if fam == "slide5f":
-		limit = float(int(m["limit"]) << 4)      # p6<<4 travel distance
-	if limit == 0.0:
-		# A ZERO SLIDE (0xbd-0xc0). Its slot's limit word is 0, so the
-		# handler's `cmp ax, word [ecx+6] / jl` — a signed compare of a
-		# non-negative step against zero — can never take the "still
-		# travelling" branch: it falls straight into the arrived path on the
-		# first tick (v1.01 0x138392/0x13842d, disassembled 2026-09-16),
-		# where it zeroes the step, CLEARS ITS OWN ENABLE BIT, flips the act
-		# parity and calls ObjSetPos with the position unchanged. The port
-		# used to return here before any of that, so the node stayed enabled
-		# for ever and its chain bit never came back down.
-		_say(off, "mover", "move", {"family": fam, "axis": int(m["axis"]),
-			"travel": _mover_travel(m, m["progress"]), "speed": 0.0})
-		_clear_enable(e)
-		m["dir"] = -float(m["dir"])
-		return
-	var span: float = absf(limit)
-	var speed: float
-	match fam:
-		"slide":
-			speed = SLIDE_SPEED_FAST if span >= 2048.0 else SLIDE_SPEED_SLOW
-		"slide5f":
-			speed = float(m["p4"]) * SLIDE_SPEED_SCALE
-		"jump":
-			speed = 1.0e9                        # instant (0x137ad0)
-		"rot":
-			# A WALL MONITOR — and its handler is nine instructions long.
-			# The action table at 0x59e00 gives every act eight bytes (the
-			# handler pointer, then p4 and p6), and only 0x36/0x37/0x38
-			# point at v1.01 0x138577: it reads p4 and p6, does
-			# `add eax, edx / and eax, 0x7ff` on the entity's 11-bit Euler
-			# component — the WHOLE half turn in a single tick — and leaves
-			# through `and byte [esi+0x12], 0xfe`, clearing its own enable
-			# bit. There is no travel, no rate and no per-tick step
-			# anywhere in it.
-			#
-			# The panels are flat and two-sided with a different picture on
-			# each face, so that instant half turn IS the screen changing:
-			# switched on, switched off, a different readout. Turning it at
-			# the swing rate instead showed the player a polygon revolving
-			# on its axis for two seconds (playtest 2026-09-16: "flipuje sa,
-			# ako keby sa rotovala"). The 11-bit mask makes +1024
-			# self-inverse, which is what the direction flip below does.
-			#
-			# A rot slot with NO angle (0x39-0x3e) is a different handler
-			# and a real rotation — the radar dish, the globe, the sky dome
-			# — and it never reaches here (the continuous branch above
-			# returns first).
-			speed = 1.0e9
-		_:
-			speed = SWING_SPEED
-	var target: float = span if m["dir"] > 0.0 else 0.0
-	var p: float = move_toward(m["progress"], target, speed * delta)
-	if m["progress"] == 0.0 or m["progress"] == span:
-		print("[action] mover @%05x %s %s starts (%s, span %.0f)" % [off, node.name, fam,
-			"forward" if m["dir"] > 0.0 else "back", span])
-	if not bool(m.get("running", false)):
-		# Announced at the START of the run, with the travel the run will
-		# make: the DOS handler self-disables on arrival and the graph's
-		# simulation settles it the same way, so the two are talking about
-		# one and the same movement — here, the moment it begins (step 3).
-		m["running"] = true
-		_say(off, "mover", "move", {"family": fam, "axis": int(m["axis"]),
-			"travel": _mover_travel(m, target), "speed": speed})
-	m["progress"] = p
-	_apply_mover_transform(node, m)
-	if p == target:
-		_clear_enable(e)                       # arrived: self-disable
-		m["dir"] = -m["dir"]                     # next activation reverses
-		m["running"] = false
-
-## How far this run carries the mover from where it stands, signed, in
-## the units its family works in — the same number the graph's
-## simulation writes as move@<id>:<family><axis><travel>
-## (trigger_graph._settle). From either end of the travel that is the
-## whole span; a mover a chain switched off half way and switched on
-## again makes only the rest of it, and says so.
-static func _mover_travel(m: Dictionary, target: float) -> float:
-	var sign: float = float(m.get("sign", 1.0))
-	var fam: String = String(m["family"])
-	if fam != "rot" and fam != "slide" and float(m["limit"]) < 0.0:
-		sign = -sign
-	return (target - float(m["progress"])) * sign
-
-## DOS axis p4 (0=X, 1=Y-down, 2=Z) → Godot world direction.
-static func dos_axis(axis_i: int) -> Vector3:
-	if axis_i == 1:
-		return Vector3.DOWN
-	if axis_i == 2:
-		return Vector3(0.0, 0.0, -1.0)
-	return Vector3.RIGHT
-
-func _apply_mover_transform(node: Node3D, m: Dictionary) -> void:
-	var base: Transform3D = m["base"]
-	var fam: String = m["family"]
-	var sign: float = float(m.get("sign", 1.0))
-	if fam != "rot" and fam != "slide" and m["limit"] < 0.0:
-		sign = -sign
-	if fam == "slide5f":
-		# DOS adds to entity+0xc (Y, Y-down) → Godot -Y (slides down).
-		node.transform = base.translated_local(
-			Vector3(0.0, -m["progress"] * sign, 0.0))
-		return
-	if fam == "slide" or fam == "jump":
-		# Translate along the DOS world axis (handlers 0x137a28/0x137ad0
-		# add to the entity position, not to a local frame).
-		node.transform = Transform3D(base.basis,
-			base.origin + dos_axis(int(m["axis"])) * (m["progress"] * sign))
-		return
-	# Swing/rot: advance one Euler component of the entity (see
-	# swing_basis) — the base basis IS euler_basis(euler) at progress 0.
-	var euler: Vector3 = m.get("euler", Vector3.ZERO)
-	node.transform = Transform3D(
-		swing_basis(euler, int(m["axis"]), m["progress"] * sign), base.origin)
-	# The AnimatableBody3D child follows through the global-transform
-	# notification (main.gd _make_animatable keeps sync_to_physics off).
+## (The mover step, the transform it comes to and the travel it announces
+## are the Mover nodes' own since step 5e — scripts/level/mover.gd
+## mover_watch / apply_transform / travel_to, with every reading that was
+## bought for them.)
 
 ## Destructible damage-stage advance (handler 0x120833, act 0x19). The
 ## handler is never told HOW HARD the object was hit — ObjHit calls it

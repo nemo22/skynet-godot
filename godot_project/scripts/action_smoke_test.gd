@@ -60,7 +60,7 @@ func _ready() -> void:
 		if level == null:
 			continue
 		print("[smoke] %s: movers=%d destr=%d prox=%d teleports=%d"
-			% [m, level.action._movers.size(), level.action._destr.size(),
+			% [m, level.behaviour.mover_nodes().size(), level.action._destr.size(),
 			   level.behaviour.prox_nodes().size(), level.action._teleports.size()])
 		if m == "MAP.210":
 			level210 = level
@@ -94,7 +94,7 @@ func _run_map210_checks(level: LevelLoader.Level) -> void:
 			by_name[nm] = []
 		by_name[nm].append(e)
 
-	_check(action._movers.size() >= 5,
+	_check(level.behaviour.mover_nodes().size() >= 5,
 		"MAP.210 has movers registered (doors/gates/dish)")
 	var exits: Array = []
 	for t in action._teleports:
@@ -420,8 +420,8 @@ func _run_behaviour_checks() -> void:
 				l210.action.tick(0.016, far)
 			_check(not l210.action.enabled(door.file_off), "the gate stops when it is fully open")
 			l210.action._flip_link(lever_b)
-			var m: Dictionary = l210.action._movers.get(door.file_off, {})
-			_check(l210.action.enabled(door.file_off) and float(m.get("dir", 1.0)) < 0.0,
+			var m: Node = l210.behaviour.mover_node(door.file_off)
+			_check(l210.action.enabled(door.file_off) and m != null and float(m.dir) < 0.0,
 				"the lever behind the gate runs it back — it closes")
 
 	# MAP.232: the nine consoles bring the objective counter to 1; then
@@ -1143,23 +1143,25 @@ func _run_level_scene_checks() -> void:
 		_check(silent == 0, "%d looping sounds carry their stream (%d without)" % [sounds.get_child_count(), silent])
 
 	# Parity: the animation at its midpoint and its end lands where the
-	# action system puts the same entity at half and full travel.
+	# running mover puts the same entity at half and full travel. The live
+	# one is the record's own Mover node (step 5e) and the mesh it moves is
+	# the loader's, so what is read back is that mesh's transform.
 	var action: ActionSystem = level.action
 	var worst_pos: float = 0.0
 	var worst_rot: float = 0.0
 	var compared: int = 0
 	for e in mover_ents:
 		var m: Node = by_id.get(e.file_off)
+		var live: Node = level.behaviour.mover_node(e.file_off)
 		var node: Node3D = action._nodes.get(e.file_off)
-		if m == null or node == null or not action._movers.has(e.file_off):
+		if m == null or live == null or node == null:
 			continue
-		var st: Dictionary = action._movers[e.file_off]
 		var prm: Dictionary = LevelBehaviour.mover_params(e.link_act_type)
 		var anim: Animation = (m.get_node("AnimationPlayer") as AnimationPlayer).get_animation("move")
 		var body: Node3D = m.get_node("Body")
 		for f in [0.5, 1.0]:
-			st["progress"] = float(prm["span"]) * f
-			action._apply_mover_transform(node, st)
+			live.progress = float(prm["span"]) * f
+			live.apply_transform()
 			var want: Transform3D = node.transform
 			var t: float = anim.length * f
 			var pos: Vector3 = (m as Node3D).position + body.position

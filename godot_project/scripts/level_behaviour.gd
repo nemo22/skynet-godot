@@ -59,6 +59,12 @@ const ActionSystem := preload("res://scripts/action_system.gd")
 const Briefing     := preload("res://scripts/loaders/briefing.gd")
 const BSAReader    := preload("res://scripts/loaders/bsa_reader.gd")
 
+## The DOS geometry of a mover — the 11-bit Euler basis every variant-1
+## record is placed with, the swing that advances one of its three
+## components, the world direction of a DOS axis — belongs to the movers
+## themselves since step 5e of docs/trigger_graph_plan.md.
+const MoverNode    := preload("res://scripts/level/mover.gd")
+
 const MOVER        := preload("res://scenes/level/mover.tscn")
 const DESTRUCTIBLE := preload("res://scenes/level/destructible.tscn")
 const DAMAGEABLE   := preload("res://scenes/level/damageable.tscn")
@@ -207,7 +213,7 @@ static func entity_pos(e: MapFile.Entity) -> Vector3:
 ## DOS matrix conjugated by the Y/Z flip (level_loader.gd, verified
 ## against FUN_0014e100).
 static func entity_basis(e: MapFile.Entity) -> Basis:
-	return ActionSystem.euler_basis(float(e.off_x & 0x7FF), float(e.off_y & 0x7FF), float(e.off_z & 0x7FF))
+	return MoverNode.euler_basis(float(e.off_x & 0x7FF), float(e.off_y & 0x7FF), float(e.off_z & 0x7FF))
 
 ## The entity's raw 11-bit Euler triple (pitch, yaw, roll).
 static func entity_euler(e: MapFile.Entity) -> Vector3:
@@ -216,9 +222,14 @@ static func entity_euler(e: MapFile.Entity) -> Vector3:
 # ---------------------------------------------------------------------
 # Movers: the 0x59b00 slot → travel, direction, speed → an animation
 # ---------------------------------------------------------------------
-## What ActionSystem.register_node / _step_mover derive from a mover
-## act: family, DOS axis, the span of the travel, the direction sign
-## and the speed, all from the same table and the same constants.
+## The bake's own copy of Rules.mover_params, and the ONLY reader of it is
+## the "move" animation below — the running game asks the rules module
+## directly (scripts/level/mover.gd adopt, step 5e). It is one row behind
+## on purpose, not by accident: every "rot" here is still a 2048-unit
+## continuous turn, where the rules module gives the three wall-monitor
+## slots the instant 1024 their handler really does (2026-09-16). Bringing
+## the two together changes the baked animation of those movers and so
+## needs a rebake; nothing plays that animation.
 static func mover_params(act: int) -> Dictionary:
 	var cfg: Array = ActionSystem.MOVER_TABLE[act]
 	var fam: String = String(cfg[0])
@@ -257,7 +268,7 @@ static func mover_params(act: int) -> Dictionary:
 ## rotation keys every SWING_KEY_STEP for the swings; a rotator loops.
 ## `euler` is the entity's raw Euler triple (entity_euler), `base` the
 ## basis it yields — the swings advance one Euler component
-## (ActionSystem.swing_basis), the slides move along a DOS axis.
+## (MoverNode.swing_basis), the slides move along a DOS axis.
 static func mover_animation(p: Dictionary, euler: Vector3, base: Basis) -> Animation:
 	var anim := Animation.new()
 	var fam: String = p["family"]
@@ -276,7 +287,7 @@ static func mover_animation(p: Dictionary, euler: Vector3, base: Basis) -> Anima
 			end = base * Vector3(0.0, -span * sign, 0.0)
 		else:
 			# Along the DOS world axis: the handlers add to the position.
-			end = ActionSystem.dos_axis(int(p["axis"])) * (span * sign)
+			end = MoverNode.dos_axis(int(p["axis"])) * (span * sign)
 		anim.position_track_insert_key(t, dur, end)
 	else:
 		var t: int = anim.add_track(Animation.TYPE_ROTATION_3D)
@@ -285,7 +296,7 @@ static func mover_animation(p: Dictionary, euler: Vector3, base: Basis) -> Anima
 		for k in steps + 1:
 			var f: float = float(k) / float(steps)
 			anim.rotation_track_insert_key(t, dur * f,
-				ActionSystem.swing_basis(euler, int(p["axis"]), span * f * sign).get_rotation_quaternion())
+				MoverNode.swing_basis(euler, int(p["axis"]), span * f * sign).get_rotation_quaternion())
 		if fam == "rot":
 			anim.loop_mode = Animation.LOOP_LINEAR
 	return anim
