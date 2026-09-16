@@ -7,9 +7,13 @@
 ## exactly like a human's (`net_damage` on what the ray hits).
 extends Node
 
-const WALK_SPEED: float = 600.0
-const GRAVITY: float = 4500.0
-const JUMP_SPEED: float = 950.0        # same hop as the player
+## A bot runs at the DOS forward run (fly_camera.run_speed), falls under
+## the DOS world gravity and hops with the DOS jump — the same numbers the
+## human next to it moves by, so a bot no longer outruns the player it is
+## hunting (they were 600 / 4500 / 950 while the player was, 2026-09-16).
+const WALK_SPEED: float = 400.0
+const GRAVITY: float = 392.0
+const JUMP_SPEED: float = 177.0        # same hop as the player: 40 u of air
 const SEE_RANGE: float = 7000.0
 const THINK_INTERVAL: float = 0.2
 const POSE_INTERVAL: float = 0.05

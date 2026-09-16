@@ -6,23 +6,49 @@
 ## straight through all geometry.
 ##
 ## Desktop:  click to capture the mouse, WASD/arrows walk, mouse looks,
-##           Space jumps, Shift sprints, ESC releases.
+##           Space jumps, Shift runs, C crouches, ESC releases.
 ## Android:  driven by the on-screen TouchControls D-pads.
 
 extends CharacterBody3D
 
-@export var walk_speed: float = 600.0
-@export var sprint_multiplier: float = 2.5
-@export var fly_speed: float = 3500.0          # noclip
-@export var gravity: float = 4500.0
-## Jump apex = v²/2g: 950 → ~100 u (a crate, not a truck). The old 1800
-## reached 360 u — four eye heights, far above the DOS hop (2026-09-03).
-@export var jump_speed: float = 950.0
-## Extra horizontal speed carried through a jump taken at full
-## sprint. Scales with how fast the player actually left the
-## ground, so a standing jump is unchanged.
-const JUMP_RUN_BOOST: float = 0.35
-var _air_boost: float = 0.0
+## --- On foot: the DOS mover -------------------------------------------
+## Mover table 0x38e53 = {tick, post-move, init} x {foot, jeep, HK}; the
+## soldier's tick is 0x12a900 and the step that turns the keys into a
+## velocity is 0x11af95. [0x43100] holds 65536/fps, so every
+## `imul k,[0x43100]` in there is k PER SECOND — every figure below is
+## u/s or u/s², nothing per tick.
+##
+## Forward and back both walk at 250. The port walked at 600 and ran at
+## 600 x 2.5 = 1500 — six times the DOS walk, which is why the soldier
+## outran his own car ("pohyb pesi je rychly a naopak jeep je teraz
+## pomaly", 2026-09-16; the jeep was already on its DOS numbers).
+@export var walk_speed: float = 250.0
+## RUN (the DOS run modifier) lifts the FORWARD cap only, to 400 — 1.6x
+## the walk. Backwards stays at 250 however hard you run.
+@export var run_speed: float = 400.0
+## The sidestep has its own, lower pair of caps: 210 walking, 310 running.
+const STRAFE_SPEED: float = 210.0
+const STRAFE_RUN_SPEED: float = 310.0
+## The keys do not SET the speed in DOS, they pull it: 1500 u/s² reaches
+## the walk cap in 0.17 s, and the same figure is the friction that
+## brings a released key back to a stand.
+const GROUND_ACCEL: float = 1500.0
+@export var fly_speed: float = 3500.0          # noclip (debug, no DOS number)
+## Noclip's own RUN multiplier — a debug camera, nothing DOS about it.
+const FLY_RUN: float = 2.5
+## DOS world gravity. At 4500 the soldier fell like a brick and the fall
+## damage (FALL_SAFE_SPEED) fired on a 17 u step instead of a 200 u drop.
+@export var gravity: float = 392.0
+## DOS jump: 177 u/s off the floor, so the apex is v²/2g = 40 units and
+## the hop lasts 0.9 s. A run does NOT jump higher or further in DOS —
+## the port's 35 % air boost is gone with it.
+@export var jump_speed: float = 177.0
+## DOS crouch: the eye sinks from 75 to 35 and comes back at 100 u/s, and
+## nothing else changes — neither the body nor the speed.
+const CROUCH_EYE: float = 35.0
+const CROUCH_RATE: float = 100.0
+var _eye: float = 75.0
+## DOS mouse look: 0.176 ° per pixel.
 @export var mouse_sensitivity: float = 0.003
 @export var touch_look_speed: float = 2.2
 
@@ -91,9 +117,21 @@ const STEP_HEIGHT: float = 80.0
 ## no such test and it climbs.
 const FOOT_MAX_SLOPE_DEG: float = 40.0
 const VEH_MAX_SLOPE_DEG: float = 75.0
-## Keyboard turning / looking (TURN LEFT-RIGHT, LOOK UP-DOWN), rad/s.
-const KEY_TURN_RATE: float = 2.4
-const KEY_LOOK_RATE: float = 1.5
+## Keyboard turning (TURN LEFT / TURN RIGHT). DOS does not turn at a flat
+## rate: the first tick moves at 5.6 °/s and the rate winds up at
+## 720 °/s² to 315 °/s, so a tap nudges the view and a held key spins it.
+## In rad/s and rad/s².
+const KEY_TURN_START: float = 0.098
+const KEY_TURN_MAX: float = 5.50
+const KEY_TURN_ACCEL: float = 12.57
+## LOOK UP / LOOK DOWN: a flat 180 °/s, no ramp.
+const KEY_LOOK_RATE: float = 3.14
+## How far the head tilts: DOS clamps the soldier's pitch at ±67.5°.
+const PITCH_MAX: float = 1.178
+## The gunship's nose only tilts ±45°.
+const HK_PITCH_MAX: float = 0.785
+## Where the turn ramp has got to (0 = the key is not held).
+var _turn_ramp: float = 0.0
 ## A hand-thrown grenade (RMB) leaves the hand far slower than the
 ## launcher's round (Grenade.SPEED) — a lob, not a shot.
 const HAND_GRENADE_SPEED: float = 500.0    # DOS thrown records: 500 u/s ahead …
@@ -274,11 +312,29 @@ const JEEP_TURN_MAX: float = 1.074
 const JEEP_WHEEL_RATE: float = 3.28
 ## The brake squeals (sound 29) above this speed.
 const JEEP_SKID_SPEED: float = 171.0
-## HK: DOS mission 7 flight — hover, thrust in every axis, no gravity.
-const HK_SPEED: float = 2600.0
-const HK_STRAFE: float = 1400.0
-const HK_CLIMB: float = 900.0
-const HK_ACCEL: float = 2200.0
+## The car keeps the fall it was hand-tuned with. `gravity` above is the
+## soldier's DOS figure (392); the jeep's own handler was decoded and
+## tuned separately (2026-09-03/09-11) and is left exactly as it drives.
+const JEEP_GRAVITY: float = 4500.0
+## Arrow-key turning in the jeep swings the CAR, which the DOS controls
+## never did — it keeps the flat rate the port drove with, out of the
+## soldier's ramp above.
+const JEEP_KEY_TURN_RATE: float = 2.4
+## HK: DOS mission 7 flight (mover 0x131100) — hover, thrust along the
+## view, no gravity and no terrain floor. 800 ahead, 400 back, winding up
+## at 900 u/s²; the sidestep is 400, or 550 with the modifier held, at
+## 700; the lift is 200, also at 700. The port flew it at 2600/1400/900
+## on a 2200 ramp — three times the gunship's DOS speed.
+const HK_SPEED: float = 800.0
+const HK_BACK_SPEED: float = 400.0
+const HK_ACCEL: float = 900.0
+const HK_STRAFE: float = 400.0
+const HK_STRAFE_RUN: float = 550.0
+const HK_STRAFE_ACCEL: float = 700.0
+const HK_CLIMB: float = 200.0
+const HK_CLIMB_ACCEL: float = 700.0
+## Keyboard turning in the gunship: a flat 90 °/s, not the soldier's ramp.
+const HK_TURN_RATE: float = 1.571
 const HK_MIN_ALTITUDE: float = 150.0
 ## …and a ceiling over it. DOS caps how high the gunship may climb
 ## ("v DOS hre bolo limitované, ako vysoko môže hráč vyletieť
@@ -405,7 +461,9 @@ func set_spawn(pos: Vector3, yaw: float, reset_state: bool = true) -> void:
 		_reset_owned()
 	_sync_hud()
 
-## Point the view (radians) — automation / debug.
+## Point the view (radians) — automation / debug. Deliberately NOT held to
+## the DOS ±67.5° the hands are (_pitch_max): a test or a console `aim`
+## that puts the crosshair straight down on something must be able to.
 func set_view(yaw: float, pitch: float) -> void:
 	_yaw = yaw
 	_pitch = clampf(pitch, -PI * 0.49, PI * 0.49)
@@ -477,8 +535,11 @@ func set_vehicle(v: int) -> void:
 	_vm_firing = false
 	_fire_cd = 0.3
 	motion_mode = CharacterBody3D.MOTION_MODE_FLOATING if v == VEH_HK else CharacterBody3D.MOTION_MODE_GROUNDED
+	_eye = float(VEH_EYE[v])                 # a fresh seat, standing height
+	_pitch = clampf(_pitch, -_pitch_max(), _pitch_max())
 	if _cam != null:
-		_cam.position.y = float(VEH_EYE[v])
+		_cam.position.y = _eye
+		_cam.rotation.x = _pitch
 	var cs: CollisionShape3D = get_node_or_null("CollisionShape3D")
 	if cs != null:
 		var cap := CapsuleShape3D.new()
@@ -753,13 +814,29 @@ func _unhandled_input(event: InputEvent) -> void:
 		_pitch = 0.0
 	elif event is InputEventMouseMotion and _captured:
 		_yaw -= event.relative.x * mouse_sensitivity
-		_pitch = clamp(_pitch - event.relative.y * mouse_sensitivity, -1.5, 1.5)
+		_pitch = clampf(_pitch - event.relative.y * mouse_sensitivity, -_pitch_max(), _pitch_max())
+
+## How far the view may tilt right now: the soldier's DOS ±67.5°, or the
+## gunship's ±45° nose.
+func _pitch_max() -> float:
+	return HK_PITCH_MAX if vehicle == VEH_HK else PITCH_MAX
+
+## The keyboard turn rate for this tick (rad/s). The soldier's winds up
+## (KEY_TURN_*); the gunship turns at a flat 90 °/s and the jeep keeps the
+## port's own rate, since the arrow keys there swing the car itself.
+func _turn_rate(delta: float) -> float:
+	if vehicle == VEH_HK:
+		return HK_TURN_RATE
+	if vehicle == VEH_JEEP:
+		return JEEP_KEY_TURN_RATE
+	_turn_ramp = minf(maxf(_turn_ramp, KEY_TURN_START) + KEY_TURN_ACCEL * delta, KEY_TURN_MAX)
+	return _turn_ramp
 
 func _physics_process(delta: float) -> void:
 	# --- look ---------------------------------------------------------
 	if ui_look != Vector2.ZERO:
 		_yaw -= ui_look.x * touch_look_speed * delta
-		_pitch = clamp(_pitch - ui_look.y * touch_look_speed * delta, -1.5, 1.5)
+		_pitch = clampf(_pitch - ui_look.y * touch_look_speed * delta, -_pitch_max(), _pitch_max())
 	rotation.y = _yaw
 	if _cam != null:
 		_cam.rotation.x = _pitch
@@ -813,19 +890,22 @@ func _physics_process(delta: float) -> void:
 	var turn: float = 0.0
 	if Controls.is_pressed("turn_left"):  turn += 1.0
 	if Controls.is_pressed("turn_right"): turn -= 1.0
-	if turn != 0.0:
-		if Controls.is_pressed("slide"):
+	if turn != 0.0 and not Controls.is_pressed("slide"):
+		_yaw = wrapf(_yaw + turn * _turn_rate(delta) * delta, -PI, PI)
+	else:
+		if turn != 0.0:
 			str_in -= turn
-		else:
-			_yaw = wrapf(_yaw + turn * KEY_TURN_RATE * delta, -PI, PI)
+		_turn_ramp = 0.0                  # let go, and the ramp starts over
 	# LOOK UP / LOOK DOWN tilt the view (the mouse does it too).
 	var tilt: float = 0.0
 	if Controls.is_pressed("look_up"):   tilt += 1.0
 	if Controls.is_pressed("look_down"): tilt -= 1.0
 	if tilt != 0.0:
-		_pitch = clampf(_pitch + tilt * KEY_LOOK_RATE * delta, -PI * 0.49, PI * 0.49)
-	fwd_in += ui_move.y
-	str_in += ui_move.x
+		_pitch = clampf(_pitch + tilt * KEY_LOOK_RATE * delta, -_pitch_max(), _pitch_max())
+	fwd_in = clampf(fwd_in + ui_move.y, -1.0, 1.0)
+	str_in = clampf(str_in + ui_move.x, -1.0, 1.0)
+
+	_crouch(delta)
 
 	var was: Vector3 = global_position
 	if noclip:
@@ -1099,7 +1179,7 @@ func _drive(delta: float, fwd_in: float, str_in: float) -> void:
 	if is_on_floor():
 		velocity.y = 0.0
 	else:
-		velocity.y -= gravity * delta
+		velocity.y -= JEEP_GRAVITY * delta
 	var before := global_position
 	move_and_slide()
 	var rammed: bool = _ram_check(pre_pos, pre_yaw)
@@ -1150,11 +1230,21 @@ func _hover(delta: float, fwd_in: float, str_in: float) -> void:
 		vert += 1.0
 	if Controls.is_pressed("down"):
 		vert -= 1.0
-	var want: Vector3 = -look.z * fwd_in * HK_SPEED * speed_boost \
-		+ look.x * str_in * HK_STRAFE + Vector3.UP * vert * HK_CLIMB
-	if _sprinting():
-		want *= 1.4
-	velocity = velocity.move_toward(want, HK_ACCEL * delta)
+	vert = clampf(vert, -1.0, 1.0)
+	# DOS caps each axis on its own: 800 ahead but only 400 back, 400
+	# across (550 with the modifier), 200 up.
+	var thr: float = fwd_in * (HK_SPEED if fwd_in > 0.0 else HK_BACK_SPEED)
+	var sid: float = str_in * (HK_STRAFE_RUN if _sprinting() else HK_STRAFE)
+	var want: Vector3 = (-look.z * thr + look.x * sid) * speed_boost \
+		+ Vector3.UP * vert * HK_CLIMB
+	# …and gives each its own ramp (900 ahead, 700 across and up). What
+	# the stick is asking for decides the rate this tick runs at.
+	var demand: float = absf(fwd_in) + absf(str_in) + absf(vert)
+	var accel: float = HK_ACCEL
+	if demand > 0.0:
+		accel = (HK_ACCEL * absf(fwd_in) + HK_STRAFE_ACCEL * absf(str_in)
+			+ HK_CLIMB_ACCEL * absf(vert)) / demand
+	velocity = velocity.move_toward(want, accel * delta)
 	# Ground clearance: push up when the surface below comes too close.
 	var space := get_world_3d().direct_space_state
 	if space != null:
@@ -1206,6 +1296,22 @@ func _hk_ray_query(from: Vector3, to: Vector3) -> PhysicsRayQueryParameters3D:
 func _sprinting() -> bool:
 	return ui_sprint or Controls.is_pressed("sprint")
 
+## CROUCH (DOS): the eye drops from 75 to CROUCH_EYE and comes back at
+## CROUCH_RATE, and that is the whole of it — the body is the same
+## cylinder and the walk is the same speed. Only on foot and out of the
+## water, where the same key dives instead.
+func _crouch(delta: float) -> void:
+	if _cam == null:
+		return
+	var down: bool = vehicle == VEH_FOOT and not noclip and not in_water \
+		and (Controls.is_pressed("down") or ui_vert < 0.0)
+	var target: float = CROUCH_EYE if down else float(VEH_EYE[vehicle])
+	if is_equal_approx(_eye, target):
+		return
+	_eye = move_toward(_eye, target, CROUCH_RATE * delta)
+	if vehicle == VEH_FOOT:
+		_cam.position.y = _eye
+
 ## Grounded movement: walk on surfaces, gravity, jump, wall collision.
 ## --- Water (DOS 0x120c83 water level, 0x12e56b breath) ---------------
 ## `water_level` is the surface Y the level controller found on the map's
@@ -1215,7 +1321,11 @@ func _sprinting() -> bool:
 ## down. DOS gives about 24 s of air (0x347 ticks) and then takes 85 HP a
 ## second (accumulator step 0x5500 >> 8) until he surfaces or drowns.
 var water_level: float = INF
-const SWIM_SPEED_SCALE: float = 0.62   # slower than walking
+## DOS swims at exactly half the land speeds — 125 forward, 200 running,
+## 105 across and 155 running across — and the stroke takes hold at
+## 375 u/s² instead of the walk's 1500.
+const SWIM_SPEED_SCALE: float = 0.5
+const SWIM_ACCEL: float = 375.0
 const SWIM_VERTICAL: float = 260.0     # up/down paddle speed
 const SWIM_RISE: float = 170.0         # buoyancy back toward the surface
 const FLOAT_EYE: float = 10.0          # eyes ride this far above the water
@@ -1306,12 +1416,9 @@ func _breathe(delta: float) -> void:
 ## Swimming: no ground contact, no jump — buoyancy plus paddling. The
 ## view aims the stroke, so looking down and holding forward dives.
 func _swim(delta: float, fwd_in: float, str_in: float) -> void:
-	var basis_y := Basis(Vector3.UP, _yaw)
-	var horiz := -basis_y.z * fwd_in + basis_y.x * str_in
-	if horiz.length() > 1.0:
-		horiz = horiz.normalized()
-	var speed: float = walk_speed * speed_boost * class_speed * SWIM_SPEED_SCALE
-	var want := Vector3(horiz.x * speed, 0.0, horiz.z * speed)
+	var want: Vector3 = _want_velocity(fwd_in, str_in, SWIM_SPEED_SCALE)
+	var speed: float = want.length()
+	want.y = 0.0
 	# Swimming forward while looking up or down carries you that way.
 	if fwd_in > 0.0 and _cam != null:
 		want.y += -_cam.global_transform.basis.z.y * speed * absf(fwd_in)
@@ -1331,53 +1438,63 @@ func _swim(delta: float, fwd_in: float, str_in: float) -> void:
 		# comes out, so the swimmer is meant to float, not to sink.
 		want.y += clampf((water_level + FLOAT_EYE - eye_y) * 3.0,
 			-SWIM_FLOAT_BACK, SWIM_RISE)
-	velocity = velocity.lerp(want, clampf(SWIM_DRAG * delta, 0.0, 1.0))
+	# The stroke ramps like the walk does, at a quarter of the rate; the
+	# float and the paddle keep the springy vertical they were given.
+	var h := Vector3(velocity.x, 0.0, velocity.z).move_toward(
+		Vector3(want.x, 0.0, want.z), SWIM_ACCEL * delta)
+	velocity.x = h.x
+	velocity.z = h.z
+	velocity.y = lerpf(velocity.y, want.y, clampf(SWIM_DRAG * delta, 0.0, 1.0))
 	move_and_slide()
+
+## The horizontal velocity the keys are asking for. DOS builds it one axis
+## at a time (0x11af95) and does NOT normalise the diagonal, so forward
+## and right together is 250 ahead PLUS 210 across — about 326 u/s — and
+## that is how the original moves. `scale` is the swimmer's half.
+func _want_velocity(fwd_in: float, str_in: float, scale: float = 1.0) -> Vector3:
+	var run: bool = _sprinting()
+	# The run modifier lifts the forward cap only; backwards stays at the
+	# walk. The sidestep has its own pair.
+	var f: float = fwd_in * ((run_speed if run else walk_speed) if fwd_in > 0.0 else walk_speed)
+	var s: float = str_in * (STRAFE_RUN_SPEED if run else STRAFE_SPEED)
+	var b := Basis(Vector3.UP, _yaw)
+	return (-b.z * f + b.x * s) * (speed_boost * class_speed * scale)
 
 func _walk(delta: float, fwd_in: float, str_in: float) -> void:
 	if in_water:
 		_swim(delta, fwd_in, str_in)
 		return
-	var basis_y := Basis(Vector3.UP, _yaw)
-	var horiz := -basis_y.z * fwd_in + basis_y.x * str_in
-	if horiz.length() > 1.0:
-		horiz = horiz.normalized()
-	var base: float = walk_speed * speed_boost * class_speed
-	var speed: float = base * (sprint_multiplier if _sprinting() else 1.0)
+	var want: Vector3 = _want_velocity(fwd_in, str_in)
+	# The keys pull the speed, they do not set it: GROUND_ACCEL toward what
+	# they ask for, and the same figure as friction back to a stand when
+	# they ask for nothing. The port used to slam the velocity to the cap
+	# on the press and to zero on the release.
+	var h := Vector3(velocity.x, 0.0, velocity.z).move_toward(want, GROUND_ACCEL * delta)
+	velocity.x = h.x
+	velocity.z = h.z
 	if is_on_floor():
-		var jump: bool = Controls.is_pressed("up") or ui_vert > 0.0
-		if jump:
-			# A run-up has to buy distance — "jump so Shiftom (behom) by
-			# mal hráč skočiť ďalej", and the gaps between the roofs need
-			# it. The take-off speed decides the whole arc, so the boost
-			# is fixed here rather than read again in mid-air; the
-			# vertical impulse is untouched (it matches the DOS jump —
-			# 0x3c0000 = 60 units in a frame at 0x11bdfd — and raising it
-			# would put the player on ledges the level never offers).
-			_air_boost = JUMP_RUN_BOOST * clampf(
-				(speed - base) / maxf(base * (sprint_multiplier - 1.0), 1.0), 0.0, 1.0)
-		else:
-			_air_boost = 0.0
-		velocity.y = jump_speed if jump else 0.0
+		# DOS jumps at a flat 177 u/s, running or not (40 u of air, 0.9 s).
+		velocity.y = jump_speed if (Controls.is_pressed("up") or ui_vert > 0.0) else 0.0
 	else:
-		speed *= 1.0 + _air_boost
 		velocity.y -= gravity * delta
-	velocity.x = horiz.x * speed
-	velocity.z = horiz.z * speed
 	var before := global_position
 	var on_floor_before: bool = is_on_floor()
 	var fall_v: float = -velocity.y                # how fast he comes down
 	move_and_slide()
 	if not on_floor_before and is_on_floor():
 		_land(fall_v)
-	if on_floor_before and horiz.length() > 0.1 and is_on_wall():
-		_step_up(horiz, speed * delta)
-	_track_stuck(delta, horiz.length() > 0.1, global_position.distance_to(before))
+	var moving: float = h.length()
+	if on_floor_before and moving > 1.0 and is_on_wall():
+		_step_up(h, moving * delta)
+	_track_stuck(delta, want.length() > 1.0, global_position.distance_to(before))
 
 ## A fall (DOS 0x122876): landing at `v` u/s costs (v - 396) x 1113 / 256
 ## points past 396 u/s — a jump off a roof hurts, a stair does not. Not in
 ## the water (the entry damps the fall, _water_check) and never in a
 ## vehicle. The port had no fall damage at all until 2026-09-15.
+## The threshold is a DROP of v²/2g: at the DOS gravity that is 200 units,
+## the height it was written for. While the port fell at 4500 the same
+## 396 u/s came up after 17 units — one stair riser (2026-09-16).
 const FALL_SAFE_SPEED: float = 396.0
 const FALL_POINTS_PER_UNIT: float = 1113.0 / 256.0
 
@@ -1476,7 +1593,7 @@ func _fly(_delta: float, fwd_in: float, str_in: float) -> void:
 	var dir := -look.z * fwd_in + look.x * str_in + Vector3.UP * vert
 	var speed := fly_speed
 	if _sprinting():
-		speed *= sprint_multiplier
+		speed *= FLY_RUN
 	velocity = Vector3.ZERO
 	if dir.length_squared() > 0.0:
 		global_position += dir.normalized() * speed * _delta

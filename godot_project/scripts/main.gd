@@ -464,7 +464,10 @@ func _cli_place() -> void:
 		# the body every half second (agent reproduction of "can't pass").
 		# Route: "x,z;x,z;...[;secs]" — waypoints in order.
 		_walk_route = []
-		_walk_limit = 12.0
+		# The soldier walks at the DOS 250 u/s (fly_camera.walk_speed), so a
+		# route takes about 2.4x as long as it did at the port's old 600 —
+		# the default window was raised to match (2026-09-16).
+		_walk_limit = 30.0
 		for wp in String(_cli["walk"]).split(";"):
 			var parts: PackedStringArray = wp.split(",")
 			if parts.size() >= 2:
@@ -5160,7 +5163,9 @@ func run_command(line: String) -> String:
 				return "usage: walkto x z [secs]"
 			_walk_route.clear()
 			_walk_target = Vector2(float(args[0]), float(args[1]))
-			_walk_limit = float(args[2]) if args.size() > 2 else 6.0
+			# 15 s, not 6: at the DOS 250 u/s that is the same ~3800 units
+			# the old default bought at the port's 600 (2026-09-16).
+			_walk_limit = float(args[2]) if args.size() > 2 else 15.0
 			_walk_t = 0.0
 			_walk_stuck = 0.0
 			_walk_best = 1e9
