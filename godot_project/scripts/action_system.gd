@@ -1260,6 +1260,19 @@ func _step_mover(off: int, e: MapFile.Entity, delta: float) -> void:
 	if fam == "slide5f":
 		limit = float(int(m["limit"]) << 4)      # p6<<4 travel distance
 	if limit == 0.0:
+		# A ZERO SLIDE (0xbd-0xc0). Its slot's limit word is 0, so the
+		# handler's `cmp ax, word [ecx+6] / jl` — a signed compare of a
+		# non-negative step against zero — can never take the "still
+		# travelling" branch: it falls straight into the arrived path on the
+		# first tick (v1.01 0x138392/0x13842d, disassembled 2026-09-16),
+		# where it zeroes the step, CLEARS ITS OWN ENABLE BIT, flips the act
+		# parity and calls ObjSetPos with the position unchanged. The port
+		# used to return here before any of that, so the node stayed enabled
+		# for ever and its chain bit never came back down.
+		_say(off, "mover", "move", {"family": fam, "axis": int(m["axis"]),
+			"travel": _mover_travel(m, m["progress"]), "speed": 0.0})
+		_clear_enable(e)
+		m["dir"] = -float(m["dir"])
 		return
 	var span: float = absf(limit)
 	var speed: float
@@ -1354,6 +1367,12 @@ func _advance_destructible(e: MapFile.Entity, damage: float) -> bool:
 		var new_stage: int = mini(want, meshes.size() - 1)
 		if new_stage != d["stage"]:
 			d["stage"] = new_stage
+			# One announcement per stage that actually happens, wherever the
+			# damage came from — gunfire as well as a chain (M3 step 3; the
+			# call used to sit in _break_down alone, so a prop shot to pieces
+			# went past the bus in silence).
+			_say(e.file_off, "destructible", "destruct",
+				{"stage": new_stage, "stages": meshes.size()})
 			if node != null and is_instance_valid(node) \
 					and node is MeshInstance3D and meshes[new_stage] != null:
 				(node as MeshInstance3D).mesh = meshes[new_stage]
@@ -1363,6 +1382,7 @@ func _advance_destructible(e: MapFile.Entity, damage: float) -> bool:
 	elif want >= 1:
 		# No stage meshes — vanish (rubble piles etc.).
 		_spent[e.file_off] = true
+		_say(e.file_off, "destructible", "destruct", {"stage": 1, "stages": 1})
 		if node != null and is_instance_valid(node):
 			_blast(node, true, absi(e.destroy_param))
 			node.visible = false
@@ -1395,10 +1415,9 @@ func _break_down(e: MapFile.Entity) -> void:
 	# the first touch.
 	print("[action] destructible @%05x struck by a chain" % e.file_off)
 	var was_spent: bool = _spent.has(e.file_off)
+	# (The stage itself is announced by _advance_destructible, which every
+	# way of damaging the thing goes through.)
 	_advance_destructible(e, DESTRUCT_DAMAGE_PER_STAGE)
-	var d: Dictionary = _destr[e.file_off]
-	_say(e.file_off, "destructible", "destruct",
-		{"stage": int(d["stage"]), "stages": (d["meshes"] as Array).size()})
 	if was_spent or not _spent.has(e.file_off):
 		return                                   # still standing, or long gone
 	_hp[e.file_off] = 0.0

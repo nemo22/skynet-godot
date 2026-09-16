@@ -667,7 +667,52 @@ func _run() -> void:
 	await _check_jeep_objective()
 	await _check_ram_wall()
 	await _check_water()
+	await _check_trigger_verifier()
 	_finish()
+
+## A handful of MAP.210's triggers driven through the REAL INPUT PATH and
+## laid against the graph's prediction — the step-4 verifier
+## (scripts/triggers/trigger_verifier.gd) on four nodes instead of four
+## thousand, so a suite can afford it. The full run is a CLI command,
+## `--verify-triggers=all`; this is the tripwire under it, and under the
+## player driver the solver also uses: a key that stops reaching
+## fly_camera._unhandled_input shows up here in a second.
+const VERIFY_NODES: Array = [
+	0x077f3,     # the canyon lever (0xF1): the gate's two leaves part
+	0x0ba48,     # one gate of the ring round the jeep: the hint and the line
+	0x076f7,     # a doorway (0xF0): touching arms it, the key takes it
+	0x0c9b4,     # a destructible: one rifle round is one damage stage
+]
+
+func _check_trigger_verifier() -> void:
+	if not _level_is("210"):
+		# The checks above finish on whatever map they needed last; the
+		# four nodes below are MAP.210's, and it is loaded fresh so the
+		# graph's prediction is made for the map the file has.
+		(_main.get("_map_state") as Dictionary).erase("MAP.210")
+		_main.call("_change_level", "MAP.210", false, false)
+		var back: bool = await _wait(func() -> bool:
+			return _level_is("210") and _settled(), 180.0)
+		_check(back, "MAP.210 loads for the trigger verifier")
+		if not back:
+			return
+	var v: Node = load("res://scripts/triggers/trigger_verifier.gd").new()
+	v.name = "TriggerVerifierSubset"
+	v.set("main", _main)
+	_main.add_child(v)
+	var rows: Array = await v.call("check_current", VERIFY_NODES)
+	var good: int = 0
+	for r in rows:
+		var row: Dictionary = r
+		if String(row["res"]) == "PASS":
+			good += 1
+		else:
+			_check(false, "verifier: %05x %s — %s" % [int(row["id"]),
+				String(row["res"]), String(row["why"])])
+	_check(good == VERIFY_NODES.size(),
+		"%d of %d triggers do through the keys what the graph says they do"
+		% [good, VERIFY_NODES.size()])
+	v.queue_free()
 
 ## Mission 1's last objective through main.gd's own level changes and
 ## saves (playtest 2026-09-15: "let's roll" at the jeep, and the next

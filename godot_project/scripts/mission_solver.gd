@@ -33,6 +33,13 @@
 ## controller itself; the route it prints is what to walk with --walk when
 ## the controller and the sweeps disagree.
 ##
+## Putting the player somewhere and letting the game run N frames is the
+## PLAYER DRIVER's (scripts/triggers/player_driver.gd, M3 step 4) — the
+## same copy the trigger verifier drives the input path with, so the two
+## cannot drift apart. What the solver does with it is unchanged: the
+## spawn call with reset_state = false, and a wait on drawn AND physics
+## frames.
+##
 ## MISSION SCENES (the default; `--no-mission-scene` solves the old way).
 ## With the whole mission standing as one scene, a doorway is no longer a
 ## level change: the player is MOVED to the
@@ -45,6 +52,8 @@
 ## inside the scene the same way it ends on a map: the counter reaches zero.
 extends Node
 
+const PlayerDriver := preload("res://scripts/triggers/player_driver.gd")
+
 ## 16, not 32: a player walks round the corner of a machine; on a 32 u
 ## grid the flood met MAP.252's boiler corner on every line to the gate
 ## behind it (101 u from the last cell, radius 86, 72 u for a player).
@@ -56,7 +65,7 @@ const SWIM_QUANT: float = 48.0      # depth step of a swimming cell
 const STEP: float = 80.0            # fly_camera.STEP_HEIGHT
 const MAX_DROP: float = 1200.0
 const FLOOR_MIN_NY: float = 0.766   # cos 40° — fly_camera.FOOT_MAX_SLOPE_DEG (DOS)
-const LIFT: float = 4.0             # clearance under the capsule (safe_margin)
+const LIFT: float = PlayerDriver.LIFT   # clearance under the capsule (safe_margin)
 const FLOAT_FEET: float = 65.0      # eyes 75 over the feet ride 10 over the water
 const WATER_EXIT: float = 40.0      # a swimmer steps out onto a ledge this high
 const EYE: float = 75.0
@@ -83,6 +92,9 @@ const DIRS: Array = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0
 	Vector2i(1, 1), Vector2i(1, -1), Vector2i(-1, 1), Vector2i(-1, -1)]
 
 var main = null                     # scripts/main.gd (untyped: its privates are read)
+## Where the player is put and how frames are waited on — shared with the
+## trigger verifier (scripts/triggers/player_driver.gd).
+var _drv: RefCounted = null
 ## Where the level being solved stands (LevelLoader.Level.origin) — what
 ## _epos adds to take a record into the world the solver walks.
 var _zone: Vector3 = Vector3.ZERO
@@ -144,6 +156,9 @@ var _finished: bool = false
 func level_ready() -> void:
 	if _finished:
 		return
+	if _drv == null:
+		_drv = PlayerDriver.new()
+		_drv.setup(main)
 	var name: String = main._level_name()
 	if _t0 == 0:
 		_t0 = Time.get_ticks_msec()
@@ -826,18 +841,19 @@ func _perform(a, name: String, act: Dictionary) -> void:
 				await get_tree().physics_frame
 	await get_tree().physics_frame
 
-## Wait `n` drawn frames AND physics frames. The ActionSystem ticks in
-## main._process; after a 200 ms flood the engine runs up to eight
-## physics steps in one iteration, so waiting for physics frames alone
-## let the solver move on before a single tick had seen the player at
-## the gate — 24SHAL9 never tripped and its door stayed shut (2026-09-11).
+## Wait `n` drawn frames AND physics frames (PlayerDriver.frames). The
+## ActionSystem ticks in main._process; after a 200 ms flood the engine
+## runs up to eight physics steps in one iteration, so waiting for physics
+## frames alone let the solver move on before a single tick had seen the
+## player at the gate — 24SHAL9 never tripped and its door stayed shut
+## (2026-09-11).
 func _frames(n: int) -> void:
-	for _i in n:
-		await get_tree().process_frame
-		await get_tree().physics_frame
+	await _drv.frames(n)
 
+## Put the player on a cell (PlayerDriver.place: the spawn call with
+## reset_state = false, facing left alone).
 func _put(at: Vector3) -> void:
-	main.player.set_spawn(at + Vector3(0.0, LIFT, 0.0), main.player.rotation.y, false)
+	_drv.place(at)
 
 ## Doors and lifts a round set moving: wait until they stop (rotators
 ## never do).

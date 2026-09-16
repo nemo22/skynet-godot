@@ -193,8 +193,15 @@ func _targets_of(n: Node) -> Array:
 ## DOS handlers clear their own bit), and a cue that DOS retires (act ←
 ## 0xFF) is retired in the record too.
 func _fire(n: Node) -> void:
+	# A cue DOS has RETIRED (act ← 0xFF, `spent` here) does nothing at all
+	# when its bit goes up again — and must not be announced as if it had.
+	# The bus used to say "hint" on every later flip of a chain whose
+	# message had long since been read, which is what the step-4 verifier
+	# saw as a second activation doing more than the graph said it would.
+	var was_spent: bool = "spent" in n and bool(n.get("spent"))
 	n.call("fire")
-	_announce_fire(n)
+	if not was_spent:
+		_announce_fire(n)
 	var s: int = state_of(n) & ~1
 	set_state(n, s)
 	_mirror(id_of(n), s)

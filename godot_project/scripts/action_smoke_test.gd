@@ -34,6 +34,7 @@ const TriggerGraph := preload("res://scripts/triggers/trigger_graph.gd")
 const TriggerLock := preload("res://scripts/triggers/trigger_lock.gd")
 const TriggerBus := preload("res://scripts/triggers/trigger_bus.gd")
 const TriggerEquiv := preload("res://scripts/triggers/trigger_equiv.gd")
+const TriggerVerifier := preload("res://scripts/triggers/trigger_verifier.gd")
 
 const CAMPAIGN: Array = [
 	"MAP.210", "MAP.220", "MAP.230", "MAP.240",
@@ -1263,6 +1264,32 @@ func _run_trigger_lock_checks() -> void:
 		"%d maps and %d nodes match the lock in %.2f s (%d unpinned)"
 		% [int(res["checked"]), int(head.get("nodes", 0)),
 		   float(res["ms"]) / 1000.0, int(res["unpinned"])])
+	_run_xfail_checks()
+
+## The known-failure list the step-4 verifier gates on
+## (tests/rules/skynet.xfail). It travels in the public repository beside
+## the lock and keeps the same discipline: map number, id, act byte, the
+## kind the rules module names and one tag out of a fixed list — no
+## entity names, no paths, none of the game's own words.
+func _run_xfail_checks() -> void:
+	var path: String = TriggerVerifier.XFAIL_PATH
+	_check(FileAccess.file_exists(path), "the verifier's known-failure list is present")
+	if not FileAccess.file_exists(path):
+		return
+	var text: String = FileAccess.get_file_as_string(path)
+	var dirty: PackedStringArray = TriggerVerifier.hygiene(text)
+	_check(dirty.is_empty(), "the known-failure list holds only numbers, hex and keywords%s"
+		% ("" if dirty.is_empty() else " — " + ", ".join(dirty.slice(0, 3))))
+	var planted: int = 0
+	for line in ["210 06db5 EF prox_gate BUTTON01",
+			"210 06db5 EF nonsense loop_no_handler",
+			"# the door sound is missing"]:
+		if not TriggerVerifier.hygiene(text + line + "\n").is_empty():
+			planted += 1
+	_check(planted == 3,
+		"it refuses a name, an unknown kind and a comment of its own (%d of 3)" % planted)
+	_check(TriggerVerifier.hygiene(text.replace("\n", "\r\n")).is_empty(),
+		"it still reads clean with carriage returns in it")
 
 ## M3 step 3 — the event BUS, and what it is for.
 ##

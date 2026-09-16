@@ -585,6 +585,7 @@ func _cli_after_level() -> void:
 			if not c.strip_edges().is_empty():
 				print("[cli] ] %s → %s" % [c.strip_edges(), await run_command(c.strip_edges())])
 	_solver_level_ready()
+	_verifier_level_ready()
 	if _cli.has("console-open"):
 		# Automation: drop the console itself (a screenshot of its UI).
 		open_console(String(_cli["console-open"]))
@@ -649,6 +650,23 @@ func _solver_level_ready() -> void:
 		solver.set("main", self)
 		add_child(solver)
 	solver.call("level_ready")
+
+## --verify-triggers=all|mission:210|maps:215,217|changed: the trigger
+## verifier is told that a world is up (scripts/triggers/trigger_verifier.gd,
+## M3 step 4). Unlike the solver it drives every further level change
+## itself, so this only ever starts it — the first world it is given is
+## the one it begins on, and `begin` ignores every later call.
+func _verifier_level_ready() -> void:
+	if not _cli.has("verify-triggers"):
+		return
+	var v: Node = get_node_or_null("TriggerVerifier")
+	if v != null:
+		return
+	v = load("res://scripts/triggers/trigger_verifier.gd").new()
+	v.name = "TriggerVerifier"
+	v.set("main", self)
+	add_child(v)
+	v.call("begin")
 
 ## Frame-time probe. Prints the distribution, not just the average: a
 ## mean of 8 ms with a 90 ms worst frame is exactly what "docela dost to

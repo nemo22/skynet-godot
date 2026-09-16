@@ -394,7 +394,20 @@ static func mover_params(act: int) -> Dictionary:
 		"slide5f":
 			span = absf(float(limit << 4))      # p6<<4 travel distance
 		"rot":
-			span = 2048.0                       # a full turn, looped
+			# Only a slot with NO angle is a full turn, looped. The three
+			# that carry one (0x36-0x38, p6 = 1024) are the wall monitors,
+			# and their handler (v1.01 0x138577, disassembled 2026-09-16) is
+			# not a travel at all: `add eax, edx / and eax, 0x7ff` puts the
+			# whole 1024 — half of the 2048-unit circle — on the angle in a
+			# single tick and then `and byte [esi+0x12], 0xfe` clears the
+			# enable bit. The mask makes it self-inverse, so the next
+			# trigger turns the panel back. Until 2026-09-16 this line gave
+			# them 2048 as well, and the graph read every monitor as a
+			# continuous rotator (spin@) while the runtime ran it as the
+			# 1024-unit half turn the table says (action_system._movers
+			# takes its limit straight from MOVER_TABLE).
+			if limit == 0:
+				span = 2048.0
 	var speed: float = SWING_SPEED
 	match fam:
 		"slide":
