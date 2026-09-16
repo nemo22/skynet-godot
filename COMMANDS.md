@@ -82,10 +82,10 @@ godot --headless --path godot_project -- --gamedata=DIR --import
 | --- | --- | --- |
 | `--map=MAP.230` | a map name | Skip the menu and start on that map. Case is fixed up for you. |
 | `--screen=NAME` | see below | Open a menu screen instead of the title screen and stop there. **(dev)** |
-| `--dev` | — | Enable the F-key scene switcher and its overlay: F1 the game, F2 the texture atlas viewer, F3 the object viewer, F4 the enemy viewer, F5 the sound browser. Without it those keys do nothing. **(dev)** |
+| `--dev` | — | Enable the scene switcher and its overlay: CTRL+F1 the game, CTRL+F2 the texture atlas viewer, CTRL+F3 the object viewer, CTRL+F4 the enemy viewer, CTRL+F5 the sound browser. Without it those keys do nothing. CTRL is held because the bare F1-F5 belong to the game: they pick the thrown item. **(dev)** |
 
 `--screen=` takes one of `netmenu`, `join`, `netjoin`, `newgame`, `load`,
-`options`, `controls`, `detail`, `debug`, `maps`. `quit` shows the title
+`options`, `controls`, `mouse`, `detail`, `debug`, `maps`. `quit` shows the title
 screen with its quit confirmation up. Any other word shows the title
 screen.
 

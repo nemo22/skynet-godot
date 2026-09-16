@@ -37,8 +37,12 @@ const FntFont := preload("res://scripts/loaders/fnt_font.gd")
 ## are the records; the vehicle guns sit at records 20-25 (the jeep's
 ## plasma twice, 20/21, and its rockets 22/23) and the detector at 13.
 const SLOT_RECORD: Dictionary = {13: 20, 14: 22, 15: 24, 16: 25, 17: 13}
-## Thrown item's ammo pool → its record (14 pipe bomb .. 18 satchel).
-const POOL_RECORD: Dictionary = {5: 14, 6: 15, 2: 16, 8: 17, 9: 18}
+## Thrown item's ammo pool → its record, read off the weapon table's +0x4c
+## (0x43714 + rec * 0x60): 14 pipe bomb, 15 molotov, 16 grenade, 18
+## canister, 19 satchel. Record 17 (pool 7) is a sixth thrown record the
+## start list never hands out — counting straight through it drew the
+## canister with record 17's icon and the satchel with the canister's.
+const POOL_RECORD: Dictionary = {5: 14, 6: 15, 2: 16, 8: 18, 9: 19}
 ## The vehicle's secondary: its rockets (jeep 22, HK 25), pool 11.
 const VEHICLE_SECOND_RECORD: Dictionary = {1: 22, 2: 25}
 const VEHICLE_SECOND_POOL: int = 11

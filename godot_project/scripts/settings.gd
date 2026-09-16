@@ -1,10 +1,12 @@
 ## Autoload `Settings`: the gameplay and render-detail options the DOS
 ## OPTIONS / RENDER DETAIL screens set, persisted to user://settings.cfg.
 ##
-## The DOS original keeps these in CONTROLS.DAT (154 bytes at VA 0x60152,
-## checksummed): difficulty at +0x58 (default 1 = MED), render detail at
-## +0x64 (default 2 = HIGH), reverse stereo at +0x5C. Volumes live there
-## too, but this port keeps those in the Audio autoload.
+## The DOS original keeps these in CONTROLS.DAT (154 bytes at VA 0x60452,
+## the first 37 dwords checksummed into +0x96 by FUN_00140392): difficulty
+## at +0x58 (default 1 = MED), render detail at +0x64 (default 2 = HIGH),
+## reverse stereo at +0x5C, and the three mouse settings below. Volumes
+## live there too, but this port keeps those in the Audio autoload.
+## (The base used to be written here as 0x60152, 0x300 low.)
 ##
 ## DIFFICULTY does NOT change how many enemies a map has, nor what it
 ## drops — that is a common misremembering. Skynet.exe indexes a table
@@ -83,6 +85,66 @@ func set_msaa(i: int) -> void:
 
 func apply_aa() -> void:
 	get_tree().root.msaa_3d = MSAA_MODES[clampi(msaa, 0, MSAA_MODES.size() - 1)]
+
+## --- MOUSE (OPTIONS → CONTROLS → MOUSE) --------------------------------
+## The DOS original has a page of its own for this — MOUSE.IMG, the loop
+## at VA 0x140c77 — and it is three settings: two 11-step bars, MOUSE
+## SENSITIVITY HORIZONTAL and VERTICAL, and a REVERSE VERTICAL button.
+## They live in CONTROLS.DAT at +0x44, +0x48 and +0x60 (the file's base is
+## VA 0x60452, not the 0x60152 this file used to name); the 154-byte
+## defaults template at 0x604ec starts them at 3, 3 and off.
+##
+## The stored number is a DIVISOR — 1 is the fastest, 11 the slowest, and
+## the bar draws 12 - value lit segments, so the default 3 shows 9 of 11.
+## The view gain is 4096 / value per mickey on each axis (FUN_00124e58 at
+## 0x124f5a builds the two 16.16 factors), i.e. an 11 : 1 span. The port
+## keeps its own hand-measured 0.176 ° per pixel as what the DOS DEFAULT
+## feels like and scales it by MOUSE_DEFAULT / value, so step 3 is exactly
+## what the port has always had and the span is the original's.
+const MOUSE_STEPS: int = 11
+const MOUSE_DEFAULT: int = 3
+## Radians of view per mouse pixel at MOUSE_DEFAULT.
+const MOUSE_BASE_RATE: float = 0.003
+var mouse_h: int = MOUSE_DEFAULT
+var mouse_v: int = MOUSE_DEFAULT
+## CONTROLS.DAT +0x60 bit 0. DOS negates the mouse's dy for the view
+## anyway (0x13179c and two more free-look paths, all mouse-only — the
+## joystick's Y is always negated and this never touches it); the button
+## flips it back, which is what a player calls "invert Y".
+var mouse_invert_y: bool = false
+
+## Radians of view per mouse pixel, per axis.
+func mouse_rate_x() -> float:
+	return MOUSE_BASE_RATE * float(MOUSE_DEFAULT) / float(maxi(mouse_h, 1))
+
+func mouse_rate_y() -> float:
+	return MOUSE_BASE_RATE * float(MOUSE_DEFAULT) / float(maxi(mouse_v, 1))
+
+## +1 normally, -1 with REVERSE VERTICAL on — the factor the pitch of
+## every look path (mouse and touch alike) multiplies by.
+func mouse_pitch_sign() -> float:
+	return -1.0 if mouse_invert_y else 1.0
+
+## What the DOS bar shows: 12 - value lit segments, so more is faster.
+## The menu's slider works in these, which is why it fills to the right as
+## the mouse gets quicker.
+static func mouse_lit(value: int) -> int:
+	return clampi(MOUSE_STEPS + 1 - value, 1, MOUSE_STEPS)
+
+func set_mouse_h(lit: int) -> void:
+	mouse_h = MOUSE_STEPS + 1 - clampi(lit, 1, MOUSE_STEPS)
+	save()
+	print("[settings] mouse sensitivity horizontal %d of %d" % [mouse_lit(mouse_h), MOUSE_STEPS])
+
+func set_mouse_v(lit: int) -> void:
+	mouse_v = MOUSE_STEPS + 1 - clampi(lit, 1, MOUSE_STEPS)
+	save()
+	print("[settings] mouse sensitivity vertical %d of %d" % [mouse_lit(mouse_v), MOUSE_STEPS])
+
+func set_mouse_invert_y(on: bool) -> void:
+	mouse_invert_y = on
+	save()
+	print("[settings] reverse vertical %s" % ("ON" if on else "OFF"))
 
 var difficulty: int = MED
 var detail: int = HIGH
@@ -178,6 +240,9 @@ func _ready() -> void:
 		hires_weapons = bool(cfg.get_value("video", "hires_weapons", false))
 		texture_filter = bool(cfg.get_value("video", "texture_filter", false))
 		dynamic_lights = bool(cfg.get_value("video", "dynamic_lights", false))
+		mouse_h = clampi(int(cfg.get_value("controls", "mouse_h", MOUSE_DEFAULT)), 1, MOUSE_STEPS)
+		mouse_v = clampi(int(cfg.get_value("controls", "mouse_v", MOUSE_DEFAULT)), 1, MOUSE_STEPS)
+		mouse_invert_y = bool(cfg.get_value("controls", "mouse_invert_y", false))
 		mission_scenes_chosen = bool(cfg.get_value("game", "mission_scenes_chosen", false))
 		if mission_scenes_chosen:
 			mission_scenes = bool(cfg.get_value("game", "mission_scenes", true))
@@ -201,6 +266,9 @@ func save() -> void:
 	cfg.set_value("video", "dynamic_lights", dynamic_lights)
 	cfg.set_value("game", "mission_scenes", mission_scenes)
 	cfg.set_value("game", "mission_scenes_chosen", mission_scenes_chosen)
+	cfg.set_value("controls", "mouse_h", mouse_h)
+	cfg.set_value("controls", "mouse_v", mouse_v)
+	cfg.set_value("controls", "mouse_invert_y", mouse_invert_y)
 	cfg.save(CFG_PATH)
 
 ## The multiplier on the DOS gamma.

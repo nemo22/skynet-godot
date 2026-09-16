@@ -124,6 +124,7 @@ var _screen_netmenu: Control = null
 var _screen_load: Control = null
 var _screen_options: Control = null
 var _screen_controls: Control = null
+var _screen_mouse: Control = null
 var _screen_display: Control = null
 ## QUIT.IMG — the "QUIT TO DOS?" confirmation box (see _confirm_quit).
 var _quit_art: Variant = null
@@ -249,7 +250,8 @@ func _maybe_import() -> void:
 		var target: Control = {"netmenu": _screen_netmenu, "join": _screen_join,
 			"newgame": _screen_newgame, "netjoin": _screen_netjoin,
 			"load": _screen_load, "options": _screen_options,
-			"controls": _screen_controls, "detail": _screen_display,
+			"controls": _screen_controls, "mouse": _screen_mouse,
+			"detail": _screen_display,
 			"debug": _screen_debug, "maps": _screen_maps}.get(String(cli["screen"]), _screen_main)
 		if target == _screen_load:
 			_refresh_load_slots()
@@ -527,6 +529,9 @@ func _build() -> void:
 	_screen_options = _build_options_screen(art.get("OPTIONS"))
 	_screen_controls = _build_controls_screen(art.get("CONTROLS"))
 	_screen_display = _build_display_screen(art.get("DETAIL"))
+	# After the display screen: _value_field files its repaint in the one
+	# `_field_paints` list, which _build_display_screen clears as it starts.
+	_screen_mouse = _build_mouse_screen()
 	_quit_art = art.get("QUITMAIN" if in_game else "QUIT")
 	if not in_game:
 		_screen_debug = _build_debug_screen()
@@ -544,6 +549,7 @@ func _build() -> void:
 		_screen_load:     _screen_main,
 		_screen_options:  _screen_main,
 		_screen_controls: _screen_options,
+		_screen_mouse:    _screen_controls,
 		_screen_display:  _screen_options,
 		_screen_debug:    _screen_options,
 		_screen_maps:     _screen_debug,
@@ -566,7 +572,7 @@ func _build() -> void:
 func _all_screens() -> Array:
 	return [_screen_main, _screen_newgame, _screen_netjoin, _screen_netmenu,
 		_screen_join, _screen_load, _screen_options, _screen_controls,
-		_screen_display, _screen_debug, _screen_maps, _screen_save]
+		_screen_mouse, _screen_display, _screen_debug, _screen_maps, _screen_save]
 
 ## Main screen — transparent hotspots over the START.IMG menu bar.
 func _build_main_screen() -> Control:
@@ -1632,8 +1638,81 @@ func _build_controls_screen(controls_tex: Variant) -> Control:
 	panel.add_child(_img_hotspot(CTL_JOYSTICK_RECT, s,
 		func() -> void: _show_toast("Joystick configuration is not implemented.")))
 	panel.add_child(_img_hotspot(CTL_MOUSE_RECT, s,
-		func() -> void: _show_toast("Mouse configuration is not implemented.")))
+		func() -> void: _show_screen(_screen_mouse)))
 	return root
+
+## MOUSE SENSITIVITY — the page behind the CONTROLS screen's MOUSE button.
+## The original has one (MOUSE.IMG, the loop at VA 0x140c77) and it is
+## exactly these three things: an 11-step HORIZONTAL bar, an 11-step
+## VERTICAL bar and a REVERSE VERTICAL button, all of them in
+## CONTROLS.DAT (+0x44, +0x48, +0x60). The values, the eleven steps and
+## the default are the original's; what is the port's is the FURNITURE —
+## the bars are the DETAIL screen's ArtSlider rather than eleven clickable
+## cells, the same way that screen replaced DETAIL.IMG's own rows with
+## the dialog cut from its art (playtest 2026-09-12).
+func _build_mouse_screen() -> Control:
+	var pair := _panel_screen()
+	var vb: VBoxContainer = pair[1]
+	vb.add_child(_heading("MOUSE SENSITIVITY"))
+	var frame_row := CenterContainer.new()
+	vb.add_child(frame_row)
+	var frame := PanelContainer.new()
+	frame.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	frame.add_theme_stylebox_override("panel", _get_panel_style())
+	frame_row.add_child(frame)
+	var grid := GridContainer.new()
+	grid.columns = 1
+	grid.add_theme_constant_override("v_separation", 12)
+	frame.add_child(grid)
+	_mouse_bar(_cell(grid, "Horizontal"), true)
+	_mouse_bar(_cell(grid, "Vertical"), false)
+	# The DOS button reads REVERSE VERTICAL; a player asking for it calls
+	# it the reverse Y axis ("I'm missing mouse settings — movement speed
+	# and reverse Y axis", playtest 2026-09-16).
+	var c_inv := _cell(grid, "Reverse vertical")
+	_value_field(c_inv,
+		func() -> String: return "ON" if Settings.mouse_invert_y else "OFF",
+		func() -> bool: return Settings.mouse_invert_y,
+		func() -> void: Settings.set_mouse_invert_y(not Settings.mouse_invert_y),
+		"Looking up and down the other way round — the mouse and the touch stick both.")
+	vb.add_child(_spacer(4))
+	vb.add_child(_menu_button("BACK", func() -> void: _show_screen(_screen_controls)))
+	return pair[0]
+
+## One of the two sensitivity bars. It works in the LIT SEGMENTS the DOS
+## bar draws (12 - the stored value), so it fills to the right as the
+## mouse gets quicker — the stored number itself is a divisor and runs the
+## other way.
+func _mouse_bar(cell: VBoxContainer, horizontal: bool) -> void:
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 14)
+	var sl := ArtSlider.new()
+	sl.minv = 1.0
+	sl.maxv = float(Settings.MOUSE_STEPS)
+	sl.step = 1.0
+	sl.value = float(Settings.mouse_lit(Settings.mouse_h if horizontal else Settings.mouse_v))
+	sl.trough = _art_track_sb if _art_track_sb != null else _dos_bevel(true)
+	sl.fill = _art_track_fill_sb if _art_track_fill_sb != null \
+		else _dos_bevel(true, DOS_ON_FILL)
+	sl.knob = _art_knob()
+	sl.custom_minimum_size = Vector2(230, 38)
+	sl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(sl)
+	var lbl := _section_label("")
+	lbl.custom_minimum_size = Vector2(110, 46)
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(lbl)
+	var paint := func() -> void:
+		lbl.text = "%d / %d" % [int(sl.value), Settings.MOUSE_STEPS]
+	sl.changed.connect(func(v: float) -> void:
+		if horizontal:
+			Settings.set_mouse_h(int(v))
+		else:
+			Settings.set_mouse_v(int(v))
+		paint.call())
+	paint.call()
+	cell.add_child(row)
 
 ## A transparent hotspot button placed over baked art, at `rect`
 ## (image pixels) scaled by `s`.
@@ -2607,7 +2686,7 @@ func show_page(page: String) -> void:
 	_close_quit()
 	var target: Control = {"load": _screen_load, "save": _screen_save,
 		"options": _screen_options, "controls": _screen_controls,
-		"detail": _screen_display}.get(page, _screen_main)
+		"mouse": _screen_mouse, "detail": _screen_display}.get(page, _screen_main)
 	if target == _screen_load or target == _screen_save:
 		_refresh_load_slots()
 	_show_screen(target)

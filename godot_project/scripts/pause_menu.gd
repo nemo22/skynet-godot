@@ -117,7 +117,7 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 ## Open a page: "cheats" is this node's own; "main" (the bar), "load",
-## "save", "options", "controls" and "detail" are menu.gd's.
+## "save", "options", "controls", "mouse" and "detail" are menu.gd's.
 func _show(page: String) -> void:
 	_cheats.visible = page == "cheats"
 	_menu.visible = page != "cheats"

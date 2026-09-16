@@ -100,6 +100,16 @@ var _mission_done: bool = false
 var _cli: Dictionary = {}
 var _campaign_maps: Array[String] = []   # ordered mission "main" maps
 var _mission_start_map: String = ""      # the campaign map the mission began on
+## The player exactly as the mission began — DOS's mission-start snapshot
+## (FUN_0011d346 takes it, FUN_0011d3b0 puts it back: damage, armour, the
+## thirteen ammo pools, the twenty-six per-weapon counts and BOTH weapon
+## selections). RESTART MISSION replays from this, never from what the
+## attempt that failed left behind. `_mission_start_snap_key` is the
+## mission it was taken for, so walking back into the mission's own first
+## map — mission 1 returns to MAP.210 from every one of its interiors —
+## does not overwrite it with a half-spent kit.
+var _mission_start_state: Dictionary = {}
+var _mission_start_snap_key: int = -1
 # --- Map transitions (DOS session loop FUN_001216df, skynet_gh.c:24720) --
 # `_prev_map_name` mirrors DAT_00038b18 (the map we came from — an exit
 # whose target is 0 returns there); `_pending_marker_set` mirrors
@@ -1050,12 +1060,27 @@ func _level_ready_tail(level: LevelLoader.Level, name: String) -> void:
 		if not player.border_hint.is_connected(_on_border_hint):
 			player.border_hint.connect(_on_border_hint)
 	_apply_pending_player()
+	_take_mission_start_state(name)
 	_collect_radiation(level)
 	_setup_water(level)
 	_setup_scenery(level)
 	_set_hud_mode(player.vehicle if is_instance_valid(player) else 0)
 	if _dm != null:
 		_dm.on_level_ready(level)
+
+## The mission has just begun on its first map: keep the player as he
+## stands, for RESTART MISSION. Taken here, after _apply_pending_player,
+## so a save loaded on the start map restarts to the state the save has —
+## and only once per mission, so coming back to the first map later does
+## not overwrite it. A deathmatch and a loose map have no mission to
+## restart and take none.
+func _take_mission_start_state(name: String) -> void:
+	if _dm != null or Net.active or not is_instance_valid(player):
+		return
+	if not _campaign_maps.has(name) or _mission_start_snap_key == _mission_key:
+		return
+	_mission_start_snap_key = _mission_key
+	_mission_start_state = _player_snapshot()
 
 ## The actors of ONE level. With a mission scene up every zone's robots
 ## are in the tree at once and the "enemy" group holds them all, so what
@@ -1669,6 +1694,9 @@ func _update_moon() -> void:
 
 ## Seconds the MISSION COMPLETE screen stays before the next mission.
 const AUTO_ADVANCE_SEC: float = 6.0
+## Seconds FAILED.IMG stands alone before the RESTART MISSION box comes up
+## over it (DOS FUN_00121fe3 holds it about that long).
+const FAILED_HOLD_SEC: float = 2.4
 
 ## The player's settings apply the moment they change, not on the next
 ## map: BRIGHTNESS (the DOS gamma), RENDER DETAIL (the haze, occlusion
@@ -1939,7 +1967,10 @@ func _process(delta: float) -> void:
 			"second_pool": int(player.secondary_pool), "second_name": str(player.secondary_name),
 			"second_count": int(player.secondary_ammo), "bearing": _hud_bearing(),
 		})
-		if hp <= 0 and _game_over == null and _dm == null:
+		# A restart carries the corpse through the fade — the player is put
+		# back on his feet only once the first map is up — so a level change
+		# under way must not raise the banner a second time.
+		if hp <= 0 and _game_over == null and _dm == null and not _level_busy:
 			_show_game_over()
 	# No DOS mission ends by body count: they end when the objective
 	# counter runs out (_on_objective_complete). `_mission_hostiles` is
@@ -2414,7 +2445,8 @@ func _finish_mission_if_done(delay: float) -> void:
 	if gen != _level_gen or key != _mission_key:
 		return
 	if _game_over != null:
-		# Killed in the wait (or act 0x2B): RESPAWN asks again.
+		# Killed in the wait (or act 0x2B): the mission was lost after all,
+		# and the restart that replays it asks again.
 		_mission_done = false
 		return
 	_mission_ended_key = key
@@ -2606,7 +2638,7 @@ func _change_level(map_name: String, fade_out: bool, briefing: bool, saved: Dict
 		EffectWarmup.warm(_current_level.entities if _current_level.entities != null else self)
 		_cli_after_level()
 	_fade_to(0.0, 0.35)
-	if not saved.is_empty():
+	if not saved.is_empty() and not saved.has("restart"):
 		_set_status("GAME LOADED.")
 	# A mission whose last objective fell while the level changed (or a
 	# save from the moment it fell) ends now.
@@ -3371,13 +3403,7 @@ func save_to_slot(slot: int) -> bool:
 	if _level_busy or _mission_done or _game_over != null:
 		_set_status("CANNOT SAVE NOW.")
 		return false
-	# The player goes back into the level's own (DOS) coordinates: a zone of
-	# a mission scene stands off the origin, and a save must read the same
-	# whichever runtime loads it — nor may the zone origins of a rebaked
-	# mission strand the player in mid-air.
-	var psnap: Dictionary = player.save_state()
-	if _current_level.origin != Vector3.ZERO and psnap.has("pos"):
-		psnap["pos"] = (psnap["pos"] as Vector3) - _current_level.origin
+	var psnap: Dictionary = _player_snapshot()
 	var data: Dictionary
 	if _mission != null:
 		data = _scene_save_data(psnap)
@@ -3394,6 +3420,8 @@ func save_to_slot(slot: int) -> bool:
 			# 2026-09-14 — both optional on load (see _install_save).
 			"mission_start_map": _mission_start_map,
 			"stats": Stats.mission_state(),
+			# 2026-09-16, also optional: what RESTART MISSION replays from.
+			"mission_start_player": _mission_start_state,
 		}
 	if not SaveGame.write(slot, data):
 		_set_status("SAVE FAILED.")
@@ -3403,6 +3431,17 @@ func save_to_slot(slot: int) -> bool:
 			if data.has("zones") else ""])
 	_set_status("GAME SAVED.")
 	return true
+
+## The player as a save file (and the mission-start snapshot) keeps him.
+## He goes back into the level's own (DOS) coordinates: a zone of a
+## mission scene stands off the origin, and a snapshot must read the same
+## whichever runtime restores it — nor may the zone origins of a rebaked
+## mission strand him in mid-air.
+func _player_snapshot() -> Dictionary:
+	var snap: Dictionary = player.save_state()
+	if _current_level != null and _current_level.origin != Vector3.ZERO and snap.has("pos"):
+		snap["pos"] = (snap["pos"] as Vector3) - _current_level.origin
+	return snap
 
 ## The mission counter as a save keeps it.
 func _objectives_save() -> Dictionary:
@@ -3426,7 +3465,8 @@ func _objectives_save() -> Dictionary:
 ##   return_zone  the previous-map register: where an exit whose target is 0
 ##                leads (DAT_00038b18)
 ##   player       the player, in the zone's own coordinates
-##   objectives, mission_start_map, stats — as the per-map session has them
+##   objectives, mission_start_map, stats, mission_start_player — as the
+##                per-map session has them
 ## The score is not kept: the zone's maptype marker picks it again.
 func _scene_save_data(psnap: Dictionary) -> Dictionary:
 	return {
@@ -3442,6 +3482,7 @@ func _scene_save_data(psnap: Dictionary) -> Dictionary:
 		"objectives": _objectives_save(),
 		"mission_start_map": _mission_start_map,
 		"stats": Stats.mission_state(),
+		"mission_start_player": _mission_start_state,
 	}
 
 ## Is `data` a mission-scene session (format 3)?
@@ -3527,6 +3568,12 @@ func _install_save(data: Dictionary) -> void:
 	if not _campaign_maps.has(start) or _mission_of(start) != _mission_key_for(map_name):
 		start = _mission_start_for(map_name)
 	_mission_start_map = start
+	# What RESTART MISSION replays from. A save from before 2026-09-16, or
+	# one taken outside a campaign mission, carries none: the restart then
+	# starts the mission with the DOS starting kit instead.
+	var msp: Variant = data.get("mission_start_player", {})
+	_mission_start_state = (msp as Dictionary).duplicate() if msp is Dictionary else {}
+	_mission_start_snap_key = _mission_of(start) if not _mission_start_state.is_empty() else -1
 
 ## The campaign map the mission `map_name` is played in starts on ("" outside
 ## the campaign).
@@ -3950,6 +3997,13 @@ func _apply_snapshot(level: LevelLoader.Level, name: String, snap: Dictionary) -
 	print("[skynet] %s: restored state (%d dead, %d pickups taken)"
 		% [name, dead.size(), taken.size()])
 
+## Death, and act 0x2B. DOS (FUN_00122b52) sets the dead + mission-failed
+## bits, plays SFX 108 and runs no animation and no fade; FUN_00121fe3
+## then holds FAILED.IMG up for about 2.4 seconds and hands over to the
+## RESTART MISSION dialog. There is NO single-player respawn — the port
+## offered one, and it put the player back exactly where he was killed,
+## because every marker-set arrival had overwritten the spawn point ("it
+## respawned me on the very spot where I died", playtest 2026-09-16).
 func _show_game_over() -> void:
 	_show_end_screen("MISSION FAILED", Color(0.9, 0.22, 0.16), true,
 		"", "FAILED.IMG")
@@ -3976,9 +4030,10 @@ func _next_campaign_map() -> String:
 			return m
 	return ""
 
-## Show a paused end-of-mission screen. `respawnable` adds a RESPAWN
-## button (death); a non-empty `next_map` adds a NEXT MISSION button (win).
-func _show_end_screen(title: String, color: Color, respawnable: bool,
+## Show a paused end-of-mission screen. `failed` is death: the banner
+## stands alone for FAILED_HOLD_SEC and the RESTART MISSION box follows it.
+## A non-empty `next_map` is the mission that won and what comes after it.
+func _show_end_screen(title: String, color: Color, failed: bool,
 		next_map: String = "", banner_img: String = "") -> void:
 	if _game_over != null:
 		return
@@ -3988,11 +4043,12 @@ func _show_end_screen(title: String, color: Color, respawnable: bool,
 	add_child(cl)
 	_game_over = cl
 	_game_over_next = next_map
-	_game_over_respawnable = respawnable
+	_game_over_failed = failed
+	_game_over_restart = false
 	print("[skynet] end screen: %s (next %s)" % [title, next_map if next_map != "" else "-"])
 	var dim := ColorRect.new()
 	# A won mission leaves the frozen view showing under the banner.
-	dim.color = Color(0.02, 0.03, 0.05, 0.85 if respawnable else 0.45)
+	dim.color = Color(0.02, 0.03, 0.05, 0.85 if failed else 0.45)
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	cl.add_child(dim)
 	var center := CenterContainer.new()
@@ -4002,6 +4058,7 @@ func _show_end_screen(title: String, color: Color, respawnable: bool,
 	vb.alignment = BoxContainer.ALIGNMENT_CENTER
 	vb.add_theme_constant_override("separation", 22)
 	center.add_child(vb)
+	_game_over_box = vb
 	# The DOS banner art — WELLDONE.IMG "WELL DONE, SOLDIER!" (189x18) or
 	# FAILED.IMG "MISSION FAILED, SOLDIER!" (228x18), index 0 transparent —
 	# blown up to most of the screen width, the way the original announced
@@ -4032,9 +4089,15 @@ func _show_end_screen(title: String, color: Color, respawnable: bool,
 	# Main is paused under this screen, so its _input never sees Enter or
 	# Space: the keys ride on a button of the (always processing) layer.
 	cl.add_child(_br_keybtn([KEY_ENTER, KEY_KP_ENTER, KEY_SPACE], _end_screen_accept))
-	if respawnable:
-		vb.add_child(_game_over_button("RESPAWN", _game_over_respawn))
-		vb.add_child(_game_over_button("MAIN MENU", _game_over_menu))
+	if failed:
+		# DOS shows the banner alone, then the dialog. ESC in the dialog is
+		# NO — and only there, so ESC under the banner still does nothing.
+		cl.add_child(_br_keybtn([KEY_ESCAPE], _end_screen_cancel))
+		var failed_layer: CanvasLayer = cl
+		get_tree().create_timer(FAILED_HOLD_SEC, true, false, true).timeout.connect(
+			func() -> void:
+				if _game_over == failed_layer and is_instance_valid(failed_layer):
+					_show_restart_box(_game_over_box))
 		return
 	# A won mission is DOS's banner and nothing else — WELLDONE.IMG for a
 	# few seconds, then the next mission's briefing (a DOSBox run,
@@ -4047,6 +4110,96 @@ func _show_end_screen(title: String, color: Color, respawnable: bool,
 				_advance_to(next_map)
 			else:
 				_game_over_menu())
+
+## RESTART.IMG, the DOS "RESTART MISSION? YES / NO" box, under the banner
+## that is already up (FUN_0011d09e). It is the same 96x37 panel as
+## QUIT.IMG, drawn at 75,27 of the 320x200 screen, so YES and NO sit in
+## the same two rectangles the menu's quit box uses.
+const RESTART_BOX_SCALE: float = 4.0
+const RESTART_YES_RECT: Rect2 = Rect2(0, 20, 52, 17)
+const RESTART_NO_RECT: Rect2 = Rect2(52, 20, 44, 17)
+
+func _show_restart_box(vb: VBoxContainer) -> void:
+	if _game_over_restart or not is_instance_valid(vb):
+		return
+	_game_over_restart = true
+	# No index-0 pixel anywhere in the box, so nothing to make see-through.
+	var art: ImageTexture = _load_panel_texture("RESTART.IMG")
+	if art == null:
+		# No archive art: the plain buttons the other screens use. The
+		# wording is the box's own.
+		vb.add_child(_game_over_button("RESTART MISSION", _restart_mission))
+		vb.add_child(_game_over_button("MAIN MENU", _game_over_menu))
+		return
+	var s := RESTART_BOX_SCALE
+	var box := Control.new()
+	box.custom_minimum_size = Vector2(96.0 * s, 37.0 * s)
+	var pic := TextureRect.new()
+	pic.texture = art
+	pic.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	pic.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	pic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(pic)
+	box.add_child(_restart_hotspot(RESTART_YES_RECT, s, _restart_mission))
+	box.add_child(_restart_hotspot(RESTART_NO_RECT, s, _game_over_menu))
+	vb.add_child(box)
+
+## A transparent button over the box's baked YES / NO caption, lit while
+## the pointer is on it (the DOS box draws a RESTBTN.CFA frame there).
+func _restart_hotspot(rect: Rect2, s: float, cb: Callable) -> Button:
+	var b := Button.new()
+	b.flat = true
+	b.focus_mode = Control.FOCUS_NONE
+	b.position = rect.position * s
+	b.size = rect.size * s
+	var empty := StyleBoxEmpty.new()
+	var hover := StyleBoxFlat.new()
+	hover.bg_color = Color(0.9, 0.95, 1.0, 0.18)
+	b.add_theme_stylebox_override("normal", empty)
+	b.add_theme_stylebox_override("hover", hover)
+	b.add_theme_stylebox_override("pressed", hover)
+	b.add_theme_stylebox_override("focus", empty)
+	b.pressed.connect(cb)
+	return b
+
+## RESTART MISSION — the box's YES (FUN_0011d09e, which calls
+## FUN_0011d3b0). DOS replays the WHOLE mission from its FIRST map and
+## through the briefing, with the marker set back to 0, the objective
+## counter re-read from the script and every map's saved state deleted
+## (the tfs_swap.* files go, one INT 21h unlink each); the player comes
+## back as the mission-start snapshot has him. Nothing of the attempt that
+## failed survives — which is the whole point, and why there is no
+## respawn.
+##
+## The wipe is the save machinery's: _install_save with a session that
+## holds nothing but the map and that snapshot empties `_map_state`, the
+## previous-map register, the zone phases, the pending marker set and the
+## stats, and puts `_mission_key` back to -1 so _ensure_mission_script
+## reads the script and the counter again. _clear_level, which runs first,
+## takes down the mission scene with its zones, `_zone_state` and
+## `_phases`, and clears `_seen_meshes`, `_mission_hostiles` and
+## `_prev_map_name`.
+func _restart_mission() -> void:
+	if _level_busy:
+		return
+	var start: String = _mission_start_map
+	if not _maps.has(start):
+		start = _level_name()          # a loose map: replay the map itself
+	if not _maps.has(start):
+		_game_over_menu()
+		return
+	print("[skynet] RESTART MISSION: %s%s" % [start, "" if _mission_start_state.is_empty()
+		else " with the state the mission was entered with"])
+	_dismiss_end_screen()
+	await _change_level(start, true, true, {
+		"map": start,
+		"player": _mission_start_state,
+		"mission_start_player": _mission_start_state,
+		"mission_start_map": start,
+		# Read by _change_level alone: a restart is not a loaded game and
+		# must not say GAME LOADED. It is never written to a file.
+		"restart": true,
+	})
 
 ## Clear the end screen and load `map_name` (the next campaign mission).
 func _advance_to(map_name: String) -> void:
@@ -4064,6 +4217,9 @@ func _dismiss_end_screen() -> void:
 		if is_instance_valid(_game_over):
 			_game_over.queue_free()
 		_game_over = null
+	_game_over_box = null
+	_game_over_failed = false
+	_game_over_restart = false
 	PauseState.pop(&"end_screen")
 
 ## Show the pre-mission briefing for a mission "main" map, if one exists.
@@ -4516,11 +4672,17 @@ func _briefing_teardown() -> void:
 		_briefing_overlay = null
 
 ## What the end screen offers, for the keyboard: Enter/Space take the
-## first choice (NEXT MISSION or RESPAWN); Esc does nothing there — it
-## used to open the pause menu over the banner, whose MAIN MENU is the
-## one way out of that (2026-09-05, "namiesto ďalšej misie menu").
+## first choice — YES in the RESTART MISSION box, or the next mission.
+## Esc is NO, and only once the box is up; under the banner it does
+## nothing, as it did before (2026-09-05, "namiesto ďalšej misie menu").
 var _game_over_next: String = ""
-var _game_over_respawnable: bool = false
+## This end screen is a death (FAILED.IMG), and the RESTART box under it
+## is up.
+var _game_over_failed: bool = false
+var _game_over_restart: bool = false
+## The banner's own column — where the RESTART box is put when its wait
+## is up, or when Enter skips it.
+var _game_over_box: VBoxContainer = null
 
 func _game_over_button(text: String, cb: Callable) -> Button:
 	var b := Button.new()
@@ -4531,24 +4693,28 @@ func _game_over_button(text: String, cb: Callable) -> Button:
 	b.pressed.connect(cb)
 	return b
 
-func _game_over_respawn() -> void:
-	_dismiss_end_screen()
-	if is_instance_valid(player):
-		player.respawn()
-	_finish_mission_if_done(2.5)          # the counter may have run out as he died
-
 func _game_over_menu() -> void:
 	_return_to_menu()
 
-## Enter / Space on the end screen: its first choice.
+## Enter / Space on the end screen: its first choice. Under the banner
+## that is the box itself — the wait is skippable, as the won mission's
+## is.
 func _end_screen_accept() -> void:
 	if _game_over == null:
 		return
-	if _game_over_respawnable:
-		_game_over_respawn()
+	if _game_over_restart:
+		_restart_mission()
+	elif _game_over_failed:
+		_show_restart_box(_game_over_box)
 	elif _game_over_next != "":
 		_advance_to(_game_over_next)
 	else:
+		_game_over_menu()
+
+## Esc: NO in the RESTART MISSION box — the main menu (FUN_0011d09e treats
+## it as the NO button). Before the box is up it does nothing.
+func _end_screen_cancel() -> void:
+	if _game_over != null and _game_over_restart:
 		_game_over_menu()
 
 func _clear_level() -> void:
@@ -5000,10 +5166,16 @@ func run_command(line: String) -> String:
 				return "no player"
 			if not args.is_empty() and args[0].to_lower() == "next":
 				p.cycle_throwable(1)
+			elif not args.is_empty() and args[0].is_valid_int():
+				# `throw 1`..`throw 5` — the F-keys by number, for a run with
+				# no keyboard of its own (--console=).
+				var n: int = clampi(int(args[0]), 1, 5) - 1
+				p.select_throwable(int(p.THROW_KEYS.get(KEY_F1 + n, -1)))
 			elif not args.is_empty() and args[0].to_lower() == "now":
 				# Like `shoot`: a leftover cooldown (entering the jeep sets
 				# one) must not swallow the agent's shot silently.
 				p.set("_fire_cd", 0.0)
+				p.set("_throw_cd", 0.0)
 				p.call("_throw_secondary")
 			return "secondary: %s x%d" % [p.secondary_name, p.secondary_ammo]
 		"drop":

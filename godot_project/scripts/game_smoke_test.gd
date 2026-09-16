@@ -183,6 +183,9 @@ func _run() -> void:
 	_check(not bool(con.is_open) and not get_tree().paused, "console closes and resumes")
 	_main.call("run_command", "give ammo")
 
+	await _check_throwables(player)
+	await _check_mouse_settings(player)
+
 	# --- 1d. Music: every HMI parses to a sane song, the map's maptype
 	# picks its track and the synth is running ---
 	var hmi_ok: int = 0
@@ -420,6 +423,7 @@ func _run() -> void:
 	var saved_pools: Dictionary = (player.get("_pools") as Dictionary).duplicate()
 	var saved_prev: String = String(_main.get("_prev_map_name"))
 	player.set("health", 61.0)
+	player.call("select_throwable", 4)                   # SATCHEL, not the default
 	_check(bool(_main.call("save_to_slot", 9)), "save_to_slot(9) writes a save file")
 	_check(SaveGame.exists(9), "slot 9 file exists (%s)" % SaveGame.path(9))
 	_check(SaveGame.info(9).begins_with("MAP.210"), "slot 9 header names MAP.210 (%s)" % SaveGame.info(9))
@@ -427,6 +431,7 @@ func _run() -> void:
 	player.global_position = saved_pos + Vector3(4000.0, 0.0, 0.0)
 	player.set("_pools", {0: 1, 1: 1, 2: 1, 3: 1, 4: 1, 12: 1})
 	player.set("health", 100.0)
+	player.call("select_throwable", 0)
 	var old_id: int = (_main.get("_current_level") as Object).get_instance_id()
 	_main.call("load_from_slot", 9)
 	ok = await _wait(func() -> bool:
@@ -441,6 +446,8 @@ func _run() -> void:
 		_check(is_equal_approx(float(player.get("health")), 61.0), "health restored from the save (%.0f)" % float(player.get("health")))
 		_check(String(_main.get("_prev_map_name")) == saved_prev, "previous-map register restored (%s)" % saved_prev)
 		_check(player.call("owned_list") == saved_owned, "weapon ownership restored from the save (%d weapons)" % saved_owned.size())
+		_check(int(player.get("_throw_idx")) == 4 and String(player.get("secondary_name")) == "SATCHEL",
+			"the THROWN weapon's selection is restored too (%s)" % str(player.get("secondary_name")))
 		var pk_back: bool = false
 		for s in get_tree().get_nodes_in_group("pickup"):
 			if s.has_meta("pickup_off") and int(s.get_meta("pickup_off")) == pick_off:
@@ -668,7 +675,86 @@ func _run() -> void:
 	await _check_ram_wall()
 	await _check_water()
 	await _check_trigger_verifier()
+	await _check_restart(player)
 	_finish()
+
+## Death and RESTART MISSION. DOS has no single-player respawn
+## (FUN_00122b52 only sets the dead + failed bits): FAILED.IMG stands for
+## a moment, then the RESTART.IMG box asks, and YES replays the WHOLE
+## mission from its first map with the state it was entered with, every
+## map's saved state deleted. The port used to offer a RESPAWN button that
+## put the player back where he was killed, because the spawn point had
+## been overwritten by the last marker-set arrival (playtest 2026-09-16).
+func _check_restart(player: CharacterBody3D) -> void:
+	if _main.get("_game_over") != null:
+		_main.call("_dismiss_end_screen")
+	if _main.call("_mission_key_for", _main.call("_level_name")) != 210:
+		_main.call("_change_level", "MAP.210", false, false)
+		if not await _wait(func() -> bool: return _level_is("210") and _settled(), 180.0):
+			return _check(false, "MAP.210 loads for the restart check")
+	var snap: Dictionary = _main.get("_mission_start_state")
+	_check(not snap.is_empty() and int(_main.get("_mission_start_snap_key")) == 210,
+		"a mission-start snapshot was taken when mission 1 began")
+	var start_owned: Array = (snap.get("owned", []) as Array).duplicate()
+	var start_bullets: int = int((snap.get("pools", {}) as Dictionary).get(0, -1))
+	# Make the attempt worth throwing away: a spent pool, a hurt player and
+	# a per-map overlay with something in it.
+	(player.get("_pools") as Dictionary)[0] = 7
+	player.set("health", 33.0)
+	(_main.get("_map_state") as Dictionary)["MAP.218"] = {"dead": {}, "taken": {}}
+	# Die.
+	player.set("god_mode", false)
+	player.call("take_damage", 1.0e6)
+	var ok: bool = await _wait(func() -> bool: return _main.get("_game_over") != null, 12.0)
+	_check(ok and bool(_main.get("_game_over_failed")) and not bool(_main.get("_game_over_restart")),
+		"death puts up MISSION FAILED, with no box under it yet")
+	ok = await _wait(func() -> bool: return bool(_main.get("_game_over_restart")), 12.0)
+	_check(ok, "the RESTART MISSION box follows the banner by itself")
+	if not ok:
+		return
+	# …and it is the original's own 96x37 box, not the fallback buttons.
+	var art_box: bool = false
+	for c in (_main.get("_game_over_box") as Node).get_children():
+		for g in c.get_children():
+			if g is TextureRect and (g as TextureRect).texture != null \
+					and (g as TextureRect).texture.get_width() == 96:
+				art_box = true
+	_check(art_box, "the box is RESTART.IMG itself, with its baked YES / NO")
+	# YES.
+	_main.call("_end_screen_accept")
+	ok = await _wait(func() -> bool: return _main.get("_briefing_overlay") != null, 60.0)
+	_check(ok, "the restart goes through the mission briefing, as DOS does")
+	if ok:
+		_main.call("_briefing_begin")
+	ok = await _wait(func() -> bool: return _level_is("210") and _settled(), 180.0)
+	_check(ok, "the restart replays the mission from its FIRST map")
+	if not ok:
+		return
+	_check((_main.get("_map_state") as Dictionary).is_empty()
+		and String(_main.get("_prev_map_name")).is_empty(),
+		"every map's saved state is gone (%d overlays left)" % (_main.get("_map_state") as Dictionary).size())
+	_check(int(_main.get("_objectives_left")) == int(_main.get("_objectives_total"))
+		and int(_main.get("_objectives_left")) > 0,
+		"the objective counter is back to the full %d" % int(_main.get("_objectives_total")))
+	_check(_main.get("_game_over") == null and int(_main.get("_mission_ended_key")) == -1,
+		"the mission is playable again — no end screen, nothing won")
+	_check(is_equal_approx(float(player.get("health")), float(snap.get("health", -1.0)))
+		and int(player.call("pool_count", 0)) == start_bullets
+		and player.call("owned_list") == start_owned,
+		"the player is back as the mission started him (%.0f HP, %d bullets, %d weapons)"
+			% [float(player.get("health")), int(player.call("pool_count", 0)), start_owned.size()])
+	# A second failure must work exactly the same way.
+	player.call("take_damage", 1.0e6)
+	ok = await _wait(func() -> bool: return bool(_main.get("_game_over_restart")), 20.0)
+	_check(ok, "a second death asks again")
+	if ok:
+		_main.call("_end_screen_accept")
+		ok = await _wait(func() -> bool: return _main.get("_briefing_overlay") != null, 60.0)
+		if ok:
+			_main.call("_briefing_begin")
+		var back: bool = await _wait(func() -> bool: return _level_is("210") and _settled(), 180.0)
+		_check(back, "the second restart replays the mission too")
+	player.set("god_mode", true)
 
 ## A handful of MAP.210's triggers driven through the REAL INPUT PATH and
 ## laid against the graph's prediction — the step-4 verifier
@@ -677,6 +763,180 @@ func _run() -> void:
 ## `--verify-triggers=all`; this is the tripwire under it, and under the
 ## player driver the solver also uses: a key that stops reaching
 ## fly_camera._unhandled_input shows up here in a second.
+## What each of the DOS keys must select: {key: [record, name, pool]}.
+## The records come from the weapon table at 0x43714 (+0x4c = the pool);
+## the key chain that hands them to WeaponSelectScn is at 0x11b0f5.
+const THROW_KEYS: Dictionary = {
+	KEY_F1: [15, "MOLOTOV", 6],
+	KEY_F2: [14, "PIPE BOMB", 5],
+	KEY_F3: [16, "GRENADE", 2],
+	KEY_F4: [18, "CANISTER BOMB", 8],
+	KEY_F5: [19, "SATCHEL", 9],
+}
+
+## Tap a key the way a player does — Input.parse_input_event, flushed at
+## once, so it travels the real path into fly_camera._unhandled_input.
+func _tap(code: int) -> void:
+	for down in [true, false]:
+		var k := InputEventKey.new()
+		k.keycode = code
+		k.physical_keycode = code
+		k.pressed = down
+		k.echo = false
+		Input.parse_input_event(k)
+		Input.flush_buffered_events()
+	await get_tree().process_frame
+
+## The thrown items: F1-F5 pick one each, an EMPTY one can be picked and
+## throws nothing at all, and in a vehicle no weapon key does anything
+## ("the different grenade types are completely missing", playtest
+## 2026-09-16 — the port only had a forward-only cycle on `0`).
+func _check_throwables(player: CharacterBody3D) -> void:
+	var pool_record: Dictionary = preload("res://scripts/hud_panel.gd").POOL_RECORD
+	var hit: int = 0
+	for key in THROW_KEYS:
+		var want: Array = THROW_KEYS[key]
+		await _tap(int(key))
+		if String(player.get("secondary_name")) == String(want[1]) \
+				and int(player.get("secondary_pool")) == int(want[2]) \
+				and int(pool_record.get(int(want[2]), -1)) == int(want[0]):
+			hit += 1
+		else:
+			print("[e2e]   %s selected %s (pool %d), wanted %s (pool %d, record %d)"
+				% [OS.get_keycode_string(int(key)), str(player.get("secondary_name")),
+				   int(player.get("secondary_pool")), str(want[1]), int(want[2]), int(want[0])])
+	_check(hit == THROW_KEYS.size(),
+		"F1-F5 each select their DOS record (%d of %d)" % [hit, THROW_KEYS.size()])
+
+	# An EMPTY item is selectable — DOS tests the owned bit and nothing
+	# else — and throwing it does nothing, silently.
+	var live: Dictionary = player.get("_pools")
+	live[2] = 0                                # the grenades DOS starts at 0
+	live[8] = 0
+	await _tap(KEY_F3)
+	_check(String(player.get("secondary_name")) == "GRENADE"
+		and int(player.get("secondary_ammo")) == 0,
+		"an empty item is still selectable (GRENADE x%d)" % int(player.get("secondary_ammo")))
+	var idx_before: int = int(player.get("_throw_idx"))
+	var live_before: int = get_tree().get_nodes_in_group("projectile").size()
+	player.set("_throw_cd", 0.0)
+	player.call("_throw_secondary")
+	await get_tree().physics_frame
+	_check(int(player.get("_throw_idx")) == idx_before
+		and int(player.call("pool_count", 2)) == 0
+		and get_tree().get_nodes_in_group("projectile").size() == live_before,
+		"throwing an empty item throws nothing and does not cycle away from it")
+	# The next one along is taken even though IT is empty too.
+	player.call("cycle_throwable", 1)
+	_check(String(player.get("secondary_name")) == "CANISTER BOMB",
+		"the cycle no longer skips an empty item (%s)" % str(player.get("secondary_name")))
+	# A stocked one leaves the hand.
+	await _tap(KEY_F2)
+	var pipes: int = int(player.call("pool_count", 5))
+	player.set("_throw_cd", 0.0)
+	player.call("_throw_secondary")
+	await get_tree().physics_frame
+	_check(pipes > 0 and int(player.call("pool_count", 5)) == pipes - 1,
+		"a stocked item is thrown and costs one (%d → %d)" % [pipes, int(player.call("pool_count", 5))])
+
+	# In a vehicle NO weapon key works: DOS skips the whole block on the
+	# player-mode register (0x11b025).
+	var at: Vector3 = player.global_position
+	var was_weapon: int = int(player.get("_weapon_idx"))
+	player.call("set_vehicle", 1)
+	var veh_weapon: int = int(player.get("_weapon_idx"))
+	var veh_throw: int = int(player.get("_throw_idx"))
+	for key in THROW_KEYS:
+		await _tap(int(key))
+	await _tap(KEY_0)
+	await _tap(KEY_2)
+	_check(bool(player.call("_weapon_keys_blocked"))
+		and int(player.get("_throw_idx")) == veh_throw
+		and int(player.get("_weapon_idx")) == veh_weapon,
+		"in the jeep neither F1-F5 nor `0` nor the number keys change a weapon")
+	player.call("set_vehicle", 0)
+	player.global_position = at
+	player.call("_select_weapon", was_weapon)
+	for f in 4:
+		await get_tree().physics_frame
+
+## One mouse movement, straight into the handler. The keys above already
+## prove the real input path reaches it; what is measured here is the rate
+## and the SIGN, which is what OPTIONS → CONTROLS → MOUSE sets.
+func _look_dy(player: CharacterBody3D, dy: float) -> void:
+	var mm := InputEventMouseMotion.new()
+	mm.relative = Vector2(0.0, dy)
+	player.call("_unhandled_input", mm)
+
+## MOUSE SENSITIVITY and REVERSE VERTICAL — the DOS mouse page's three
+## settings ("chýbajú mi nastavenia myši", playtest 2026-09-16). The
+## settings ("I'm missing mouse settings — movement speed and reverse Y
+## axis", playtest 2026-09-16). The sensitivity is one number per axis
+## over eleven steps, as CONTROLS.DAT +0x44 / +0x48 keep it, and REVERSE
+## VERTICAL (+0x60) reaches the JEEP's turret as well as the soldier's
+## head.
+func _check_mouse_settings(player: CharacterBody3D) -> void:
+	var h0: int = Settings.mouse_h
+	var v0: int = Settings.mouse_v
+	var inv0: bool = Settings.mouse_invert_y
+	var was_captured: bool = bool(player.get("_captured"))
+	player.set("_captured", true)
+	_check(is_equal_approx(Settings.mouse_rate_x(), Settings.MOUSE_BASE_RATE)
+		and Settings.mouse_h == Settings.MOUSE_DEFAULT,
+		"the DOS default step is the rate the port has always looked at (%.4f rad/px)"
+			% Settings.mouse_rate_x())
+	# The screen works in lit segments: 11 lit is the fastest step, 1 the
+	# slowest, and the span is the original's 11 : 1.
+	Settings.set_mouse_h(Settings.MOUSE_STEPS)
+	var fastest: float = Settings.mouse_rate_x()
+	Settings.set_mouse_h(1)
+	var slowest: float = Settings.mouse_rate_x()
+	_check(Settings.mouse_h == 11 and is_equal_approx(fastest / slowest, 11.0),
+		"the sensitivity spans 11 : 1, as the DOS bar does (%.4f .. %.4f rad/px)" % [slowest, fastest])
+	Settings.set_mouse_h(Settings.mouse_lit(h0))
+	# It is written where _ready reads it: a restart of the game finds it.
+	Settings.set_mouse_v(4)
+	Settings.set_mouse_invert_y(true)
+	var cfg := ConfigFile.new()
+	var read_back: bool = cfg.load(Settings.CFG_PATH) == OK
+	_check(read_back and int(cfg.get_value("controls", "mouse_v", -1)) == Settings.mouse_v
+		and bool(cfg.get_value("controls", "mouse_invert_y", false)),
+		"the mouse settings are written to %s, where the next start reads them" % Settings.CFG_PATH)
+	# REVERSE VERTICAL, on foot and in the jeep.
+	player.call("set_view", 0.0, 0.0)
+	Settings.set_mouse_invert_y(false)
+	_look_dy(player, 20.0)
+	var normal: float = float(player.get("_pitch"))
+	player.call("set_view", 0.0, 0.0)
+	Settings.set_mouse_invert_y(true)
+	_look_dy(player, 20.0)
+	var inverted: float = float(player.get("_pitch"))
+	_check(normal < -0.001 and is_equal_approx(inverted, -normal),
+		"REVERSE VERTICAL flips the soldier's pitch (%.3f → %.3f rad)" % [normal, inverted])
+	var at: Vector3 = player.global_position
+	player.call("set_vehicle", 1)
+	Settings.set_mouse_invert_y(false)
+	player.set("_aim_pitch", 0.0)
+	_look_dy(player, 20.0)
+	var turret: float = float(player.get("_aim_pitch"))
+	Settings.set_mouse_invert_y(true)
+	player.set("_aim_pitch", 0.0)
+	_look_dy(player, 20.0)
+	var turret_inv: float = float(player.get("_aim_pitch"))
+	_check(absf(turret) > 0.001 and is_equal_approx(turret_inv, -turret),
+		"…and the jeep's turret with it (%.3f → %.3f rad)" % [turret, turret_inv])
+	player.call("set_vehicle", 0)
+	player.global_position = at
+	# Put the player's own settings back exactly as they were: save()
+	# rewrites the whole file, so nothing of it is left changed.
+	Settings.set_mouse_h(Settings.mouse_lit(h0))
+	Settings.set_mouse_v(Settings.mouse_lit(v0))
+	Settings.set_mouse_invert_y(inv0)
+	player.set("_captured", was_captured)
+	player.call("set_view", 0.0, 0.0)
+	for f in 4:
+		await get_tree().physics_frame
+
 const VERIFY_NODES: Array = [
 	0x077f3,     # the canyon lever (0xF1): the gate's two leaves part
 	0x0ba48,     # one gate of the ring round the jeep: the hint and the line

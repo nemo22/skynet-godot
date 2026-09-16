@@ -48,8 +48,15 @@ const FLY_RUN: float = 2.5
 const CROUCH_EYE: float = 35.0
 const CROUCH_RATE: float = 100.0
 var _eye: float = 75.0
-## DOS mouse look: 0.176 ° per pixel.
-@export var mouse_sensitivity: float = 0.003
+## Mouse look. The rate and the sign are the player's — OPTIONS →
+## CONTROLS → MOUSE, the page the DOS original had too (Settings.mouse_h /
+## mouse_v / mouse_invert_y, each with its DOS meaning). The port's own
+## measured figure, 0.176 ° per pixel, is what the DOS default step feels
+## like and is Settings.MOUSE_BASE_RATE.
+## The touch look-stick is a RATE (per second) where the mouse is per
+## pixel, so it cannot share the number; it is scaled by the same ratio,
+## so slowing the mouse down slows the stick with it, and it takes the
+## same REVERSE VERTICAL.
 @export var touch_look_speed: float = 2.2
 
 const Tracer := preload("res://scripts/tracer.gd")
@@ -93,8 +100,6 @@ var ui_sprint: bool = false           # touch/automation RUN, same as Shift
 var health: float = 100.0
 var ui_fire: bool = false             # set by the TouchControls FIRE button
 var _fire_cd: float = 0.0
-var _spawn_pos: Vector3 = Vector3.ZERO
-var _spawn_yaw: float = 0.0
 ## Anti-wedge: seconds of movement input without progress, and the last
 ## position where walking was free (fallback teleport target).
 var _stuck_t: float = 0.0
@@ -148,7 +153,7 @@ const STEP_PROBE: float = 14.0                 # minimum forward advance
 # record-keyed fields (vx = record +0x00) stay per slot.
 #
 # Per-record fields, all read straight from the two DOS tables
-# (weapon record at 0x4361c + stride 0x60; its ammo type at 0x40728 +
+# (weapon record at 0x43714 + stride 0x60; its ammo type at 0x40728 +
 # stride 0x32, record +0x14):
 #   kind   ammo-type flight family (ammo +0x00 callback): 0 = instant
 #          "bullet"; 0x000f3414 = gravity "grenade"; 0x000f344d =
@@ -205,7 +210,7 @@ var _weapons: Array = [
 	{"name": "MOTION DETECTOR",  "kind": "detector", "dmg": 0.0,  "rate": 2,  "pool": -1, "cost": 0,   "snd": "", "sel": -1, "dry": -1, "cfa": "WEAPON13.CFA", "animspd": 8, "vx": 168},
 ]
 ## Where each slot's shot leaves and where it flies (read from Skynet.exe
-## 0x4361c): [record +0x30 x right, +0x34 y DOWN, +0x38 z ahead — all from
+## 0x43714): [record +0x30 x right, +0x34 y DOWN, +0x38 z ahead — all from
 ## the eye, in the view's frame; DOS adds 20 to z (FUN_00125caf, 0x125d45)
 ## — and +0x5c bit 1, set when the shot flies AT the point under the
 ## crosshair (0x125dc3; without it, straight along the view)]. The guns
@@ -245,32 +250,57 @@ const VEHICLE_WEAPONS: Dictionary = {1: [13, 14], 2: [15, 16]}
 ## --- Secondary (thrown) weapons ---------------------------------------
 ## DOS keeps TWO selected-weapon registers: WeaponSelectPri (0x1254c6)
 ## for the gun and WeaponSelectScn (0x125585) for the thrown item, and
-## the THROW key uses the second one. The campaign start list (0x43470)
-## already owns weapon records 14/15/16/18/19 and the pool table
-## (0x43ff4) stocks them — 25 pipe bombs, 20 molotovs, 2 canister bombs,
-## 1 satchel, 0 grenades — with record 15, the MOLOTOV, selected by
-## default (0x44396). In a vehicle the secondary is the rocket pod, which
+## the THROW key uses the second one. The campaign start list (0x4356c =
+## 0,1,2,4,7,14,15,16,18,19,20,21,22,24,25,-1) already owns weapon records
+## 14/15/16/18/19 and the pool table (0x440ec) stocks them — 25 pipe
+## bombs, 20 molotovs, 2 canister bombs, 1 satchel, 0 grenades — with
+## record 15, the MOLOTOV, selected by default (0x4449a = {15, 25, 22} for
+## foot / jeep / HK). In a vehicle the secondary is the rocket pod, which
 ## is why the jeep answers the throw key with a rocket.
 ##
+## (The addresses in this file used to be ~0xF8 low. 0x43714 + rec * 0x60
+## is the weapon table that matches the slots below field for field —
+## +0x00 view x, +0x14 ammo type, +0x24 rate, +0x4c pool, +0x50 cost,
+## +0x54/+0x58 select / dry sound, +0x5c the owned bits.)
+##
 ## The DOS CONTROL CONFIGURATION screen has no bind box for changing the
-## secondary — all 17 of its boxes are accounted for — so the original
-## was stuck with whatever it started with. The port cycles it with the
-## `0` key and the middle mouse button.
+## secondary — all 17 of its boxes are accounted for, and row 7 binds the
+## THROW act, not the choice of item. The choice is on F1-F5, which are
+## not rebindable (FUN_0011ad8a, the block at 0x11b0f5).
 const THROWABLES: Array = [
-	# DOS records 14-18 (2026-09-15 audit): the ammo's damage is the direct
+	# DOS records 14-19 (2026-09-15 audit): the ammo's damage is the direct
 	# hit AND the blast strength (Projectile.dos_blast — the reach is half
 	# the strength + 40, capped at 290); there is no fuse, they go off on
 	# the first thing they touch; thrown at 500 u/s ahead and 392 up (the
 	# satchel is dropped, 50 ahead). `splash` only sizes the deathmatch
 	# report and the effect.
-	{"name": "PIPE BOMB",     "pool": 5, "dmg": 200.0,   "splash": 140.0, "speed": 500.0},
-	{"name": "MOLOTOV",       "pool": 6, "dmg": 125.0,   "splash": 102.0, "speed": 500.0},
-	{"name": "GRENADE",       "pool": 2, "dmg": 200.0,   "splash": 140.0, "speed": 500.0},
-	{"name": "CANISTER BOMB", "pool": 8, "dmg": 800.0,   "splash": 290.0, "speed": 500.0},
-	{"name": "SATCHEL",       "pool": 9, "dmg": 15000.0, "splash": 290.0, "speed": 50.0},
+	{"rec": 14, "name": "PIPE BOMB",     "pool": 5, "dmg": 200.0,   "splash": 140.0, "speed": 500.0},
+	{"rec": 15, "name": "MOLOTOV",       "pool": 6, "dmg": 125.0,   "splash": 102.0, "speed": 500.0},
+	{"rec": 16, "name": "GRENADE",       "pool": 2, "dmg": 200.0,   "splash": 140.0, "speed": 500.0},
+	{"rec": 18, "name": "CANISTER BOMB", "pool": 8, "dmg": 800.0,   "splash": 290.0, "speed": 500.0},
+	{"rec": 19, "name": "SATCHEL",       "pool": 9, "dmg": 15000.0, "splash": 290.0, "speed": 50.0},
 ]
-const THROW_DEFAULT: int = 1          # MOLOTOV, as the DOS default
+## The five keys, each wired to ITS OWN RECORD rather than to a place in
+## the list above. The poller's chain (0x11b0f5 onwards) reads
+## `mov eax,15 / 14 / 16 / 18 / 19` for F1..F5 and hands each straight to
+## WeaponSelectScn, so F2 is the pipe bomb and F1 the molotov — not the
+## other way round, and record 17 (pool 7) is a sixth thrown record the
+## start list 0x4356c never hands out.
+const THROW_KEYS: Dictionary = {
+	KEY_F1: 1,      # MOLOTOV       record 15
+	KEY_F2: 0,      # PIPE BOMB     record 14
+	KEY_F3: 2,      # GRENADE       record 16
+	KEY_F4: 3,      # CANISTER BOMB record 18
+	KEY_F5: 4,      # SATCHEL       record 19
+}
+const THROW_DEFAULT: int = 1          # MOLOTOV, as the DOS default (0x4449a)
 var _throw_idx: int = THROW_DEFAULT
+## The throw has a cooldown OF ITS OWN — DOS counts it down in the
+## secondary record's +0x28, not in the gun's — so a throw never eats the
+## next shot and a shot never eats the next throw. All five records carry
+## rate 1, i.e. 0x10000 / 1 = one second.
+const THROW_RATE: float = 1.0
+var _throw_cd: float = 0.0
 ## HUD-facing mirror of the selected thrown item (main.gd reads these).
 var secondary_name: String = ""
 var secondary_ammo: int = 0
@@ -360,11 +390,11 @@ var _foot_owned: Dictionary = {}
 var _foot_weapon: int = 1
 var _weapon_idx: int = 0
 ## Weapon ownership — DOS record +0x5c bit 0. A new SkyNET campaign
-## game hands out the list at 0x43470 (FUN_0012562c from the session
+## game hands out the list at 0x4356c (FUN_0012562c from the session
 ## start, skynet_gh.c:21838): PIPE, UZI, ASSAULT RIFLE, SHOTGUN, LASER
 ## RIFLE (plus the jeep/thrown-item records that have no slot here).
 const START_WEAPONS: Array = [0, 1, 2, 4, 7]
-## The "arnold" cheat list at 0x4350c: every on-foot weapon except the
+## The "arnold" cheat list at 0x43604: every on-foot weapon except the
 ## super uzi (its own cheat).
 const ALL_WEAPONS: Array = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 const SUPER_UZI: int = 12
@@ -388,7 +418,7 @@ const DRY_FIRE_DELAY: float = 0.25
 ## sprite index 0xB680 → bank 365), puffed where a shot strikes geometry.
 const IMPACT_BANK_BULLET: int = 365
 
-# Shared ammo pools — Skynet.exe 0x43ff4, 13 × {0, initial, max}. A
+# Shared ammo pools — Skynet.exe 0x440ec, 13 × {0, initial, max}. A
 # weapon's record +0x4c names its pool; +0x50 is the cost per shot:
 #   0  bullets   500/750  UZI ×1 · ASSAULT RIFLE ×3 · MACHINE GUN ×4
 #   1  shells     50/200  SHOTGUN ×1
@@ -447,8 +477,9 @@ func _ready() -> void:
 
 ## Place the player at a spawn point facing `yaw` (radians). Called by
 ## the level controller once the map is loaded. `reset_state` restores
-## full health and the DOS starting ammo (a fresh mission or a respawn);
-## map exits pass false so HP/ammo carry into the interior and back.
+## full health and the DOS starting ammo (a fresh mission, or a deathmatch
+## respawn); map exits pass false so HP/ammo carry into the interior and
+## back.
 func set_spawn(pos: Vector3, yaw: float, reset_state: bool = true) -> void:
 	global_position = pos
 	_yaw = yaw
@@ -457,14 +488,15 @@ func set_spawn(pos: Vector3, yaw: float, reset_state: bool = true) -> void:
 	rotation = Vector3(0.0, yaw, 0.0)
 	if _cam != null:
 		_cam.rotation = Vector3.ZERO
-	_spawn_pos = pos
-	_spawn_yaw = yaw
 	if reset_state:
 		health = max_health
 		armor = 0.0
 		_net_env_dmg = 0.0                 # owed by the life that just ended
 		_reset_pools()
 		_reset_owned()
+		# Both DOS selection registers come back from 0x4449a with the rest
+		# of the kit: on foot that is record 15, the MOLOTOV.
+		_throw_idx = THROW_DEFAULT
 	_sync_hud()
 
 ## Point the view (radians) — automation / debug. Deliberately NOT held to
@@ -766,6 +798,17 @@ func _select_weapon(idx: int) -> void:
 	_sync_hud()
 	Audio.play_id(int(_weapons[idx].get("sel", -1)), -8.0)
 
+## Is the whole weapon-selection block of the key poller switched off?
+## DOS tests the player-mode register (0x11b025: `cmp [0x30a58],0` — the
+## same word that indexes the mover table, 0 on foot) and skips the number
+## keys, the weapon cycle AND F1-F5 in one go, so a driver cannot change
+## either weapon: the jeep has the guns it has. The port's own extras (the
+## wheel, the middle button, `0`) go through the same gate — the number
+## keys were only blocked by accident, because _reset_owned leaves a
+## vehicle owning its two slots.
+func _weapon_keys_blocked() -> bool:
+	return vehicle != VEH_FOOT
+
 func _unhandled_input(event: InputEvent) -> void:
 	# The debug toggles stay out of a network game: hits are checked on the
 	# victim's machine, so F9 made a player invulnerable online, and F8
@@ -781,6 +824,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		god_mode = not god_mode
 		print("[player] god mode %s" % ("ON" if god_mode else "OFF"))
 		return
+	if input_locked:
+		# Dead, chatting, unspawned, or a level change under way: DOS runs no
+		# key poller at all then, and the port used to keep taking weapon keys
+		# from a corpse.
+		return
 	if _mobile:
 		return                           # touch handled by TouchControls
 	if event is InputEventMouseButton and event.pressed:
@@ -791,6 +839,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				_capture(true)
 			return
 		if _captured and _act_on(event):
+			return
+		if _weapon_keys_blocked():
 			return
 		match event.button_index:
 			MOUSE_BUTTON_MIDDLE:
@@ -809,18 +859,30 @@ func _unhandled_input(event: InputEvent) -> void:
 			_try_activate()
 		elif Controls.matches(event, "center_view"):
 			set_view(_yaw, 0.0)           # CENTER VIEW: level the horizon
+		elif _weapon_keys_blocked():
+			return
 		elif event.keycode >= KEY_1 and event.keycode <= KEY_9:
 			_select_weapon(event.keycode - KEY_1)
+		elif THROW_KEYS.has(event.keycode):
+			select_throwable(int(THROW_KEYS[event.keycode]))
 		elif event.keycode == KEY_0:
 			cycle_throwable(1)          # 0 cycles the thrown item
-	elif event is InputEventMouseMotion and _captured and vehicle == VEH_JEEP:
-		# In the jeep the mouse moves the gun crosshair; the keys drive.
-		_aim_yaw = clampf(_aim_yaw - event.relative.x * mouse_sensitivity, -JEEP_AIM_YAW, JEEP_AIM_YAW)
-		_aim_pitch = clampf(_aim_pitch - event.relative.y * mouse_sensitivity, JEEP_AIM_PITCH_DOWN, JEEP_AIM_PITCH_UP)
-		_pitch = 0.0
 	elif event is InputEventMouseMotion and _captured:
-		_yaw -= event.relative.x * mouse_sensitivity
-		_pitch = clampf(_pitch - event.relative.y * mouse_sensitivity, -_pitch_max(), _pitch_max())
+		var dyaw: float = event.relative.x * Settings.mouse_rate_x()
+		# REVERSE VERTICAL is the DOS mouse screen's own button and it
+		# reaches the TURRET as much as the soldier's head: the three places
+		# the flag is read (0x13179c, 0x135b81, 0x12af6c) are the view's
+		# pitch, whatever the player is sitting in.
+		var dpitch: float = event.relative.y * Settings.mouse_rate_y() \
+			* Settings.mouse_pitch_sign()
+		if vehicle == VEH_JEEP:
+			# In the jeep the mouse moves the gun crosshair; the keys drive.
+			_aim_yaw = clampf(_aim_yaw - dyaw, -JEEP_AIM_YAW, JEEP_AIM_YAW)
+			_aim_pitch = clampf(_aim_pitch - dpitch, JEEP_AIM_PITCH_DOWN, JEEP_AIM_PITCH_UP)
+			_pitch = 0.0
+		else:
+			_yaw -= dyaw
+			_pitch = clampf(_pitch - dpitch, -_pitch_max(), _pitch_max())
 
 ## How far the view may tilt right now: the soldier's DOS ±67.5°, or the
 ## gunship's ±45° nose.
@@ -841,16 +903,22 @@ func _turn_rate(delta: float) -> float:
 func _physics_process(delta: float) -> void:
 	# --- look ---------------------------------------------------------
 	if ui_look != Vector2.ZERO:
+		# The stick takes the mouse page's settings through the same ratio:
+		# its rate is per second, so the DOS number cannot be applied to it
+		# directly, but a player who slowed the mouse down meant the look.
+		var base: float = Settings.MOUSE_BASE_RATE
+		var dyaw: float = ui_look.x * touch_look_speed * delta \
+			* (Settings.mouse_rate_x() / base)
+		var dpitch: float = ui_look.y * touch_look_speed * delta \
+			* (Settings.mouse_rate_y() / base) * Settings.mouse_pitch_sign()
 		if vehicle == VEH_JEEP:
 			# The touch look-stick lays on the turret, as the mouse does:
 			# in the jeep the view is the gun (see LOOK UP / LOOK DOWN).
-			_aim_yaw = clampf(_aim_yaw - ui_look.x * touch_look_speed * delta,
-				-JEEP_AIM_YAW, JEEP_AIM_YAW)
-			_aim_pitch = clampf(_aim_pitch - ui_look.y * touch_look_speed * delta,
-				JEEP_AIM_PITCH_DOWN, JEEP_AIM_PITCH_UP)
+			_aim_yaw = clampf(_aim_yaw - dyaw, -JEEP_AIM_YAW, JEEP_AIM_YAW)
+			_aim_pitch = clampf(_aim_pitch - dpitch, JEEP_AIM_PITCH_DOWN, JEEP_AIM_PITCH_UP)
 		else:
-			_yaw -= ui_look.x * touch_look_speed * delta
-			_pitch = clampf(_pitch - ui_look.y * touch_look_speed * delta, -_pitch_max(), _pitch_max())
+			_yaw -= dyaw
+			_pitch = clampf(_pitch - dpitch, -_pitch_max(), _pitch_max())
 	rotation.y = _yaw
 	# THE VIEW IS BUILT ONCE A FRAME, and the trigger below fires along the
 	# one the crosshair is drawn with. DOS builds its 3x3 view matrix
@@ -901,6 +969,8 @@ func _physics_process(delta: float) -> void:
 	# --- weapon -------------------------------------------------------
 	if _fire_cd > 0.0:
 		_fire_cd -= delta
+	if _throw_cd > 0.0:
+		_throw_cd -= delta
 	_regen_vehicle_energy(delta)
 	# (The DOS armour-regen routine, 0x1227f0 with the difficulty table's
 	# fourth column, has no caller: armour only comes back at a mission's
@@ -1948,25 +2018,28 @@ func _projectile_cfg(kind: String, w: Dictionary) -> Dictionary:
 ## foot it lobs the selected thrown item in an upward arc, out of its own
 ## pool, without disturbing the gun in the player's hands.
 func _throw_secondary() -> void:
-	if health <= 0.0 or _cam == null or _fire_cd > 0.0:
+	if health <= 0.0 or _cam == null:
 		return
 	if vehicle != VEH_FOOT:
+		if _fire_cd > 0.0:
+			return
 		_shoot(int(VEHICLE_WEAPONS[vehicle][1]))
+		return
+	if _throw_cd > 0.0:
 		return
 	var t: Dictionary = THROWABLES[_throw_idx]
 	var pool: int = int(t["pool"])
+	# DOS arms the cooldown BEFORE it looks at the pool (0x1263ec: the
+	# record's +0x28 is loaded with 0x10000 / +0x24 = one second at rate 1,
+	# and only then does FUN_001265e1 find the pool empty), and the dry
+	# sound of all five records is -1 — so an empty hand throws nothing,
+	# says nothing, and still costs the second. The port used to cycle to
+	# whatever was still stocked and play the gun's dry click.
+	_throw_cd = THROW_RATE
 	if int(_pools.get(pool, 0)) <= 0:
-		# Out of this one: move to the next item that still has stock, so
-		# the key always does something (DOS just played the dry click).
-		if not cycle_throwable(1):
-			_fire_cd = DRY_FIRE_DELAY
-			Audio.play_id(10, -6.0)
-			return
-		t = THROWABLES[_throw_idx]
-		pool = int(t["pool"])
+		return
 	_pools[pool] = int(_pools[pool]) - 1
 	_sync_hud()
-	_fire_cd = 0.6
 	var fwd: Vector3 = aim_dir()
 	var muzzle: Vector3 = _muzzle_point(THROW_MUZZLE)   # the left hand
 	# DOS: the item leaves along the view at the record's speed with
@@ -1979,20 +2052,33 @@ func _throw_secondary() -> void:
 	get_tree().current_scene.add_child(g)
 	g.setup(muzzle, arc, float(t["dmg"]), float(t["splash"]), self, vel.length(), t)
 
-## Step to the next thrown item that still has rounds. Returns false when
-## the player is carrying none at all. Bound to `0` and the middle mouse
-## button; the pause menu and the console call it too.
+## Choose thrown item `i` (an index into THROWABLES) — the DOS
+## WeaponSelectScn, FUN_00125a85. It tests ONE thing, the record's owned
+## bit (+0x5c bit 0), and nothing else: an item with an empty pool is
+## selectable, which is why a player can stand there with GRENADE x0 in
+## the panel. Every one of the five is owned from the start list 0x4356c
+## and nothing in the game takes one away, so the bit is always set here;
+## the test stays as a statement of the rule.
+##
+## (DOS also debounces the poller by 20 ticks — it reads the key's STATE
+## every frame. A Godot key-down event fires once, so there is nothing to
+## debounce.)
+func select_throwable(i: int) -> bool:
+	if _weapon_keys_blocked() or i < 0 or i >= THROWABLES.size() or i == _throw_idx:
+		return false
+	_throw_idx = i
+	_sync_hud()
+	Audio.play_id(9, -8.0)
+	secondary_changed.emit(secondary_name, secondary_ammo)
+	return true
+
+## Step to the next thrown item — the port's own convenience on `0` and
+## the middle mouse button (the console calls it too). It does NOT skip
+## the empty ones: they are selectable in DOS, so skipping them would hide
+## exactly the item the F-keys are there to reach.
 func cycle_throwable(dir: int) -> bool:
 	var n: int = THROWABLES.size()
-	for k in n:
-		var i: int = (_throw_idx + dir * (k + 1) + n * (k + 1)) % n
-		if int(_pools.get(int(THROWABLES[i]["pool"]), 0)) > 0:
-			_throw_idx = i
-			_sync_hud()
-			Audio.play_id(9, -8.0)
-			secondary_changed.emit(secondary_name, secondary_ammo)
-			return true
-	return false
+	return select_throwable(posmod(_throw_idx + dir, n))
 
 ## Short-range melee swing (the pipe). One ray cast forward from the
 ## camera up to MELEE_RANGE; if it lands on a damageable node we apply
@@ -2107,8 +2193,10 @@ func take_dos_damage(points: float, scaled: bool = true) -> void:
 	take_damage(points * max_health / DOS_HEALTH_POINTS, scaled)
 
 ## Take `amount` of the port's own bar (max_health). On death the player
-## just dies — the level controller shows a game-over screen and calls
-## respawn(). `scaled` applies the DIFFICULTY multiplier
+## just dies — no animation, no fade: the level controller puts up
+## MISSION FAILED and offers the mission again from its first map, as DOS
+## does (there is no single-player respawn). `scaled` applies the
+## DIFFICULTY multiplier
 ## (Settings.dmg_to_player); DOS scales weapon damage in the
 ## projectile-impact path only, so radiation and other environmental
 ## damage pass false.
@@ -2195,10 +2283,6 @@ func net_damage(amount: float, attacker: Node) -> void:
 		weapon = int(attacker.get("weapon_idx"))
 	Net.hit(Net.local_id, amount, Net.id_of(attacker), weapon)
 
-## Respawn at the stored level start (set_spawn resets health and ammo).
-func respawn() -> void:
-	set_spawn(_spawn_pos, _spawn_yaw)
-
 ## --- DOS pickup effects (handler 0x11d670, item table 0x35800) --------
 
 ## Emitted with the STRINGS.PRS "PICKED UP ..." line for the HUD.
@@ -2233,7 +2317,7 @@ func give_weapon(idx: int) -> void:
 
 ## --- DOS cheat effects (CHEAT.PRS codes, handlers at 0x141f08..) ------
 
-## "arnold": the 0x4350c list — every on-foot weapon but the super uzi.
+## "arnold": the 0x43604 list — every on-foot weapon but the super uzi.
 func give_all_weapons() -> void:
 	for w in ALL_WEAPONS:
 		_owned[int(w)] = true
@@ -2276,6 +2360,9 @@ func save_state() -> Dictionary:
 		"pos": global_position, "yaw": _yaw, "pitch": _pitch,
 		"health": health, "armor": armor,
 		"pools": _pools.duplicate(), "weapon": _weapon_idx,
+		# DOS's save keeps BOTH weapon registers (0x11d3b0 copies them
+		# back), and the port used to drop the thrown one on every load.
+		"throw": _throw_idx,
 		"owned": owned_list(), "speed_boost": speed_boost,
 		"vehicle": vehicle, "foot_owned": _foot_owned.keys(), "foot_weapon": _foot_weapon,
 	}
@@ -2303,6 +2390,7 @@ func restore_state(d: Dictionary) -> void:
 			_owned[int(w)] = true
 	speed_boost = float(d.get("speed_boost", 1.0))
 	_weapon_idx = clampi(int(d.get("weapon", _weapon_idx)), 0, _weapons.size() - 1)
+	_throw_idx = clampi(int(d.get("throw", _throw_idx)), 0, THROWABLES.size() - 1)
 	if not _owned.has(_weapon_idx):
 		_owned[_weapon_idx] = true
 	_vm_idx = 0

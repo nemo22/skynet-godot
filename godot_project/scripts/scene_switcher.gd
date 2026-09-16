@@ -1,6 +1,12 @@
 ## Global scene switcher. Autoloaded.
-## F1 = Level (main.tscn), F2 = Atlas viewer, F3 = Object viewer, F4 = Enemy
-## viewer (later). Always-on overlay shows the current mode.
+## CTRL+F1 = Level (main.tscn), CTRL+F2 = Atlas viewer, CTRL+F3 = Object
+## viewer, CTRL+F4 = Enemy viewer, CTRL+F5 = Sound browser. Always-on
+## overlay shows the current mode.
+##
+## CTRL, since 2026-09-16: F1-F5 are the game's own keys — they pick the
+## thrown item, as they do in DOS (fly_camera.THROW_KEYS) — and this
+## autoload sees an event before any scene does, so a bare F1 in a --dev
+## run threw the player out of the level instead of selecting the molotov.
 
 extends Node
 
@@ -41,7 +47,7 @@ func _ready() -> void:
 	_label.add_theme_color_override("font_color", Color(1, 1, 1))
 	_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
 	_label.add_theme_constant_override("outline_size", 4)
-	_label.text = "F1 Level   F2 Atlas   F3 Objects   F4 Enemies   F5 Sounds   ESC Quit"
+	_label.text = "CTRL+ F1 Level  F2 Atlas  F3 Objects  F4 Enemies  F5 Sounds   ESC Quit"
 	canvas.add_child(_label)
 
 ## Save the window to `path` as a PNG after `delay` seconds, then quit when
@@ -59,7 +65,8 @@ func capture_after(path: String, delay: float, quit: bool) -> void:
 func _input(event: InputEvent) -> void:
 	if not dev:
 		return
-	if event is InputEventKey and event.pressed and not event.echo:
+	if event is InputEventKey and event.pressed and not event.echo \
+			and (event as InputEventKey).ctrl_pressed:
 		var k: int = event.keycode
 		if SCENES.has(k):
 			preload("res://scripts/pause_state.gd").reset()   # a paused game must not follow into the viewer
