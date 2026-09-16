@@ -199,6 +199,31 @@ const ROT_SPEED: float = 153.0           # continuous rotators
 const SLIDE_SPEED_SCALE: float = 2.2     # 0x5f slide speed = p4 * this (units/s)
 
 # ---------------------------------------------------------------------
+# Path vehicles — DOS AI state 11, v1.01 handler 0x127400. An actor that
+# drives a chain of placement MARKERS: the cargo truck into MAP.210's
+# base, MAP.260's convoy, MAP.280's boss chase, and the HK that lifts the
+# player off MAP.234's roof. Types 46-52 share the parameters (enemy
+# table 0x44E00). The vehicles run on their own nodes since step 5f of
+# docs/trigger_graph_plan.md (scripts/level/path_vehicle.gd), and read
+# these from here rather than keeping a second copy beside them.
+# ---------------------------------------------------------------------
+const PATH_SPEED_K: float = 80.0 / 256.0        # segment speed = k · its length
+const PATH_ACCEL: float = 160.0                 # units/s², from a standstill
+const PATH_TURN: float = 128.0 / 2048.0 * TAU   # 22.5°/s, yaw only and visual
+const PATH_REACH: float = 80.0                  # 3D distance that counts as arrived
+## DOS ticks the actors in the 5×5 MAP-GRID cells around the player — the
+## cell index, not a radius (0x12980f: edx = 5). A grid cell is 1024 units
+## (64×64 cells over the 65536-unit map), so the window reaches two cells
+## each way. The port used a 1024-unit radius, and the HK that lifts the
+## player off MAP.234's roof waits 2413 units from where he arrives: it
+## never started ("na strechu malo prísť HK a nepriletelo").
+const PATH_TICK_CELL: float = 1024.0
+const PATH_TICK_CELLS: int = 2
+## The stop case walks at most this many links before giving up — the DOS
+## loop has no guard and the shipped maps need none.
+const PATH_MAX_HOPS: int = 64
+
+# ---------------------------------------------------------------------
 # Measuring constants (the runtime's, kept in one place)
 # ---------------------------------------------------------------------
 const PROX_GATE_RADIUS: float = 60.0        # 0xEF (v1.01 0x1386a0, cmp 0x3c)

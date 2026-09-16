@@ -768,14 +768,16 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 			# no spawn yaw — DOS actors start facing +Z.
 			# Vehicles that drive a marker path (AI state 11): the truck
 			# into MAP.210's base, MAP.260's convoy, MAP.234's pick-up HK.
-			# The action system moves them (handler 0x127400); the path is
-			# the marker's own link.
+			# The marker's own node drives them (step 5f,
+			# scripts/level/path_vehicle.gd, handler 0x127400); the path is
+			# the marker's own link, and registering here is what puts the
+			# vehicle on the path sweep at all.
 			if not spawn and et >= 0 and et < AIData.TYPES.size() \
 					and int(AIData.TYPES[et].get("st", -1)) == 11 and e.link_next > 0:
 				emi.make_path_vehicle()
 				emi.indestructible = int(AIData.TYPES[et].get("hp", 0)) == 0
-				if level.action != null:
-					level.action.register_path_vehicle(e.file_off, emi, e.link_next)
+				if level.behaviour != null:
+					level.behaviour.register_path_vehicle(e, emi)
 			var trig: int = 0 if spawn else e.exit_map & 0xFFFF
 			if trig > 0:
 				emi.make_dormant(float(trig))

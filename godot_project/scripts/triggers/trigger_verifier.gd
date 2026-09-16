@@ -77,6 +77,15 @@ const SETTLE_FRAMES: int = 1000
 ## keeps him a long way away for the same reason; here he has to be at
 ## the node, so the noise is spent in advance instead).
 const PRE_FRAMES: int = 3
+## …and how long he stands there for a PATH check, which is a special case
+## of the same thing. A machine says once that it has picked its path up,
+## on the first tick it spends in the player's grid window — so every
+## OTHER machine that comes into reach while he settles where he was put
+## down must have said it before the recording starts, or the check reads
+## a neighbour's announcement as this vehicle's doing. MAP.260 is nine of
+## them driving one town, and the player put down beside the outer lane is
+## carried back inside the border box, which brings more of them in.
+const PATH_SETTLE_FRAMES: int = 120
 ## Shots per node: the assault rifle's 20 points are one damage stage
 ## (DESTRUCT_DAMAGE_PER_STAGE = 16), so one shot is the usual whole test.
 const SHOT_MAX: int = 3
@@ -370,12 +379,9 @@ func _on_objective(_idx: int) -> void:
 # ---------------------------------------------------------------------
 func _snapshot(level) -> Dictionary:
 	var a = level.action
-	var paths: Dictionary = {}
-	for off in a._path_vehicles:
-		var v: Dictionary = a._path_vehicles[off]
-		var nd: Node3D = v["node"]
-		paths[off] = [nd.position if nd != null and is_instance_valid(nd) else Vector3.ZERO,
-			nd.rotation.y if nd != null and is_instance_valid(nd) else 0.0]
+	# Where every path vehicle stands and which way it faces — the
+	# vehicles' own since step 5f, and asked of them here.
+	var paths: Dictionary = level.behaviour.path_snapshot() if level.behaviour != null else {}
 	return {"action": a.save_state(), "objectives": a.objectives_left,
 		"paths": paths, "water": float(main.player.get("water_level")),
 		"spawn": main.player.global_position, "yaw": main.player.rotation.y}
@@ -425,22 +431,14 @@ func _reset(level, snap: Dictionary) -> void:
 	# …and that no mover is in the middle of a run (step 5e). Where each
 	# one STANDS came back with restore_state above.
 	level.behaviour.mover_forget()
+	# …and every path vehicle back at the head of its path and standing
+	# still, where the map put it (step 5f).
+	level.behaviour.path_forget()
+	level.behaviour.path_restore(snap["paths"])
 	a._touch_latched.clear()
 	a._armed.clear()
 	a._teleport_fired = false
 	a.objectives_left = int(snap["objectives"])
-	var paths: Dictionary = snap["paths"]
-	for off in paths:
-		var v: Dictionary = a._path_vehicles.get(off, {})
-		if v.is_empty():
-			continue
-		var nd: Node3D = v["node"]
-		if nd != null and is_instance_valid(nd):
-			nd.position = paths[off][0]
-			nd.rotation.y = float(paths[off][1])
-		v["tgt"] = 0
-		v["spd"] = 0.0
-		v["tspd"] = 0.0
 	main.player.set("water_level", float(snap["water"]))
 	_exit_seen.clear()
 	if level.bus != null:
@@ -813,11 +811,11 @@ func _check_relay(level, node: Dictionary, num: int, id: int, act: int,
 func _check_path(level, node: Dictionary, num: int, id: int, act: int,
 		kind: String) -> void:
 	var a = level.action
-	var v: Dictionary = a._path_vehicles.get(id, {})
-	if v.is_empty():
+	var veh: Node = level.behaviour.vehicle_node(id) if level.behaviour != null else null
+	if veh == null:
 		_row(num, id, act, kind, "path", UNREACHABLE, "no vehicle was built for it")
 		return
-	var nd: Node3D = v["node"]
+	var nd: Node3D = veh.actor
 	if nd == null or not is_instance_valid(nd):
 		_row(num, id, act, kind, "path", UNREACHABLE, "the vehicle is gone")
 		return
@@ -830,21 +828,20 @@ func _check_path(level, node: Dictionary, num: int, id: int, act: int,
 	var beside: Vector3 = nd.global_position + Vector3(0.0, 0.0, 256.0)
 	var floor_at: Vector3 = _floor_under(beside, 600.0)
 	_drv.place(floor_at if floor_at != Vector3.INF else beside)
-	await _drv.frames(PRE_FRAMES)
+	await _drv.physics(PATH_SETTLE_FRAMES)
 	# Standing beside it is already enough for the DOS window, and the
 	# vehicle picks its path up on the first tick it is in — before the
 	# recording would have started. Put it back at the head and take the
 	# measurement from there.
-	v["tgt"] = 0
-	v["spd"] = 0.0
-	v["tspd"] = 0.0
+	veh.path_forget()
 	was = nd.position
 	var bus = level.bus
 	bus.record(true)
 	bus.clear()
 	var e = level.map.entities_by_off.get(id)
 	if e != null:
-		a._flip_link(e)                          # the lever that starts it
+		a._flip_link(e)                          # the end of the path, taken directly
+	_arm_path(level, int(veh.head))
 	for _i in 180:
 		await _drv.physics(1)
 		if nd.position.distance_to(was) > 80.0:
@@ -856,6 +853,34 @@ func _check_path(level, node: Dictionary, num: int, id: int, act: int,
 	if moved <= 80.0:
 		why = _join(why, "it moved %.0f units in three seconds" % moved)
 	_row(num, id, act, kind, "path", FAIL if not why.is_empty() else PASS, why)
+
+## Switch the markers of a path on, whatever the walk above left them at.
+##
+## The flip stands in for the END of the path — it is how the chain's
+## effects are reached without driving the whole route first — but
+## ObjFlipLink is a TOGGLE, and a map may author its path either way.
+## MAP.210's truck waits for a lever, so its markers are off and the flip
+## switches them on; MAP.234's HK is already flying when the map loads, so
+## its markers are on (st 01) and that same flip switched them OFF — the
+## machine then sat still for the whole three seconds and the check read
+## it as a vehicle that will not drive. Thirteen of the fourteen pinned
+## path_window rows said exactly that, and it was the check's own doing,
+## not the game's: the running game drives every one of them.
+##
+## What the path itself is the vehicle's node knows (path_watch): the
+## chain of variant-3 MARKERS from the head, stopping at an actor or at
+## the first link that is not one.
+func _arm_path(level, head: int) -> void:
+	var cur = level.map.entities_by_off.get(head)
+	var hops: int = 0
+	while cur != null and hops < Rules.PATH_MAX_HOPS:
+		if (cur.flags & 3) != 3 or cur.marker_type < 0:
+			return
+		level.triggers.arm(cur.file_off)
+		if (cur.flags & 0x40) != 0 or int(level.triggers.link(cur.file_off)) < 1:
+			return
+		cur = level.map.entities_by_off.get(int(level.triggers.link(cur.file_off)))
+		hops += 1
 
 # ---------------------------------------------------------------------
 # Driving and recording

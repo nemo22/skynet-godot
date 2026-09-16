@@ -50,6 +50,14 @@
 ## is for, and being registered IS being on the sweep. A mover whose .3D
 ## the archives do not hold has never moved, and still does not.
 ##
+## Step 5f brought the PATH VEHICLES — the cargo truck, the convoy, the
+## boss chase and the pick-up HK (scripts/level/path_vehicle.gd). Those
+## are the one class with no baked twin: a vehicle's record is a placement
+## MARKER, and markers get no node at all (level_behaviour.kind_of), so
+## the node is built here at registration and kept in its own container.
+## It is deliberately NOT in the map's node index below — nothing flips a
+## marker and nothing presents one.
+##
 ## The `state` export on the nodes is the byte the MAP was AUTHORED with
 ## and stays that: nothing writes it at run time any more, so there is no
 ## second copy to disagree with the runtime. The one node-side mirror
@@ -73,6 +81,11 @@
 extends Node3D
 
 const Rules := preload("res://scripts/triggers/rules_skynet.gd")
+const PathVehicle := preload("res://scripts/level/path_vehicle.gd")
+
+## The container the path vehicles are built into. Not a baked one — see
+## the header — so the index below steps over it by name.
+const VEHICLES: StringName = &"Vehicles"
 
 ## A hint cue ([G1]..) fired: index = act - 0x1C.
 signal hint_message(index: int)
@@ -154,6 +167,11 @@ var _light_fx_clock: float = 0.0
 ## mesh the archives do not hold is not here and never runs.
 var _movers: Dictionary = {}
 
+## The path vehicles, in the order the MAP lists their actor markers —
+## marker file_off → its PathVehicle node. Built at registration (see the
+## header); a map with no vehicle never builds the container either.
+var _vehicles: Dictionary = {}
+
 func _ready() -> void:
 	_ensure_index()
 	# One-shots armed in the MAP data fire once at level start (a door
@@ -192,6 +210,11 @@ func _ensure_index() -> void:
 	_indexed = true
 	for c in get_children():
 		if not (c is Node3D):            # the Mission node
+			continue
+		if c.name == VEHICLES:
+			# Built here at run time, not by the bake: a path vehicle's
+			# record is a placement marker, which is no part of the map's
+			# entity index — nothing flips one and nothing presents one.
 			continue
 		for n in c.get_children():
 			_by_id[id_of(n)] = n
@@ -551,6 +574,77 @@ func mover_forget() -> void:
 	_ensure_index()
 	for off in _movers:
 		_movers[off].mover_forget()
+
+# ---------------------------------------------------------------------
+# The path vehicles (step 5f)
+# ---------------------------------------------------------------------
+## The level loader has built the machine for the actor marker `e` (an
+## enemy start whose type runs AI state 11 and whose own link is the first
+## marker of a path): give the marker a node of its own and put it on the
+## sweep. Being registered IS being on the sweep, exactly as it was when
+## the same call built a dictionary entry in ActionSystem — an actor the
+## loader builds no machine for never reaches this and has never driven.
+func register_path_vehicle(e, actor: Node3D) -> void:
+	var n: Node3D = PathVehicle.new()
+	n.name = ("Vehicle_%d_%05x" % [e.enemy_type, e.file_off]).validate_node_name()
+	n.id = e.file_off
+	n.head = e.link_next
+	n.vehicle = e.enemy_type
+	n.position = Vector3(float(e.x), -float(e.y), -float(e.z))
+	n.branch = self
+	n.actor = actor
+	_vehicles_root().add_child(n)
+	_vehicles[e.file_off] = n
+
+## The container, made on the first vehicle of the map (see the header —
+## the bake writes none, because a marker gets no node).
+func _vehicles_root() -> Node3D:
+	var c := get_node_or_null(NodePath(VEHICLES)) as Node3D
+	if c == null:
+		c = Node3D.new()
+		c.name = VEHICLES
+		add_child(c)
+	return c
+
+## One tick of every path vehicle. Run from the level's per-tick sweep
+## (ActionSystem.tick) in the place it has always held: after the spawn
+## sprites, before the water. `player_pos` is ZONE-LOCAL, because the DOS
+## window each vehicle tests is a MAP-GRID cell index and the markers are
+## in that space too.
+func path_tick(delta: float, player_pos: Vector3) -> void:
+	for off in _vehicles:
+		_vehicles[off].path_watch(delta, player_pos)
+
+## The PathVehicle node of the actor marker at `id`, or null.
+func vehicle_node(id: int) -> Node:
+	return _vehicles.get(id)
+
+## Every one of them, in map order.
+func vehicle_nodes() -> Array:
+	return _vehicles.values()
+
+## Where each machine stands and which way it faces. The per-map overlay
+## has never carried a vehicle (a map re-entered puts them back at their
+## markers, as DOS does by re-reading the map); this is for the verifier,
+## which checks a whole map's nodes without reloading it.
+func path_snapshot() -> Dictionary:
+	var out: Dictionary = {}
+	for off in _vehicles:
+		out[off] = _vehicles[off].snapshot()
+	return out
+
+func path_restore(snap: Dictionary) -> void:
+	for off in snap:
+		var n: Node = _vehicles.get(off)
+		if n != null:
+			n.restore(snap[off] as Array)
+
+## Every vehicle put back at the head of its path and stopped — what the
+## verifier clears between two checks of the same map. Where each machine
+## STANDS is path_restore's business, not this.
+func path_forget() -> void:
+	for off in _vehicles:
+		_vehicles[off].path_forget()
 
 # ---------------------------------------------------------------------
 # The relays, the spawns, the water and the lights (step 5d)

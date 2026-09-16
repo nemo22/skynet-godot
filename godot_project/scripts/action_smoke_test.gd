@@ -467,12 +467,13 @@ func _run_behaviour_checks() -> void:
 	if l210b != null:
 		var truck = l210b.map.entities_by_off.get(0x78d3)
 		var lever = l210b.map.entities_by_off.get(0xc084)
-		var v: Dictionary = l210b.action._path_vehicles.get(0x78d3, {})
+		# The vehicles drive from their own Behaviour nodes since step 5f.
+		var v: Node = l210b.behaviour.vehicle_node(0x78d3)
 		_check(truck != null and truck.marker_type == 2 and truck.enemy_type == 46
-			and truck.link_next > 0 and not v.is_empty(),
+			and truck.link_next > 0 and v != null,
 			"MAP.210's cargo truck is a path vehicle with a path")
-		if not v.is_empty() and lever != null:
-			var tnode: Node3D = v["node"]
+		if v != null and lever != null:
+			var tnode: Node3D = v.actor
 			var at: Vector3 = tnode.position         # DOS ticks it near the player
 			var before: Vector3 = at
 			for i in 30:
@@ -499,13 +500,12 @@ func _run_behaviour_checks() -> void:
 	var l234: LevelLoader.Level = LevelLoader.new().load_level("MAP.234")
 	if l234 != null:
 		var hk_off: int = -1
-		for off in l234.action._path_vehicles:
-			hk_off = int(off)
+		for n in l234.behaviour.vehicle_nodes():
+			hk_off = int(n.id)
 			break
 		_check(hk_off >= 0, "MAP.234 has the pick-up HK as a path vehicle")
 		if hk_off >= 0:
-			var hv: Dictionary = l234.action._path_vehicles[hk_off]
-			var hnode: Node3D = hv["node"]
+			var hnode: Node3D = l234.behaviour.vehicle_node(hk_off).actor
 			var hstart: Vector3 = hnode.position
 			var m2: Array = []
 			if l234.behaviour != null:
@@ -525,10 +525,8 @@ func _run_behaviour_checks() -> void:
 	# missed it because it ticks with the player right beside the HK
 	# ("na strechu malo prísť HK a nepriletelo", playtest 2026-09-12).
 	var l234b: LevelLoader.Level = LevelLoader.new().load_level("MAP.234")
-	if l234b != null and not l234b.action._path_vehicles.is_empty():
-		var off2: int = int(l234b.action._path_vehicles.keys()[0])
-		var hv2: Dictionary = l234b.action._path_vehicles[off2]
-		var hn2: Node3D = hv2["node"]
+	if l234b != null and not l234b.behaviour.vehicle_nodes().is_empty():
+		var hn2: Node3D = (l234b.behaviour.vehicle_nodes()[0] as Node).get("actor")
 		var from2: Vector3 = hn2.position
 		var watcher: Vector3 = from2 + Vector3(1200.0, 0.0, 0.0)
 		for i in 60:
@@ -575,9 +573,9 @@ func _run_behaviour_checks() -> void:
 			if (e.flags & 3) == 3 and e.marker_type == 2 and e.convoy:
 				conv += 1
 		_check(conv == 9, "nine convoy markers carry the 0x80 type bit (%d)" % conv)
-		_check(l260.action._path_vehicles.size() == 9,
+		_check(l260.behaviour.vehicle_nodes().size() == 9,
 			"the convoy is built as nine path vehicles (%d)"
-			% l260.action._path_vehicles.size())
+			% l260.behaviour.vehicle_nodes().size())
 		var door = null
 		for e in l260.map.entities:
 			if (e.flags & 3) == 1 and e.hp > 0 \

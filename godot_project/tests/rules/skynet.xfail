@@ -13,7 +13,6 @@
 217 0d57f 19 destructible destruct_stage_count
 220 0c673 EF prox_gate chain_short
 220 0ea54 EF prox_gate chain_short
-220 0ed96 31 marker path_window
 220 0f74e F2 prox_chain chain_short
 220 10517 19 destructible destruct_stage_count
 220 105a7 19 destructible destruct_stage_count
@@ -41,7 +40,6 @@
 231 04c97 EF prox_gate chain_extra
 233 03c01 EF prox_gate second_activation
 233 054f8 EF prox_gate chain_silent
-234 0ea0c 33 marker path_window
 239 02a73 EF prox_gate chain_short
 240 09fbb EF prox_gate chain_extra
 240 0a033 EF prox_gate chain_extra
@@ -66,14 +64,6 @@
 260 12e51 19 destructible destruct_stage_count
 260 134ea 19 destructible destruct_stage_count
 260 1427e B1 marker path_window
-260 154f4 AE marker path_window
-260 15704 B1 marker path_window
-260 157f4 B1 marker path_window
-260 1592c B1 marker path_window
-260 15a7c AF marker path_window
-260 15bc0 B1 marker path_window
-260 17d2e B2 marker path_window
-260 17e7c B1 marker path_window
 260 18254 19 destructible destruct_stage_count
 260 1829b 19 destructible destruct_stage_count
 260 182cb 19 destructible destruct_stage_count
@@ -119,8 +109,6 @@
 272 09e7f EF prox_gate chain_short
 272 09f79 EF prox_gate chain_silent
 280 08616 EF prox_gate second_activation
-280 0c001 34 marker path_window
-281 032db 34 marker path_window
 281 04ae4 EF prox_gate port_use_reach
 283 02f3a EF prox_gate second_activation
 283 0349a EF prox_gate second_activation

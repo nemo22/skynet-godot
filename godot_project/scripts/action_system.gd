@@ -30,7 +30,8 @@
 ## 0x01-0x12 left in step 5d, onto scripts/level/raw_action.gd. The
 ## MOVERS — every slide, swing, jump and rotator of the table above —
 ## left in step 5e, onto scripts/level/mover.gd: each one steps its own
-## travel and moves the mesh this class registered for it.)
+## travel and moves the mesh this class registered for it. The PATH
+## VEHICLES left in step 5f, onto scripts/level/path_vehicle.gd.)
 ##
 ## Where the state lives: NOT here, and not in the parsed MapFile
 ## either. Since step 5a of docs/trigger_graph_plan.md every state byte,
@@ -62,8 +63,9 @@
 ## their nodes — the PROXIMITY class, which watches the player and
 ## answers the use key from its own nodes since step 5c, the four
 ## classes that watch no player at all since step 5d (the relays, the
-## spawn sprites, the water and the lights), and the MOVERS since step
-## 5e. Still here: exits, destructibles, demolition, the path vehicles.
+## spawn sprites, the water and the lights), the MOVERS since step 5e and
+## the PATH VEHICLES since step 5f. Still here: exits, destructibles,
+## demolition.
 
 extends RefCounted
 
@@ -151,7 +153,8 @@ var triggers: RefCounted = null
 ## fire from it (F2), the proximity class has run on it since step 5c —
 ## the key, the sweep and the wall buttons are all its nodes' work — and
 ## since step 5d so do the relays, the spawn sprites, the water and the
-## lights, since step 5e the movers. This is how all of them are reached.
+## lights, since step 5e the movers and since step 5f the path vehicles.
+## This is how all of them are reached.
 ## Null is an ordinary state — an ActionSystem built by hand has no
 ## branch and none of those.
 var behaviour: Node = null
@@ -184,24 +187,11 @@ var _teleport_fired: bool = false   # one map change per level instance
 ## Objectives still to go — main.gd keeps the count (DOS [0x1e6c2]); the
 ## 0x2C relays watch it from their own nodes and are handed it per tick.
 var objectives_left: int = 0
-## Path-following vehicles — DOS AI state 11, v1.01 handler 0x127400:
-## the cargo truck that drives into MAP.210's base, MAP.260's convoy,
-## MAP.280's boss chase and the HK that lifts the player off MAP.234's
-## roof. Types 46-52 share the parameters (enemy table 0x44E00).
-const PATH_SPEED_K: float = 80.0 / 256.0        # segment speed = k · its length
-const PATH_ACCEL: float = 160.0                 # units/s², from a standstill
-const PATH_TURN: float = 128.0 / 2048.0 * TAU   # 22.5°/s, yaw only and visual
-const PATH_REACH: float = 80.0                  # 3D distance that counts as arrived
-## DOS ticks the actors in the 5×5 MAP-GRID cells around the player —
-## the cell index, not a radius (0x12980f: edx = 5). A grid cell is 1024
-## units (64×64 cells over the 65536-unit map), so the window reaches two
-## cells each way. The port used a 1024-unit radius, and the HK that
-## lifts the player off MAP.234's roof waits 2413 units from where he
-## arrives: it never started ("na strechu malo prísť HK a nepriletelo").
-const PATH_TICK_CELL: float = 1024.0
-const PATH_TICK_CELLS: int = 2
-const MARKER_PATH_LOOP: int = 105               # marker type that loops to the start
-var _path_vehicles: Dictionary = {}   # marker file_off → runtime state
+## (The path-following vehicles — the cargo truck into MAP.210's base,
+## MAP.260's convoy, MAP.280's boss chase and the HK that lifts the player
+## off MAP.234's roof — left in step 5f, onto scripts/level/path_vehicle.gd:
+## each actor marker drives its own path from its own node, and the
+## parameters of the drive are the rules module's, Rules.PATH_*.)
 
 ## Every press of the use key, whatever the crosshair was on: the gates
 ## in reach answer it on the next sweep (behaviour.press_use).
@@ -654,8 +644,13 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 		behaviour.relay_tick(objectives_left)
 		behaviour.spawn_tick()
 	# Vehicles on a marker path (AI state 11) ----------------------
-	for off in _path_vehicles:
-		_step_path_vehicle(_path_vehicles[off], delta, here)
+	# The truck, the convoy, the boss chase and the pick-up HK drive their
+	# own markers from their own nodes since step 5f
+	# (scripts/level/path_vehicle.gd) — here, where they have always run.
+	# What the DOS grid window is measured against is the player's own
+	# position, so it goes over with the tick.
+	if behaviour != null:
+		behaviour.path_tick(delta, here)
 	# Water level (0xd6-0xda) -------------------------------------
 	# The movers that move it are Behaviour nodes since step 5d, and they
 	# ask for the new height on the branch's own signal.
@@ -809,99 +804,14 @@ func _fires(e: MapFile.Entity) -> bool:
 func _clear_enable(e: MapFile.Entity) -> void:
 	triggers.clear_enable(e.file_off)
 
-## A vehicle actor that drives its marker path: `path_head` is the first
-## marker (the actor marker's own link).
-func register_path_vehicle(off: int, node: Node3D, path_head: int) -> void:
-	var e: MapFile.Entity = _map.entities_by_off.get(off) if _map != null else null
-	_path_vehicles[off] = {
-		"node": node, "head": path_head, "tgt": 0, "tspd": 0.0, "spd": 0.0,
-		"off": off, "vehicle": e.enemy_type if e != null else -1,
-	}
+## (The whole of a path vehicle — picking the path up, the segment speed,
+## the yaw it turns to, the chain it fires at the end and the stop case
+## that switches the path off again — is the vehicle's own node since step
+## 5f: scripts/level/path_vehicle.gd, registered by the level loader
+## straight onto the branch, with every reading that was bought for it.)
 
 static func _dos_pos(e: MapFile.Entity) -> Vector3:
 	return Vector3(float(e.x), -float(e.y), -float(e.z))
-
-## Handler 0x127400, one frame: pick up the path, run at the segment's
-## own speed, and at the end of it flip whatever the last marker points
-## at (the HK's CHUNK3 carries mission 3's [M2]). The vehicle walks a
-## straight 3D line from marker to marker — no terrain, no collision.
-##
-## zone-local ↔ world: `player_pos` is ZONE-LOCAL (tick translated it),
-## like the actor's own position and the markers it drives to.
-func _step_path_vehicle(v: Dictionary, delta: float, player_pos: Vector3) -> void:
-	var node: Node3D = v["node"]
-	if node == null or not is_instance_valid(node):
-		return
-	if node.has_method("is_dead") and node.is_dead():
-		return
-	# The actors hang under the level's Enemies node, whose only transform
-	# is the zone origin, so their local position IS the zone-local one
-	# the markers are in — and it still reads correctly outside the tree
-	# (the smoke tests).
-	if absi(floori(node.position.x / PATH_TICK_CELL) - floori(player_pos.x / PATH_TICK_CELL)) > PATH_TICK_CELLS \
-			or absi(floori(node.position.z / PATH_TICK_CELL) - floori(player_pos.z / PATH_TICK_CELL)) > PATH_TICK_CELLS:
-		return                                   # outside the DOS 5×5 window
-	var cur: MapFile.Entity = _map.entities_by_off.get(int(v["tgt"]))
-	if cur == null:
-		cur = _map.entities_by_off.get(int(v["head"]))
-		if cur == null:
-			return
-		v["tgt"] = cur.file_off
-		v["spd"] = 0.0
-		v["tspd"] = PATH_SPEED_K * node.position.distance_to(_dos_pos(cur))
-		# The vehicle has picked its path up — what the graph calls
-		# path@<the vehicle's own marker> (M3 step 3).
-		_say(int(v["off"]), "marker", "path",
-			{"head": int(v["head"]), "vehicle": int(v.get("vehicle", -1))})
-	elif not enabled(cur.file_off):
-		# The path is off (nobody has thrown the lever): brake, and clear
-		# the bit down the whole chain, as the DOS stop case does.
-		v["tspd"] = 0.0
-		_path_disable(int(v["head"]))
-	elif node.position.distance_to(_dos_pos(cur)) <= PATH_REACH:
-		var nxt: MapFile.Entity = _map.entities_by_off.get(link_of(cur.file_off)) \
-			if link_of(cur.file_off) > 0 else null
-		if nxt == null:
-			v["tspd"] = 0.0
-			_path_disable(int(v["head"]))
-		elif (nxt.flags & 3) == 3 and nxt.marker_type >= 0 and enabled(nxt.file_off):
-			if nxt.marker_type == MARKER_PATH_LOOP:
-				nxt = _map.entities_by_off.get(int(v["head"]))
-			if nxt != null:
-				v["tspd"] = PATH_SPEED_K * _dos_pos(cur).distance_to(_dos_pos(nxt))
-				v["tgt"] = nxt.file_off
-				cur = nxt
-		else:
-			# The path ends on something that is not a marker: fire it
-			# once, cut the link and coast to a stop.
-			print("[action] path vehicle at @%05x fires the end of its path @%05x"
-				% [cur.file_off, nxt.file_off])
-			_flip_link(nxt)
-			triggers.cut_link(cur.file_off)
-			v["tspd"] = 0.0
-			return
-	var to: Vector3 = _dos_pos(cur) - node.position
-	if to.length() > 0.001:
-		if float(v["tspd"]) > 0.0:
-			var want: float = atan2(-to.x, -to.z)
-			var turn: float = wrapf(want - node.rotation.y, -PI, PI)
-			node.rotation.y += clampf(turn, -PATH_TURN * delta, PATH_TURN * delta)
-		node.position += to.normalized() * (float(v["spd"]) * delta)
-	var dv: float = float(v["tspd"]) - float(v["spd"])
-	v["spd"] = float(v["spd"]) + clampf(signf(dv) * PATH_ACCEL * delta, -absf(dv), absf(dv))
-
-## The stop case calls ObjFlipLink with "and 0xFE": the whole path goes
-## off, so a lever has to switch it on again before the vehicle moves.
-func _path_disable(head: int) -> void:
-	var cur: MapFile.Entity = _map.entities_by_off.get(head)
-	var hops: int = 0
-	while cur != null and hops < 64:
-		if enabled(cur.file_off):
-			_clear_enable(cur)
-		if (cur.flags & 0x40) != 0 or link_of(cur.file_off) < 1:
-			return
-		cur = _map.entities_by_off.get(link_of(cur.file_off))
-		hops += 1
 
 ## The port's own test for STANDING IN a doorway (the 0xF0 exits): the
 ## TRUE 3D distance belongs to the DOS proximity handlers, whose radii
