@@ -23,8 +23,12 @@
 ##   +- Voices          VoiceCue 0xED
 ##   +- Messages        MessageCue 0x1C..0x25 ([G1]..)
 ##   +- Objectives      Objective 0x26..0x2A ([M1]..), 0x2B = mission failed
-##   +- Raw             RawAction: every other id with its data, and the
-##                      act-less relays a chain passes through
+##   +- Raw             RawAction: the lights a chain switches, the 0x2C
+##                      relay, the water movers and the 0xF3 spawn
+##                      sprites — which run from these nodes since step
+##                      5d of docs/trigger_graph_plan.md — plus every
+##                      other id with its data, and the act-less relays a
+##                      chain passes through
 ##
 ## Node ids are the MAP file offsets the entities were read from:
 ## unique within a map, stable across rebakes, and what saves and the

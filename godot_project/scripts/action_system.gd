@@ -25,7 +25,9 @@
 ##
 ## (0xEF, 0xF1 and 0xF2 — the use-key gates, the chain triggers and the
 ## wall buttons — left in step 5c: they watch the player from their own
-## nodes now, scripts/level/trigger.gd.)
+## nodes now, scripts/level/trigger.gd. The countdown relay 0x2C, the
+## spawn sprites 0xF3, the water movers 0xd6-0xda and the map lights
+## 0x01-0x12 left in step 5d, onto scripts/level/raw_action.gd.)
 ##
 ## Where the state lives: NOT here, and not in the parsed MapFile
 ## either. Since step 5a of docs/trigger_graph_plan.md every state byte,
@@ -54,10 +56,11 @@
 ## the level's Behaviour branch (scripts/level/behaviour.gd). Done so
 ## far: the chain walk itself (ObjFlipLink, now the trigger runtime's),
 ## the one-shot cues — sounds, voice lines, hints, objectives fire from
-## their nodes — and the PROXIMITY class, which watches the player and
-## answers the use key from its own nodes since step 5c. Still here:
-## movers, exits, destructibles, demolition, relays, spawns, water,
-## lights.
+## their nodes — the PROXIMITY class, which watches the player and
+## answers the use key from its own nodes since step 5c, and the four
+## classes that watch no player at all since step 5d (the relays, the
+## spawn sprites, the water and the lights). Still here: movers, exits,
+## destructibles, demolition, the path vehicles.
 
 extends RefCounted
 
@@ -67,18 +70,18 @@ const Projectile := preload("res://scripts/projectile.gd")
 signal teleport_requested(target_map: int, marker_set: int)
 ## A destroyed object drops an item (FUN_00124293 → FUN_00124119).
 signal drop_requested(pos: Vector3, drop_type: int)
-## Acts 0xd6-0xda (handler 0x121160): the map's water level glides to a
-## new target. `absolute` = go to this Y, otherwise add it to the target.
-## MAP.254's sewers flood and drain as the walls and valves are opened.
-signal water_level_requested(value: float, absolute: bool)
+## (The water level is asked for on the Behaviour branch's own signal
+## since step 5d — the movers that move it are its nodes.)
 
 const MapFile := preload("res://scripts/loaders/map_file.gd")
 const PickupData := preload("res://scripts/pickup_data.gd")
 ## What each action id MEANS now lives on its own, next to the generated
 ## trigger graph that reads the same rows (scripts/triggers/rules_skynet.gd,
 ## M3 step 1). The tables below are those rows by reference, so every
-## caller of ActionSystem.MOVER_TABLE / SOUND_ONESHOT / WATER_ACTS / the
-## ACT_* bands still finds them here and nothing about play changes.
+## caller of ActionSystem.MOVER_TABLE / SOUND_ONESHOT / the ACT_* bands
+## still finds them here and nothing about play changes. (The water table
+## went with the water in step 5d: the nodes that run it read it straight
+## off the rules module.)
 ## Future Shock runs SkyNET's table at run time as it always has (its own
 ## rules_shock.gd is used by the graph alone, and is informational).
 const Rules := preload("res://scripts/triggers/rules_skynet.gd")
@@ -89,7 +92,6 @@ const Rules := preload("res://scripts/triggers/rules_skynet.gd")
 ## families and the provenance of each id are documented there.
 const MOVER_TABLE: Dictionary = Rules.MOVER_TABLE
 const SOUND_ONESHOT: Dictionary = Rules.SOUND_ONESHOT
-const WATER_ACTS: Dictionary = Rules.WATER_ACTS
 
 const ACT_DESTRUCT_A: int = Rules.ACT_DESTRUCT_A
 const ACT_DESTRUCT_B: int = Rules.ACT_DESTRUCT_B
@@ -99,7 +101,6 @@ const ACT_LIGHT_FLICKER: int = Rules.ACT_LIGHT_FLICKER
 const ACT_LIGHT_STROBE: int = Rules.ACT_LIGHT_STROBE
 const ACT_LIGHT_FADE_UP_FIRST: int = Rules.ACT_LIGHT_FADE_UP_FIRST
 const ACT_LIGHT_FADE_DOWN_LAST: int = Rules.ACT_LIGHT_FADE_DOWN_LAST
-const LIGHT_FX_TICK: float = 1.0 / 20.0
 const ACT_PROX_GATE: int = Rules.ACT_PROX_GATE      # 60-unit player-proximity gate
 const ACT_PROX_CHAIN_A: int = Rules.ACT_PROX_CHAIN_A  # radius 256 (table +4)
 const ACT_PROX_CHAIN_B: int = Rules.ACT_PROX_CHAIN_B  # radius 1024 (table +4)
@@ -110,9 +111,7 @@ const ACT_HINT_LAST: int = Rules.ACT_HINT_LAST
 const ACT_OBJECTIVE_FIRST: int = Rules.ACT_OBJECTIVE_FIRST
 const ACT_FAIL: int = Rules.ACT_FAIL
 const ACT_RELAY: int = Rules.ACT_RELAY
-const RELAY_AT: int = Rules.RELAY_AT
 const ACT_SPAWN: int = Rules.ACT_SPAWN
-var _water_nodes: Array = []      # entities with a water act
 
 const SWING_SPEED: float = Rules.SWING_SPEED
 const SLIDE_SPEED_SLOW: float = Rules.SLIDE_SPEED_SLOW
@@ -140,12 +139,6 @@ var _teleports: Array = []        # entities with act 0xF0
 ## Their world positions, index for index — tick() tests them every
 ## physics step, and the records never move.
 var _teleport_pos: PackedVector3Array = PackedVector3Array()
-var _light_ents: Array = []       # variant-2 lights with a light act
-## file_off → OmniLight3D placed by main (_place_map_lights); a light
-## act flips the runtime's enable word and this node follows.
-var map_lights: Dictionary = {}
-var _light_fx_clock: float = 0.0
-var _light_strobe_on: Dictionary = {}   # file_off → visible (flicker/strobe state)
 var _destruct_nodes: Array = []   # entities with acts 0x18/0x19
 var _demolish_nodes: Array = []   # entities with act 0x1B
 ## The level's trigger state (scripts/triggers/trigger_runtime.gd, step
@@ -153,10 +146,11 @@ var _demolish_nodes: Array = []   # entities with act 0x1B
 ## the sweeps below read. Set by the level loader.
 var triggers: RefCounted = null
 ## The level's Behaviour branch (scripts/level/behaviour.gd). The cues
-## fire from it (F2) and, since step 5c, the proximity class runs on it:
-## the key, the sweep and the wall buttons below are all its nodes' work
-## and this is how they are reached. Null is an ordinary state — an
-## ActionSystem built by hand has no branch and no proximity.
+## fire from it (F2), the proximity class has run on it since step 5c —
+## the key, the sweep and the wall buttons are all its nodes' work — and
+## since step 5d so do the relays, the spawn sprites, the water and the
+## lights. This is how all of them are reached. Null is an ordinary state
+## — an ActionSystem built by hand has no branch and none of those.
 var behaviour: Node = null
 ## The level's trigger event bus (scripts/triggers/trigger_bus.gd, M3
 ## step 3): every handler run below announces itself on it. An OBSERVER
@@ -164,11 +158,6 @@ var behaviour: Node = null
 ## ordinary state (a test building an ActionSystem by hand), and play is
 ## the same either way. See _say.
 var bus: RefCounted = null
-## file_off → true while a light act is running, so the light effect is
-## announced on the EDGE. The flicker and strobe handlers run every tick
-## their bit is up (0x137713 / 0x13773b) and would otherwise announce a
-## hundred times a second.
-var _light_live: Dictionary = {}
 ## Physics access for reachability tests (set by the level controller).
 var space: PhysicsDirectSpaceState3D = null
 var player_body: CollisionObject3D = null
@@ -189,12 +178,9 @@ var _spent: Dictionary = {}       # file_off → true (HP-depleted, inert)
 var _armed: Dictionary = {}       # file_off → armed earlier this tick
 var _touch_latched: Dictionary = {} # teleport file_off → player touching
 var _teleport_fired: bool = false   # one map change per level instance
-## Objectives still to go — main.gd keeps the count (DOS [0x1e6c2]);
-## the 0x2C relays watch it.
+## Objectives still to go — main.gd keeps the count (DOS [0x1e6c2]); the
+## 0x2C relays watch it from their own nodes and are handed it per tick.
 var objectives_left: int = 0
-var _relays: Array = []
-var _spawns: Dictionary = {}      # 0xF3 sprite file_off → its hidden Enemy
-var _spawned: Dictionary = {}     # 0xF3 sprite file_off → true once revealed
 ## Path-following vehicles — DOS AI state 11, v1.01 handler 0x127400:
 ## the cargo truck that drives into MAP.210's base, MAP.260's convoy,
 ## MAP.280's boss chase and the HK that lifts the player off MAP.234's
@@ -257,18 +243,15 @@ func setup(map: MapFile.MapFile) -> void:
 		if e.marker_type >= 0:
 			continue
 		var act: int = e.link_act_type
-		# (The proximity types — 0xEF, 0xF1, 0xF2 — are not listed here
-		# any more: since step 5c each of them watches the player from its
-		# own node on the Behaviour branch, scripts/level/trigger.gd.)
+		# (The proximity types — 0xEF, 0xF1, 0xF2 — are not listed here any
+		# more: since step 5c each of them watches the player from its own
+		# node on the Behaviour branch, scripts/level/trigger.gd. Nor are
+		# the lights, the relays and the water movers: since step 5d each of
+		# them runs from its own node too, scripts/level/raw_action.gd,
+		# which reads the same act byte and variant off the bake.)
 		if act == ACT_TELEPORT:
 			_teleports.append(e)
 			_teleport_pos.append(_dos_pos(e))
-		elif (e.flags & 3) == 2 and is_light_act(act):
-			_light_ents.append(e)
-		elif act == ACT_RELAY:
-			_relays.append(e)
-		elif WATER_ACTS.has(act):
-			_water_nodes.append(e)
 		elif is_destructible(act):
 			_destruct_nodes.append(e)
 		elif act == ACT_DEMOLISH:
@@ -306,50 +289,16 @@ static func swing_basis(euler: Vector3, axis_i: int, delta: float) -> Basis:
 ## answers the use key instead of the player walking past it — is the
 ## proximity class's own since step 5c: Trigger.is_wall_button.)
 
+## Is this act id one of the light handlers (0x137700..)? The record has
+## to be a variant-2 light as well for it to mean anything — those
+## handlers write the intensity and enable words a variant-2 record keeps
+## at sub+0 and sub+8, and the other variants keep other data there. The
+## lights themselves run on their own nodes since step 5d
+## (scripts/level/raw_action.gd); this is left for _do_action, which has
+## to know that such an entity's handler is somebody else's business.
 static func is_light_act(act: int) -> bool:
 	return act == ACT_LIGHT_TOGGLE or act == ACT_LIGHT_FLICKER or act == ACT_LIGHT_STROBE \
 		or (act >= ACT_LIGHT_FADE_UP_FIRST and act <= ACT_LIGHT_FADE_DOWN_LAST)
-
-## The light record `e` as the map shows it: on when the enable word is
-## positive (the DOS toggle flips its sign bit).
-func _light_apply(e: MapFile.Entity) -> void:
-	var l = map_lights.get(e.file_off)
-	if l == null or not is_instance_valid(l):
-		return
-	var on: bool = triggers.light_enable(e.file_off) > 0
-	if _light_strobe_on.has(e.file_off):
-		on = on and bool(_light_strobe_on[e.file_off])
-	(l as Node3D).visible = on
-
-## One-shot light acts, run when the light's bit 0 is set (DOS runs the
-## handler each tick the bit is on; toggle and the fades clear it).
-func _light_step(e: MapFile.Entity, fx_tick: bool) -> void:
-	var act: int = act_of(e.file_off)
-	if act == ACT_LIGHT_TOGGLE:
-		var word: int = triggers.light_enable(e.file_off)
-		triggers.set_light_enable(e.file_off, -word if word != 0 else 1)
-		_clear_enable(e)
-		_light_apply(e)
-	elif act == ACT_LIGHT_FLICKER or act == ACT_LIGHT_STROBE:
-		if not fx_tick:
-			return
-		var cur: bool = bool(_light_strobe_on.get(e.file_off, true))
-		if act == ACT_LIGHT_STROBE or randf() < 0.5:
-			cur = not cur
-		_light_strobe_on[e.file_off] = cur
-		_light_apply(e)
-	else:
-		# Fade by (act - 12)/4 of the current intensity, up or down.
-		var l = map_lights.get(e.file_off)
-		var f: float = float(act - 0x0C) / 4.0
-		if act >= 0x10:
-			f = -float(act - 0x0C) / 4.0
-		if l != null and is_instance_valid(l):
-			(l as OmniLight3D).light_energy = maxf((l as OmniLight3D).light_energy * (1.0 + f), 0.0)
-		triggers.set_light_intensity(e.file_off,
-			maxi(int(float(triggers.light_intensity(e.file_off)) * (1.0 + f)), 0))
-		_clear_enable(e)
-		_light_apply(e)
 
 ## Can `e` flip the chain it links to by itself — a proximity or use-key
 ## trigger, a countdown relay, a prop whose hit or death fires its link
@@ -703,25 +652,12 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 	var here: Vector3 = player_pos - zone_origin
 	var eye: Vector3 = here if eye_pos == Vector3.INF else eye_pos - zone_origin
 	# Lights ------------------------------------------------------
-	if not _light_ents.is_empty():
-		_light_fx_clock += delta
-		var fx_tick: bool = _light_fx_clock >= LIGHT_FX_TICK
-		if fx_tick:
-			_light_fx_clock = 0.0
-		for e in _light_ents:
-			if _fires(e):
-				if not _light_live.has(e.file_off):
-					_light_live[e.file_off] = true
-					_say(e.file_off, "light", "light",
-						{"op": Rules.light_op(act_of(e.file_off)),
-						 "enable": triggers.light_enable(e.file_off)})
-				_light_step(e, fx_tick)
-			else:
-				_light_live.erase(e.file_off)
-				if _light_strobe_on.has(e.file_off):
-					# The chain took the bit away: the flicker ends on.
-					_light_strobe_on.erase(e.file_off)
-					_light_apply(e)
+	# The variant-2 map lights a chain switches, flickers, strobes or fades
+	# run from their own nodes since step 5d (scripts/level/raw_action.gd,
+	# swept by scripts/level/behaviour.gd) — here, at the head of the tick,
+	# where they have always run.
+	if behaviour != null:
+		behaviour.light_tick(delta)
 	# Movers ------------------------------------------------------
 	for off in _movers:
 		var e: MapFile.Entity = _map.entities_by_off.get(off)
@@ -763,49 +699,20 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 			continue
 		_clear_enable(e)
 		_demolish(e)
-	# Countdown relays (0x2C): MAP.232's 232MAIN waits for the ninth
-	# console — the counter is then 1 — and sets off the robots, the
-	# stuck door and the voice line.
-	for e in _relays:
-		if not enabled(e.file_off):
-			continue
-		if objectives_left > 0 and objectives_left == RELAY_AT:
-			print("[action] relay @%05x fires (%d objective left)" % [e.file_off, objectives_left])
-			_say(e.file_off, "relay", "relay", {"at": RELAY_AT, "left": objectives_left})
-			_flip_link(e)
-			_clear_enable(e)
-	# Spawn points (0xF3): the chain enables the sprite, its robot
-	# appears, the sprite's bit goes down.
-	for off in _spawns:
-		var e: MapFile.Entity = _map.entities_by_off.get(off)
-		if e == null or not _fires(e):
-			continue
-		_clear_enable(e)
-		_spawn_in(off)
+	# The countdown relays (0x2C) and the spawn sprites (0xF3), both on
+	# their own nodes since step 5d. The counter a relay watches is main's
+	# and is handed over as it stands this tick.
+	if behaviour != null:
+		behaviour.relay_tick(objectives_left)
+		behaviour.spawn_tick()
 	# Vehicles on a marker path (AI state 11) ----------------------
 	for off in _path_vehicles:
 		_step_path_vehicle(_path_vehicles[off], delta, here)
 	# Water level (0xd6-0xda) -------------------------------------
-	for e in _water_nodes:
-		if not _fires(e):
-			continue
-		_clear_enable(e)
-		var cfg: Array = WATER_ACTS[act_of(e.file_off)]
-		var delta_u: int = int(cfg[0])
-		var partner: int = int(cfg[1])
-		if partner != 0:
-			triggers.set_act(e.file_off, partner)   # next time it goes the other way
-		var target: float = -float(delta_u)
-		if delta_u == 0:
-			# zone-local ↔ world: an absolute surface height, and what it
-			# sets is compared with world positions.
-			target = -float(e.y) + zone_origin.y
-			water_level_requested.emit(target, true)
-		else:
-			water_level_requested.emit(target, false)
-		print("[action] water act @%05x (DOS delta %d)" % [e.file_off, delta_u])
-		_say(e.file_off, "water", "water",
-			{"delta": delta_u, "absolute": delta_u == 0, "target": target})
+	# The movers that move it are Behaviour nodes since step 5d, and they
+	# ask for the new height on the branch's own signal.
+	if behaviour != null:
+		behaviour.water_tick()
 	# Teleports ---------------------------------------------------
 	# A chain (0xEF gate → sound node → 0xF0) or touching the doorway
 	# sprite ARMS the exit (state bit 0); the map change itself needs
@@ -935,11 +842,15 @@ func arm_proximity(player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> void:
 		if _within_touch(_teleport_pos[ti], here, TELEPORT_TOUCH_RADIUS):
 			_touch_latched[e.file_off] = true
 
-## Horizontal distance test with a vertical window.
 ## Enabled now, or enabled at any point earlier in this tick (see
-## `_armed`) — the test the one-shot sweeps use.
+## `_armed`) — the test the one-shot sweeps use. PUBLIC since step 5d:
+## the classes that moved onto their nodes make the same test, and reach
+## it through the branch (Behaviour.fires).
+func fires(off: int) -> bool:
+	return enabled(off) or _armed.has(off)
+
 func _fires(e: MapFile.Entity) -> bool:
-	return enabled(e.file_off) or _armed.has(e.file_off)
+	return fires(e.file_off)
 
 ## Switch an entity's enable bit off — what the DOS handlers do to
 ## themselves when they are done. One place to write it since step 5a:
@@ -949,11 +860,6 @@ func _fires(e: MapFile.Entity) -> bool:
 ## (MAP.210's gate could open but never close).
 func _clear_enable(e: MapFile.Entity) -> void:
 	triggers.clear_enable(e.file_off)
-
-## An 0xF3 spawn point's robot, built hidden by the level loader
-## (SpawnEnemiesInit — at most 50 a map).
-func register_spawn(off: int, node: Node) -> void:
-	_spawns[off] = node
 
 ## A vehicle actor that drives its marker path: `path_head` is the first
 ## marker (the actor marker's own link).
@@ -1049,15 +955,6 @@ func _path_disable(head: int) -> void:
 		cur = _map.entities_by_off.get(link_of(cur.file_off))
 		hops += 1
 
-func _spawn_in(off: int) -> void:
-	_spawned[off] = true
-	var e: MapFile.Entity = _map.entities_by_off.get(off) if _map != null else null
-	_say(off, "spawn", "spawn", {"type": (e.exit_map & 0xFFFF) if e != null else -1})
-	var n = _spawns.get(off)
-	if n != null and is_instance_valid(n) and n.has_method("spawn_in"):
-		print("[action] spawn @%05x: %s appears" % [off, n.name])
-		n.spawn_in()
-
 ## The port's own test for STANDING IN a doorway (the 0xF0 exits): the
 ## TRUE 3D distance belongs to the DOS proximity handlers, whose radii
 ## come from the game data (Trigger.inside). A doorway sprite hangs above
@@ -1091,10 +988,14 @@ func save_state() -> Dictionary:
 	for off in _destr:
 		var d: Dictionary = _destr[off]
 		destr[off] = [d["stage"], d["accum"]]
+	# The robots an 0xF3 chain has let out: the sprites' own since step 5d,
+	# and asked of them here so the snapshot's shape is unchanged (step 5h
+	# moves the save format itself).
+	var spawned: Dictionary = behaviour.spawned_offs() if behaviour != null else {}
 	return {
 		"states": bytes["states"], "movers": movers, "destr": destr,
 		"hp": _hp.duplicate(), "spent": _spent.duplicate(),
-		"spawned": _spawned.duplicate(),
+		"spawned": spawned,
 		"acts": bytes["acts"], "links": bytes["links"],
 	}
 
@@ -1128,8 +1029,9 @@ func restore_state(snap: Dictionary) -> void:
 	# the map overlay removes on its own). They were counted for the
 	# STATISTICS page when they first appeared.
 	Stats.hold_enemy_count = true
-	for off in (snap.get("spawned", {}) as Dictionary):
-		_spawn_in(int(off))
+	if behaviour != null:
+		for off in (snap.get("spawned", {}) as Dictionary):
+			behaviour.spawn_reveal(int(off))
 	Stats.hold_enemy_count = false
 	var movers: Dictionary = snap.get("movers", {})
 	for off in movers:

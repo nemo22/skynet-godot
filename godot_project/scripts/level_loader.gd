@@ -489,9 +489,13 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 	# The proximity class runs on the branch's own nodes (step 5c): the
 	# sweep, the use key and the wall buttons are theirs, and the two of
 	# them meet over the classes that have not moved yet — the records,
-	# the hit points and the doorway a gate's chain ends in.
+	# the hit points and the doorway a gate's chain ends in. The relays,
+	# the spawn sprites, the water and the lights are the branch's too
+	# (step 5d), and the water is the one of them that hands a height back
+	# out into world space, so the branch is told where its zone stands.
 	level.action.behaviour = level.behaviour
 	level.behaviour.action = level.action
+	level.behaviour.zone_origin = origin
 
 	_phase("baked scene")
 	# Terrain mesh — built once and served from the asset cache
@@ -772,8 +776,11 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 				emi.make_dormant(float(trig))
 			if spawn:
 				emi.hide_until_spawned()
-				if level.action != null:
-					level.action.register_spawn(e.file_off, emi)
+				# The sprite's own node lets it out (step 5d,
+				# scripts/level/raw_action.gd), and registering here is what
+				# puts that sprite on the spawn sweep at all.
+				if level.behaviour != null:
+					level.behaviour.register_spawn(e.file_off, emi)
 			en += 1
 	level.enemy_count = en
 	print("[level] placed %d enemies (variant-3 markers)" % en)

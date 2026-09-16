@@ -1005,6 +1005,8 @@ func _connect_behaviour(level: LevelLoader.Level) -> void:
 		level.behaviour.objective_complete.connect(_on_objective_complete)
 		level.behaviour.hint_message.connect(_on_hint_message)
 		level.behaviour.mission_failed.connect(_on_mission_failed)
+		# …and the water the branch's 0xd6-0xda movers ask for (step 5d).
+		level.behaviour.water_level.connect(_on_water_level)
 
 ## The action system's signals and the references it needs, and the
 ## player's own signals (connected once, whatever the level).
@@ -1014,7 +1016,6 @@ func _connect_action(level: LevelLoader.Level) -> void:
 	if not level.action.teleport_requested.is_connected(_on_teleport_requested):
 		level.action.teleport_requested.connect(_on_teleport_requested)
 		level.action.drop_requested.connect(_on_drop_requested)
-		level.action.water_level_requested.connect(_on_water_level)
 	level.action.space = get_world_3d().direct_space_state
 	level.action.player_body = player
 	level.action.objectives_left = _objectives_left
@@ -1469,8 +1470,12 @@ func _place_map_lights(level: LevelLoader.Level) -> int:
 		level.entities.add_child(l)
 		if starts_on:
 			n += 1
-	if level.action != null:
-		level.action.map_lights = level.map_lights
+	# The lamps are the light records' own since step 5d: each variant-2
+	# node reaches its own through the branch (Behaviour.lamp). Handed over
+	# whole, because changing DYNAMIC LIGHTS frees every one of them and
+	# builds them again.
+	if level.behaviour != null:
+		level.behaviour.map_lights = level.map_lights
 	return n
 
 ## `per_pixel`: with DYNAMIC LIGHTS on the surfaces take their light per

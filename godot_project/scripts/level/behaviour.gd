@@ -35,6 +35,14 @@
 ## doorway a gate's chain ends in). The state those nodes read and write
 ## is the runtime's, as everything here is.
 ##
+## Step 5d brought the four classes that watch no player at all: the
+## countdown RELAY (0x2C), the SPAWN sprites (0xF3), the WATER movers
+## (0xd6-0xda) and the map LIGHTS (0x01-0x12). Each of them runs on its
+## own node (scripts/level/raw_action.gd) and this holds the four sweeps
+## over them, in the order and in the places the one long loop ran them,
+## plus the two things that are the LEVEL's rather than any one record's:
+## the lamps main.gd placed for this map and the flicker clock they share.
+##
 ## The `state` export on the nodes is the byte the MAP was AUTHORED with
 ## and stays that: nothing writes it at run time any more, so there is no
 ## second copy to disagree with the runtime. The one node-side mirror
@@ -63,6 +71,16 @@ signal hint_message(index: int)
 signal objective_complete(index: int)
 ## The 0x2B cue fired.
 signal mission_failed()
+## Acts 0xd6-0xda (handler 0x121160): the map's water level glides to a
+## new target. `absolute` = go to this Y, otherwise add it to the target.
+## MAP.254's sewers flood and drain as the walls and valves are opened.
+signal water_level(value: float, absolute: bool)
+
+## How often the flicker and the strobe are allowed to change a lamp. The
+## DOS handlers (0x137713 / 0x13773b) run on the engine tick, which is
+## faster than anything worth watching; this is the port's rate and one
+## clock serves every lamp of the map.
+const LIGHT_FX_TICK: float = 1.0 / 20.0
 
 var _by_id: Dictionary = {}          # id → node
 var _indexed: bool = false
@@ -85,6 +103,16 @@ var bus: RefCounted = null
 ## ordinary state (a branch built by hand in a test) and the nodes fall
 ## back to what the bake wrote on them.
 var action: RefCounted = null
+## Where this zone stands in the world (LevelLoader.Level.origin). Every
+## node here holds DOS coordinates, i.e. ZONE-LOCAL Godot ones, and the
+## one thing below that hands a position OUT of them is the water level a
+## 0xd6 sets absolutely. Zero for a lone map, where the two spaces are the
+## same thing.
+var zone_origin: Vector3 = Vector3.ZERO
+## file_off → the OmniLight3D main.gd placed for a variant-2 record
+## (_place_map_lights). Handed over whole and replaced whole: changing
+## DYNAMIC LIGHTS frees every lamp and builds them again.
+var map_lights: Dictionary = {}
 
 ## Every Trigger node of the map by id, and the ones the DOS handlers
 ## actually run for, in the order the MAP lists them — the sweep list
@@ -98,6 +126,18 @@ var _prox_by_id: Dictionary = {}
 ## 2026-09-11). The port had them fire on approach, so the jeep drove
 ## into MAP.220's truck by itself. Set by press_use, spent by prox_tick.
 var _use_edge: bool = false
+
+## The step-5d classes, each in the order the MAP lists them — the sweep
+## lists ActionSystem.setup used to build. A record is on one of the first
+## three by the act byte and the variant it was authored with
+## (RawAction.sweep_class); the spawn sprites come in at registration
+## instead, with the robot the level loader built for them.
+var _relays: Array = []
+var _water: Array = []
+var _lights: Array = []
+var _spawns: Dictionary = {}          # file_off → its RawAction node
+## The flicker clock every lamp of the map shares.
+var _light_fx_clock: float = 0.0
 
 func _ready() -> void:
 	_ensure_index()
@@ -147,6 +187,12 @@ func _ensure_index() -> void:
 				_prox_by_id[id_of(n)] = n
 				if bool(n.call("on_sweep")):
 					_prox.append(n)
+			elif n.has_method("sweep_class"):
+				n.set("branch", self)
+				match String(n.call("sweep_class")):
+					"relay": _relays.append(n)
+					"water": _water.append(n)
+					"light": _lights.append(n)
 
 ## The node of entity `id` (the MAP file offset), or null.
 func node(id: int) -> Node:
@@ -398,6 +444,129 @@ func prox_forget() -> void:
 	_use_edge = false
 	for t in _prox_by_id.values():
 		t.prox_forget()
+
+# ---------------------------------------------------------------------
+# The relays, the spawns, the water and the lights (step 5d)
+# ---------------------------------------------------------------------
+## The four sweeps below are run from the level's per-tick sweep
+## (ActionSystem.tick) in the places they have always held, and each of
+## them is one line per node — the work is the node's
+## (scripts/level/raw_action.gd).
+
+## Every map light, once. The flicker and the strobe run every tick their
+## bit is up, so they share one clock rather than changing a lamp on every
+## physics step.
+func light_tick(delta: float) -> void:
+	_ensure_index()
+	if _lights.is_empty():
+		return
+	_light_fx_clock += delta
+	var fx_tick: bool = _light_fx_clock >= LIGHT_FX_TICK
+	if fx_tick:
+		_light_fx_clock = 0.0
+	for n in _lights:
+		n.light_watch(fx_tick)
+
+## The countdown relays. `objectives_left` is the mission counter main.gd
+## keeps (DOS [0x1e6c2]) — the one thing a relay watches.
+func relay_tick(objectives_left: int) -> void:
+	_ensure_index()
+	for n in _relays:
+		n.relay_watch(objectives_left)
+
+## The spawn sprites a chain has switched on.
+func spawn_tick() -> void:
+	_ensure_index()
+	for off in _spawns:
+		_spawns[off].spawn_watch()
+
+## The water movers a chain has switched on.
+func water_tick() -> void:
+	_ensure_index()
+	for n in _water:
+		n.water_watch()
+
+## An 0xF3 sprite's robot, built hidden by the level loader and handed to
+## the sprite's own node. The registration IS the sweep list: a map may
+## carry an 0xF3 no robot was built for (the DOS cap is 50 a map, and a
+## type with no frames gets none), and such a sprite has never fired.
+func register_spawn(off: int, robot: Node) -> void:
+	_ensure_index()
+	var n: Node = _by_id.get(off)
+	if n == null or not n.has_method("spawn_reveal"):
+		push_warning("[behaviour] no node for the 0xF3 spawn @%05x" % off)
+		return
+	n.set("enemy", robot)
+	_spawns[off] = n
+
+## file_off → the robot waiting at each registered spawn sprite.
+func spawn_enemies() -> Dictionary:
+	_ensure_index()
+	var out: Dictionary = {}
+	for off in _spawns:
+		out[off] = _spawns[off].get("enemy")
+	return out
+
+## The robots a chain let out, for the map's state overlay …
+func spawned_offs() -> Dictionary:
+	_ensure_index()
+	var out: Dictionary = {}
+	for off in _spawns:
+		if bool(_spawns[off].get("spawned")):
+			out[off] = true
+	return out
+
+## … and the way back: one of them comes out again on a later visit.
+func spawn_reveal(off: int) -> void:
+	_ensure_index()
+	var n: Node = _spawns.get(off)
+	if n != null:
+		n.spawn_reveal()
+
+## The lamp main.gd placed for a variant-2 record, or null.
+func lamp(id: int):
+	return map_lights.get(id)
+
+## A water mover asks for a new surface height. `absolute` = go to this Y
+## (a world one), otherwise add it to the target. main.gd glides the
+## surface there and everything that reads the level follows on the way.
+func water_to(value: float, absolute: bool) -> void:
+	water_level.emit(value, absolute)
+
+## Say what a node just did and what it came to, on the level's event bus
+## (M3 step 3). `kind` as scripts/triggers/rules_skynet.gd names it and
+## `effect_kind` as scripts/triggers/trigger_bus.gd lists it; both are
+## data, and nothing here is told to anyone in particular — the bus is an
+## observer and null is an ordinary state.
+func say(id: int, kind: String, effect_kind: String, payload: Dictionary) -> void:
+	if bus == null:
+		return
+	bus.announce_fire(id, kind)
+	if not effect_kind.is_empty():
+		bus.announce_effect(id, effect_kind, payload)
+
+## Enabled now, or enabled at any point earlier in this tick — the test
+## the one-shot sweeps make. A chain walked earlier in the same tick may
+## already have switched the entity off again (several triggers can share
+## one chain), and DOS runs each object's handler AS the chain is flipped,
+## so the arming is what counts. The bookkeeping is still the action
+## system's (step 5h moves it); without one, the live bit is all there is.
+func fires(id: int) -> bool:
+	if action != null:
+		return bool(action.fires(id))
+	return runtime != null and runtime.enabled(id)
+
+## Everything the step-5d nodes remember about the level's own doing,
+## forgotten — what the verifier clears between two checks of the same
+## map. A robot an 0xF3 chain let out stays out (putting it back is the
+## level loader's work, not a snapshot's), but the sprite is armed again,
+## so the next check of it announces as it did the first time.
+func raw_forget() -> void:
+	_ensure_index()
+	for n in _lights:
+		n.raw_forget()
+	for off in _spawns:
+		_spawns[off].raw_forget()
 
 ## Say what just fired, in the rules module's own vocabulary (M3 step 3).
 ## Nothing here changes what the cue did — it has already done it.

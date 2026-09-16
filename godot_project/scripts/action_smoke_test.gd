@@ -431,7 +431,9 @@ func _run_behaviour_checks() -> void:
 	if l232 != null:
 		var far2 := Vector3(1e9, 0.0, 1e9)
 		var relay = l232.map.entities_by_off.get(0x598d)
-		var spawns: Dictionary = l232.action._spawns
+		# The relay and the spawn sprites run on their own Behaviour nodes
+		# since step 5d; the robots waiting at them are asked of the branch.
+		var spawns: Dictionary = l232.behaviour.spawn_enemies()
 		var hidden: int = 0
 		for off in spawns:
 			if spawns[off].is_hidden():
@@ -612,7 +614,9 @@ func _run_behaviour_checks() -> void:
 	if l254 != null:
 		var far3 := Vector3(1e9, 0.0, 1e9)
 		var asked: Array = []
-		l254.action.water_level_requested.connect(
+		# The movers are Behaviour nodes since step 5d and ask for the new
+		# height on the branch's own signal.
+		l254.behaviour.water_level.connect(
 			func(v: float, absolute: bool) -> void: asked.append([v, absolute]))
 		var hole = l254.map.entities_by_off.get(0x6eca)
 		var walk = l254.map.entities_by_off.get(0x92cd)

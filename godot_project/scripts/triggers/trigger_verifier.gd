@@ -416,11 +416,15 @@ func _reset(level, snap: Dictionary) -> void:
 	_restore_acts(level)
 	a.restore_state(snap["action"])
 	level.behaviour.prox_forget()
+	# …and what the step-5d classes remember: the flicker each lamp is
+	# half way through, and the sprites whose robot is out. A robot an
+	# 0xF3 chain let out stays out (putting it back is the level loader's
+	# work, not a snapshot's) — but the sprite is armed again, so the next
+	# check of it announces as it did the first time.
+	level.behaviour.raw_forget()
 	a._touch_latched.clear()
 	a._armed.clear()
 	a._teleport_fired = false
-	a._light_live.clear()
-	a._light_strobe_on.clear()
 	a.objectives_left = int(snap["objectives"])
 	for off in a._movers:
 		(a._movers[off] as Dictionary)["running"] = false
@@ -436,10 +440,6 @@ func _reset(level, snap: Dictionary) -> void:
 		v["tgt"] = 0
 		v["spd"] = 0.0
 		v["tspd"] = 0.0
-	# A robot an 0xF3 chain let out stays out (putting it back is the
-	# level loader's work, not a snapshot's) — but the sprite is armed
-	# again, so the next check of it announces as it did the first time.
-	a._spawned.clear()
 	main.player.set("water_level", float(snap["water"]))
 	_exit_seen.clear()
 	if level.bus != null:
