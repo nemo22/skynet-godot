@@ -101,6 +101,10 @@ Platform notes:
 | `--no-mission-scene` | play the campaign a map at a time, the old way |
 | `--screenshot=FILE` | save a frame and quit (for automation) |
 
+[COMMANDS.md](COMMANDS.md) is the full reference: every switch the port
+reads, the scenes that can be started instead of the game, and the
+developer tooling.
+
 ## Building from source
 
 Godot **4.7.2** (standard build, no C#). Open `godot_project/` in the
