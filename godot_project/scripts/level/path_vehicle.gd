@@ -20,7 +20,7 @@
 ## chain, as the DOS one does, so a lever has to be thrown again.
 ##
 ## Until step 5f this class was one dictionary keyed by the actor marker's
-## file offset, swept from the long loop in scripts/action_system.gd. The
+## file offset, swept from the long loop (gone since step 5h). The
 ## node is the vehicle now. What it holds is what one of these remembers
 ## between ticks — which marker it is driving at, how fast it is going and
 ## how fast it wants to go — and it is the only thing that moves the

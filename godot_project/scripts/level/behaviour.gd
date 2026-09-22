@@ -68,6 +68,15 @@
 ## everything around it and a drop belongs to the level, not to the thing
 ## that died.
 ##
+## Step 5h brought the last class, the EXITS (scripts/level/map_exit.gd),
+## and with it the loop itself: `tick` below is the level's per-tick sweep
+## — every class in the order the DOS engine ran them — and the use key,
+## the arrival latch, the state overlay and the switch faces come with it.
+## scripts/action_system.gd is gone; nothing forwards any more, and what
+## a class needs that is not one record's — the physics space for the
+## exits' line of sight, the mission counter a relay watches, the one
+## map change a level is allowed — is held here, where the level is.
+##
 ## The `state` export on the nodes is the byte the MAP was AUTHORED with
 ## and stays that: nothing writes it at run time any more, so there is no
 ## second copy to disagree with the runtime. The one node-side mirror
@@ -110,6 +119,9 @@ signal mission_failed()
 ## new target. `absolute` = go to this Y, otherwise add it to the target.
 ## MAP.254's sewers flood and drain as the walls and valves are opened.
 signal water_level(value: float, absolute: bool)
+## A 0xF0 doorway was taken: the level controller changes the map (the
+## target map, 0 = back to the previous one, and the spawn-marker set).
+signal teleport_requested(target_map: int, marker_set: int)
 ## A destroyed object drops an item — a crate its ammo, a locker a medkit
 ## (DOS FUN_00124293 → FUN_00124119, the 0x423d6 table's third word). The
 ## position is ZONE-LOCAL: the drop becomes a child of the level's sprites
@@ -134,14 +146,14 @@ var runtime: RefCounted = null
 ## is the normal case in a test that builds a branch by hand, and nothing
 ## below reads anything back.
 var bus: RefCounted = null
-## The classes that have not moved off the records yet — the exits and the
-## per-tick bookkeeping of a chain walk (scripts/action_system.gd). Two
-## things are reached through it: the MAP record's own read-only data, and
-## the doorway a gate's chain ends in.
-## Step 5h takes it away with the rest of ActionSystem; null is an
-## ordinary state (a branch built by hand in a test) and the nodes fall
-## back to what the bake wrote on them.
-var action: RefCounted = null
+## Physics access for the exits' line of sight, set by the level
+## controller (main._connect_level). Null in a headless test, and then
+## nothing is ever in the way.
+var space: PhysicsDirectSpaceState3D = null
+var player_body: CollisionObject3D = null
+## Objectives still to go — main.gd keeps the count (DOS [0x1e6c2]) and
+## hands it over as it changes; the 0x2C relays watch it.
+var objectives_left: int = 0
 ## Where this zone stands in the world (LevelLoader.Level.origin). Every
 ## node here holds DOS coordinates, i.e. ZONE-LOCAL Godot ones, and the
 ## one thing below that hands a position OUT of them is the water level a
@@ -155,7 +167,7 @@ var map_lights: Dictionary = {}
 
 ## Every Trigger node of the map by id, and the ones the DOS handlers
 ## actually run for, in the order the MAP lists them — the sweep list
-## ActionSystem used to build at setup. An 0xEF whose state bits 1-2 are
+## the long loop used to build at setup. An 0xEF whose state bits 1-2 are
 ## not both clear or both set is not a gate and is on neither.
 var _prox: Array = []
 var _prox_by_id: Dictionary = {}
@@ -167,7 +179,7 @@ var _prox_by_id: Dictionary = {}
 var _use_edge: bool = false
 
 ## The step-5d classes, each in the order the MAP lists them — the sweep
-## lists ActionSystem.setup used to build. A record is on one of the first
+## lists the long loop used to build. A record is on one of the first
 ## three by the act byte and the variant it was authored with
 ## (RawAction.sweep_class); the spawn sprites come in at registration
 ## instead, with the robot the level loader built for them.
@@ -179,7 +191,7 @@ var _spawns: Dictionary = {}          # file_off → its RawAction node
 var _light_fx_clock: float = 0.0
 
 ## The movers with a mesh to move, in the order the MAP lists them — the
-## order ActionSystem's own dictionary was built in, which is the order the
+## order the long loop's own dictionary was built in, which is the order the
 ## level loader registers them. file_off → its Mover node; a mover whose
 ## mesh the archives do not hold is not here and never runs.
 var _movers: Dictionary = {}
@@ -192,7 +204,7 @@ var _vehicles: Dictionary = {}
 ## The step-5g classes. `_hittable` is the mesh the level loader built for
 ## a record, by file offset — what a blast goes off at and what leaves the
 ## world when a pool runs out; every action target is in it, movers
-## included, exactly as ActionSystem's own node index was. `_wrecks` are
+## included, exactly as the long loop's own node index was. `_wrecks` are
 ## the records with TRANSFRM.PRS damage stages (registration IS membership,
 ## and it makes the same test the DOS lookup does — by the object's own
 ## mesh name), `_rams` the ones a CHAIN can break (act 0x18/0x19) and
@@ -202,6 +214,18 @@ var _hittable: Dictionary = {}
 var _wrecks: Dictionary = {}
 var _rams: Array = []
 var _demolishers: Array = []
+
+## The step-5h class: every 0xF0 doorway of the map, in the order the MAP
+## lists them — the sweep list the long loop built at setup.
+var _exits: Array = []
+## One map change per level instance. DOS holds no latch in the handler
+## — it clears its own bit 0 and would fire again on the next rise — but
+## the map change it asks for (`or [0x30a50], 0x20`, v1.01 0x1380b2) is
+## tested at the top of the next frame, before the entity sweep, and the
+## level is torn down. The port's transition is asynchronous (a fade) and
+## a player standing in a gate re-toggles the bit every frame, so the
+## outcome needs saying out loud.
+var _exit_taken: bool = false
 
 func _ready() -> void:
 	_ensure_index()
@@ -256,6 +280,9 @@ func _ensure_index() -> void:
 				_prox_by_id[id_of(n)] = n
 				if bool(n.call("on_sweep")):
 					_prox.append(n)
+			elif n.has_method("exit_watch"):
+				n.set("branch", self)
+				_exits.append(n)
 			elif n.has_method("mover_watch"):
 				# A mover joins its sweep when the loader hands it the mesh
 				# it moves (register_mover), not here.
@@ -275,7 +302,7 @@ func _ensure_index() -> void:
 			# class's: a demolition prop whose mesh HAS damage stages is
 			# baked as a wreck (level_behaviour.kind_of), so the sweeps go
 			# by the byte the record was authored with, as the one long
-			# loop's own lists did (ActionSystem.setup).
+			# loop's own lists did.
 			match act_of(n):
 				Rules.ACT_DESTRUCT_A, Rules.ACT_DESTRUCT_B: _rams.append(n)
 				Rules.ACT_DEMOLISH: _demolishers.append(n)
@@ -370,7 +397,7 @@ func node_bytes(id: int) -> Dictionary:
 # ---------------------------------------------------------------------
 ## Every position below is ZONE-LOCAL — the DOS coordinates the records
 ## and the nodes are in. The caller takes the player's world position into
-## that space once (ActionSystem.zone_origin) and everything here works in
+## that space once (`tick`) and everything here works in
 ## it, as the sweep it came from did.
 
 ## The triggers the handlers run for, in map order. A caller that wants
@@ -392,7 +419,7 @@ func press_use() -> void:
 	_use_edge = true
 
 ## One tick of every proximity trigger, from the eye. Run from the level's
-## per-tick sweep (ActionSystem.tick) in the place it has always held:
+## per-tick sweep (`tick`) in the place it has always held:
 ## after the movers, before the one-shot classes that read what a chain
 ## armed this tick.
 ##
@@ -446,8 +473,13 @@ func prox_use(id: int, eye: Vector3) -> bool:
 ##
 ## Measured as the record's own handler measures it: 3D, from the eye, at
 ## the radius the slot carries (Trigger.measure).
-func use_nearby(eye: Vector3) -> bool:
+##
+## zone-local ↔ world: both arrive as WORLD positions and are taken into
+## the records' own space here.
+func use_nearby(player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> bool:
 	_ensure_index()
+	var here: Vector3 = player_pos - zone_origin
+	var eye: Vector3 = here if eye_pos == Vector3.INF else eye_pos - zone_origin
 	var best: Node = null
 	var best_d: float = INF
 	for t in _prox:
@@ -485,11 +517,39 @@ func gate_to_exit(eye: Vector3) -> Node:
 		return t
 	return null
 
-## Take the doorway `gate`'s chain ends in. The exits are still the action
-## system's (step 5h), so it is asked to do it — the walk of the gate's
-## own chain is the gate's, and happens there.
+## Take the doorway `gate`'s chain ends in.
+##
+## DOS has one path here and it is the ordinary one. The 0xEF handler
+## calls ObjFlipLink (v1.01 0x139caa); the walk toggles bit 0 of every
+## node on the way — the door sound, the leaves, the doorway itself —
+## and the 0xF0 handler runs on the next dispatch and asks for the map
+## change.
+##
+## Two things the port has and DOS has not meet here. TOUCHING a doorway
+## arms it (MapExit.exit_watch), so the exit's bit can be up before the
+## key is pressed and the walk would take it back DOWN — the exit would
+## never fire. And the port's map change is a fade, so the level lives on
+## with the player still standing in the gate. So: walk the chain ONCE per
+## level instance, which is DOS's single walk and everything on it (the
+## door sound above all), then leave the exit enabled as that walk leaves
+## it and take it.
+##
+## Guarding the walk on the EXIT's own bit was what lost the chain:
+## standing in the doorway had already armed it, so the key went straight
+## through in silence (M3 step 4 read that as exit_chain_skipped, 148 of
+## its failures). The guard is the gate's own (Trigger.walk_once) — not
+## its proximity latch, which a spawn inside the gate pre-sets
+## (prox_arm) and which would then swallow the very first walk in the
+## truck interiors.
 func use_exit_through(gate: Node) -> bool:
-	return bool(action.use_exit_through(gate)) if action != null else false
+	if _exit_taken or runtime == null:
+		return false
+	var t: Node = exit_node(chain_exit(int(gate.id)))
+	if t == null:
+		return false
+	gate.walk_once()
+	runtime.arm(int(t.id))
+	return bool(t.fire())
 
 ## The first 0xF0 exit down the chain from `id`, or -1. The live link and
 ## act bytes, which are the runtime's: a path whose link play has cut goes
@@ -506,22 +566,19 @@ func chain_exit(id: int) -> int:
 		cur = int(runtime.link(cur))
 	return -1
 
-## Walk the chain from `id` — ObjFlipLink, which is the runtime's. What
-## is not is the bookkeeping around it: which entities a walk armed during
-## this tick, for the one-shot sweeps that have not moved yet, and the lit
-## face of a BUTTON mesh the loader built. When the last of those moves
-## (step 5h) this goes straight to the runtime.
+## Walk the chain from `id` — ObjFlipLink, which is the runtime's, and
+## since step 5h the whole of it: what a walk armed for the rest of the
+## tick and the lit face of a BUTTON it passes are the runtime's own
+## bookkeeping and its call back out here (present_flip).
 func flip_chain(id: int) -> void:
-	if action != null:
-		action.flip_chain(id)
-	elif runtime != null:
+	if runtime != null:
 		runtime.flip(id)
 
 ## The MAP record of `id` — the read-only data the map was authored with,
 ## which is where the static half of a rule lives (a wall button's name
-## and variant). Null when the branch has no action system to ask.
+## and variant). Null when the branch has no runtime to ask.
 func record_of(id: int):
-	return action.record(id) if action != null else null
+	return runtime.record(id) if runtime != null else null
 
 ## Everything the proximity nodes remember about the player, forgotten —
 ## what the verifier clears between two checks of the same map.
@@ -537,7 +594,7 @@ func prox_forget() -> void:
 ## The level loader has built the mesh of mover `e`: hand it to the record's
 ## own node, which moves it from here on, and put that node on the sweep.
 ## Being registered IS being on the sweep, exactly as it was when the same
-## call built a dictionary entry in ActionSystem — a mover whose .3D is
+## call built a dictionary entry in the long loop — a mover whose .3D is
 ## missing from the archives never reaches this and has never moved.
 func register_mover(e, node: Node3D) -> void:
 	_ensure_index()
@@ -552,7 +609,7 @@ func register_mover(e, node: Node3D) -> void:
 	_movers[e.file_off] = n
 
 ## One tick of every mover. Run from the level's per-tick sweep
-## (ActionSystem.tick) in the place it has always held: after the lights,
+## (`tick`) in the place it has always held: after the lights,
 ## before the proximity triggers — the movers carry the collision bodies
 ## the player stands on, and a trigger he trips this tick must see them
 ## where this tick left them.
@@ -572,7 +629,7 @@ func mover_nodes() -> Array:
 	return _movers.values()
 
 ## Is the entity at `off` a mover (door/gate/lift/rotator) this level
-## actually moves? (Not to be confused with ActionSystem.is_mover, which
+## actually moves? (Not to be confused with Rules.is_mover, which
 ## asks the same of an ACT byte and knows nothing of this map.)
 func has_mover(off: int) -> bool:
 	_ensure_index()
@@ -626,7 +683,7 @@ func mover_forget() -> void:
 ## enemy start whose type runs AI state 11 and whose own link is the first
 ## marker of a path): give the marker a node of its own and put it on the
 ## sweep. Being registered IS being on the sweep, exactly as it was when
-## the same call built a dictionary entry in ActionSystem — an actor the
+## the same call built a dictionary entry in the long loop — an actor the
 ## loader builds no machine for never reaches this and has never driven.
 func register_path_vehicle(e, actor: Node3D) -> void:
 	var n: Node3D = PathVehicle.new()
@@ -651,7 +708,7 @@ func _vehicles_root() -> Node3D:
 	return c
 
 ## One tick of every path vehicle. Run from the level's per-tick sweep
-## (ActionSystem.tick) in the place it has always held: after the spawn
+## (`tick`) in the place it has always held: after the spawn
 ## sprites, before the water. `player_pos` is ZONE-LOCAL, because the DOS
 ## window each vehicle tests is a MAP-GRID cell index and the markers are
 ## in that space too.
@@ -784,13 +841,11 @@ func obj_hit(id: int, damage: float) -> bool:
 		if w != null:
 			acted = bool(w.call("advance"))
 		elif not was_spent and ((st & 2) != 0 or ((st & 4) != 0 and depleted)):
-			# The chain walk and then the record's own handler, DOS order.
-			# The bookkeeping of a walk is still the action system's (step
-			# 5h moves it), so that is what is asked to do it.
-			if action != null:
-				action.trigger(id)
-			else:
-				runtime.flip(id)
+			# ObjFlipLink and then the record's own ObjDoAction, DOS order.
+			# That second call does nothing for anything that gets here:
+			# every family the port runs is a per-tick handler on its own
+			# node now, and the chain walk is the whole of the hit.
+			runtime.flip(id)
 			acted = true
 	if has_hp:
 		runtime.set_hp(id, runtime.hp(id) - damage)
@@ -807,7 +862,7 @@ func obj_hit(id: int, damage: float) -> bool:
 ## through. Nothing in the map data starts a destructible enabled, so bit
 ## 0 here always means "a chain just fired me".
 ##
-## Run from the level's per-tick sweep (ActionSystem.tick) in the place it
+## Run from the level's per-tick sweep (`tick`) in the place it
 ## has always held: after the proximity triggers, whose walk is what arms
 ## one of these.
 func destruct_tick() -> void:
@@ -990,7 +1045,7 @@ func destruct_restore(snap: Dictionary) -> void:
 # The relays, the spawns, the water and the lights (step 5d)
 # ---------------------------------------------------------------------
 ## The four sweeps below are run from the level's per-tick sweep
-## (ActionSystem.tick) in the places they have always held, and each of
+## (`tick`) in the places they have always held, and each of
 ## them is one line per node — the work is the node's
 ## (scripts/level/raw_action.gd).
 
@@ -1090,12 +1145,9 @@ func say(id: int, kind: String, effect_kind: String, payload: Dictionary) -> voi
 ## the one-shot sweeps make. A chain walked earlier in the same tick may
 ## already have switched the entity off again (several triggers can share
 ## one chain), and DOS runs each object's handler AS the chain is flipped,
-## so the arming is what counts. The bookkeeping is still the action
-## system's (step 5h moves it); without one, the live bit is all there is.
+## so the arming is what counts (TriggerRuntime.fires).
 func fires(id: int) -> bool:
-	if action != null:
-		return bool(action.fires(id))
-	return runtime != null and runtime.enabled(id)
+	return runtime != null and runtime.fires(id)
 
 ## Everything the step-5d nodes remember about the level's own doing,
 ## forgotten — what the verifier clears between two checks of the same
@@ -1159,3 +1211,315 @@ func sync_from_runtime() -> void:
 		var n: Node = _by_id[id]
 		if "spent" in n:
 			n.set("spent", runtime.act(int(id)) == 0xFF)
+
+# ---------------------------------------------------------------------
+# The level tick and the use key (step 5h)
+# ---------------------------------------------------------------------
+## One tick of the level — the DOS engine re-runs enabled entities'
+## handlers every tick, and each class below has done its own since its
+## own step. main.gd runs this on the physics step: DOS ticked at a fixed
+## rate, and the movers carry the collision bodies the player stands on.
+## Motion scales by `delta`, and the triggers only need to see the player
+## once a step.
+##
+## The ORDER is the one long loop's, which was the DOS engine's, and each
+## sweep says below why it stands where it does.
+##
+## `player_pos` is the body (feet): the doorways and the path vehicles'
+## grid window go by it. `eye_pos` is where the DOS proximity handlers
+## measure from — 0x1379c4 (0xF1/0xF2) and 0x137e2e (0xEF) both subtract
+## the camera position [0xd47b4] from the entity and take the 3D length
+## (v1.00 disassembly, 2026-09-15). The port measured from the feet, 75 u
+## lower, so MAP.260's mission-end BUTTONX (0xF2, radius 1024) could be
+## driven past (playtest 2026-09-15). Callers that put a test point right
+## at a trigger may leave it out: it defaults to `player_pos`.
+##
+## zone-local ↔ world: both come in as WORLD positions and are taken into
+## the records' own space here, once, for the whole sweep.
+func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> void:
+	_ensure_index()
+	var here: Vector3 = player_pos - zone_origin
+	var eye: Vector3 = here if eye_pos == Vector3.INF else eye_pos - zone_origin
+	# The variant-2 map lights a chain switches, flickers, strobes or
+	# fades, at the head of the tick where they have always run.
+	light_tick(delta)
+	# The doors, the gates, the lifts and the rotators — before the
+	# proximity sweep, whose triggers must see the bodies where this tick
+	# left them.
+	mover_tick(delta)
+	# The 0xEF gates, the 0xF1/0xF2 chain triggers and the wall buttons:
+	# after the movers and before the one-shot classes below, which read
+	# what a chain armed this tick.
+	prox_tick(eye)
+	# (Sound one-shots, voice lines, hints and objectives fire from their
+	# nodes as the chain is flipped — F2.)
+	# The destructibles a chain breaks (0x18/0x19 — MAP.248's girder ram)
+	# and the props a chain kills outright (0x1B): after the proximity
+	# sweep, whose walk is what arms one of them.
+	destruct_tick()
+	demolish_tick()
+	# The countdown relays (0x2C) and the spawn sprites (0xF3). The counter
+	# a relay watches is main's and stands as this tick has it.
+	relay_tick(objectives_left)
+	spawn_tick()
+	# The truck, the convoy, the boss chase and the pick-up HK. What the
+	# DOS grid window is measured against is the player's own position.
+	path_tick(delta, here)
+	# The water a chain moves (0xd6-0xda).
+	water_tick()
+	# The doorways, last, because a chain walked anywhere above may have
+	# armed one this very tick (MapExit.exit_watch).
+	exit_tick(here)
+	# …and that arming is news for one tick only.
+	if runtime != null:
+		runtime.clear_armed()
+
+## The crosshair found the mesh of record `id` and the use key went down
+## (scripts/action_target.gd).
+##
+## A PROXIMITY record answers on its own node (step 5c): its DOS handler
+## runs for a player inside the radius the slot carries and for no one
+## else (0x1386a0 for the 0xEF, 0x138223 for the 0xF1/0xF2), and that
+## holds whichever way the port's key arrived — the sweep, use_nearby, or
+## the crosshair ray that got here. Everything else keeps the port's
+## aim-and-press rule as it was: the ray is all these have ever had, and
+## the bit-1 gate ("act on hit", ObjHit's own) is the whole of what
+## qualifies them.
+##
+## zone-local ↔ world: `player_pos` (the feet) and `eye` are WORLD
+## positions and are taken into the records' own space for the proximity
+## measure, which is the node's. Vector3.INF for `player_pos` means "no
+## measure" — the caller has picked both the entity and the place, and
+## says so (TriggerEquiv.activate, the solver).
+func on_player_activate(id: int, player_pos: Vector3 = Vector3.INF,
+		eye: Vector3 = Vector3.INF) -> bool:
+	_ensure_index()
+	if runtime == null or runtime.spent(id) or record_of(id) == null:
+		return false
+	var t: Node = prox_node(id)
+	if t != null:
+		var from: Vector3 = Vector3.INF
+		if player_pos.is_finite():
+			from = (eye if eye.is_finite() else player_pos) - zone_origin
+		return bool(t.prox_use(from))
+	if (runtime.state(id) & 2) == 0:
+		return false
+	flip_chain(id)
+	return true
+
+## Use key: take the doorway the player is standing at. Returns true when
+## a map change was requested (one per level instance). `eye`: where the
+## 0xEF gate below measures from — the camera, as DOS 0x1386a0 does; the
+## feet when not given (tests). MAP.210's cargo box is sealed and boarded
+## with the key at its rear wall: the gate inside is 91-97 u from the feet
+## there, over the 86 u reach, but 23-42 u from the eye (playtest
+## 2026-09-15: "the cargo truck cannot be entered").
+##
+## THE GATE FIRST. DOS knows one way through a door — an 0xEF gate whose
+## chain ends in the 0xF0 — and it plays that chain on the way. A doorway
+## the player merely TOUCHED is the port's own fallback (MapExit), and
+## taking it first is what silenced the gates: the exit was already armed,
+## so the key went through without the door ever sounding.
+##
+## Both reaches are the handlers' own. The gate is the 0xEF measure, 60
+## units from the eye plus the 26-unit pad the port's capsule needs; the
+## doorway is the touch radius that armed it, not that radius plus a
+## gate's on top of it (M3 step 4 read the extra 60 as port_use_reach).
+##
+## zone-local ↔ world: both arrive as WORLD positions and are taken into
+## the records' own space here.
+func activate_teleport(player_pos: Vector3, eye: Vector3 = Vector3.INF) -> bool:
+	_ensure_index()
+	if _exit_taken:
+		return false
+	var here: Vector3 = player_pos - zone_origin
+	var from_eye: Vector3 = (eye - zone_origin) if eye.is_finite() else here
+	var gate: Node = gate_to_exit(from_eye)
+	if gate != null:
+		return use_exit_through(gate)
+	for x in _exits:
+		if bool(x.use(here)):
+			return true
+	return false
+
+## Called right after the player is placed: latch every gate and doorway
+## the spawn point already lies inside, so a return exit that drops the
+## player beside the gate it came through (MAP.210 marker 27 is 64 units
+## from the bunker gate; MAP.211's start sits inside its DOOR gate) waits
+## for him to step out and back in instead of bouncing straight back. The
+## triggers measure from `eye_pos` as the sweep does (default: the body
+## position), the doorways from the body.
+##
+## zone-local ↔ world: both arrive as WORLD positions and are taken into
+## the records' own space here.
+func arm_proximity(player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> void:
+	_ensure_index()
+	var here: Vector3 = player_pos - zone_origin
+	var eye: Vector3 = here if eye_pos == Vector3.INF else eye_pos - zone_origin
+	prox_arm(eye)
+	for x in _exits:
+		x.exit_arm(here)
+
+# ---------------------------------------------------------------------
+# The exits (step 5h)
+# ---------------------------------------------------------------------
+## Every 0xF0 doorway of the map, in map order — a caller that wants one
+## of them wants where it stands and what it leads to, both of which the
+## node answers (scripts/level/map_exit.gd).
+func exit_nodes() -> Array:
+	_ensure_index()
+	return _exits
+
+## The MapExit node of entity `id`, or null.
+func exit_node(id: int) -> Node:
+	_ensure_index()
+	for x in _exits:
+		if int(x.id) == id:
+			return x
+	return null
+
+## One tick of every doorway, from the player's feet (zone-local).
+func exit_tick(feet: Vector3) -> void:
+	_ensure_index()
+	for x in _exits:
+		x.exit_watch(feet)
+
+## Has this level already asked for its one map change?
+func exit_taken() -> bool:
+	return _exit_taken
+
+## A doorway fired: the level is changing, and no other may ask again.
+func take_exit(id: int, target_map: int, marker_set: int) -> bool:
+	_exit_taken = true
+	print("[action] teleport → map %d, marker set %d" % [target_map, marker_set])
+	say(id, "exit", "exit", {"map": target_map, "set": marker_set,
+		"back": target_map == 0})
+	teleport_requested.emit(target_map, marker_set)
+	return true
+
+## The level controller could not take the exit (no previous map, a target
+## missing from the archive): this level stays, so its other exits must
+## still work — the one-map-change latch is let go again.
+func exit_refused() -> void:
+	_exit_taken = false
+
+## Everything the doorways remember, forgotten — what the verifier clears
+## between two checks of the same map.
+func exit_forget() -> void:
+	_ensure_index()
+	_exit_taken = false
+	for x in _exits:
+		x.exit_forget()
+
+## Nothing solid between the player and `target` (a doorway sprite sits on
+## the floor, so aim a little above it). True when no physics space is
+## available (headless unit tests).
+##
+## zone-local ↔ world: both ends are zone-local, and the physics space is
+## the world's — the rays are cast with the zone origin added back on.
+func reachable(from_local: Vector3, target_local: Vector3) -> bool:
+	if space == null:
+		return true
+	var from: Vector3 = from_local + zone_origin
+	var target: Vector3 = target_local + zone_origin
+	# `from` is the player's FEET (use_pressed sends global_position). One
+	# ray from the floor ran through MAP.252's torpedo-room shell 22 u from
+	# the player, so the exit into it never fired (found by --solve,
+	# 2026-09-11). Look from the eye and the chest to the sprite's middle
+	# and its foot; a closed door leaf (108 u tall) still blocks all four.
+	for fy in [75.0, 40.0]:
+		for ty in [40.0, 8.0]:
+			var a: Vector3 = from + Vector3(0.0, fy, 0.0)
+			var b: Vector3 = target + Vector3(0.0, ty, 0.0)
+			var q := PhysicsRayQueryParameters3D.create(a, b)
+			q.collide_with_areas = false
+			if player_body != null:
+				q.exclude = [player_body.get_rid()]
+			var hit := space.intersect_ray(q)
+			if not hit.has("position") or (hit["position"] as Vector3).distance_to(b) < 48.0:
+				return true
+	return false
+
+# ---------------------------------------------------------------------
+# The loader's meshes, and what a chain does to one (step 5h)
+# ---------------------------------------------------------------------
+## The level loader has built the mesh of `e`: a MOVER's goes straight on
+## to the record's own node, which moves it from here on and takes the
+## transform it was placed at as the rest pose — so this is called with
+## the transform already final. Every one of them is also a HITTABLE: what
+## a blast goes off at, and what leaves the world when a pool of hit
+## points runs out.
+func register_node(e, node: Node3D) -> void:
+	_ensure_index()
+	if Rules.is_mover(int(e.link_act_type)):
+		register_mover(e, node)
+	register_hittable(e, node)
+
+## The mesh the loader built for record `id`, or null.
+func hit_node(id: int) -> Node3D:
+	_ensure_index()
+	return _hittable.get(id)
+
+## A chain walked over `id`: BUTTON01/02 are a single quad with the OFF
+## texture (222/0, 222/2) on the front face and the lit ON texture (222/1,
+## 222/3) on the back. DOS shows the pressed state by the texture alone —
+## the panel does not turn (playtest, 2026-09-11); the port turned it
+## 180°, which swung a panel whose origin is off its face round to the far
+## side. The two faces swap materials instead, so the front shows the lit
+## art where it stands.
+func present_flip(id: int) -> void:
+	var node: Node3D = _hittable.get(id)
+	if node == null or not is_instance_valid(node):
+		return
+	if not String(node.get_meta("mesh_name", node.name)).begins_with("BUTTON"):
+		return
+	var mi: MeshInstance3D = node as MeshInstance3D
+	if mi == null:
+		var found: Array = node.find_children("*", "MeshInstance3D", true, false)
+		if not found.is_empty():
+			mi = found[0]
+	if mi == null or mi.mesh == null or mi.mesh.get_surface_count() != 2:
+		return
+	var lit: bool = runtime != null and runtime.enabled(id)
+	node.set_meta("switch_lit", lit)
+	mi.set_surface_override_material(0, mi.mesh.surface_get_material(1) if lit else null)
+	mi.set_surface_override_material(1, mi.mesh.surface_get_material(0) if lit else null)
+
+## Every button a chain has flipped, drawn again — after main.gd re-lit
+## the level (DYNAMIC LIGHTS changed), which replaces the surface
+## materials the lit face was shown with.
+func refresh_switch_visuals() -> void:
+	_ensure_index()
+	for id in _hittable:
+		var n: Node3D = _hittable[id]
+		if n != null and is_instance_valid(n) and n.has_meta("switch_lit"):
+			present_flip(int(id))
+
+# ---------------------------------------------------------------------
+# The nodes' share of the state overlay (step 5h)
+# ---------------------------------------------------------------------
+## What the nodes of this branch remember for themselves, for the
+## runtime's snapshot (plan §4): how far each mover has travelled and
+## which way it goes next, the stage each wreck is showing, and the 0xF3
+## sprites whose robot is already out. Everything else in a snapshot is a
+## byte, and the bytes are the runtime's.
+func present_snapshot() -> Dictionary:
+	_ensure_index()
+	return {"movers": mover_snapshot(), "destr": destruct_snapshot(),
+		"spawned": spawned_offs()}
+
+## …and back again, after the runtime has taken the bytes.
+func present_restore(snap: Dictionary) -> void:
+	_ensure_index()
+	# Robots an 0xF3 chain already let out come back out (the dead ones the
+	# map overlay removes on its own). They were counted for the STATISTICS
+	# page when they first appeared.
+	Stats.hold_enemy_count = true
+	for off in (snap.get("spawned", {}) as Dictionary):
+		spawn_reveal(int(off))
+	Stats.hold_enemy_count = false
+	# …and the movers back where the overlay left them, mesh and all, and
+	# every wreck at the stage it had reached — a plain prop the overlay
+	# says was destroyed leaves the world again with them.
+	mover_restore(snap.get("movers", {}))
+	destruct_restore(snap.get("destr", {}))

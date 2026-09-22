@@ -107,7 +107,7 @@ class Entity:
 	## `link_next` is the file offset of the next chained entity (≤ 0
 	## terminates). `link_act_type` is the action dispatch type — the
 	## index into the DAT_00059b00 handler table (fully dumped from
-	## Skynet.exe; families in action_system.gd):
+	## Skynet.exe; families in scripts/triggers/rules_skynet.gd):
 	##   slide/swing/rot ids  doors, gates, lifts, rotators (movers)
 	##   0x18/0x19            TRANSFRM.PRS destructible mesh-swap
 	##   0xEF                 60-unit player-proximity gate

@@ -6,7 +6,7 @@
 ## so each one becomes a ZONE: a Node3D placed on a +X grid whose child
 ## `Level` is the baked converted/maps/MAP.NNN.level.scn. Everything the
 ## MAP records say stays zone-local; the node's own transform is what puts
-## the zone in the world (Level.origin, ActionSystem.zone_origin).
+## the zone in the world (Level.origin, Behaviour.zone_origin).
 ##
 ## The exports are what the runtime needs to switch a zone on without
 ## re-reading the MAP: which heightmap it stands on, the music track its

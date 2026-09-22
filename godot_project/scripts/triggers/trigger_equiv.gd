@@ -143,11 +143,11 @@ static func activate(level, id: int, how: String, damage: float = 1.0e6) -> bool
 	at += level.origin as Vector3
 	match how:
 		"use":
-			return level.action.on_player_activate(id, at)
+			return level.behaviour.on_player_activate(id, at)
 		"hit":
-			return level.action.on_player_hit(id, damage)
+			return level.behaviour.obj_hit(id, damage)
 		_:
-			level.action._flip_link(e)
+			level.triggers.flip(id)
 			return true
 
 # ---------------------------------------------------------------------
@@ -186,12 +186,12 @@ static func check(level, graph: Dictionary, id: int, opts: Dictionary = {}) -> D
 	# before the recording starts puts them behind us: each announces once
 	# and, while its bit stays up, not again.
 	for i in int(opts.get("settle", 4)):
-		level.action.tick(dt, away, away)
+		level.behaviour.tick(dt, away, away)
 	bus.record(true)
 	bus.clear()
 	activate(level, id, how, float(opts.get("damage", 1.0e6)))
 	for i in int(opts.get("ticks", 400)):
-		level.action.tick(dt, away, away)
+		level.behaviour.tick(dt, away, away)
 	var heard: Array = bus.take()
 	bus.record(false)
 	out.merge(compare(node.get("first", []), tokens(heard)))

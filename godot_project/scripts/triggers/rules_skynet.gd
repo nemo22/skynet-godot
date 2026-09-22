@@ -4,9 +4,9 @@
 ## an action id (a slot of the DOS handler table at Skynet.exe VA
 ## 0x59b00), a state byte and a link to the next entity of a chain.
 ## Until now the knowledge of what each id means lived in
-## action_system.gd next to the code that runs it. This module is that
+## the long loop next to the code that ran it. This module is that
 ## knowledge on its own — data, no runtime — so three readers can share
-## it: the running game (action_system.gd still holds the constants by
+## it: the running game (every class holds the constants by
 ## reference, so nothing about play changes), the generated trigger
 ## graph (scripts/triggers/trigger_graph.gd) and whatever checks the
 ## graph later.
@@ -49,7 +49,7 @@ const GAME: String = "skynet"
 const INFORMATIONAL: bool = false
 
 # ---------------------------------------------------------------------
-# Tables (moved here from action_system.gd, unchanged)
+# Tables (moved here from the old long loop, unchanged)
 # ---------------------------------------------------------------------
 ## Mover ids → [family, p4, p6] from the 0x59b00 table's per-slot
 ## config dword (+4 low u16, +6 high u16). Families by handler body
@@ -240,7 +240,7 @@ const TELEPORT_TOUCH_RADIUS: float = 90.0
 ## put doorways directly above/below each other.
 const PROX_VERTICAL_WINDOW: float = 512.0
 ## Use key reach for a wall button the crosshair is not on
-## (ActionSystem.use_nearby's fallback, and where the checks stand).
+## (Behaviour.use_nearby's fallback, and where the checks stand).
 const USE_REACH: float = 130.0
 ## …and how far the CROSSHAIR itself reaches (fly_camera._try_activate's
 ## ray). That is a wall button's real measure, and the owner's kept rule
@@ -284,9 +284,9 @@ const UNDECODED: Dictionary = {
 ## MARKER_KIND decides for a placement marker.
 ##
 ## Six variant-1 meshes of the shipped maps carry act 0x01, and the
-## running game has never lit one: action_system.setup takes an entity
-## into _light_ents only when `(flags & 3) == 2`, and _do_action leaves
-## the rest alone. The graph read them as lamps, which put six
+## running game has never lit one: a record joins the light sweep only
+## when `(flags & 3) == 2` (RawAction.sweep_class), and nothing else
+## dispatches the act at all. The graph read them as lamps, which put six
 ## fade/toggle effects in the lock that nothing in the game performs.
 const NOT_A_LIGHT: Dictionary = {
 	"kind": "inert", "family": "", "p4": 0, "p6": 0,
@@ -374,6 +374,17 @@ static func has_rule(act: int) -> bool:
 
 static func kind_of(act: int) -> String:
 	return String(rule_for(act)["kind"])
+
+## Does this act id drive one of the 0x59b00 MOVER handlers — a door, a
+## gate, a lift, a rotator? The table above is the whole answer, and the
+## bake asks it to decide which records become Mover nodes.
+static func is_mover(act: int) -> bool:
+	return MOVER_TABLE.has(act)
+
+## …and is it one of the two TRANSFRM.PRS destructible slots (0x18/0x19,
+## the same handler with a different first parameter)?
+static func is_destructible(act: int) -> bool:
+	return act == ACT_DESTRUCT_A or act == ACT_DESTRUCT_B
 
 ## The rule of an act byte AS CARRIED BY A PARTICULAR RECORD. The table
 ## above is keyed by the act alone, but two of the bands only mean what
@@ -620,8 +631,8 @@ static func _build() -> Dictionary:
 	#   making it once-per-rise, and a chain re-arming it would fire it
 	#   again. It cannot be SEEN to: the frame loop tests that 0x20 at
 	#   0x117a2e, before the next entity sweep, and tears the level down —
-	#   one map change per level instance, always. The port's
-	#   _teleport_fired latch is that outcome; the graph's simulation
+	#   one map change per level instance, always. The port's own latch
+	#   (Behaviour.exit_taken) is that outcome; the graph's simulation
 	#   stops at the first exit for the same reason (trigger_graph._simulate).
 	r[ACT_TELEPORT] = _row("exit", {"dos": "0x137881", "prov": "dos",
 		"modes": [

@@ -22,9 +22,9 @@
 ## The Behaviour branch is phases F1/F2 of docs/map_format_plan.md: the
 ## bake generates it, the editor shows it, and the running level lifts
 ## it out like the rest (take() below) — its root script walks the
-## chains and fires the cues, while action_system.gd still drives the
-## movers, triggers, exits and destructibles from the MAP records until
-## their turn comes. Enemies, pickups, lights and markers are still
+## chains, fires the cues and sweeps every class of the DOS object layer
+## from the nodes themselves (steps 5c-5h). Enemies, pickups, lights and
+## markers are still
 ## built from the records by the loader.
 ##
 ## Two things this buys, both of them asked for (2026-09-04, "kludne

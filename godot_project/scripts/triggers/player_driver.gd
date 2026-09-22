@@ -2,10 +2,10 @@
 ## (docs plan §5 layer (c), M3 step 4).
 ##
 ## Everything that has driven the player until now did it from the
-## inside: the solver called ActionSystem.on_player_activate with an
+## inside: the solver called on_player_activate with an
 ## entity offset it had already picked, the console's `use` skipped the
 ## crosshair ray, the tests called tick() by hand. Each of those proves
-## that the ACTION SYSTEM does something; none of them proves that a
+## that the OBJECT LAYER does something; none of them proves that a
 ## player can make it happen, because none of them goes through the
 ## input path the game actually has.
 ##
@@ -96,7 +96,7 @@ func feet() -> Vector3:
 # ---------------------------------------------------------------------
 # Time
 # ---------------------------------------------------------------------
-## Wait `n` drawn AND physics frames. The ActionSystem ticks in main's
+## Wait `n` drawn AND physics frames. The level ticks in main's
 ## _physics_process, but a flood or a level build can run several physics
 ## steps inside one iteration, so waiting for physics frames alone can
 ## step past the tick that was supposed to see the player somewhere

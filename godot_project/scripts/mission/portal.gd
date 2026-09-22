@@ -8,9 +8,9 @@
 ## which is what `target_zone` and `target_pos` spell out.
 ##
 ## The node stands at `world_pos`, so the editor shows the doorways where
-## they are. ActionSystem._teleports stays the authority at runtime; these
-## nodes are the baked, readable view of the same table (and what step 4
-## resolves a teleport against).
+## they are. The level's own MapExit nodes stay the authority at runtime
+## (scripts/level/map_exit.gd); these are the baked, readable view of the
+## same table (and what step 4 resolves a teleport against).
 ##
 ## `kind` repeats the census verdict: "portal" (an exit into a zone of
 ## this mission), "portal (no spawn)" (the target has no such marker set),

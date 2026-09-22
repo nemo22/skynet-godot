@@ -5,19 +5,23 @@
 ## game's LOAD screen must not offer the other's saves). The first line
 ## is a short header the LOAD menu can show without parsing the body:
 ##   SKYNET-SAVE <version>|<map>|<yyyy-mm-dd hh:mm>|<game>
-## Format 2 and 3 bodies are JSON: `JSON.from_native` of the session
-## dictionary built by main.save_to_slot, so int keys, Vector2i / Vector3
+## Formats 2 to 5 are JSON: `JSON.from_native` of the session dictionary
+## built by main.save_to_slot, so int keys, Vector2i / Vector3
 ## values and typed arrays come back exactly as they went in. Objects are
 ## neither written nor read (to_native without allow_objects), so a save
 ## file — something players share — cannot load a Resource or run a script.
-## The two JSON formats differ in the session they hold, not in encoding:
-##   3  a MISSION SCENE session (v0.4, docs/m2_mission_scene_plan.md) — the
+## They differ in the session they hold, not in encoding:
+##   5  a MISSION SCENE session (v0.4, docs/m2_mission_scene_plan.md) — the
 ##      mission, the zone the player is in, each world's phase and the
 ##      overlay of every zone the mission has built (main._scene_save_data)
-##   2  a per-map session — the map, the previous-map register and the
+##   4  a per-map session — the map, the previous-map register and the
 ##      per-map overlay; what every game without a mission scene still
-##      writes (Future Shock, loose maps, the mission-scene flag off), so
-##      a v0.3 build keeps reading those
+##      writes (Future Shock, loose maps, the mission-scene flag off)
+##   3 / 2  the same two sessions before migration step 5h of
+##      docs/trigger_graph_plan.md, whose overlays keep their trigger
+##      state under "action" instead of "triggers". Still read: the two
+##      are the same dictionary under two names, keyed by MAP file offset
+##      either way, and main._trigger_state takes whichever is there.
 ## Format 1 bodies (var_to_str text, older builds) still load when they
 ## name no Object or Resource: str_to_var would instantiate or load those.
 ## Used via `const SaveGame := preload("res://scripts/save_game.gd")`
@@ -28,9 +32,12 @@ const SLOTS: int = 10
 ## F6 / F7 use slot 0 — shown as the first LOAD.IMG bar.
 const QUICK_SLOT: int = 0
 ## The newest format this build reads and writes: a mission-scene session.
-const VERSION: int = 3
+const VERSION: int = 5
 ## A per-map session (JSON, 2026-09-14 onwards).
-const VERSION_MAP: int = 2
+const VERSION_MAP: int = 4
+## The oldest JSON body this build still reads: the per-map session as it
+## was before migration step 5h (3 = the mission-scene one).
+const VERSION_JSON_FIRST: int = 2
 ## The var_to_str text format builds before 2026-09-14 wrote.
 const VERSION_TEXT: int = 1
 const MAGIC := "SKYNET-SAVE"
@@ -119,7 +126,7 @@ static func read(slot: int) -> Dictionary:
 	if parts.size() > 3 and not parts[3].is_empty() and parts[3] != _game():
 		return _refuse(file, "this is a %s save" % ("Future Shock" if parts[3] == "shock" else "SkyNET"))
 	var v: Variant = null
-	if version == VERSION or version == VERSION_MAP:
+	if version >= VERSION_JSON_FIRST and version <= VERSION:
 		v = _from_json(body)
 	elif version == VERSION_TEXT:
 		v = _from_text(body)

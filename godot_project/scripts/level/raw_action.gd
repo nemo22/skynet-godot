@@ -19,7 +19,7 @@
 ## nothing is lost and nothing is invented.
 ##
 ## Until step 5d the four classes above were four arrays swept from one
-## long loop in scripts/action_system.gd. The node is the sweep now, and
+## long loop (gone since step 5h). The node is the sweep now, and
 ## what it holds is what one of these records remembers between ticks:
 ## whether its robot is out, whether its flicker is showing the lamp or
 ## hiding it, whether its handler has announced itself already. What it
@@ -94,7 +94,7 @@ func _clear_enable() -> void:
 ## "light", "relay" or "water" for a record one of the sweeps below runs
 ## for, and any other kind name for the ids that stay inert. Read off the
 ## act byte and the variant the MAP was AUTHORED with — the lists
-## ActionSystem.setup used to build once at load — so a water valve that
+## the long loop used to build once at load — so a water valve that
 ## swaps its own act byte (0xd9 ↔ 0xda) stays water either way.
 ##
 ## The rules module answers it, which keeps the running game and the
@@ -141,7 +141,7 @@ func spawn_watch() -> void:
 	spawn_reveal()
 
 ## The robot steps out. Also what a save's overlay does on the way back
-## into a map (ActionSystem.restore_state), where the bit is long since
+## into a map (Behaviour.present_restore), where the bit is long since
 ## down and the robot is simply out again.
 func spawn_reveal() -> void:
 	spawned = true

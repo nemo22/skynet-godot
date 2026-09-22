@@ -2120,7 +2120,7 @@ signal secondary_changed(name: String, count: int)
 signal hurt(amount: float)
 signal use_pressed(pos: Vector3)
 ## Every press of the use key, whatever is under the crosshair — DOS
-## fires the 0xEF gates in reach on the key itself (ActionSystem.press_use).
+## fires the 0xEF gates in reach on the key itself (Behaviour.press_use).
 signal activate_key(pos: Vector3)
 
 func _try_activate() -> void:

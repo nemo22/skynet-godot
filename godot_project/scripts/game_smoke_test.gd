@@ -252,12 +252,12 @@ func _run() -> void:
 
 	# --- 2b. Blast damage reaches destructible map objects (cars) ---
 	var car: Node3D = null
-	var action = _main.get("_current_level").action
+	var rt = _main.get("_current_level").triggers
 	var branch = _main.get("_current_level").behaviour
 	for h in get_tree().get_nodes_in_group("hittable"):
 		var hoff: int = int(h.call("file_off"))
 		var w: Node = branch.wreck_node(hoff)
-		if w != null and int(w.get("stage")) == 0 and not action.is_spent(hoff) and (String(h.name).begins_with("CARHIP") or String(h.name).begins_with("COPCAR")):
+		if w != null and int(w.get("stage")) == 0 and not rt.spent(hoff) and (String(h.name).begins_with("CARHIP") or String(h.name).begins_with("COPCAR")):
 			car = h
 			break
 	_check(car != null, "a staged destructible car is in the hittable group")
@@ -343,12 +343,12 @@ func _run() -> void:
 	# its AnimatableBody3D really moved in the physics server ---
 	var door_e = null
 	for e in lvl.map.entities:
-		if (e.flags & 3) == 1 and lvl.action.is_mover_off(e.file_off) and LevelLoader.MapFile.entity_name(lvl.map, e).begins_with("210DOOR"):
+		if (e.flags & 3) == 1 and lvl.behaviour.has_mover(e.file_off) and LevelLoader.MapFile.entity_name(lvl.map, e).begins_with("210DOOR"):
 			door_e = e
 			break
 	_check(door_e != null, "MAP.210 has a 210DOOR swing-door mover")
 	if door_e != null:
-		var dnode: Node3D = lvl.action._nodes.get(door_e.file_off)
+		var dnode: Node3D = lvl.behaviour.hit_node(door_e.file_off)
 		var dbody: AnimatableBody3D = null
 		for c in dnode.get_children():
 			if c is AnimatableBody3D:
@@ -369,7 +369,7 @@ func _run() -> void:
 	# free once both leaves have slid apart ---
 	var leaves: Array = []
 	for e in lvl.map.entities:
-		if (e.flags & 3) == 1 and lvl.action.is_mover_off(e.file_off) and LevelLoader.MapFile.entity_name(lvl.map, e) == "BIGDOOR":
+		if (e.flags & 3) == 1 and lvl.behaviour.has_mover(e.file_off) and LevelLoader.MapFile.entity_name(lvl.map, e) == "BIGDOOR":
 			leaves.append(e)
 	_check(leaves.size() == 2, "MAP.210 has two BIGDOOR gate leaves (%d)" % leaves.size())
 	if leaves.size() == 2:
@@ -463,7 +463,7 @@ func _run() -> void:
 		lvl = _main.get("_current_level")
 		var open_after_load: int = 0
 		for e in lvl.map.entities:
-			if (e.flags & 3) == 1 and lvl.action.is_mover_off(e.file_off) and LevelLoader.MapFile.entity_name(lvl.map, e) == "BIGDOOR":
+			if (e.flags & 3) == 1 and lvl.behaviour.has_mover(e.file_off) and LevelLoader.MapFile.entity_name(lvl.map, e) == "BIGDOOR":
 				# How far a leaf has slid is the mover node's own (step 5e).
 				if float(lvl.behaviour.mover_node(e.file_off).progress) > 100.0:
 					open_after_load += 1
@@ -489,8 +489,8 @@ func _run() -> void:
 		var drops: Array = []
 		lvl.behaviour.item_dropped.connect(func(at: Vector3, t: int) -> void: drops.append(t))
 		if crate != null:
-			lvl.action.on_player_hit(crate.file_off, 60.0)
-			_check(lvl.action.is_spent(crate.file_off), "a 60-damage hit destroys the crate")
+			lvl.behaviour.obj_hit(crate.file_off, 60.0)
+			_check(lvl.triggers.spent(crate.file_off), "a 60-damage hit destroys the crate")
 			_check(drops == [3], "the crate's destruction rolls an ammo drop (type 3)")
 		for f in 5:
 			await get_tree().physics_frame
@@ -506,7 +506,7 @@ func _run() -> void:
 			# open here too — MAP.216 is the same base re-authored.
 			var open_leaves: int = 0
 			for e in lvl.map.entities:
-				if (e.flags & 3) == 1 and lvl.action.is_mover_off(e.file_off) and LevelLoader.MapFile.entity_name(lvl.map, e) == "BIGDOOR":
+				if (e.flags & 3) == 1 and lvl.behaviour.has_mover(e.file_off) and LevelLoader.MapFile.entity_name(lvl.map, e) == "BIGDOOR":
 					if float(lvl.behaviour.mover_node(e.file_off).progress) > 100.0:
 						open_leaves += 1
 			_check(open_leaves == 2, "MAP.216 inherits the open base gate from MAP.210 (%d leaves open)" % open_leaves)
@@ -524,7 +524,7 @@ func _run() -> void:
 		for c in lvl.entities.get_children():
 			if not (c is MeshInstance3D) or not c.has_method("file_off"):
 				continue
-			if not lvl.action.is_mover_off(c.file_off()):
+			if not lvl.behaviour.has_mover(c.file_off()):
 				continue
 			var has_box: bool = false
 			for body in c.get_children():
@@ -611,7 +611,7 @@ func _run() -> void:
 	if ok:
 		lvl = _main.get("_current_level")
 		var cover = lvl.map.entities_by_off.get(0x3077)   # 210SDOR1 leaf
-		var cover_node: Node3D = lvl.action._nodes.get(0x3077)
+		var cover_node: Node3D = lvl.behaviour.hit_node(0x3077)
 		var cbase: Vector3 = cover_node.global_position
 		var gate = lvl.map.entities_by_off.get(0x32cb)    # CORC3229, state 0x10
 		var gpos := Vector3(float(gate.x), -float(gate.y), -float(gate.z))
@@ -620,15 +620,15 @@ func _run() -> void:
 		player.global_position = gpos
 		for f in 3:
 			await get_tree().physics_frame
-		lvl.action.press_use()               # DOS 0x137e2e: the use key, not the approach
+		lvl.behaviour.press_use()               # DOS 0x137e2e: the use key, not the approach
 		for f in 240:
 			await get_tree().physics_frame
 		_check(cover_node.global_position.distance_to(cbase) > 100.0,
 			"silo cover door slides open from the bit-0-less proximity gate (%.0f u)" % cover_node.global_position.distance_to(cbase))
 		var objs: Array = []
 		lvl.behaviour.objective_complete.connect(func(i: int) -> void: objs.append(i))
-		lvl.action.on_player_activate(0x2f8f)             # missile button
-		var hades: Node3D = lvl.action._nodes.get(0x47f0)
+		lvl.behaviour.on_player_activate(0x2f8f)             # missile button
+		var hades: Node3D = lvl.behaviour.hit_node(0x47f0)
 		var hbase: Vector3 = hades.global_position
 		for f in 240:
 			await get_tree().physics_frame
@@ -636,7 +636,7 @@ func _run() -> void:
 		# Objective acts are 0x26..0x2A → index 0..4 ([M1]..[M5]); the
 		# 0x1C..0x25 band is hints and moves no counter.
 		_check(objs.has(0x27 - 0x26), "missile chain fires mission objective 0x27 (%s)" % str(objs))
-		var btn_node: Node3D = lvl.action._nodes.get(0x2f8f)
+		var btn_node: Node3D = lvl.behaviour.hit_node(0x2f8f)
 		_check(bool(btn_node.get_meta("switch_lit", false)), "pressed button flips to its lit face")
 	# Mission end: back on MAP.210 to check the objective counter and
 	# that marker 4 is a RADIATION source, not an extraction zone (the
@@ -998,7 +998,7 @@ func _check_variant_objective() -> void:
 		return
 	var lvl = _main.get("_current_level")
 	var jeep = lvl.map.entities_by_off.get(jeep_off)
-	_check(jeep != null and lvl.action.act_of(jeep_off) == 0x1C,
+	_check(jeep != null and lvl.triggers.act(jeep_off) == 0x1C,
 		"MAP.210's jeep is hint [G1] (act 0x1c)")
 	if jeep == null:
 		return
@@ -1006,9 +1006,9 @@ func _check_variant_objective() -> void:
 	_check(left0 >= 2 and int((_main.get("_objective_cursor") as Array)[2]) == 0,
 		"mission 1 has its [M3] still to do (%d left)" % left0)
 	var at := Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z))
-	lvl.action.press_use()                   # the eight gates answer the use key
-	lvl.action.tick(0.016, at)
-	_check(lvl.action.act_of(jeep_off) == 0xFF and int(_main.get("_objectives_left")) == left0,
+	lvl.behaviour.press_use()                   # the eight gates answer the use key
+	lvl.behaviour.tick(0.016, at)
+	_check(lvl.triggers.act(jeep_off) == 0xFF and int(_main.get("_objectives_left")) == left0,
 		"the gates fire MAP.210's jeep hint: retired, nothing counted")
 
 	_main.call("_on_teleport_requested", 216, 12)
@@ -1018,7 +1018,7 @@ func _check_variant_objective() -> void:
 		return
 	lvl = _main.get("_current_level")
 	var j216 = lvl.map.entities_by_off.get(jeep_off)
-	_check(j216 != null and lvl.action.act_of(jeep_off) == 0x1C,
+	_check(j216 != null and lvl.triggers.act(jeep_off) == 0x1C,
 		"MAP.216's jeep hint is its own: no act byte crosses from MAP.210")
 
 	_main.call("_on_teleport_requested", 217, 14)
@@ -1029,17 +1029,17 @@ func _check_variant_objective() -> void:
 	lvl = _main.get("_current_level")
 	var j217 = lvl.map.entities_by_off.get(jeep_off)
 	var cue: Node = lvl.behaviour.node(jeep_off) if lvl.behaviour != null else null
-	_check(j217 != null and lvl.action.act_of(jeep_off) == 0x28
+	_check(j217 != null and lvl.triggers.act(jeep_off) == 0x28
 		and cue != null and not bool(cue.get("spent")),
 		"MAP.217's jeep arrives as a live [M3] objective")
 	var trig = lvl.map.entities_by_off.get(0x80c5)
-	_check(trig != null and trig.link_act_type == 0xF2 and lvl.action.enabled(0x80c5),
+	_check(trig != null and trig.link_act_type == 0xF2 and lvl.triggers.enabled(0x80c5),
 		"MAP.217's 210BASE3 keeps its armed 0xF2 bit (scenery with state 00 on the variants)")
 	if j217 == null or cue == null:
 		return
 	at = Vector3(float(j217.x), -float(j217.y), -float(j217.z))
-	lvl.action.press_use()
-	lvl.action.tick(0.016, at)
+	lvl.behaviour.press_use()
+	lvl.behaviour.tick(0.016, at)
 	var left1: int = int(_main.get("_objectives_left"))
 	_check(left1 == left0 - 1 and int((_main.get("_objective_cursor") as Array)[2]) == 1,
 		"the jeep counts [M3] on MAP.217 (%d → %d left)" % [left0, left1])
@@ -1064,19 +1064,27 @@ func _check_variant_objective() -> void:
 		return
 	lvl = _main.get("_current_level")
 	cue = lvl.behaviour.node(jeep_off)
-	_check(bool(cue.get("spent")) and lvl.action.act_of(jeep_off) == 0xFF
+	_check(bool(cue.get("spent")) and lvl.triggers.act(jeep_off) == 0xFF
 		and int(_main.get("_objectives_left")) == left1,
 		"a counted objective stays counted after the load (%d left)" % int(_main.get("_objectives_left")))
 	_check(not bool(_main.get("_mission_done")), "the loaded level can end its mission (_mission_done down)")
-	lvl.action.press_use()
-	lvl.action.tick(0.016, at)
+	lvl.behaviour.press_use()
+	lvl.behaviour.tick(0.016, at)
 	_check(int(_main.get("_objectives_left")) == left1, "and the jeep cannot count it a second time")
 
 	# A v0.3.0 save: the imported retirement sits in MAP.217's overlay while
 	# [M3] was never shown. The load must give the objective back.
 	var data: Dictionary = SaveGame.read(9)
-	var acts: Dictionary = data.get("map_state", {}).get("MAP.217", {}).get("action", {}).get("acts", {})
+	var acts: Dictionary = data.get("map_state", {}).get("MAP.217", {}).get("triggers", {}).get("acts", {})
 	_check(int(acts.get(jeep_off, -1)) == 0xFF, "the save holds the jeep's retirement")
+	# …and an overlay written BEFORE migration step 5h keeps that same
+	# dictionary under "action". The two convert 1:1 — every key in either
+	# is a MAP file offset — so the load reads whichever name is there.
+	_check(int((_main.call("_trigger_state", {"action": {"acts": {jeep_off: 0xFF}}})
+			as Dictionary).get("acts", {}).get(jeep_off, -1)) == 0xFF
+		and (_main.call("_trigger_state", data.get("map_state", {}).get("MAP.217", {}))
+			as Dictionary).has("acts"),
+		"a pre-5h overlay's trigger state is read under its own name")
 	var objs: Dictionary = data["objectives"]
 	objs["left"] = left0
 	(objs["cursor"] as Array)[2] = 0
@@ -1091,17 +1099,17 @@ func _check_variant_objective() -> void:
 		return
 	lvl = _main.get("_current_level")
 	cue = lvl.behaviour.node(jeep_off)
-	_check(not bool(cue.get("spent")) and lvl.action.act_of(jeep_off) == 0x28
+	_check(not bool(cue.get("spent")) and lvl.triggers.act(jeep_off) == 0x28
 		and int(_main.get("_objectives_left")) == left0,
 		"an objective retired but never counted comes back live (%d left)" % int(_main.get("_objectives_left")))
-	lvl.action.press_use()
-	lvl.action.tick(0.016, at)
+	lvl.behaviour.press_use()
+	lvl.behaviour.tick(0.016, at)
 	_check(int(_main.get("_objectives_left")) == left1, "and the jeep counts it once (%d left)" % int(_main.get("_objectives_left")))
 	# Give [M3] back: the silo check after this counts MAP.215's two
 	# objectives and must not finish mission 1 on the way.
 	_main.set("_objectives_left", left0)
 	(_main.get("_objective_cursor") as Array)[2] = 0
-	lvl.action.objectives_left = left0
+	lvl.behaviour.objectives_left = left0
 	st = _main.get("_map_state")
 	st.erase("MAP.216")
 	st.erase("MAP.217")
@@ -1133,7 +1141,7 @@ func _check_jeep_objective() -> void:
 		return
 	var lvl = _main.get("_current_level")
 	var jeep = lvl.map.entities_by_off.get(0x75cb)
-	_check(jeep != null and lvl.action.act_of(0x75cb) == 0x28,
+	_check(jeep != null and lvl.triggers.act(0x75cb) == 0x28,
 		"the MAP.217 jeep carries objective act 0x28")
 	if jeep == null:
 		return
@@ -1141,9 +1149,9 @@ func _check_jeep_objective() -> void:
 	lvl.behaviour.objective_complete.connect(func(i: int) -> void: objs.append(i))
 	# Stand on the jeep and press use: every gate around it trips in the
 	# same tick (DOS fires all the 0xEF gates within 60 u on the key).
-	lvl.action.press_use()
-	lvl.action.tick(0.016, Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z)))
-	lvl.action.tick(0.016, Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z)))
+	lvl.behaviour.press_use()
+	lvl.behaviour.tick(0.016, Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z)))
+	lvl.behaviour.tick(0.016, Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z)))
 	_check(objs.has(0x28 - 0x26),
 		"eight gates tripping at once still fire objective 0x28 (%s)" % str(objs))
 	await _check_jeep_ram()
@@ -1330,12 +1338,12 @@ func _check_ram_wall() -> void:
 	# The START BOX is pressed, not walked into, and the girder has to ram
 	# the wall several times before it gives (the DOS run, 2026-09-11).
 	var presses: int = 0
-	while presses < 12 and not lvl.action.is_spent(wall.file_off):
-		lvl.action.press_use()
-		lvl.action.tick(0.016, at)
-		lvl.action.tick(0.016, at)
+	while presses < 12 and not lvl.triggers.spent(wall.file_off):
+		lvl.behaviour.press_use()
+		lvl.behaviour.tick(0.016, at)
+		lvl.behaviour.tick(0.016, at)
 		presses += 1
-	_check(lvl.action.is_spent(wall.file_off) and presses > 1,
+	_check(lvl.triggers.spent(wall.file_off) and presses > 1,
 		"the START BOX chain breaks the wall open after several rams (%d)" % presses)
 
 ## Marker 103/104 is the map's water level (DOS 0x120bf9): the harbour
@@ -1369,7 +1377,7 @@ func _check_water() -> void:
 ## along the gate line (x - 400 .. x + 400) — '#' blocked, '.' free.
 func _gate_diag(lvl, leaves: Array, centre: Vector3, probe: PhysicsShapeQueryParameters3D, space: PhysicsDirectSpaceState3D, tag: String) -> void:
 	for e in leaves:
-		var n: Node3D = lvl.action._nodes.get(e.file_off)
+		var n: Node3D = lvl.behaviour.hit_node(e.file_off)
 		var body_xf := Transform3D()
 		for c in n.get_children():
 			if c is AnimatableBody3D:

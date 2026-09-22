@@ -18,7 +18,7 @@
 ##      the surface, climbing out onto a ledge up to WATER_EXIT above it.
 ##   2. FIRE what a player standing in that space can fire: walk-in gates
 ##      and levers (the player is put on the nearest reachable cell and the
-##      ActionSystem tick does the rest), use-key buttons, and, when nothing
+##      the level tick does the rest), use-key buttons, and, when nothing
 ##      else is left, every destructible in sight is shot down.
 ##   3. Wait for the doors and lifts, and flood again.
 ## Once nothing new fires it takes an exit (0xF0) the space reaches,
@@ -91,7 +91,7 @@ const ACTIVATE_RAY: float = 600.0
 ## doorway by touch (2026-09-16: it used to be that plus a gate's 60, which
 ## reached further than anything in the original did).
 const EXIT_REACH: float = 90.0
-const V_WINDOW: float = 512.0       # ActionSystem.PROX_VERTICAL_WINDOW
+const V_WINDOW: float = 512.0       # Rules.PROX_VERTICAL_WINDOW
 const DIRS: Array = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1),
 	Vector2i(1, 1), Vector2i(1, -1), Vector2i(-1, 1), Vector2i(-1, -1)]
 
@@ -184,7 +184,10 @@ func _solve_map() -> void:
 	for _i in 12:                       # colliders registered, spawn settled
 		await get_tree().physics_frame
 	var lvl = main._current_level
-	var a = lvl.action
+	# The level the run is playing: its Behaviour branch is the DOS object
+	# layer (the sweeps, the use key, the doorways), its trigger runtime
+	# holds every byte play changes, and its MAP holds the records.
+	var a = lvl
 	var p = main.player
 	p.set("god_mode", true)
 	_setup(lvl)
@@ -234,7 +237,7 @@ func _solve_map() -> void:
 	for x in _exits(a, name):
 		_put(x["at"])
 		await _frames(3)
-		if a.activate_teleport(p.global_position, main._eye_position()):
+		if a.behaviour.activate_teleport(p.global_position, main._eye_position()):
 			_visited[x["vkey"]] = true
 			_door_uses[x["dkey"]] = int(x["used"]) + 1
 			_route.append("%s: EXIT → %s set %d from %s%s" % [name, x["target"], x["set"],
@@ -244,14 +247,14 @@ func _solve_map() -> void:
 			_write_view(name, a)
 			_running = false
 			return                      # main loads the map, level_ready() goes on
-		var ex = a._map.entities_by_off.get(x["off"])
-		var armed: bool = ex != null and a.enabled(ex.file_off)
-		# world → zone-local: _reachable measures in the records' space.
+		var ex = a.map.entities_by_off.get(x["off"])
+		var armed: bool = ex != null and a.triggers.enabled(ex.file_off)
+		# world → zone-local: the measure is in the records' space.
 		var line_ok: bool = ex != null \
-			and a._reachable(p.global_position - _zone, _epos(ex) - _zone)
+			and a.behaviour.reachable(p.global_position - _zone, _epos(ex) - _zone)
 		var by: String = ""
 		if ex != null and not line_ok:
-			# The same ray ActionSystem._reachable casts: player → sprite + 40.
+			# The same ray Behaviour.reachable casts: player → sprite + 40.
 			var rq := PhysicsRayQueryParameters3D.create(p.global_position, _epos(ex) + Vector3(0.0, 40.0, 0.0))
 			rq.exclude = [p.get_rid()]
 			var h := _space.intersect_ray(rq)
@@ -690,7 +693,7 @@ func _ray(from: Vector3, to: Vector3) -> Dictionary:
 	return _space.intersect_ray(rq)
 
 ## The reachable cell nearest `ep` within `reach` horizontally and the
-## ActionSystem's vertical window; -1 when there is none.
+## the doorways' vertical window; -1 when there is none.
 func _nearest(ep: Vector3, reach: float, vwin: float = V_WINDOW) -> int:
 	var best: int = -1
 	var bd: float = INF
@@ -802,25 +805,25 @@ func _reach_point(ep: Vector3, reach: float) -> Vector3:
 func _candidates(a, name: String, shoot: bool) -> Array:
 	var out: Array = []
 	if shoot:
-		for off in a.damageable_offs():
+		for off in a.behaviour.damageable_offs():
 			var k: String = "s%05x" % off
 			if _done.has(name + ":" + k):
 				continue
-			var e = a._map.entities_by_off.get(off)
+			var e = a.map.entities_by_off.get(off)
 			var n: int = _shooting_spot(a, off, _aim_point(a, off, e))
 			if n >= 0:
 				out.append({"kind": "shoot", "off": off, "key": k, "at": _pos[n], "what": _ename(a, e)})
 		return out
 	for t in _prox_nodes(a):
-		var e = a.record(int(t.id))
+		var e = a.behaviour.record_of(int(t.id))
 		var k: String = "p%05x" % e.file_off
-		if _done.has(name + ":" + k) or a.is_spent(e.file_off):
+		if _done.has(name + ":" + k) or a.triggers.spent(e.file_off):
 			continue
 		# The live bytes, which are the trigger runtime's (step 5a) — a
 		# lever spent earlier in this run is not the lever the MAP file has.
-		var act: int = a.act_of(e.file_off)
+		var act: int = a.triggers.act(e.file_off)
 		var chain: bool = act == 0xF1 or act == 0xF2
-		if chain and not a.enabled(e.file_off):
+		if chain and not a.triggers.enabled(e.file_off):
 			continue                     # a spent lever
 		var use_only: bool = t.is_wall_button()
 		# A 0xEF gate is the USE KEY at a doorway, not a tripwire: its DOS
@@ -856,8 +859,8 @@ func _candidates(a, name: String, shoot: bool) -> Array:
 				"at": at, "what": _ename(a, e)})
 	# (A cue no chain points at used to be listed here too, as something the
 	# key could read. The owner retired that port rule on 2026-09-15 and
-	# ActionSystem no longer keeps the list — DOS has no use-key path to a
-	# cue, so the solver has none either.)
+	# nothing keeps that list any more — DOS has no use-key path to a cue,
+	# so the solver has none either.)
 	return out
 
 func _perform(a, name: String, act: Dictionary) -> void:
@@ -870,24 +873,24 @@ func _perform(a, name: String, act: Dictionary) -> void:
 	await _frames(3)
 	match String(act["kind"]):
 		"use":
-			a.on_player_activate(int(act["off"]), main.player.global_position,
+			a.behaviour.on_player_activate(int(act["off"]), main.player.global_position,
 				main._eye_position())
 		"use-gate":
-			# The action system's own use edge, not main's — that one would
-			# take a doorway the press happens to stand in as well, and the
-			# solver takes its exits itself, one at a time and on purpose.
-			a.press_use()
+			# The branch's own use edge, not main's — that one would take a
+			# doorway the press happens to stand in as well, and the solver
+			# takes its exits itself, one at a time and on purpose.
+			a.behaviour.press_use()
 			await _frames(2)
 		"shoot":
 			for _k in 15:
-				if not a.is_damageable_off(int(act["off"])):
+				if not a.behaviour.is_damageable(int(act["off"])):
 					break
-				a.on_player_hit(int(act["off"]), 400.0)
+				a.behaviour.obj_hit(int(act["off"]), 400.0)
 				await get_tree().physics_frame
 	await get_tree().physics_frame
 
 ## Wait `n` drawn frames AND physics frames (PlayerDriver.frames). The
-## ActionSystem ticks in main._process; after a 200 ms flood the engine
+## The level ticks in main._process; after a 200 ms flood the engine
 ## runs up to eight physics steps in one iteration, so waiting for physics
 ## frames alone let the solver move on before a single tick had seen the
 ## player at the gate — 24SHAL9 never tripped and its door stayed shut
@@ -919,7 +922,7 @@ func _settle(a) -> void:
 	await _frames(3)
 
 func _aim_point(a, off: int, e) -> Vector3:
-	var n = a._nodes.get(off)
+	var n = a.behaviour.hit_node(off)
 	if n != null and is_instance_valid(n) and n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
 		var mi: MeshInstance3D = n
 		return mi.global_transform * mi.mesh.get_aabb().get_center()
@@ -945,7 +948,7 @@ func _shooting_spot(a, off: int, aim: Vector3, reach: float = SHOOT_RANGE) -> in
 				if d <= reach:
 					near.append([d, i])
 	near.sort_custom(func(x, y): return x[0] < y[0])
-	var target = a._nodes.get(off)
+	var target = a.behaviour.hit_node(off)
 	for j in mini(near.size(), 40):
 		var i: int = near[j][1]
 		var eye: Vector3 = _pos[i] + Vector3(0.0, EYE, 0.0)
@@ -976,16 +979,17 @@ func _exits(a, name: String) -> Array:
 	# alone, the run could never get into the truck (and so never into
 	# MAP.216, which is the mission).
 	var spots: Dictionary = {}
-	for e in a._teleports:
+	for e in _exit_recs(a):
 		spots[e.file_off] = [[_epos(e), EXIT_REACH]]
 	for g in _prox_nodes(a):
-		if int(g.act) != 0xEF or a.is_spent(int(g.id)):
+		if int(g.act) != 0xEF or a.triggers.spent(int(g.id)):
 			continue
 		var t: int = a.behaviour.chain_exit(int(g.id))
 		if t >= 0 and spots.has(t):
-			(spots[t] as Array).append([_epos(a.record(int(g.id))), float(g.measure())])
+			(spots[t] as Array).append([_epos(a.behaviour.record_of(int(g.id))),
+				float(g.measure())])
 	var out: Array = []
-	for e in a._teleports:
+	for e in _exit_recs(a):
 		var target: String = ("MAP.%03d" % e.exit_map) if e.exit_map > 0 else String(main._prev_map_name)
 		var vkey: String = "%s#%d" % [target, e.exit_marker_id]
 		var dkey: String = "%s:%05x" % [name, e.file_off]
@@ -1028,7 +1032,7 @@ func _pass(name: String) -> void:
 		print("[solve]   " + r)
 	print("[solve] RESULT PASS — mission complete on %s after %.0f s%s" % [name,
 		(Time.get_ticks_msec() - _t0) / 1000.0, _where()])
-	_write_view(name, main._current_level.action)
+	_write_view(name, main._current_level)
 	_quit(0)
 
 func _fail(name: String, a) -> void:
@@ -1040,7 +1044,7 @@ func _fail(name: String, a) -> void:
 		print("[solve]   " + r)
 	_report_unreached(a, name)
 	print("[solve] movers now:
-" + String(a.mover_report()))
+" + String(a.behaviour.mover_report()))
 	_write_view(name, a)
 	print("[solve] RESULT FAIL — stuck on %s after %.0f s%s"
 		% [name, (Time.get_ticks_msec() - _t0) / 1000.0, _where()])
@@ -1054,15 +1058,15 @@ func _quit(code: int) -> void:
 ## reachable cell, and what stops the capsule between the two.
 func _report_unreached(a, name: String) -> void:
 	var targets: Array = []
-	for e in a._teleports:
+	for e in _exit_recs(a):
 		var tgt: String = ("MAP.%03d" % e.exit_map) if e.exit_map > 0 else "previous map"
 		if _reach_point(_epos(e), EXIT_REACH) == Vector3.INF:
 			targets.append(["EXIT @%05x → %s set %d" % [e.file_off, tgt, e.exit_marker_id], _epos(e)])
 	for t in _prox_nodes(a):
-		var e = a.record(int(t.id))
+		var e = a.behaviour.record_of(int(t.id))
 		if not _done.has("%s:p%05x" % [name, e.file_off]):
 			targets.append(["trigger %s @%05x (act %02x)" % [_ename(a, e), e.file_off, e.link_act_type], _epos(e)])
-	for e in a._map.entities:
+	for e in a.map.entities:
 		if e.link_act_type >= 0x26 and e.link_act_type <= 0x2A:
 			targets.append(["OBJECTIVE %s @%05x (act %02x)" % [_ename(a, e), e.file_off, e.link_act_type], _epos(e)])
 	for t in targets:
@@ -1166,12 +1170,12 @@ func _write_view(name: String, a) -> void:
 		if cx >= 0 and cx < w and cz >= 0 and cz < h:
 			rows[cz][cx] = ch.unicode_at(0)
 	for t in _prox_nodes(a):
-		mark.call(_epos(a.record(int(t.id))), "U" if t.is_wall_button() else "G")
-	for e in a._map.entities:
-		var act: int = a.act_of(e.file_off)
+		mark.call(_epos(a.behaviour.record_of(int(t.id))), "U" if t.is_wall_button() else "G")
+	for e in a.map.entities:
+		var act: int = a.triggers.act(e.file_off)
 		if act >= 0x26 and act <= 0x2A:
 			mark.call(_epos(e), "O")
-	for e in a._teleports:
+	for e in _exit_recs(a):
 		mark.call(_epos(e), "E")
 	for s in _seeds.get(name, []):
 		mark.call(s, "S")
@@ -1200,6 +1204,20 @@ func _epos(e) -> Vector3:
 func _prox_nodes(a) -> Array:
 	return a.behaviour.prox_nodes() if a.behaviour != null else []
 
+## The MAP record behind every 0xF0 doorway of the level, in map order.
+## The doorways are nodes since step 5h and the node knows where it stands
+## and what it leads to; what the walk below wants of one is its record —
+## the file offset it is keyed by and the marker set it spawns at.
+func _exit_recs(a) -> Array:
+	var out: Array = []
+	if a.behaviour == null:
+		return out
+	for x in a.behaviour.exit_nodes():
+		var e = a.behaviour.record_of(int(x.id))
+		if e != null:
+			out.append(e)
+	return out
+
 ## Where the run stands when a mission scene is up: the console's own zone
 ## line (the zone, its mission, where it stands and which phase its world is
 ## in). "" under the per-map runtime, where the map name says it all.
@@ -1211,6 +1229,6 @@ func _where() -> String:
 func _ename(a, e) -> String:
 	if e == null:
 		return "?"
-	if e.name_index >= 0 and e.name_index < a._map.names.size():
-		return String(a._map.names[e.name_index])
+	if e.name_index >= 0 and e.name_index < a.map.names.size():
+		return String(a.map.names[e.name_index])
 	return "sprite" if (e.flags & 3) == 3 else "entity"

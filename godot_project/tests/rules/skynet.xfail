@@ -7,7 +7,6 @@
 220 0c673 EF prox_gate chain_short
 220 0ea54 EF prox_gate chain_short
 220 0f74e F2 prox_chain chain_short
-220 10637 19 destructible projectile_no_hit
 229 02f67 EF prox_gate second_activation
 229 03e50 EF prox_gate chain_silent
 229 0527c EF prox_gate second_activation
@@ -26,13 +25,10 @@
 240 09fbb EF prox_gate chain_extra
 240 0a033 EF prox_gate chain_extra
 240 0a057 EF prox_gate chain_extra
-260 124b9 19 destructible projectile_no_hit
 260 1427e B1 marker path_window
-260 18254 19 destructible projectile_no_hit
 260 182cb 19 destructible projectile_no_hit
 260 18312 19 destructible projectile_no_hit
 260 18447 19 destructible projectile_no_hit
-260 18477 19 destructible projectile_no_hit
 270 097f5 EF prox_gate chain_silent
 270 09e7f EF prox_gate chain_extra
 271 06db0 F0 exit chain_short

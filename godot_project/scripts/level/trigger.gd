@@ -14,8 +14,8 @@
 ## entity and the EYE — the camera position, globals [0xd49b4/b8/bc] —
 ## and nothing else: no ray, no line of sight, no vertical window.
 ##
-## Until step 5c this class was a pair of arrays swept from
-## scripts/action_system.gd. The node is the sweep now. What it holds is
+## Until step 5c this class was a pair of arrays swept from the long loop
+## (gone since step 5h). The node is the sweep now. What it holds is
 ## where the trigger stands, how far it reaches, whether the player was
 ## inside it on the last tick and whether the key has already reached it
 ## this press. What it does NOT hold is the trigger's state: the enable
@@ -32,8 +32,8 @@
 ##
 ## Every position that comes in or goes out here is ZONE-LOCAL — the DOS
 ## coordinates the records are in, which is what `position` holds. The
-## caller takes the world position into that space once (ActionSystem's
-## zone_origin).
+## caller takes the world position into that space once (Behaviour.tick,
+## by the branch's zone_origin).
 
 extends Area3D
 
@@ -131,7 +131,7 @@ func runs() -> bool:
 
 ## Is the entity this node was BAKED from one the handler ever runs for?
 ## The sweep list is fixed when the level is built, from the authored
-## bytes, exactly as ActionSystem's `_prox` was.
+## bytes, exactly as the long loop's own `_prox` list was.
 func on_sweep() -> bool:
 	if act == Rules.ACT_PROX_CHAIN_A or act == Rules.ACT_PROX_CHAIN_B:
 		return true
@@ -173,7 +173,7 @@ func is_wall_button() -> bool:
 # ---------------------------------------------------------------------
 ## One tick of this trigger. `eye` is where the DOS handlers measure from
 ## — the camera position — in zone-local coordinates; `use_edge` is true
-## in the frame the use key went down (ActionSystem.press_use).
+## in the frame the use key went down (Behaviour.press_use).
 ##
 ## DOS: the 0xEF handler never looks at bit 0 — every gate is live
 ## (MAP.215's silo cover opens from a CORC3229 piece whose state is 0x10)
@@ -187,7 +187,7 @@ func prox_watch(eye: Vector3, use_edge: bool) -> void:
 	var a: int = act_now()
 	if a == Rules.ACT_PROX_GATE:
 		# The key, not the approach. A gate whose chain ends in an exit is
-		# the use key's way through and goes by ActionSystem.activate_teleport.
+		# the use key's way through and goes by Behaviour.activate_teleport.
 		if use_edge and here and not edge_done and _chain_exit() < 0:
 			print("[action] gate @%05x used at %s" % [id, position])
 			flip()
@@ -266,7 +266,7 @@ func prox_use(eye: Vector3) -> bool:
 	# DOS order is ObjFlipLink and then the entity's own ObjDoAction. For
 	# these three slots that second call does nothing: they are per-tick
 	# handlers, dispatched from the sweep above, and ObjDoAction returns
-	# for them (action_system._do_action).
+	# for them: ObjDoAction has no port of its own any more.
 	flip()
 	if chain_trigger:
 		_clear_enable()                      # after the flip, as 0x138223 does

@@ -55,7 +55,7 @@
 extends RefCounted
 
 const MapFile      := preload("res://scripts/loaders/map_file.gd")
-const ActionSystem := preload("res://scripts/action_system.gd")
+const Rules        := preload("res://scripts/triggers/rules_skynet.gd")
 const Briefing     := preload("res://scripts/loaders/briefing.gd")
 const BSAReader    := preload("res://scripts/loaders/bsa_reader.gd")
 
@@ -130,12 +130,25 @@ const BOX_MIN_THICKNESS: float = 16.0
 ## partition the meshes the same way.
 static func wants_action(e: MapFile.Entity, name: String, transfrm: Dictionary) -> bool:
 	var act: int = e.link_act_type
-	return ActionSystem.is_mover(act) or ActionSystem.is_destructible(act) \
-		or act == ActionSystem.ACT_DEMOLISH \
+	return Rules.is_mover(act) or Rules.is_destructible(act) \
+		or act == Rules.ACT_DEMOLISH \
 		or transfrm.has(name.to_lower()) \
 		or (e.state_byte & 6) != 0 or e.hp > 0 \
-		or act == ActionSystem.ACT_PROX_GATE or act == ActionSystem.ACT_PROX_CHAIN_A \
-		or act == ActionSystem.ACT_PROX_CHAIN_B
+		or act == Rules.ACT_PROX_GATE or act == Rules.ACT_PROX_CHAIN_A \
+		or act == Rules.ACT_PROX_CHAIN_B
+
+## Can `e` flip the chain it links to by itself — a proximity or use-key
+## trigger, a countdown relay, a prop whose hit or death fires its link
+## (state bits 1-2), a marker path whose end fires what it points at?
+## main.gd's variant import carries such an entity's state only when
+## everything down its chain is the same on both maps.
+static func starts_chain(e: MapFile.Entity) -> bool:
+	var act: int = e.link_act_type
+	if e.marker_type >= 0:
+		return e.link_next > 0
+	return act == Rules.ACT_PROX_GATE or act == Rules.ACT_PROX_CHAIN_A \
+		or act == Rules.ACT_PROX_CHAIN_B \
+		or act == Rules.ACT_RELAY or (e.state_byte & 6) != 0
 
 ## Every entity another entity's chain points at (file offsets).
 static func chain_targets(map: MapFile.MapFile) -> Dictionary:
@@ -162,26 +175,26 @@ static func kind_of(map: MapFile.MapFile, e: MapFile.Entity, transfrm: Dictionar
 	var variant: int = e.flags & 3
 	var act: int = e.link_act_type
 	var name: String = MapFile.entity_name(map, e) if variant == 1 else ""
-	if ActionSystem.is_mover(act):
+	if Rules.is_mover(act):
 		return "mover" if variant == 1 else "raw"
-	if ActionSystem.is_destructible(act) or (variant == 1 and transfrm.has(name.to_lower())):
+	if Rules.is_destructible(act) or (variant == 1 and transfrm.has(name.to_lower())):
 		return "destructible" if variant == 1 else "raw"
-	if act == ActionSystem.ACT_PROX_GATE or act == ActionSystem.ACT_PROX_CHAIN_A 			or act == ActionSystem.ACT_PROX_CHAIN_B:
+	if act == Rules.ACT_PROX_GATE or act == Rules.ACT_PROX_CHAIN_A 			or act == Rules.ACT_PROX_CHAIN_B:
 		return "trigger"
-	if act == ActionSystem.ACT_TELEPORT:
+	if act == Rules.ACT_TELEPORT:
 		return "exit"
 	if act == ACT_SOUND_LOOP:
 		return "sound_loop"
-	if act == ActionSystem.ACT_VOICE:
+	if act == Rules.ACT_VOICE:
 		return "voice"
-	if ActionSystem.SOUND_ONESHOT.has(act):
+	if Rules.SOUND_ONESHOT.has(act):
 		return "sound_cue"
-	if act >= ActionSystem.ACT_HINT_FIRST and act <= ActionSystem.ACT_HINT_LAST:
+	if act >= Rules.ACT_HINT_FIRST and act <= Rules.ACT_HINT_LAST:
 		return "message"
-	if act >= ActionSystem.ACT_OBJECTIVE_FIRST and act <= ActionSystem.ACT_FAIL:
+	if act >= Rules.ACT_OBJECTIVE_FIRST and act <= Rules.ACT_FAIL:
 		return "objective"
 	# 0x1B: a chain kills it — a Damageable whose act says so.
-	if variant == 1 and (e.hp > 0 or (e.state_byte & 6) != 0 or act == ActionSystem.ACT_DEMOLISH):
+	if variant == 1 and (e.hp > 0 or (e.state_byte & 6) != 0 or act == Rules.ACT_DEMOLISH):
 		return "damageable"
 	# 0xFE / 0xFF are what DOS writes into a spent act byte, not ids.
 	if act > 0 and act < 0xFE:
@@ -231,7 +244,7 @@ static func entity_euler(e: MapFile.Entity) -> Vector3:
 ## the two together changes the baked animation of those movers and so
 ## needs a rebake; nothing plays that animation.
 static func mover_params(act: int) -> Dictionary:
-	var cfg: Array = ActionSystem.MOVER_TABLE[act]
+	var cfg: Array = Rules.MOVER_TABLE[act]
 	var fam: String = String(cfg[0])
 	var p4: int = int(cfg[1])
 	var limit: int = int(cfg[2])
@@ -248,21 +261,21 @@ static func mover_params(act: int) -> Dictionary:
 			span = absf(float(limit << 4))      # p6<<4 travel distance
 		"rot":
 			span = 2048.0                       # a full turn, looped
-	var speed: float = ActionSystem.SWING_SPEED
+	var speed: float = Rules.SWING_SPEED
 	match fam:
 		"slide":
-			speed = ActionSystem.SLIDE_SPEED_FAST if span >= 2048.0 else ActionSystem.SLIDE_SPEED_SLOW
+			speed = Rules.SLIDE_SPEED_FAST if span >= 2048.0 else Rules.SLIDE_SPEED_SLOW
 		"slide5f":
-			speed = float(p4) * ActionSystem.SLIDE_SPEED_SCALE
+			speed = float(p4) * Rules.SLIDE_SPEED_SCALE
 		"jump":
 			speed = 0.0                         # instant
 		"rot":
-			speed = ActionSystem.ROT_SPEED
+			speed = Rules.ROT_SPEED
 	return {"family": fam, "axis": clampi(p4, 0, 2), "p4": p4, "span": span,
 		"sign": sign, "speed": speed}
 
 ## The basis of a swung or spun mover at `progress` (signed 11-bit
-## units) — ActionSystem._apply_mover_transform, swing branch.
+## units) — Rules._apply_mover_transform, swing branch.
 ## The "move" animation of a mover: its Body from rest (t = 0) to the
 ## end of the travel, at the DOS speed. Position keys for the slides,
 ## rotation keys every SWING_KEY_STEP for the swings; a rotator loops.
@@ -592,10 +605,10 @@ static func _trigger(e: MapFile.Entity, name: String, variant: int, shapes: Dict
 	n.id = e.file_off
 	n.act = e.link_act_type
 	n.mesh_name = name
-	var r: float = ActionSystem.PROX_GATE_RADIUS
-	if e.link_act_type == ActionSystem.ACT_PROX_CHAIN_A:
+	var r: float = Rules.PROX_GATE_RADIUS
+	if e.link_act_type == Rules.ACT_PROX_CHAIN_A:
 		r = 256.0
-	elif e.link_act_type == ActionSystem.ACT_PROX_CHAIN_B:
+	elif e.link_act_type == Rules.ACT_PROX_CHAIN_B:
 		r = 1024.0
 	n.radius = r
 	# The port's rule (scripts/level/trigger.gd is_wall_button): a NAMED
@@ -612,9 +625,9 @@ static func _exit(e: MapFile.Entity, shapes: Dictionary) -> Node:
 	n.id = e.file_off
 	n.target_map = e.exit_map
 	n.marker_set = e.exit_marker_id
-	n.radius = ActionSystem.TELEPORT_TOUCH_RADIUS
+	n.radius = Rules.TELEPORT_TOUCH_RADIUS
 	n.state = e.state_byte
-	(n.get_node(^"Shape") as CollisionShape3D).shape = _cylinder(shapes, ActionSystem.TELEPORT_TOUCH_RADIUS)
+	(n.get_node(^"Shape") as CollisionShape3D).shape = _cylinder(shapes, Rules.TELEPORT_TOUCH_RADIUS)
 	return n
 
 ## Loops that are meant to fill a whole level, not just their corner of
@@ -644,7 +657,7 @@ static func _sound_cue(e: MapFile.Entity) -> Node:
 	var n = SOUND_CUE.instantiate()
 	n.id = e.file_off
 	n.act = e.link_act_type
-	n.sound_id = int(ActionSystem.SOUND_ONESHOT.get(e.link_act_type, -1))
+	n.sound_id = int(Rules.SOUND_ONESHOT.get(e.link_act_type, -1))
 	n.state = e.state_byte
 	n.stream = Audio.oneshot_stream_for(n.sound_id)
 	return n
@@ -660,7 +673,7 @@ static func _message(e: MapFile.Entity, mission: Node) -> Node:
 	var n = MESSAGE_CUE.instantiate()
 	n.id = e.file_off
 	n.act = e.link_act_type
-	n.index = e.link_act_type - ActionSystem.ACT_HINT_FIRST
+	n.index = e.link_act_type - Rules.ACT_HINT_FIRST
 	n.state = e.state_byte
 	var hints: PackedStringArray = mission.get("hints") if mission != null else PackedStringArray()
 	if n.index < hints.size():
@@ -672,11 +685,11 @@ static func _objective(e: MapFile.Entity, mission: Node) -> Node:
 	n.id = e.file_off
 	n.act = e.link_act_type
 	n.state = e.state_byte
-	if e.link_act_type == ActionSystem.ACT_FAIL:
+	if e.link_act_type == Rules.ACT_FAIL:
 		n.index = -1
 		n.fails_mission = true
 	else:
-		n.index = e.link_act_type - ActionSystem.ACT_OBJECTIVE_FIRST
+		n.index = e.link_act_type - Rules.ACT_OBJECTIVE_FIRST
 		var lines: PackedStringArray = mission.get("objectives") if mission != null else PackedStringArray()
 		if n.index < lines.size():
 			n.text = String(lines[n.index])
@@ -732,7 +745,7 @@ static func _cylinder(shapes: Dictionary, radius: float) -> CylinderShape3D:
 		return shapes[radius]
 	var c := CylinderShape3D.new()
 	c.radius = radius
-	c.height = 2.0 * ActionSystem.PROX_VERTICAL_WINDOW
+	c.height = 2.0 * Rules.PROX_VERTICAL_WINDOW
 	shapes[radius] = c
 	return c
 
@@ -751,13 +764,13 @@ static func _node_name(kind: String, e: MapFile.Entity, name: String) -> String:
 		"sound_loop":
 			tag = str(e.exit_map) if (e.flags & 3) == 3 else "x"
 		"sound_cue":
-			tag = str(ActionSystem.SOUND_ONESHOT.get(act, -1))
+			tag = str(Rules.SOUND_ONESHOT.get(act, -1))
 		"voice":
 			tag = str(e.exit_map)
 		"message":
-			tag = "G%d" % (act - ActionSystem.ACT_HINT_FIRST + 1)
+			tag = "G%d" % (act - Rules.ACT_HINT_FIRST + 1)
 		"objective":
-			tag = "FAIL" if act == ActionSystem.ACT_FAIL else "M%d" % (act - ActionSystem.ACT_OBJECTIVE_FIRST + 1)
+			tag = "FAIL" if act == Rules.ACT_FAIL else "M%d" % (act - Rules.ACT_OBJECTIVE_FIRST + 1)
 		_:
 			tag = "relay" if act == 0 else "%02X" % act
 			if not name.is_empty():

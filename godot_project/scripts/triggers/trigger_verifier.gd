@@ -272,7 +272,7 @@ func _changed_maps(all: PackedStringArray) -> PackedStringArray:
 func _verify_map(name: String) -> void:
 	_map_t0 = Time.get_ticks_msec()
 	var level = main._current_level
-	if level == null or level.action == null:
+	if level == null or level.behaviour == null:
 		_row(-1, 0, 0, "-", "-", FAIL, "no level")
 		return
 	var num: int = int(level.map_suffix)
@@ -297,9 +297,8 @@ func _verify_map(name: String) -> void:
 			(pn.position as Vector3) + (level.origin as Vector3),
 			float(pn.measure())])
 	_exit_world = []
-	for ti in (level.action._teleports as Array).size():
-		_exit_world.append((level.action._teleport_pos[ti] as Vector3)
-			+ (level.origin as Vector3))
+	for x in (level.behaviour.exit_nodes() as Array):
+		_exit_world.append((x.position as Vector3) + (level.origin as Vector3))
 	_snap = _pristine(level, graph, _snapshot(level))
 	var snap: Dictionary = _snap
 	var nodes: Array = (graph.get("nodes", []) as Array).duplicate()
@@ -325,14 +324,13 @@ func _verify_map(name: String) -> void:
 ## objective counter is kept here instead of in main (whose handler ends
 ## the mission and changes the level), and so is the fail act.
 func _intercept(level) -> void:
-	var a = level.action
-	if a.teleport_requested.is_connected(main._on_teleport_requested):
-		a.teleport_requested.disconnect(main._on_teleport_requested)
-	if not a.teleport_requested.is_connected(_on_exit):
-		a.teleport_requested.connect(_on_exit)
 	var b = level.behaviour
 	if b == null:
 		return
+	if b.teleport_requested.is_connected(main._on_teleport_requested):
+		b.teleport_requested.disconnect(main._on_teleport_requested)
+	if not b.teleport_requested.is_connected(_on_exit):
+		b.teleport_requested.connect(_on_exit)
 	if b.objective_complete.is_connected(main._on_objective_complete):
 		b.objective_complete.disconnect(main._on_objective_complete)
 		b.hint_message.disconnect(main._on_hint_message)
@@ -344,14 +342,13 @@ func _intercept(level) -> void:
 ## playing afterwards, and a level whose exits and objectives still
 ## reported here would take none of them.
 func _release(level) -> void:
-	var a = level.action
-	if a != null and a.teleport_requested.is_connected(_on_exit):
-		a.teleport_requested.disconnect(_on_exit)
-		if not a.teleport_requested.is_connected(main._on_teleport_requested):
-			a.teleport_requested.connect(main._on_teleport_requested)
 	var b = level.behaviour
 	if b == null:
 		return
+	if b.teleport_requested.is_connected(_on_exit):
+		b.teleport_requested.disconnect(_on_exit)
+		if not b.teleport_requested.is_connected(main._on_teleport_requested):
+			b.teleport_requested.connect(main._on_teleport_requested)
 	if b.objective_complete.is_connected(_on_objective):
 		b.objective_complete.disconnect(_on_objective)
 	if not b.objective_complete.is_connected(main._on_objective_complete):
@@ -360,11 +357,11 @@ func _release(level) -> void:
 		b.mission_failed.connect(main._on_mission_failed)
 
 ## An exit asked for its map change: written down, and nothing else. The
-## action system's one-map-change latch is deliberately LEFT SET — it is
-## what DOS does (the frame loop tears the level down before any handler
-## runs again, v1.01 0x117a2e), and releasing it here let the same exit
-## fire a second time down the tick sweep and read as "the game did it
-## twice". _reset clears the latch between checks.
+## level's one-map-change latch is deliberately LEFT SET — it is what DOS
+## does (the frame loop tears the level down before any handler runs
+## again, v1.01 0x117a2e), and releasing it here let the same exit fire a
+## second time down the tick sweep and read as "the game did it twice".
+## _reset clears the latch between checks.
 func _on_exit(target_map: int, marker_set: int) -> void:
 	_exit_seen.append([target_map, marker_set])
 
@@ -372,19 +369,20 @@ func _on_exit(target_map: int, marker_set: int) -> void:
 ## relay reads it, and an objective is supposed to take it down by one);
 ## the mission-end machinery stays out of the run.
 func _on_objective(_idx: int) -> void:
-	var a = main._current_level.action if main._current_level != null else null
-	if a != null and a.objectives_left > 0:
-		a.objectives_left -= 1
+	var b = main._current_level.behaviour if main._current_level != null else null
+	if b != null and b.objectives_left > 0:
+		b.objectives_left -= 1
 
 # ---------------------------------------------------------------------
 # Snapshot and reset
 # ---------------------------------------------------------------------
 func _snapshot(level) -> Dictionary:
-	var a = level.action
 	# Where every path vehicle stands and which way it faces — the
-	# vehicles' own since step 5f, and asked of them here.
+	# vehicles' own since step 5f, and asked of them here: a path is the
+	# one thing a snapshot does not keep.
 	var paths: Dictionary = level.behaviour.path_snapshot() if level.behaviour != null else {}
-	return {"action": a.save_state(), "objectives": a.objectives_left,
+	return {"triggers": level.triggers.snapshot(),
+		"objectives": level.behaviour.objectives_left,
 		"paths": paths, "water": float(main.player.get("water_level")),
 		"spawn": main.player.global_position, "yaw": main.player.rotation.y}
 
@@ -396,7 +394,7 @@ func _snapshot(level) -> Dictionary:
 ## same thing; for a suite running the subset at the end of a session they
 ## are not.
 func _pristine(level, graph: Dictionary, snap: Dictionary) -> Dictionary:
-	var act: Dictionary = snap["action"]
+	var act: Dictionary = snap["triggers"]
 	var states: Dictionary = act["states"]
 	var hp: Dictionary = act["hp"]
 	for n in (graph.get("nodes", []) as Array):
@@ -414,15 +412,14 @@ func _pristine(level, graph: Dictionary, snap: Dictionary) -> Dictionary:
 	act["links"] = {}
 	return snap
 
-## Put the map back as it was. ActionSystem.restore_state does the
-## records, the movers, the damage stages and the hit points; the latches
-## and the one-map-change flag are the sweeps' own memory and are cleared
-## here, or the next check would start with the player already "inside"
-## every trigger he was standing in.
+## Put the map back as it was. TriggerRuntime.restore does the bytes, the
+## movers, the damage stages and the hit points; the latches and the
+## one-map-change flag are the nodes' own memory and are cleared here, or
+## the next check would start with the player already "inside" every
+## trigger he was standing in.
 func _reset(level, snap: Dictionary) -> void:
-	var a = level.action
 	_restore_acts(level)
-	a.restore_state(snap["action"])
+	level.triggers.restore(snap["triggers"])
 	level.behaviour.prox_forget()
 	# …and what the step-5d classes remember: the flicker each lamp is
 	# half way through, and the sprites whose robot is out. A robot an
@@ -437,10 +434,11 @@ func _reset(level, snap: Dictionary) -> void:
 	# still, where the map put it (step 5f).
 	level.behaviour.path_forget()
 	level.behaviour.path_restore(snap["paths"])
-	a._touch_latched.clear()
-	a._armed.clear()
-	a._teleport_fired = false
-	a.objectives_left = int(snap["objectives"])
+	# …and the doorways: which of them the player was standing in, and the
+	# one map change this level instance is allowed (step 5h).
+	level.behaviour.exit_forget()
+	level.triggers.clear_armed()
+	level.behaviour.objectives_left = int(snap["objectives"])
 	main.player.set("water_level", float(snap["water"]))
 	_exit_seen.clear()
 	if level.bus != null:
@@ -655,8 +653,8 @@ func _walk_in(level, from: Vector3, to: Vector3, ep: Vector3) -> PackedStringArr
 func _check_exit(level, graph: Dictionary, node: Dictionary, num: int, id: int,
 		act: int, kind: String, mode: Dictionary) -> void:
 	var ep: Vector3 = _epos(level, id)
-	# The key only reaches a doorway the player can SEE: ActionSystem
-	# _reachable rays the sprite, and a shut door leaf blocks all four of
+	# The key only reaches a doorway the player can SEE: Behaviour
+	# .reachable rays the sprite, and a shut door leaf blocks all four of
 	# its lines. A doorway with no such place to stand is not a failure —
 	# it is a door that has not been opened yet.
 	#
@@ -664,7 +662,7 @@ func _check_exit(level, graph: Dictionary, node: Dictionary, num: int, id: int,
 	# either (the `alone` argument — the exit's own id is in no proximity
 	# row, so every one of them counts). The key is one key: standing in an
 	# 0xEF gate whose chain ends in this very doorway, it walks that chain
-	# first (action_system.activate_teleport) and the door sounds on the
+	# first (Behaviour.activate_teleport) and the door sounds on the
 	# way, which is right for the gate and more than this node promises.
 	# Where there is nowhere else to stand the spot is taken anyway and
 	# marked shared, as the gates' own checks do.
@@ -695,7 +693,7 @@ func _check_exit(level, graph: Dictionary, node: Dictionary, num: int, id: int,
 	# There is one key. Where the only floor inside this doorway's measure
 	# is also inside an 0xEF GATE whose chain ends in this very doorway,
 	# that gate is what the key operates — DOS's own way through a door,
-	# and the port takes it first (action_system.activate_teleport). What
+	# and the port takes it first (Behaviour.activate_teleport). What
 	# the game then did is the GATE's row of the graph, sound and all, so
 	# that is what it is measured against.
 	if not why.is_empty() and bool(spot.get("shared", false)):
@@ -704,7 +702,7 @@ func _check_exit(level, graph: Dictionary, node: Dictionary, num: int, id: int,
 			var alt: String = _why(TriggerEquiv.compare(by_gate, got))
 			why = "" if alt.is_empty() else _join(alt, "a gate covers this doorway")
 	if not why.is_empty():
-		var blocked: bool = not level.action._reachable(
+		var blocked: bool = not level.behaviour.reachable(
 			main.player.global_position - level.origin, ep - level.origin)
 		# What the refused map change asked for, when there was one: an
 		# exit that fired for the wrong map or the wrong marker set reads
@@ -730,7 +728,7 @@ func _check_exit(level, graph: Dictionary, node: Dictionary, num: int, id: int,
 	# 3. An exit a CHAIN switches on fires on the tick it is armed.
 	_reset(level, _snap)
 	var armed: PackedStringArray = await _record_around(level, func() -> void:
-		level.action._armed[id] = true)
+		level.triggers.arm_in_tick(id))
 	if not _has_exit(armed):
 		_row(num, id, act, kind, "exit", FAIL, "a chain-armed exit did not fire")
 		return
@@ -745,7 +743,7 @@ static func _has_exit(tokens: PackedStringArray) -> bool:
 # --- shots (state bit 1 / bit 2) --------------------------------------
 func _check_shot(level, node: Dictionary, num: int, id: int, act: int,
 		kind: String, how: String) -> void:
-	var a = level.action
+	var b = level.behaviour
 	var aim: Vector3 = _aim_point(level, id)
 	if aim == Vector3.INF:
 		_row(num, id, act, kind, how, UNREACHABLE, "nothing to aim at")
@@ -771,17 +769,17 @@ func _check_shot(level, node: Dictionary, num: int, id: int, act: int,
 	var drained: bool = false
 	for _i in SHOT_MAX:
 		await _fire_once()
-		if not a.is_damageable_off(id) or bus.history().size() > 0:
+		if not b.is_damageable(id) or bus.history().size() > 0:
 			break
 	# A thousand-point generator is fifty rifle shots; the death bit is
 	# what is being checked, not the barrel. The first shot above went the
 	# whole way through the input path; the rest of the hit points are
 	# taken off through the same ObjHit the bullet calls.
-	if how == "shot_death" and a.is_damageable_off(id) and bus.history().is_empty():
+	if how == "shot_death" and b.is_damageable(id) and bus.history().is_empty():
 		var left: float = float(level.triggers.hp(id))
 		if left > 0.0:
 			drained = true
-			a.on_player_hit(id, left)
+			b.obj_hit(id, left)
 	await _drv.frames(ACT_FRAMES)
 	var got: PackedStringArray = TriggerEquiv.tokens(bus.take())
 	bus.record(false)
@@ -805,7 +803,7 @@ func _fire_once() -> void:
 # --- the countdown relay (0x2C) ---------------------------------------
 func _check_relay(level, node: Dictionary, num: int, id: int, act: int,
 		kind: String, mode: Dictionary) -> void:
-	var a = level.action
+	var b = level.behaviour
 	var e = level.map.entities_by_off.get(id)
 	if e == null:
 		_row(num, id, act, kind, "counter", FAIL, "no record")
@@ -813,14 +811,13 @@ func _check_relay(level, node: Dictionary, num: int, id: int, act: int,
 	var at: int = int(mode.get("at", Rules.RELAY_AT))
 	var got: PackedStringArray = await _record_around(level, func() -> void:
 		level.triggers.arm(id)                   # what a chain does to it
-		a.objectives_left = at)
+		b.objectives_left = at)
 	var why: String = _why(TriggerEquiv.compare(node.get("first", []), got))
 	_row(num, id, act, kind, "counter", FAIL if not why.is_empty() else PASS, why)
 
 # --- a vehicle that drives a marker path ------------------------------
 func _check_path(level, node: Dictionary, num: int, id: int, act: int,
 		kind: String) -> void:
-	var a = level.action
 	var veh: Node = level.behaviour.vehicle_node(id) if level.behaviour != null else null
 	if veh == null:
 		_row(num, id, act, kind, "path", UNREACHABLE, "no vehicle was built for it")
@@ -850,7 +847,7 @@ func _check_path(level, node: Dictionary, num: int, id: int, act: int,
 	bus.clear()
 	var e = level.map.entities_by_off.get(id)
 	if e != null:
-		a._flip_link(e)                          # the end of the path, taken directly
+		level.triggers.flip(e.file_off)           # the end of the path, taken directly
 	_arm_path(level, int(veh.head))
 	for _i in 180:
 		await _drv.physics(1)
@@ -968,7 +965,7 @@ func _stand_in(level, ep: Vector3, mode: Dictionary, cap: float = 0.0,
 					continue
 				if not _fits(feet):
 					continue
-				if sight and not level.action._reachable(feet - (level.origin as Vector3),
+				if sight and not level.behaviour.reachable(feet - (level.origin as Vector3),
 						ep - (level.origin as Vector3)):
 					continue                      # a shut door leaf in the way
 				if alone >= 0 and not _alone_at(feet, alone):
@@ -993,7 +990,7 @@ func _alone_at(feet: Vector3, mine: int) -> bool:
 	return true
 
 ## Is this place outside every DOORWAY's touch measure (the port's 2D
-## radius with a vertical window, action_system._within_touch)? A spot
+## radius with a vertical window, MapExit.within)? A spot
 ## that says "nothing may happen here" cannot be one where the player is
 ## standing in a door: the key takes THAT, and rightly — it is the
 ## doorway's own rule, not the trigger being checked.
@@ -1090,7 +1087,7 @@ func _fits(feet: Vector3) -> bool:
 
 ## The middle of the node's mesh — what a shot is aimed at.
 func _aim_point(level, id: int) -> Vector3:
-	var n = level.action._nodes.get(id)
+	var n = level.behaviour.hit_node(id)
 	if n != null and is_instance_valid(n) and n is MeshInstance3D \
 			and (n as MeshInstance3D).mesh != null:
 		var mi: MeshInstance3D = n
@@ -1100,7 +1097,7 @@ func _aim_point(level, id: int) -> Vector3:
 ## A place with a clear line at `aim` whose first collider is the node
 ## itself — where a player could actually shoot it from.
 func _shooting_spot(level, id: int, aim: Vector3) -> Dictionary:
-	var target = level.action._nodes.get(id)
+	var target = level.behaviour.hit_node(id)
 	for dist in SHOT_DISTANCES:
 		for d in RING:
 			if d == Vector2.ZERO:

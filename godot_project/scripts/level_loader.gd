@@ -19,7 +19,6 @@ const MapFile      := preload("res://scripts/loaders/map_file.gd")
 const TextureCache := preload("res://scripts/loaders/texture_cache.gd")
 const WldTerrain   := preload("res://scripts/loaders/wld_terrain.gd")
 const Enemy        := preload("res://scripts/enemy.gd")
-const ActionSystem := preload("res://scripts/action_system.gd")
 const ActionTarget := preload("res://scripts/action_target.gd")
 const TransfrmPRS  := preload("res://scripts/loaders/transfrm_prs.gd")
 const EnemyAnim    := preload("res://scripts/enemy_anim.gd")
@@ -234,7 +233,7 @@ class Level:
 	var wld: WldTerrain.WLD
 	var terrain: MeshInstance3D
 	## file_off → OmniLight3D for every variant-2 light (main places them,
-	## the action system switches them).
+	## a chain switches them).
 	var map_lights: Dictionary = {}
 	var entities: Node3D                 # variant-1 .3D meshes
 	var enemies: Node3D                  # variant-3 enemy-marker actors
@@ -254,12 +253,9 @@ class Level:
 	var player_start: Vector3 = Vector3.ZERO
 	var player_dir: Vector3 = Vector3.ZERO
 	var has_player_start: bool = false
-	## Entity action/link system (doors, movers, destructibles,
-	## proximity triggers, teleports). The level controller ticks it.
-	var action: ActionSystem = null
 	## Every trigger event this level performs, announced
 	## (scripts/triggers/trigger_bus.gd, M3 step 3). An OBSERVER: the
-	## action system and the Behaviour branch announce on it, nothing in
+	## trigger runtime and the Behaviour branch announce on it, nothing in
 	## the game subscribes, and it dies with the level. One per ZONE, so a
 	## mission scene's maps each announce under their own map number.
 	var bus: RefCounted = null
@@ -390,7 +386,7 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 		   level.map.names.size(), level.map.entities.size(),
 		   "OUTDOOR" if level.is_outdoor else "INDOOR"])
 
-	# The event bus (M3 step 3) is built BEFORE the action system so that
+	# The event bus (M3 step 3) is built BEFORE the trigger state so that
 	# every trigger event of this level, from the first one, has somewhere
 	# to be announced. Nothing subscribes: it is an observer.
 	level.bus = TriggerBus.new()
@@ -401,15 +397,6 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 	level.triggers = TriggerRuntime.new()
 	level.triggers.bus = level.bus
 	level.triggers.setup(level.map)
-	# Action/link system — chains, movers, destructibles, teleports.
-	level.action = ActionSystem.new()
-	level.action.bus = level.bus
-	level.action.triggers = level.triggers
-	# zone-local ↔ world: the records it keeps are zone-local, so it needs
-	# the offset to read the player's world position and to hand positions
-	# back to the physics world and the audio.
-	level.action.zone_origin = origin
-	level.action.setup(level.map)
 	# TRANSFRM.PRS (destructible damage stages) lives in MDMDBRIF.BSA.
 	var transfrm: Dictionary = {}
 	var brif := BSAReader.new()
@@ -473,8 +460,8 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 		level.behaviour = baked.get("behaviour")
 	level.overlay = LevelScene.overlay(map_name)
 	# The behaviour nodes: from the bake, or built from the records now
-	# (a bake-less run, the editor's data view). The action system walks
-	# the chains on them from here on.
+	# (a bake-less run, the editor's data view). The chains are walked on
+	# them from here on.
 	if level.behaviour == null:
 		level.behaviour = LevelBehaviour.build(level)
 	# Its bodies and meshes sleep while the entity loop below still
@@ -486,19 +473,13 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 	level.behaviour.runtime = level.triggers
 	level.behaviour.bus = level.bus
 	level.triggers.presenter = level.behaviour
-	# The proximity class runs on the branch's own nodes (step 5c): the
-	# sweep, the use key and the wall buttons are theirs, and the two of
-	# them meet over the classes that have not moved yet — the records,
-	# the hit points and the doorway a gate's chain ends in. The relays,
-	# the spawn sprites, the water and the lights are the branch's too
-	# (step 5d), and the water is the one of them that hands a height back
-	# out into world space, so the branch is told where its zone stands.
-	# The MOVERS are the branch's since step 5e, and the two ends meet in
-	# the entity loop below: it builds the mesh and register_node hands it
-	# to the record's own Mover, which moves it from then on — so this has
-	# to be in place before that loop runs.
-	level.action.behaviour = level.behaviour
-	level.behaviour.action = level.action
+	# Every class of the DOS object layer runs on the branch's own nodes
+	# now (steps 5c-5h) and the branch is the level's per-tick sweep. The
+	# water and the drops hand positions back out into world space, so the
+	# branch is told where its zone stands; and the MOVERS meet the entity
+	# loop below, which builds the mesh and hands it to the record's own
+	# Mover through register_node — so this has to be in place before that
+	# loop runs.
 	level.behaviour.zone_origin = origin
 
 	_phase("baked scene")
@@ -620,9 +601,9 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 		var mi: MeshInstance3D
 		if wants_action:
 			var at := ActionTarget.new()
-			at.setup_action(level.action, e.file_off)
+			at.setup_action(level.behaviour, e.file_off)
 			# Sibling name collisions get renamed by the scene tree — keep
-			# the mesh identity where the action system can read it.
+			# the mesh identity where the branch can read it.
 			at.set_meta("mesh_name", name)
 			mi = at
 		else:
@@ -658,7 +639,7 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 			# Register after the transform is final — a mover's node takes
 			# where it stands now as the rest pose of its travel (step 5e,
 			# Behaviour.register_mover → Mover.adopt).
-			level.action.register_node(e, mi)
+			level.behaviour.register_node(e, mi)
 			# Staged wrecks need a TRANSFRM.PRS template for the name; a
 			# 0x19 act without one (CARHIP2C, which IS another car's last
 			# stage) just runs the plain HP path, exactly as the DOS
@@ -1410,7 +1391,7 @@ static func spawn_drop(level: Level, pos: Vector3, drop_type: int) -> Node3D:
 ## zone-local ↔ world: `pos` is ZONE-LOCAL. The sprite becomes a child of
 ## level.sprites, which carries the zone origin, and the heightmap below
 ## is sampled in map coordinates — both want the DOS space, not the
-## world one. ActionSystem.drop_requested emits zone-local for this.
+## world one. Behaviour.item_dropped emits zone-local for this.
 ##
 ## A drop is an ordinary map billboard once it is down: DOS writes it into
 ## the record list (v1.01 FUN_00124619) and from then on draws it through

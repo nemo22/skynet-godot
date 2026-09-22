@@ -11,7 +11,7 @@
 
 extends AudioStreamPlayer3D
 
-## The level the DOS one-shots play at (action_system.gd used -4 dB);
+## The level the DOS one-shots play at (the old long loop used -4 dB);
 ## the wall in between takes its share (Audio.occlusion_db).
 const BASE_DB: float = -4.0
 

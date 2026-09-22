@@ -25,7 +25,7 @@
 ##                      move at all.
 ##
 ## Until step 5e this class was one dictionary keyed by file offset, swept
-## from the long loop in scripts/action_system.gd. The node is the mover
+## from the long loop (gone since step 5h). The node is the mover
 ## now. What it holds is what one of these records remembers between ticks
 ## — how far along its travel it is, which way it is going, whether it is
 ## in the middle of a run — and it is the only thing that moves the mesh.
@@ -308,8 +308,8 @@ func _say(effect_kind: String, payload: Dictionary) -> void:
 # The map's state overlay, and the console
 # ---------------------------------------------------------------------
 ## What the per-map overlay (DOS Mst) keeps of a mover, and the way back.
-## The shape is the one ActionSystem's snapshot has always had — step 5h
-## moves the save format itself.
+## The shape is the one the save has always had; since step 5h the branch
+## asks for it on the way into the runtime's snapshot (plan §4).
 func snapshot() -> Array:
 	return [progress, dir]
 

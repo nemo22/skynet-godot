@@ -104,9 +104,9 @@ func _record_named(mesh: String):
 ## runtime's, since the records stopped carrying play's changes (step 5a).
 func _act_of(e) -> int:
 	var lvl = _main.get("_current_level")
-	if lvl == null or lvl.action == null or e == null:
+	if lvl == null or lvl.behaviour == null or e == null:
 		return -1
-	return lvl.action.act_of(e.file_off)
+	return lvl.triggers.act(e.file_off)
 
 ## Is a robot / a pickup at `off` (an offset in the map that is up) still
 ## in the world?
@@ -262,8 +262,8 @@ func _spoil_shared(next_name: String) -> Dictionary:
 		break
 	# A dent: plain hit points (no chain on hit, no damage stages), the
 	# same act, state and chain on the next variant.
-	if lvl.action != null:
-		var st: Dictionary = lvl.action.save_state()
+	if lvl.behaviour != null:
+		var st: Dictionary = lvl.triggers.snapshot()
 		var hp: Dictionary = st.get("hp", {})
 		for off in hp:
 			var e = lvl.map.entities_by_off.get(int(off))
@@ -273,9 +273,9 @@ func _spoil_shared(next_name: String) -> Dictionary:
 			var k: String = String(_main.call("_entity_key", lvl.map, e))
 			if not keys.has(k) or not bool(_main.call("_same_behaviour", lvl.map, e, other, keys[k])):
 				continue
-			lvl.action.on_player_hit(int(off), 10.0)
+			lvl.behaviour.obj_hit(int(off), 10.0)
 			out["dent"] = k
-			out["hp"] = float(lvl.action.save_state()["hp"][off])
+			out["hp"] = float(lvl.triggers.snapshot()["hp"][off])
 			break
 	await get_tree().physics_frame
 	print("[mission-e2e] shared with %s: robot %s, item %s, dent %s (hp %.0f)"
@@ -303,7 +303,7 @@ func _check_carried(spoil: Dictionary, what: String) -> void:
 	if String(spoil["dent"]).is_empty():
 		print("[mission-e2e] note: %s shares no damageable object to carry" % what)
 	else:
-		var hp: Dictionary = lvl.action.save_state().get("hp", {})
+		var hp: Dictionary = lvl.triggers.snapshot().get("hp", {})
 		var off: int = int(keys.get(spoil["dent"], -1))
 		# The variant's own record would give it full hit points: a value
 		# equal to that would prove nothing.
@@ -323,17 +323,17 @@ func _check_carried(spoil: Dictionary, what: String) -> void:
 func _fire_jeep_hint() -> void:
 	var lvl = _main.get("_current_level")
 	var jeep = _record_named("HUMMERTK")
-	if lvl == null or lvl.action == null or jeep == null:
+	if lvl == null or lvl.behaviour == null or jeep == null:
 		print("[mission-e2e] note: MAP.210's jeep is not here to fire")
 		return
 	var left: int = int(_main.get("_objectives_left"))
-	_check(lvl.action.act_of(jeep.file_off) == 0x1C,
-		"MAP.210's jeep is the hint [G1] (act %02x)" % lvl.action.act_of(jeep.file_off))
+	_check(lvl.triggers.act(jeep.file_off) == 0x1C,
+		"MAP.210's jeep is the hint [G1] (act %02x)" % lvl.triggers.act(jeep.file_off))
 	var at := Vector3(float(jeep.x), -float(jeep.y), -float(jeep.z)) + (lvl.origin as Vector3)
-	lvl.action.press_use()
-	lvl.action.tick(0.016, at, at)
+	lvl.behaviour.press_use()
+	lvl.behaviour.tick(0.016, at, at)
 	await get_tree().physics_frame
-	_check(lvl.action.act_of(jeep.file_off) == 0xFF and int(_main.get("_objectives_left")) == left,
+	_check(lvl.triggers.act(jeep.file_off) == 0xFF and int(_main.get("_objectives_left")) == left,
 		"the gates fire it: retired on MAP.210, and the objective counter has not moved (%d)" % left)
 
 ## Step 0's other half, asked of the code rather than of the world: the
@@ -484,14 +484,14 @@ func _run() -> void:
 	_check(absf(player.global_position.y - y0) < 200.0,
 		"the player stays on MAP.218's floor (dy=%.0f)" % (player.global_position.y - y0))
 
-	# --- 2b. A save taken inside the scene is a MISSION save (format 3,
-	# v0.4): the mission, the active zone (also the map, for the header and
+	# --- 2b. A save taken inside the scene is a MISSION save (the newest
+	# format): the mission, the active zone (also the map, for the header and
 	# the per-map runtime), the player in that zone's own coordinates, the
 	# return register, and the overlay of every zone built so far.
 	var pos_218: Vector3 = player.global_position
 	_check(bool(_main.call("save_to_slot", SAVE_SLOT)), "the game saves from inside a zone")
 	var slot: Dictionary = SaveGame.read(SAVE_SLOT)
-	_check(_header_version(SAVE_SLOT) == SaveGame.VERSION and SaveGame.VERSION == 3,
+	_check(_header_version(SAVE_SLOT) == SaveGame.VERSION and SaveGame.VERSION == 5,
 		"a mission scene writes save format %d" % _header_version(SAVE_SLOT))
 	_check(SaveGame.info(SAVE_SLOT).begins_with("MAP.218 · "),
 		"the LOAD menu still reads the map the player is in (%s)" % SaveGame.info(SAVE_SLOT))
@@ -935,7 +935,7 @@ func _finish_mission_1(left_before: int) -> void:
 		if t != null:
 			await _drive_record(t)
 			if _main.get("_current_level") != null:
-				_main.get("_current_level").action.on_player_activate(
+				_main.get("_current_level").behaviour.on_player_activate(
 					int(t.file_off), (_main.get("player") as Node3D).global_position)
 				for f in 20:
 					await get_tree().physics_frame

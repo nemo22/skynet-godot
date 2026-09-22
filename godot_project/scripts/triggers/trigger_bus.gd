@@ -9,7 +9,7 @@
 ## trigger event calls one of the three announce_* methods below as it
 ## does it — scripts/triggers/trigger_runtime.gd for the chain walk and
 ## scripts/level/behaviour.gd for the cues it runs,
-## scripts/action_system.gd for the exits, movers, water, lights,
+## the long loop for the exits, movers, water, lights,
 ## destructibles, demolition, spawns, relays and path vehicles. Nothing
 ## about play changes: this is an OBSERVER. The emitting code never asks
 ## who is listening, holds no reference to a listener and behaves the

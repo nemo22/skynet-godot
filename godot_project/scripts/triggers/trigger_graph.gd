@@ -22,7 +22,7 @@
 ##             even fan-in, outside the border box
 ##
 ## Nothing here runs the game: the graph is built and written, and the
-## existing ActionSystem keeps playing (plan §7 step 1). It is saved as
+## running game keeps playing (plan §7 step 1). It is saved as
 ## converted/maps/MAP.NNN.triggers.json beside the level scene, with the
 ## same trust and source-hash discipline as every other cache file, and
 ## versioned by graph_version + rules_hash so a rules change rebuilds
@@ -724,7 +724,7 @@ static func _simulate(ctx: Dictionary, id: int, modes: Array) -> Dictionary:
 	# down: DOS performs exactly one map change per level instance. The
 	# graph said the exit fires twice, which read as "walk back through and
 	# it works again"; the runtime's one-map-change latch
-	# (action_system._teleport_fired) was the one that matched DOS.
+	# (Behaviour.exit_taken) was the one that matched DOS.
 	var second: Array = [] if _ends_instance(first) else _fire(ctx, id, st)
 	return {"first": first, "second": second}
 
@@ -808,7 +808,7 @@ static func _edge(ctx: Dictionary, id: int, st: Dictionary, fx: Array) -> void:
 		"demolish":
 			# ObjHit with HP + 1 (handler 0x1378bf): the prop is GONE, and a
 			# second enable of the same node finds nothing left to kill —
-			# action_system._demolish refuses a record it has already spent.
+			# Behaviour.demolish refuses a record it has already spent.
 			# The simulation carried the flag and never read it back, so
 			# every one of these promised a second death (M3 step 4 read
 			# that as demolish_once).

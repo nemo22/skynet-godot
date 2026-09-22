@@ -150,9 +150,9 @@ func _spent() -> bool:
 # ---------------------------------------------------------------------
 # The map's state overlay
 # ---------------------------------------------------------------------
-## How far this wreck has come. The shape is unchanged from when
-## ActionSystem kept it (step 5h moves the save format itself), so an
-## older save still reads.
+## How far this wreck has come — the branch asks for it on the way into
+## a snapshot (Behaviour.present_snapshot). The shape is the one the
+## save has always had, so an older save still reads.
 func snapshot() -> Array:
 	return [stage, accum]
 

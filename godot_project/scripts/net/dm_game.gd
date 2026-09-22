@@ -270,8 +270,8 @@ func _on_respawned(id: int, pos: Vector3, yaw: float) -> void:
 		_apply_local_class()
 		# The Esc menu or the console may be up: they keep the controls.
 		player.set("input_locked", _chat_open or PauseState.is_paused())
-		if level != null and level.action != null:
-			level.action.arm_proximity(pos, pos + Vector3(0.0, DmAvatar.EYE_HEIGHT, 0.0))
+		if level != null and level.behaviour != null:
+			level.behaviour.arm_proximity(pos, pos + Vector3(0.0, DmAvatar.EYE_HEIGHT, 0.0))
 		_center_msg("", 0.0)
 		return
 	var av = _ensure_avatar(id)

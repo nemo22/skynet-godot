@@ -23,6 +23,7 @@ const DmGame      := preload("res://scripts/net/dm_game.gd")
 const WldTerrain  := preload("res://scripts/loaders/wld_terrain.gd")
 const LevelScene  := preload("res://scripts/level_scene.gd")
 const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
+const Rules       := preload("res://scripts/triggers/rules_skynet.gd")
 const CamPath     := preload("res://scripts/cam_path.gd")
 const PauseState  := preload("res://scripts/pause_state.gd")
 const HudPanel    := preload("res://scripts/hud_panel.gd")
@@ -273,7 +274,8 @@ static func _enable_backfaces(mi: MeshInstance3D) -> void:
 static func _is_small_prop(mi: MeshInstance3D, level: LevelLoader.Level) -> bool:
 	if mi.mesh == null:
 		return false
-	if level.action != null and mi.has_method("file_off") 			and level.action.is_mover_off(mi.file_off()):
+	if level.behaviour != null and mi.has_method("file_off") \
+			and level.behaviour.has_mover(mi.file_off()):
 		return false
 	var s: Vector3 = mi.mesh.get_aabb().size
 	# Flat pieces (floor tiles, wall panels, ramps) are level geometry,
@@ -806,7 +808,8 @@ func _unblock_furniture(level: LevelLoader.Level) -> void:
 	for c in level.entities.get_children():
 		if not (c is MeshInstance3D) or (c as MeshInstance3D).mesh == null:
 			continue
-		if level.action != null and c.has_method("file_off") and level.action.is_mover_off(c.file_off()):
+		if level.behaviour != null and c.has_method("file_off") \
+				and level.behaviour.has_mover(c.file_off()):
 			continue
 		var sz: Vector3 = (c as MeshInstance3D).mesh.get_aabb().size
 		if maxf(sz.x, sz.z) > FURNITURE_MAX_SIDE or sz.y > FURNITURE_MAX_HEIGHT:
@@ -891,8 +894,7 @@ func _begin_level(name: String) -> void:
 	if level.behaviour != null:
 		_connect_behaviour(level)
 		add_child(level.behaviour)
-	if level.action != null:
-		_connect_action(level)
+	_connect_level(level)
 	if Net.active:
 		# Deathmatch: no map enemies (the 31/32 markers on the arenas are
 		# the DOS jeep/HK vehicle spots) and no map pickups — the server
@@ -923,8 +925,8 @@ func _begin_level(name: String) -> void:
 	# Gates/doorways the spawn already sits in must be left before they
 	# can fire again — return exits drop the player right beside the
 	# gate they came through.
-	if level.action != null and is_instance_valid(player):
-		level.action.arm_proximity(player.global_position, _eye_position())
+	if level.behaviour != null and is_instance_valid(player):
+		level.behaviour.arm_proximity(player.global_position, _eye_position())
 	# (The automation switches — _cli_after_level — run once _change_level
 	# has finished: a scripted `use` that takes an exit is a level change
 	# of its own.)
@@ -976,8 +978,8 @@ func _bake_entity_collision(level: LevelLoader.Level) -> void:
 		# object: the BIGDOOR leaf is a braced frame whose trimesh has
 		# holes a player capsule slips through (closed!) and thin edges to
 		# wedge on.
-		var solid_mover: bool = (level.action != null and c.has_method("file_off")
-			and level.action.is_solid_mover(c.file_off()) and LevelBehaviour.is_door_like(c.mesh))
+		var solid_mover: bool = (level.behaviour != null and c.has_method("file_off")
+			and level.behaviour.is_solid_mover(c.file_off()) and LevelBehaviour.is_door_like(c.mesh))
 		if solid_mover or _is_small_prop(c, level):
 			_make_box_collision(c)          # DOS-style solid box
 		else:
@@ -990,8 +992,8 @@ func _bake_entity_collision(level: LevelLoader.Level) -> void:
 		# A moving StaticBody does not push the player — a closing gate
 		# would leave them wedged inside the leaf. Movers get an
 		# AnimatableBody3D (sync_to_physics) instead.
-		if level.action != null and c.has_method("file_off") \
-				and level.action.is_mover_off(c.file_off()):
+		if level.behaviour != null and c.has_method("file_off") \
+				and level.behaviour.has_mover(c.file_off()):
 			_make_animatable(c)
 
 ## The mission-script signals of a level's Behaviour branch. Each level
@@ -1011,16 +1013,16 @@ func _connect_behaviour(level: LevelLoader.Level) -> void:
 		level.behaviour.water_level.connect(_on_water_level)
 		level.behaviour.item_dropped.connect(_on_drop_requested)
 
-## The action system's signals and the references it needs, and the
-## player's own signals (connected once, whatever the level).
-func _connect_action(level: LevelLoader.Level) -> void:
-	if level.action == null:
+## The map change a level asks for, the references its branch needs, and
+## the player's own signals (connected once, whatever the level).
+func _connect_level(level: LevelLoader.Level) -> void:
+	if level.behaviour == null:
 		return
-	if not level.action.teleport_requested.is_connected(_on_teleport_requested):
-		level.action.teleport_requested.connect(_on_teleport_requested)
-	level.action.space = get_world_3d().direct_space_state
-	level.action.player_body = player
-	level.action.objectives_left = _objectives_left
+	if not level.behaviour.teleport_requested.is_connected(_on_teleport_requested):
+		level.behaviour.teleport_requested.connect(_on_teleport_requested)
+	level.behaviour.space = get_world_3d().direct_space_state
+	level.behaviour.player_body = player
+	level.behaviour.objectives_left = _objectives_left
 	if not player.pickup_message.is_connected(_set_status):
 		player.pickup_message.connect(_set_status)
 	if not player.use_pressed.is_connected(_on_use_pressed):
@@ -1759,8 +1761,8 @@ func _on_lighting_setting_changed(_on: bool = false) -> void:
 	for branch in [level.entities, level.enemies, level.terrain]:
 		_unshade_recursive(branch)
 	_light_level(level)
-	if level.action != null:
-		level.action.refresh_switch_visuals()
+	if level.behaviour != null:
+		level.behaviour.refresh_switch_visuals()
 
 func _refresh_brightness(_v: float = 1.0) -> void:
 	var we: WorldEnvironment = get_node_or_null("WorldEnvironment")
@@ -1886,12 +1888,12 @@ func _walk_step(delta: float) -> void:
 ## The AIR second last put on the message line (-1 = none).
 var _hud_air: int = -1
 
-## Entity action system — movers, proximity triggers, teleports — on the
-## physics step (see ActionSystem.tick).
+## The DOS object layer — movers, proximity triggers, doorways — on the
+## physics step (see Behaviour.tick).
 func _physics_process(delta: float) -> void:
-	if _current_level != null and _current_level.action != null \
+	if _current_level != null and _current_level.behaviour != null \
 			and is_instance_valid(player):
-		_current_level.action.tick(delta, player.global_position, _eye_position())
+		_current_level.behaviour.tick(delta, player.global_position, _eye_position())
 
 ## Where the DOS proximity handlers measure from: the camera (0x1379c4 and
 ## 0x137e2e subtract [0xd47b4], the view position) — 75 u over the feet on
@@ -2018,18 +2020,18 @@ func _on_secondary_changed(name: String, count: int) -> void:
 	_set_status("%s  x%d" % [name, count], 2.5)
 
 ## Every press of the use key, whatever the crosshair is on: the 0xEF
-## gates within reach answer it (ActionSystem.press_use).
+## gates within reach answer it (Behaviour.press_use).
 func _on_activate_key(_pos: Vector3) -> void:
-	if _current_level != null and _current_level.action != null:
-		_current_level.action.press_use()
+	if _current_level != null and _current_level.behaviour != null:
+		_current_level.behaviour.press_use()
 
 ## Use key with nothing under the crosshair: fire an armed exit here.
 func _on_use_pressed(pos: Vector3) -> void:
-	if _current_level != null and _current_level.action != null:
-		var a = _current_level.action
-		a.press_use()                       # (also for scripted presses)
-		if not a.activate_teleport(pos, _eye_position()):
-			a.use_nearby(pos, _eye_position())
+	if _current_level != null and _current_level.behaviour != null:
+		var b = _current_level.behaviour
+		b.press_use()                       # (also for scripted presses)
+		if not b.activate_teleport(pos, _eye_position()):
+			b.use_nearby(pos, _eye_position())
 
 ## --- Radiation (DOS RadInit 0x13b149 / dose 0x13b1e0) ----------------
 ## Marker type 4 is a RADIATION SOURCE, not an extraction zone: the u16
@@ -2424,8 +2426,8 @@ func _on_objective_complete(idx: int) -> void:
 		if at < sec.size():
 			text = String(sec[at])
 			_objective_cursor[idx] = at + 1
-	if _current_level != null and _current_level.action != null:
-		_current_level.action.objectives_left = _objectives_left
+	if _current_level != null and _current_level.behaviour != null:
+		_current_level.behaviour.objectives_left = _objectives_left
 	print("[skynet] objective %d done, %d left" % [idx + 1, _objectives_left])
 	_set_status(text if not text.is_empty() else "OBJECTIVE COMPLETE.", 6.0)
 	_finish_mission_if_done(2.5)
@@ -2593,11 +2595,11 @@ func _on_teleport_requested(target_map: int, marker_set: int) -> void:
 	_pending_marker_set = marker_set
 	_transition(target)
 
-## The exit was not taken: the action system's one-map-change latch is
-## released, or every other exit of this map would stay dead.
+## The exit was not taken: the level's one-map-change latch is released,
+## or every other exit of this map would stay dead.
 func _refuse_teleport() -> void:
-	if _current_level != null and _current_level.action != null:
-		_current_level.action.teleport_refused()
+	if _current_level != null and _current_level.behaviour != null:
+		_current_level.behaviour.exit_refused()
 
 ## Fade out, swap the level, fade back in. Exits bypass the briefing —
 ## this is an in-mission move.
@@ -3056,7 +3058,7 @@ func _build_zone(zname: String, z: Dictionary, carry: Dictionary = {}) -> LevelL
 	if level.behaviour != null:
 		_connect_behaviour(level)
 		node.add_child(level.behaviour)
-	_connect_action(level)
+	_connect_level(level)
 	if level.enemies != null:
 		node.add_child(level.enemies)
 	if level.sprites != null:
@@ -3135,8 +3137,8 @@ func _activate_zone(zname: String, from: String, gen: int, carry: Dictionary = {
 	# Gates/doorways the arrival already stands in must be left before
 	# they can fire again — a return exit drops the player right beside
 	# the doorway they came through.
-	if level.action != null and is_instance_valid(player):
-		level.action.arm_proximity(player.global_position, _eye_position())
+	if level.behaviour != null and is_instance_valid(player):
+		level.behaviour.arm_proximity(player.global_position, _eye_position())
 	if level.is_outdoor:
 		Audio.play_ambient("AMB_WIND.RAW")
 	else:
@@ -3166,8 +3168,8 @@ func _deactivate_zone(zname: String) -> void:
 		return
 	var level = z.get("level")
 	if level != null:
-		if level.action != null:
-			level.action.teleport_refused()
+		if level.behaviour != null:
+			level.behaviour.exit_refused()
 		if level.enemies != null and is_instance_valid(level.enemies):
 			level.enemies.process_mode = Node.PROCESS_MODE_DISABLED
 		if level.sky != null and is_instance_valid(level.sky):
@@ -3258,8 +3260,8 @@ func _free_zone_level(entry: Dictionary) -> void:
 	entry["level"] = null
 	if lvl == null:
 		return
-	if lvl.action != null:
-		lvl.action.teleport_refused()
+	if lvl.behaviour != null:
+		lvl.behaviour.exit_refused()
 	# The sky dome hangs under Main (it follows the camera); everything
 	# else of the zone stands under the zone node, so that is swept whole
 	# — the branches, their map lights, the occluders and any overlay.
@@ -3381,11 +3383,11 @@ func _phase_note(z: Dictionary) -> String:
 ## disk on load, as they do on every transition.
 ##
 ## Two sessions, one file (scripts/save_game.gd):
-##   per-map (format 2)  {map, prev_map, map_state, player, objectives,
+##   per-map (VERSION_MAP)  {map, prev_map, map_state, player, objectives,
 ##                        mission_start_map, stats} — what the per-map
 ##                        runtime writes: Future Shock, loose maps, the
 ##                        mission-scene flag off
-##   mission (format 3, "v0.4", step 6 of docs/m2_mission_scene_plan.md)
+##   mission (VERSION, "v0.4", step 6 of docs/m2_mission_scene_plan.md)
 ##                       {map, mission, zone, phases, zones, return_zone,
 ##                        player, objectives, mission_start_map, stats} —
 ##                        written whenever a mission scene is up
@@ -3455,7 +3457,7 @@ func _objectives_save() -> Dictionary:
 	return {"key": _mission_key, "left": _objectives_left,
 		"cursor": _objective_cursor.duplicate()}
 
-## A mission scene saved as the mission it is (format 3, "v0.4"):
+## A mission scene saved as the mission it is (SaveGame.VERSION, "v0.4"):
 ##   map          the DOS map the player stands in — the active zone, under
 ##                the map in force (MAP.217, not the MAP.210 it was baked
 ##                from); the slot header and the per-map runtime read this
@@ -3464,7 +3466,7 @@ func _objectives_save() -> Dictionary:
 ##   phases       every world's phase: the map it was baked from → the map
 ##                in force ({"MAP.210": "MAP.217"}); applied before any zone
 ##                is built
-##   zones        map → overlay ({dead, taken, action, sig, grid, outdoor,
+##   zones        map → overlay ({dead, taken, triggers, sig, grid, outdoor,
 ##                mission[, water, water_y]}) for every zone the mission has
 ##                built and every overlay still waiting (a zone not walked
 ##                into since a load, a phase a world has left behind); a
@@ -3492,7 +3494,7 @@ func _scene_save_data(psnap: Dictionary) -> Dictionary:
 		"mission_start_player": _mission_start_state,
 	}
 
-## Is `data` a mission-scene session (format 3)?
+## Is `data` a mission-scene session (the `zones` shape)?
 static func _is_scene_save(data: Dictionary) -> bool:
 	return data.get("zones") is Dictionary
 
@@ -3611,8 +3613,8 @@ func _apply_pending_player() -> void:
 		snap["pos"] = (snap["pos"] as Vector3) + _current_level.origin
 	if is_instance_valid(player):
 		player.restore_state(snap)
-		if _current_level != null and _current_level.action != null:
-			_current_level.action.arm_proximity(player.global_position, _eye_position())
+		if _current_level != null and _current_level.behaviour != null:
+			_current_level.behaviour.arm_proximity(player.global_position, _eye_position())
 
 ## Fade the screen to `alpha` over `dur` seconds (0 = at once). A newer
 ## fade replaces one still running — the fade-in after a load is not
@@ -3644,8 +3646,8 @@ func _fade_to(alpha: float, dur: float) -> void:
 		_fade_tween = null
 
 ## Snapshot the current map before it is torn down (DOS MstSave): which
-## enemy markers are dead, which pickups were taken, and the action
-## system's trigger/mover/destructible state.
+## enemy markers are dead, which pickups were taken, and the whole
+## trigger state of the map (TriggerRuntime.snapshot).
 func _save_map_state() -> void:
 	var lvl := _current_level
 	if lvl == null:
@@ -3674,7 +3676,11 @@ func _level_snapshot(lvl: LevelLoader.Level, with_water: bool = false) -> Dictio
 				taken.erase(c.get_meta("pickup_off"))
 	var snap: Dictionary = {
 		"dead": dead, "taken": taken,
-		"action": lvl.action.save_state() if lvl.action != null else {},
+		# The trigger state of the map: every byte play has changed, the
+		# movers, the wrecks and the robots let out (TriggerRuntime.snapshot,
+		# plan §4). Written under "triggers" since step 5h — a save from
+		# before keeps the same dictionary under "action" (_trigger_state).
+		"triggers": lvl.triggers.snapshot() if lvl.triggers != null else {},
 		# Entity signature for variant maps (MAP.216/217 are the base of
 		# MAP.210 re-authored): file offset → identity key, see
 		# _import_variant_state.
@@ -3740,14 +3746,14 @@ static func _chain_signature(m: LevelLoader.MapFile.MapFile, e) -> String:
 ## May the state of `s` (variant map `sm`, as parsed) stand for `d` (this
 ## map, as parsed), the entity with the same identity key? Only when both
 ## behave alike: the same act and state byte, and for an entity that fires
-## a chain by itself (ActionSystem.starts_chain) the same chain all the way
+## a chain by itself (LevelBehaviour.starts_chain) the same chain all the way
 ## down. The variants re-author exactly these: MAP.210/216's jeep is hint
 ## [G1] where MAP.217's is [M3], and MAP.217's 210BASE3 is an armed 0xF2
 ## trigger where MAP.210's is scenery.
 static func _same_behaviour(sm: LevelLoader.MapFile.MapFile, s, dm: LevelLoader.MapFile.MapFile, d) -> bool:
 	if s.link_act_type != d.link_act_type or s.state_byte != d.state_byte:
 		return false
-	if not LevelLoader.ActionSystem.starts_chain(s):
+	if not LevelBehaviour.starts_chain(s):
 		return true
 	return _chain_signature(sm, s) == _chain_signature(dm, d)
 
@@ -3858,7 +3864,7 @@ func _import_variant_state(level: LevelLoader.Level, name: String) -> Dictionary
 	if best.is_empty():
 		return {}
 	var src_map: LevelLoader.MapFile.MapFile = _parse_map(best)
-	if src_map == null and level.action != null:
+	if src_map == null and level.triggers != null:
 		push_warning("[skynet] %s: cannot read variant %s — its switches and damage stay behind" % [name, best])
 	var out: Dictionary = _carry_records(level, src_map, _map_state[best], best_remap)
 	print("[skynet] %s: first visit — importing state from variant %s (%d%% of meshes shared, %d dead, %d taken, %d entities carried, %d re-authored kept fresh)"
@@ -3905,7 +3911,7 @@ func _carry_variant_state(level: LevelLoader.Level, name: String,
 ## has out of it made them undamageable.
 func _carry_records(level: LevelLoader.Level, src_map: LevelLoader.MapFile.MapFile,
 		src: Dictionary, remap: Dictionary) -> Dictionary:
-	var out: Dictionary = {"dead": {}, "taken": {}, "action": {},
+	var out: Dictionary = {"dead": {}, "taken": {}, "triggers": {},
 		"carried": 0, "kept": 0}
 	for off in src.get("dead", {}):
 		if remap.has(off):
@@ -3913,11 +3919,11 @@ func _carry_records(level: LevelLoader.Level, src_map: LevelLoader.MapFile.MapFi
 	for off in src.get("taken", {}):
 		if remap.has(off):
 			out["taken"][remap[off]] = true
-	var act_src: Dictionary = src.get("action", {})
+	var act_src: Dictionary = _trigger_state(src)
 	var act: Dictionary = {}
-	if level.action != null:
+	if level.triggers != null:
 		act = {"states": {}, "movers": {}, "destr": {}, "spent": {},
-			"hp": level.action.save_state().get("hp", {})}
+			"hp": level.triggers.snapshot().get("hp", {})}
 	if src_map != null and not act.is_empty():
 		for off in remap:
 			var s = src_map.entities_by_off.get(off)
@@ -3933,7 +3939,7 @@ func _carry_records(level: LevelLoader.Level, src_map: LevelLoader.MapFile.MapFi
 				var from: Dictionary = act_src.get(part, {})
 				if from.has(off):
 					act[part][dst] = from[off]
-	out["action"] = act
+	out["triggers"] = act
 	return out
 
 ## Save repair for v0.3.0 (the 2026-09-14 variant import). Such a snapshot
@@ -3951,8 +3957,7 @@ func _carry_records(level: LevelLoader.Level, src_map: LevelLoader.MapFile.MapFi
 ## is left alone; so is a mission already won. Dropped retirements leave
 ## the snapshot, so the next save is clean.
 func _unretire_uncounted_objectives(level: LevelLoader.Level, name: String, snap: Dictionary) -> void:
-	var action: Dictionary = snap.get("action", {})
-	var acts: Dictionary = action.get("acts", {})
+	var acts: Dictionary = _trigger_state(snap).get("acts", {})
 	if acts.is_empty() or level.map == null or _mission_key < 0 \
 			or _mission_key != _mission_key_for(name) or _mission_ended_key == _mission_key:
 		return
@@ -3963,8 +3968,8 @@ func _unretire_uncounted_objectives(level: LevelLoader.Level, name: String, snap
 		var e = level.map.entities_by_off.get(int(off))   # as parsed: nothing restored yet
 		if e == null or e.marker_type >= 0:
 			continue
-		var idx: int = e.link_act_type - LevelLoader.ActionSystem.ACT_OBJECTIVE_FIRST
-		if idx < 0 or e.link_act_type >= LevelLoader.ActionSystem.ACT_FAIL:
+		var idx: int = e.link_act_type - Rules.ACT_OBJECTIVE_FIRST
+		if idx < 0 or e.link_act_type >= Rules.ACT_FAIL:
 			continue
 		if idx >= _mission_texts.size() or (_mission_texts[idx] as Array).is_empty():
 			continue
@@ -3990,8 +3995,25 @@ func _apply_map_state(level: LevelLoader.Level, name: String) -> void:
 		_unretire_uncounted_objectives(level, name, snap)
 	_apply_snapshot(level, name, snap)
 
+## The TRIGGER STATE of one map's overlay — every byte play has changed,
+## the movers, the wrecks and the robots let out.
+##
+## Migration step 5h moved it under "triggers" (plan §4:
+## map_state[map].triggers IS the runtime's snapshot). A save written
+## before that keeps the same dictionary under "action", and the two are
+## the same thing 1:1: every key in either is a MAP FILE OFFSET and every
+## section — states, acts, links, hp, spent, movers, destr, spawned — was
+## already written by the runtime or asked of the same nodes. So an old
+## overlay converts by being read under its own name, and nothing else.
+## (A save from a build older still simply has fewer sections, which
+## restore takes as "no change there", as it always did.)
+static func _trigger_state(snap: Dictionary) -> Dictionary:
+	if snap.has("triggers"):
+		return snap["triggers"]
+	return snap.get("action", {})
+
 ## An overlay onto a level whose records have just been read: the dead
-## robots and the taken pickups leave, and the action system takes the
+## robots and the taken pickups leave, and the trigger runtime takes the
 ## switch, mover, damage and act state.
 func _apply_snapshot(level: LevelLoader.Level, name: String, snap: Dictionary) -> void:
 	var dead: Dictionary = snap.get("dead", {})
@@ -4006,8 +4028,8 @@ func _apply_snapshot(level: LevelLoader.Level, name: String, snap: Dictionary) -
 			if c.has_meta("pickup_off") and taken.has(c.get_meta("pickup_off")):
 				level.sprites.remove_child(c)
 				c.queue_free()
-	if level.action != null:
-		level.action.restore_state(snap.get("action", {}))
+	if level.triggers != null:
+		level.triggers.restore(_trigger_state(snap))
 	print("[skynet] %s: restored state (%d dead, %d pickups taken)"
 		% [name, dead.size(), taken.size()])
 
@@ -5380,9 +5402,9 @@ func run_command(line: String) -> String:
 			return out
 		"movers":
 			# Agent aid: what every mover is doing right now.
-			if _current_level == null or _current_level.action == null:
+			if _current_level == null or _current_level.behaviour == null:
 				return "no level"
-			return _current_level.action.mover_report()
+			return _current_level.behaviour.mover_report()
 		"walkto":
 			# Agent aid: drive the player at a point (the --walk driver),
 			# after a door has opened or a lift has come down.

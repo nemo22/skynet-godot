@@ -1,15 +1,16 @@
 ## The trigger state of one level — and the only thing that writes it
 ## (docs plan §4, migration step 5a).
 ##
-## Until now the same trigger state lived in two places and both were
-## read: scripts/level/behaviour.gd walked the chain on the Behaviour
-## nodes and MIRRORED every bit back into the parsed MAP record, while
-## scripts/action_system.gd read those records for the movers, the
-## proximity sweeps, the exits, the destructibles, the relays, the
-## spawns, the water and the lights — and wrote them too (_clear_enable
-## wrote node AND record). Two copies of one byte drift: the water valve
-## that swapped its own act byte did so only in the record, and a bit
-## cleared in one copy was still up in the other.
+## Before step 5a the same trigger state lived in two places and both
+## were read: scripts/level/behaviour.gd walked the chain on the
+## Behaviour nodes and MIRRORED every bit back into the parsed MAP
+## record, while one long loop (scripts/action_system.gd, gone since step
+## 5h) read those records for the movers, the proximity sweeps, the
+## exits, the destructibles, the relays, the spawns, the water and the
+## lights — and wrote them too (its _clear_enable wrote node AND
+## record). Two copies of one byte drift: the water valve that swapped
+## its own act byte did so only in the record, and a bit cleared in one
+## copy was still up in the other.
 ##
 ## So the state comes here. The MAP records stay exactly what they were
 ## — the DATA the map was authored with (act byte, link, position,
@@ -34,13 +35,20 @@
 ##                           runs, its bit clears the way its DOS handler
 ##                           clears it, and a cue DOS retires has its act
 ##                           byte set to 0xFF
-##   snapshot / restore      the per-map Mst overlay's share of the state
+##   armed / fires           what a chain armed during THIS tick, which a
+##                           one-shot sweep has to count as fired even if
+##                           a later flip took the bit down again
+##   snapshot / restore      the per-map Mst overlay, which since step 5h
+##                           is the WHOLE of a map's play state: a save
+##                           keeps it under map_state[map].triggers
 ##   reset / reset_acts      back to the records, as re-reading the MAP
 ##                           from disk used to do
 ##
 ## What a flip LOOKS like is not here: the sound a cue plays, the line it
-## prints, the loop it starts are the Behaviour branch's nodes, and this
-## reaches them through `presenter` (present_fire / present_silence) —
+## prints, the loop it starts, the lit face a button shows are the
+## Behaviour branch's nodes, and this reaches them through `presenter`
+## (present_fire / present_silence / present_flip, and present_snapshot /
+## present_restore for the three things a node remembers for itself) —
 ## one call out, no state coming back. Every flip and every cue is
 ## announced on the level's event bus exactly as before.
 ##
@@ -75,6 +83,20 @@ var _light_intensity: Dictionary = {}
 ## pool has run out and which answer nothing any more.
 var _hp: Dictionary = {}
 var _spent: Dictionary = {}
+## Every entity whose bit 0 went UP during THIS tick, even if a later
+## flip in the same tick took it back down again.
+##
+## ObjFlipLink TOGGLES bit 0, and a map may point several triggers at one
+## chain: eight 0xEF gates ring the jeep in MAP.217, all linked to the
+## HUMMERTK that carries act 0x28 — mission 1's last objective. Walking
+## up to it trips two or four of them in the SAME frame, so the toggles
+## cancelled out and the objective never fired: mission 1 could not be
+## finished. The DOS engine runs each object's handler as the chain is
+## flipped, so an even number of flips still fires it once; the port
+## sweeps by phase, so it remembers the arming instead. Cleared at the
+## end of the level's tick (Behaviour.tick), and play state that lives
+## for one tick, which is why it is here and in no snapshot.
+var _armed: Dictionary = {}
 
 func setup(m: MapFile.MapFile) -> void:
 	map = m
@@ -91,6 +113,7 @@ func reset() -> void:
 	_light_intensity.clear()
 	_hp.clear()
 	_spent.clear()
+	_armed.clear()
 	if map == null:
 		return
 	for e in map.entities:
@@ -119,6 +142,26 @@ func link(off: int) -> int:
 func enabled(off: int) -> bool:
 	return (int(_state.get(off, 0)) & 1) != 0
 
+## Did a chain arm this entity earlier in this tick (see `_armed`)?
+func armed(off: int) -> bool:
+	return _armed.has(off)
+
+## Enabled now, or enabled at any point earlier in this tick — the test
+## the one-shot sweeps make.
+func fires(off: int) -> bool:
+	return enabled(off) or _armed.has(off)
+
+## Stand in for a chain that armed `off` this tick. The walk below does
+## this for every entity whose bit it sends up; the verifier uses it to
+## put an exit in the state a chain would have left it in without
+## walking one (trigger_verifier._check_exit).
+func arm_in_tick(off: int) -> void:
+	_armed[off] = true
+
+## The end of the level's tick: what a chain armed is no longer news.
+func clear_armed() -> void:
+	_armed.clear()
+
 ## …and the two the save's deltas are measured against, as the MAP file
 ## has them (a snapshot stores only what play has changed).
 func act0(off: int) -> int:
@@ -128,6 +171,13 @@ func act0(off: int) -> int:
 func link0(off: int) -> int:
 	var e = _record(off)
 	return int(e.link_next) if e != null else 0
+
+## The MAP record of `off` — the read-only DATA the map was authored
+## with (position, radius, flags, name index, the destruction table),
+## which is the half of a rule that never changes. Null for an offset
+## this map has no record for.
+func record(off: int):
+	return _record(off)
 
 func _record(off: int):
 	return map.entities_by_off.get(off) if map != null else null
@@ -215,8 +265,9 @@ func set_spent(off: int) -> void:
 ## Walk the chain from `start_off`, toggling bit 0 of every entity on it
 ## — the start entity included — and firing what goes up as it goes, the
 ## way the DOS engine runs each object's handler while the chain is
-## flipped. Returns [[off, new_state] …] in walk order, so the caller can
-## see what was armed (ActionSystem's per-tick sweeps read that).
+## flipped. Returns [[off, new_state] …] in walk order, for a caller that
+## wants the walk itself (the graph's equivalence check); what a walk
+## ARMED is remembered here instead, in `_armed`.
 ##
 ## The DOS loop (FUN_001394aa, skynet_gh.c:39791) has no cycle guard —
 ## the shipped maps hold none — but `visited` keeps a broken one from
@@ -240,7 +291,13 @@ func flip(start_off: int) -> Array:
 		if bus != null:
 			bus.announce_flip(off, a, s)
 		out.append([off, s])
+		# What a walk LOOKS like on the node it passes: a BUTTON panel
+		# shows its lit face. Presentation, like present_fire below, and
+		# the branch alone knows about it.
+		if presenter != null:
+			presenter.present_flip(off)
 		if (s & 1) != 0:
+			_armed[off] = true               # …for the rest of this tick
 			fire(off)
 		else:
 			# A LEVEL kind runs for as long as its bit is up (the 0xEE
@@ -320,10 +377,19 @@ func _adopt(off: int) -> bool:
 # ---------------------------------------------------------------------
 # The per-map overlay (DOS Mst)
 # ---------------------------------------------------------------------
-## The state bytes of every entity, and the act bytes and links play has
-## CHANGED — a cue retired to 0xFF, a water valve that swapped its own
-## act, a finished path whose link was cut. Shape unchanged from when
-## ActionSystem kept these (step 5h moves the save format itself).
+## The whole play state of this map, as a save keeps it (plan §4's
+## TriggerState, under `map_state[map].triggers` since step 5h): the
+## state bytes of every entity, the act bytes and links play has CHANGED
+## — a cue retired to 0xFF, a water valve that swapped its own act, a
+## finished path whose link was cut — the pool of hit points and the
+## records spent from it, and, asked of the branch, the three things a
+## node remembers for itself: how far each mover has travelled and which
+## way it goes next, the stage each wreck is showing, and the 0xF3
+## sprites whose robot is already out.
+##
+## Every key in it is a MAP FILE OFFSET, which is what makes an overlay
+## carryable to a variant map (main._carry_records) and an older save
+## readable as it stands.
 func snapshot() -> Dictionary:
 	var states: Dictionary = {}
 	var acts: Dictionary = {}
@@ -336,13 +402,25 @@ func snapshot() -> Dictionary:
 	for off in _link:
 		if int(_link[off]) != link0(off):
 			links[off] = int(_link[off])
-	return {"states": states, "acts": acts, "links": links,
-		"hp": _hp.duplicate(), "spent": _spent.duplicate()}
+	var out: Dictionary = {"states": states, "acts": acts, "links": links,
+		"hp": _hp.duplicate(), "spent": _spent.duplicate(),
+		"movers": {}, "destr": {}, "spawned": {}}
+	if presenter != null:
+		var theirs: Dictionary = presenter.present_snapshot()
+		for part in ["movers", "destr", "spawned"]:
+			out[part] = theirs.get(part, {})
+	return out
 
 ## Lay a snapshot back over the state. Sparse: an offset the snapshot
 ## does not mention keeps what it has — a variant map's carry brings only
 ## the entities that behave the same on both maps (main._carry_records).
+##
+## An EMPTY snapshot is nothing to lay: a level with no overlay of its own
+## keeps the bytes its records were read with, and the pool below is not
+## emptied out from under it.
 func restore(snap: Dictionary) -> void:
+	if snap.is_empty():
+		return
 	for off in (snap.get("states", {}) as Dictionary):
 		_state[int(off)] = int(snap["states"][off]) & 0xFF
 	for off in (snap.get("acts", {}) as Dictionary):
@@ -352,11 +430,15 @@ func restore(snap: Dictionary) -> void:
 	# The pool and the wrecks are laid back WHOLE, not sparsely: the
 	# overlay carries every pool the map has, and a snapshot that names
 	# neither (an old save, a hand-built one) puts both back empty — which
-	# is what ActionSystem did with them before step 5g.
+	# is what the long loop did with them before step 5g.
 	_hp = (snap.get("hp", {}) as Dictionary).duplicate()
 	_spent = (snap.get("spent", {}) as Dictionary).duplicate()
 	if presenter != null:
 		presenter.sync_from_runtime()
+		# …and what the nodes themselves remember: the movers back where
+		# the overlay left them, mesh and all, every wreck at the stage it
+		# had reached, and the robots an 0xF3 chain had already let out.
+		presenter.present_restore(snap)
 
 ## Act bytes and links back to what the MAP file has, the state bytes
 ## left alone — what the step-4 verifier needs between two checks of the
