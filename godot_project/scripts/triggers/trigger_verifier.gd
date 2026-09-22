@@ -67,24 +67,67 @@ const SKIP: String = "SKIP"
 ## chain is walked, a mover announces at the START of its run, an exit on
 ## the tick it is armed — all inside the first few ticks.
 const ACT_FRAMES: int = 6
-## …and how long to wait afterwards for the movers to arrive, so the
-## SECOND activation starts where the graph's simulation says it does
-## (a 2 048-unit slide at 140 u/s is 14.6 s; a door is under 2). A
-## CONTINUOUS rotator never arrives and is not waited for.
-const SETTLE_FRAMES: int = 1000
+## …and how much longer an activation is HEARD OUT for when the graph
+## promised something the bus has not said yet. The chain itself is
+## walked inside one tick, but what it sets off is not: a demolition
+## deals its victim's own blast through the deferred call queue and that
+## wreck deals the next one's (Behaviour.radial_blast → call_deferred),
+## so MAP.260's twelve-deep demolition chain needs a frame per link
+## before every `demolish` is on the bus. The budget is derived from what
+## the graph promised — a node that promised nothing waits for nothing —
+## and the wait ends the moment the promise is kept, so this can only
+## turn a missing token into a heard one, never a quiet check into a
+## noisy one.
+const HEAR_FRAMES_PER_EFFECT: int = 3
+const HEAR_FRAMES_MAX: int = 180
+## The ceiling on waiting for the movers to arrive, so the SECOND
+## activation starts where the graph's simulation says it does. The wait
+## itself ends when they have all stopped; what it is allowed to cost is
+## worked out from THEIR OWN travel (_settle_budget), and this is only
+## the guard on a mover that never arrives at all. A CONTINUOUS rotator
+## is one of those and is not waited for. Forty seconds, because MAP.231's
+## cab is a 1 520-unit lift and a flat 1 000 frames stopped waiting for it
+## with a few units to go — the bit still up, and the next press reading
+## as a gate that answers once (three of the pinned second_activation
+## rows). What a check really spends is the derived budget, which for a
+## door is two seconds.
+const SETTLE_FRAMES: int = 2400
+## …and the floor under that budget: a door is under two seconds.
+const SETTLE_MIN_FRAMES: int = 120
+## Frames of grace on top of a mover's own travel time, for the tick it
+## is started on and the tick it clears its bit in.
+const SETTLE_PAD_FRAMES: int = 30
+## The seed every check starts from. Nothing in the trigger layer is
+## random, but a great deal AROUND it is: a robot picks a wander angle
+## (enemy.gd), a wreck picks one of four destruction sounds and scatters
+## its effect sprites (Behaviour.destroy), a flicker lamp tosses a coin
+## (raw_action.gd), a crate picks what it drops. Godot randomises the
+## global generator at startup, so two runs of this file put the robots
+## and the debris of MAP.210/240/250/260 in different places and the
+## `shot_each` rows that depend on what the blast reached came out
+## differently. The global seed is put back to this number before every
+## level change and before every check, which makes a run a function of
+## the tree alone. Every generator the level code reaches is that global
+## one; the two RandomNumberGenerator instances the port owns
+## (scripts/net/) belong to the deathmatch and are never built here.
+const CHECK_SEED: int = 0x5147
+## How many times a standing point is corrected toward its record when
+## the placed body measures out of reach (_nudge).
+const NUDGE_TRIES: int = 4
 ## Frames the player stands still before recording, so anything else his
 ## standing there sets off has already gone off (trigger_equiv.check
 ## keeps him a long way away for the same reason; here he has to be at
 ## the node, so the noise is spent in advance instead).
 const PRE_FRAMES: int = 3
 ## …and how long he stands there for a PATH check, which is a special case
-## of the same thing. A machine says once that it has picked its path up,
-## on the first tick it spends in the player's grid window — so every
-## OTHER machine that comes into reach while he settles where he was put
-## down must have said it before the recording starts, or the check reads
-## a neighbour's announcement as this vehicle's doing. MAP.260 is nine of
-## them driving one town, and the player put down beside the outer lane is
-## carried back inside the border box, which brings more of them in.
+## of the same thing: the DOS engine only ticks an actor in the five grid
+## cells round the player (0x12980f), so the machine has to have been in
+## the window — and moving under its own speed ramp — before the travel
+## is measured. (Until M4 it also had to have ANNOUNCED before the
+## recording started, because the port said `path` where a machine picked
+## its path up; that announcement is at the flip now, where DOS commits,
+## so a neighbour coming into reach can no longer be read as this
+## vehicle's doing.)
 const PATH_SETTLE_FRAMES: int = 120
 ## Shots per node: the assault rifle's 20 points are one damage stage
 ## (DESTRUCT_DAMAGE_PER_STAGE = 16), so one shot is the usual whole test.
@@ -144,6 +187,9 @@ var _prox_world: Array = []
 ## …and where this map's doorways are, for the same reason: a place where
 ## NOTHING may happen has to be outside their touch measure too.
 var _exit_world: Array = []
+## What the mission table had the player in before the checks put him on
+## foot, given back with the level (_open_map / _release).
+var _was_vehicle: int = 0
 var _limit: int = 0                      # --verify-limit: nodes per map
 var _only_ids: Dictionary = {}           # --verify-nodes=0bb44,075cb
 
@@ -160,6 +206,7 @@ func begin() -> void:
 	_limit = int(main._cli.get("verify-limit", 0))
 	for s in String(main._cli.get("verify-nodes", "")).split(",", false):
 		_only_ids[s.strip_edges().hex_to_int()] = true
+	_steady()
 	_prepare()
 	await _run()
 
@@ -189,12 +236,52 @@ func _prepare() -> void:
 	_shape.height = (body.height if body != null else 88.0)
 	_load_xfail()
 
+## The two things that make a run repeatable to the row.
+##
+## The seed is the obvious half (CHECK_SEED above). The other half is the
+## CLOCK: PlayerDriver.frames waits for a drawn frame and then a physics
+## frame, and a headless run draws as fast as the machine lets it, so a
+## main-loop iteration that fell behind — a level build, a map's first
+## shader compile — runs the physics step it owes SEVERAL times over and
+## the six frames a check gives a handler become nine. That is what made
+## 201@04ee1 and 359@04ee1 (a 512-unit swing door), 230@0f224 (a damage
+## stage) and 260@14fb6 (a demolition chain) come out differently on two
+## runs of the same tree. One physics step per iteration, and no jitter
+## smoothing on top of it, makes `frames(n)` mean n steps of 1/60 s
+## whatever the machine is doing. The step itself is unchanged, so the
+## game runs exactly as it does in play — only slower under load, which
+## a headless run does not care about.
+func _steady() -> void:
+	Engine.max_physics_steps_per_frame = 1
+	Engine.physics_jitter_fix = 0.0
+	seed(CHECK_SEED)
+
+## The body the standing search measures with, taken again. set_vehicle
+## swaps the capsule (fly_camera.VEH_CAPSULE), so the shape _prepare took
+## on the START map is a machine's wherever the run began on a vehicle
+## map — and a machine's capsule measured for a soldier reads every base
+## corridor as blocked. The mission runner takes it per map for the same
+## reason (mission_verifier._ready_map).
+func _take_capsule() -> void:
+	var cs: CollisionShape3D = main.player.get_node_or_null("CollisionShape3D")
+	var body: CapsuleShape3D = cs.shape as CapsuleShape3D if cs != null else null
+	if body == null:
+		return
+	_shape_y = cs.position.y
+	_shape = CapsuleShape3D.new()
+	_shape.radius = body.radius
+	_shape.height = body.height
+
 func _run() -> void:
 	_t0 = Time.get_ticks_msec()
 	var maps: PackedStringArray = _map_list()
 	print("[verify] %d map(s) to check (%s)" % [maps.size(), _spec])
 	for name in maps:
 		if main._level_name() != name:
+			# A level BUILD draws on the same global generator (the pickup
+			# a crate is given, level_loader 1391), so the seed goes back
+			# before the build as well as before each check.
+			seed(CHECK_SEED)
 			if not await main._change_level(name, false, false):
 				_row(-1, 0, 0, "-", "-", FAIL, "the level would not load")
 				continue
@@ -316,7 +403,24 @@ func _open_map(level, intercept: bool) -> Dictionary:
 	# alone, because a path vehicle IS one of them (a dead actor stops
 	# driving its markers, and `killall` took the truck with it).
 	main.player.set("god_mode", true)
+	# `intercept` — this map is being checked record by record, not played
+	# — also puts the player ON FOOT, whatever the mission table says the
+	# map is played in (main._vehicle_for_map: missions 2 and 6 drive,
+	# mission 7 flies). A gunship holds its own ground clearance — _hover
+	# pushes it off whatever is under it — so a check that puts it down on
+	# the floor a gate stands on finds the eye two hundred units above
+	# that gate a moment later, outside every measure there is, and
+	# twenty-four of MAP.272's gates read as triggers that answer nothing. The vehicle is
+	# the MISSION runner's business (layer (b), which plays mission 7 in
+	# the HK from end to end); this layer proves one record at a time and
+	# needs the player where the record's own handler measures him. It is
+	# also what puts a real gun in his hands: a vehicle weapon fires a
+	# PROJECTILE, and projectile._is_target stops a bolt only on the
+	# `enemy` group, so a car on a vehicle map was never hit at all.
 	if intercept:
+		_was_vehicle = int(main.player.vehicle)
+		main.player.set_vehicle(0)
+		_take_capsule()
 		_intercept(level)
 	# Slot 2 (ASSAULT RIFLE): 20 damage points, which is one damage stage
 	# — and chosen on the number key, so even that goes through the input
@@ -331,7 +435,7 @@ func _open_map(level, intercept: bool) -> Dictionary:
 			float(pn.measure())])
 	_exit_world = []
 	for x in (level.behaviour.exit_nodes() as Array):
-		_exit_world.append((x.position as Vector3) + (level.origin as Vector3))
+		_exit_world.append([int(x.id), (x.position as Vector3) + (level.origin as Vector3)])
 	_snap = _pristine(level, graph, _snapshot(level))
 	return graph
 
@@ -358,6 +462,9 @@ func _intercept(level) -> void:
 ## playing afterwards, and a level whose exits and objectives still
 ## reported here would take none of them.
 func _release(level) -> void:
+	if _was_vehicle > 0 and is_instance_valid(main.player):
+		main.player.set_vehicle(_was_vehicle)    # the suite goes on playing
+		_was_vehicle = 0
 	var b = level.behaviour
 	if b == null:
 		return
@@ -434,6 +541,10 @@ func _pristine(level, graph: Dictionary, snap: Dictionary) -> Dictionary:
 ## the next check would start with the player already "inside" every
 ## trigger he was standing in.
 func _reset(level, snap: Dictionary) -> void:
+	# Every check starts from the same throw of the dice (CHECK_SEED):
+	# where the robots wander to and what a wreck scatters is then the
+	# same on every run of the same tree.
+	seed(CHECK_SEED)
 	_restore_acts(level)
 	level.triggers.restore(snap["triggers"])
 	level.behaviour.prox_forget()
@@ -505,9 +616,9 @@ func _check_node(level, graph: Dictionary, node: Dictionary) -> void:
 	_checks += 1
 	match how:
 		"use_key":
-			await _check_use(level, node, num, id, act, kind, mode)
+			await _check_use(level, graph, node, num, id, act, kind, mode)
 		"prox_enter":
-			await _check_prox(level, node, num, id, act, kind, mode)
+			await _check_prox(level, graph, node, num, id, act, kind, mode)
 		"touch_arm":
 			await _check_exit(level, graph, node, num, id, act, kind, mode)
 		"shot_each", "shot_death":
@@ -545,6 +656,19 @@ func _use_spot(level, id: int, kind: String, mode: Dictionary) -> Dictionary:
 	# straight out to it found the ground under a panel three hundred units
 	# up a tower, from where the view of it is the tower.
 	var spot: Dictionary = _stand_in(level, ep, mode if gate else BUTTON_STAND, 0.0, id)
+	if not gate:
+		# A button is reached by being LOOKED at (fly_camera._try_activate
+		# → the 600-unit crosshair) or by being stood at (use_nearby, and
+		# that one measures the DOS gate radius, 86 units — not the 600
+		# the mode carries). A floor inside 86 units answers either way;
+		# further out, only the crosshair does, and only where the line
+		# to the panel is the panel. So where the near search found a
+		# place the crosshair does NOT answer from, a place it does is
+		# preferred. Where there is none, the near answer stands, so this
+		# can put nothing out of reach that was in it.
+		var seen: Dictionary = _button_spot(level, ep, id, mode, spot)
+		if bool(seen["ok"]):
+			spot = seen
 	if not gate and not bool(spot["ok"]):
 		# Nowhere in front of it: widen to the hand's reach, and ask for a
 		# clear line while doing it — the key gets to a button by being
@@ -553,13 +677,19 @@ func _use_spot(level, id: int, kind: String, mode: Dictionary) -> Dictionary:
 		# search a shot uses — put a hundred and thirty of these out of
 		# reach that the running game presses perfectly well.)
 		spot = _stand_in(level, ep, mode, Rules.USE_REACH, id, true)
+	if not bool(spot["ok"]):
+		# Last resort: the mission runner's wider ring (_stand_wide) —
+		# sixteen directions at nine distances, and, where the capsule
+		# fits nowhere, the tightest place it does not, because a SPAWN
+		# never asks whether it fits and the game puts the player there.
+		spot = _stand_wide(level, ep, mode if gate else BUTTON_STAND)
 	spot["gate"] = gate
 	spot["aim"] = ep if gate else _aim_point(level, id)
 	spot["ep"] = ep
 	return spot
 
-func _check_use(level, node: Dictionary, num: int, id: int, act: int,
-		kind: String, mode: Dictionary) -> void:
+func _check_use(level, graph: Dictionary, node: Dictionary, num: int, id: int,
+		act: int, kind: String, mode: Dictionary) -> void:
 	var spot: Dictionary = _use_spot(level, id, kind, mode)
 	var ep: Vector3 = spot["ep"]
 	var gate: bool = bool(spot["gate"])
@@ -567,13 +697,27 @@ func _check_use(level, node: Dictionary, num: int, id: int, act: int,
 	if not bool(spot["ok"]):
 		_row(num, id, act, kind, "use", UNREACHABLE, String(spot["why"]))
 		return
+	if gate:
+		# Where the body really comes to rest, not where the floor ray
+		# found ground (_nudge) — and then the map put back, because
+		# standing there may have tripped something else on the way.
+		spot["feet"] = await _nudge(level, spot["feet"], ep, mode)
+		_reset(level, _snap)
+	# …and whether that point is inside somebody else's reach is asked of
+	# the point the check will really use, not of the one the search
+	# started from: a correction of a few units carries the eye into the
+	# next gate of a ring (MAP.230's four).
+	var feet_in: Vector3 = spot["feet"]
+	spot["shared"] = not _alone_at(feet_in, id) or not _doorways_at(feet_in).is_empty()
 	var shared: String = "shared with another trigger" if bool(spot.get("shared", false)) else ""
 	# A wall button answers the key, never the walk: prove the walk first.
 	var walked: PackedStringArray = PackedStringArray()
 	if not gate:
 		walked = await _stand_and_record(level, spot["feet"], aim, gate, 0)
-	var first: PackedStringArray = await _stand_and_record(level, spot["feet"], aim, gate, 1)
-	var why: String = _why(TriggerEquiv.compare(node.get("first", []), first))
+	var first: PackedStringArray = await _stand_and_record(level, spot["feet"], aim,
+		gate, 1, node.get("first", []))
+	var why: String = _why(_share(level, graph, id, true, spot,
+		TriggerEquiv.compare(node.get("first", []), first)))
 	if first.is_empty() and not (node.get("first", []) as Array).is_empty():
 		# Nothing at all happened: say how far the eye really was, so a
 		# standing point the search believed in and the running game did not
@@ -583,19 +727,33 @@ func _check_use(level, node: Dictionary, num: int, id: int, act: int,
 			   float(mode.get("radius", 0.0)) + float(mode.get("pad", 0.0))])
 	if not walked.is_empty():
 		why = _join(why, "walking past it did %s" % " ".join(walked))
-	# …and the movers it started must do what the graph said they would.
-	why = _join(why, _mover_truth(level, node.get("first", [])))
+	# …and the movers it started must do what the graph said they would —
+	# unless the point is shared, where a leaf may have been half way
+	# through a neighbour's run before the key went down.
+	if not bool(spot["shared"]):
+		why = _join(why, _mover_truth(level, node.get("first", [])))
 	if not why.is_empty():
 		_row(num, id, act, kind, "use", FAIL, _join(why, shared))
 		return
 	# The movers arrive, clear their bit and flip their direction — and
 	# only then is the next press the graph's SECOND activation.
-	await _settle(level)
-	why = _mover_settled(level, node.get("first", []))
+	await _settle(level, node.get("first", []))
+	why = "" if bool(spot["shared"]) else _mover_settled(level, node.get("first", []))
+	# Put him back where the node says he has to stand before pressing
+	# again. The first press may have MOVED HIM: a lift is a mover with
+	# the player on it (MAP.231's cab, MAP.283's platform, MAP.272's
+	# hoists), and the port's controller rides it — so the second press
+	# went in from wherever the ride ended, which for a 378-unit lift is
+	# well outside the 86 units the 0xEF handler measures, and the check
+	# read a gate that works as one that answers once. Nothing about the
+	# MAP changed under him, only where he is standing, which is the one
+	# thing this layer places by hand anyway.
 	var second: PackedStringArray = await _record_around(level, func() -> void:
+		_drv.place(spot["feet"])
 		_aim_at(aim, gate)
-		_drv.activate())
-	why = _join(why, _why(TriggerEquiv.compare(node.get("second", []), second)))
+		_drv.activate(), node.get("second", []))
+	why = _join(why, _why(_share(level, graph, id, true, spot,
+		TriggerEquiv.compare(node.get("second", []), second))))
 	if not why.is_empty():
 		_row(num, id, act, kind, "use", FAIL, _join("second: " + why, shared))
 		return
@@ -604,7 +762,15 @@ func _check_use(level, node: Dictionary, num: int, id: int, act: int,
 	if bool(out["ok"]):
 		_reset(level, _snap)
 		var none: PackedStringArray = await _stand_and_record(level, out["feet"], aim, gate, 1)
-		if none.size() > 0:
+		# …and it only says anything if the player really WAS out of reach
+		# when the key went down. The search measures a floor point; the
+		# body is settled over it, and a point chosen twenty units outside
+		# an 86-unit measure comes back inside it when the controller
+		# pushes the capsule off the wall behind him. That is the test
+		# standing in the wrong place, not the handler reaching too far —
+		# which is what the one pinned port_use_reach row was.
+		var out_r: float = float(mode.get("radius", 0.0)) + float(mode.get("pad", 0.0))
+		if none.size() > 0 and _reach_now(ep, mode) > out_r:
 			_row(num, id, act, kind, "use", FAIL,
 				"out of reach it still did %s" % " ".join(none))
 			return
@@ -618,6 +784,8 @@ func _check_dead_gate(level, node: Dictionary, num: int, id: int, act: int,
 		{"radius": Rules.PROX_GATE_RADIUS, "pad": Rules.PLAYER_RADIUS,
 		 "origin": "eye", "metric": "3d"})
 	if not bool(spot["ok"]):
+		spot = _stand_wide(level, ep, BUTTON_STAND)
+	if not bool(spot["ok"]):
 		_row(num, id, act, kind, "dead", UNREACHABLE, String(spot["why"]))
 		return
 	var got: PackedStringArray = await _stand_and_record(level, spot["feet"], ep, true, 1)
@@ -628,27 +796,36 @@ func _check_dead_gate(level, node: Dictionary, num: int, id: int, act: int,
 			"a state-04 prop answered the key with %s" % " ".join(got))
 
 # --- walking in (0xF1 / 0xF2) -----------------------------------------
-func _check_prox(level, node: Dictionary, num: int, id: int, act: int,
-		kind: String, mode: Dictionary) -> void:
+func _check_prox(level, graph: Dictionary, node: Dictionary, num: int, id: int,
+		act: int, kind: String, mode: Dictionary) -> void:
 	var ep: Vector3 = _epos(level, id)
 	var inside: Dictionary = _stand_in(level, ep, mode, 0.0, id)
 	if not bool(inside["ok"]):
+		inside = _stand_wide(level, ep, mode)
+	if not bool(inside["ok"]):
 		_row(num, id, act, kind, "prox", UNREACHABLE, String(inside["why"]))
 		return
+	inside["feet"] = await _nudge(level, inside["feet"], ep, mode)
+	_reset(level, _snap)
+	inside["shared"] = not _alone_at(inside["feet"], id)
 	var shared: String = "shared with another trigger" if bool(inside.get("shared", false)) else ""
 	var outside: Dictionary = _stand_out(level, ep, mode, id)
 	var from: Vector3 = outside["feet"] if bool(outside["ok"]) else Vector3.INF
-	var first: PackedStringArray = await _walk_in(level, from, inside["feet"], ep)
-	var why: String = _why(TriggerEquiv.compare(node.get("first", []), first))
+	var first: PackedStringArray = await _walk_in(level, from, inside["feet"], ep,
+		node.get("first", []))
+	var why: String = _why(_share(level, graph, id, false, inside,
+		TriggerEquiv.compare(node.get("first", []), first)))
 	why = _join(why, _mover_truth(level, node.get("first", [])))
 	if not why.is_empty():
 		_row(num, id, act, kind, "prox", FAIL, _join(why, shared))
 		return
-	await _settle(level)
+	await _settle(level, node.get("first", []))
 	# Out and in again: the port's latch says nothing happens until a
 	# chain re-arms it, and the graph's second activation says the same.
-	var second: PackedStringArray = await _walk_in(level, from, inside["feet"], ep)
-	why = _why(TriggerEquiv.compare(node.get("second", []), second))
+	var second: PackedStringArray = await _walk_in(level, from, inside["feet"], ep,
+		node.get("second", []))
+	why = _why(_share(level, graph, id, false, inside,
+		TriggerEquiv.compare(node.get("second", []), second)))
 	if not why.is_empty():
 		_row(num, id, act, kind, "prox", FAIL, _join("re-entry: " + why, shared))
 		return
@@ -657,7 +834,8 @@ func _check_prox(level, node: Dictionary, num: int, id: int, act: int,
 ## Stand outside, then walk in on the movement keys (or, when there is no
 ## floor to walk from or the way is blocked, be put there), and report
 ## what the bus heard on the way in.
-func _walk_in(level, from: Vector3, to: Vector3, ep: Vector3) -> PackedStringArray:
+func _walk_in(level, from: Vector3, to: Vector3, ep: Vector3,
+		want: Array = []) -> PackedStringArray:
 	if from != Vector3.INF:
 		_drv.place(from)
 		_drv.face(ep)
@@ -673,6 +851,10 @@ func _walk_in(level, from: Vector3, to: Vector3, ep: Vector3) -> PackedStringArr
 		_drv.place(to)
 	_drv.face(ep)
 	await _drv.frames(ACT_FRAMES)
+	for _i in mini(HEAR_FRAMES_PER_EFFECT * want.size(), HEAR_FRAMES_MAX):
+		if _heard_all(want, bus.history()):
+			break
+		await _drv.frames(1)
 	var heard: Array = bus.take()
 	bus.record(false)
 	return TriggerEquiv.tokens(heard)
@@ -696,8 +878,11 @@ func _check_exit(level, graph: Dictionary, node: Dictionary, num: int, id: int,
 	# marked shared, as the gates' own checks do.
 	var spot: Dictionary = _stand_in(level, ep, mode, 0.0, id, true)
 	if not bool(spot["ok"]):
+		spot = _stand_wide(level, ep, mode, true)
+	if not bool(spot["ok"]):
 		_row(num, id, act, kind, "exit", UNREACHABLE, String(spot["why"]))
 		return
+	spot["shared"] = not _alone_at(spot["feet"], -1)
 	# 1. Touching it must only ARM it — in DOS you walk into the truck and
 	#    press the key at its rear doors; standing there does nothing.
 	var touch: PackedStringArray = await _stand_and_record(level, spot["feet"], ep, true, 0)
@@ -716,8 +901,9 @@ func _check_exit(level, graph: Dictionary, node: Dictionary, num: int, id: int,
 		_drv.place(spot["feet"])
 		_drv.face(ep)
 		_drv.look(main.player.rotation.y, -1.0)
-		_drv.activate())
-	var why: String = _why(TriggerEquiv.compare(node.get("first", []), got))
+		_drv.activate(), node.get("first", []))
+	var why: String = _why(_share(level, graph, id, true, spot,
+		TriggerEquiv.compare(node.get("first", []), got)))
 	# There is one key. Where the only floor inside this doorway's measure
 	# is also inside an 0xEF GATE whose chain ends in this very doorway,
 	# that gate is what the key operates — DOS's own way through a door,
@@ -776,6 +962,13 @@ func _check_shot(level, node: Dictionary, num: int, id: int, act: int,
 	if aim == Vector3.INF:
 		_row(num, id, act, kind, how, UNREACHABLE, "nothing to aim at")
 		return
+	if level.behaviour.hit_node(id) == null:
+		# Nothing was built for it: the record carries the hit bit and the
+		# level has no mesh of it to put a bullet into, so neither this
+		# check nor a player can reach it. Said in its own words, because
+		# "no line of fire" reads as a wall in the way.
+		_row(num, id, act, kind, how, UNREACHABLE, "no mesh was built for it to be shot")
+		return
 	var spot: Dictionary = _shooting_spot(level, id, aim)
 	if not bool(spot["ok"]):
 		_row(num, id, act, kind, how, UNREACHABLE, String(spot["why"]))
@@ -809,6 +1002,14 @@ func _check_shot(level, node: Dictionary, num: int, id: int, act: int,
 			drained = true
 			b.obj_hit(id, left)
 	await _drv.frames(ACT_FRAMES)
+	# …and heard out, as an activation is: a wreck's own blast reaches the
+	# next prop through the deferred call queue (Behaviour.radial_blast),
+	# so a row of cars answers one shot over several frames.
+	for _i in mini(HEAR_FRAMES_PER_EFFECT * (node.get("first", []) as Array).size(),
+			HEAR_FRAMES_MAX):
+		if _heard_all(node.get("first", []), bus.history()):
+			break
+		await _drv.frames(1)
 	var got: PackedStringArray = TriggerEquiv.tokens(bus.take())
 	bus.record(false)
 	var why: String = _why(TriggerEquiv.compare(node.get("first", []), got))
@@ -839,7 +1040,7 @@ func _check_relay(level, node: Dictionary, num: int, id: int, act: int,
 	var at: int = int(mode.get("at", Rules.RELAY_AT))
 	var got: PackedStringArray = await _record_around(level, func() -> void:
 		level.triggers.arm(id)                   # what a chain does to it
-		b.objectives_left = at)
+		b.objectives_left = at, node.get("first", []))
 	var why: String = _why(TriggerEquiv.compare(node.get("first", []), got))
 	_row(num, id, act, kind, "counter", FAIL if not why.is_empty() else PASS, why)
 
@@ -864,10 +1065,10 @@ func _check_path(level, node: Dictionary, num: int, id: int, act: int,
 	var floor_at: Vector3 = _floor_under(beside, 600.0)
 	_drv.place(floor_at if floor_at != Vector3.INF else beside)
 	await _drv.physics(PATH_SETTLE_FRAMES)
-	# Standing beside it is already enough for the DOS window, and the
-	# vehicle picks its path up on the first tick it is in — before the
-	# recording would have started. Put it back at the head and take the
-	# measurement from there.
+	# Standing beside it is already enough for the DOS window. Put it back
+	# at the head and take the measurement from there, so the travel below
+	# is the whole of this path's and not the part of it the machine drove
+	# while the player was being settled.
 	veh.path_forget()
 	was = nd.position
 	var bus = level.bus
@@ -924,13 +1125,22 @@ func _arm_path(level, head: int) -> void:
 ## then record: `keys` presses of the activate key, and ACT_FRAMES of the
 ## game running.
 func _stand_and_record(level, feet: Vector3, aim: Vector3, floor_aim: bool,
-		keys: int) -> PackedStringArray:
+		keys: int, want: Array = []) -> PackedStringArray:
 	_drv.place(feet)
 	_aim_at(aim, floor_aim)
 	await _drv.frames(PRE_FRAMES)
+	# Put him back on the point before the key goes down. The body does
+	# not stay where it is put — the controller settles it over the floor
+	# and slides it out of whatever it is touching — and the measure a
+	# gate applies has no slack in it (86 units for an 0xEF), so the three
+	# frames that let the neighbourhood go quiet also carried him off the
+	# spot the search had measured. _check_exit has done this since step
+	# 5b for the same reason.
 	return await _record_around(level, func() -> void:
+		_drv.place(feet)
+		_aim_at(aim, floor_aim)
 		for _i in keys:
-			_drv.activate())
+			_drv.activate(), want)
 
 ## Turn toward `aim`; with `floor_aim` put the crosshair on the ground
 ## instead, so the use key reaches the entity by the DOS route (the
@@ -940,23 +1150,48 @@ func _aim_at(aim: Vector3, floor_aim: bool) -> void:
 	if floor_aim:
 		_drv.look(main.player.rotation.y, -1.2)
 
-## Record the bus while `doit` runs and the game takes ACT_FRAMES more.
-func _record_around(level, doit: Callable) -> PackedStringArray:
+## Record the bus while `doit` runs and the game takes ACT_FRAMES more —
+## and then, while the graph is still owed a token, up to the budget
+## `want` earns (HEAR_FRAMES_PER_EFFECT above).
+func _record_around(level, doit: Callable, want: Array = []) -> PackedStringArray:
 	var bus = level.bus
 	bus.record(true)
 	bus.clear()
 	doit.call()
 	await _drv.frames(ACT_FRAMES)
+	var budget: int = mini(HEAR_FRAMES_PER_EFFECT * want.size(), HEAR_FRAMES_MAX)
+	for _i in budget:
+		if _heard_all(want, bus.history()):
+			break
+		await _drv.frames(1)
 	var heard: Array = bus.take()
 	bus.record(false)
 	return TriggerEquiv.tokens(heard)
+
+## Has everything the graph promised been said? (Nothing is judged here —
+## an EXTRA token is the comparison's business, and waiting longer could
+## only collect more of them; this is only the question "is there still
+## something to wait for".)
+func _heard_all(want: Array, history: Array) -> bool:
+	if want.is_empty():
+		return true
+	return PackedStringArray(TriggerEquiv.compare(want,
+		TriggerEquiv.tokens(history)).get("missing", PackedStringArray())).is_empty()
 
 ## Wait for every mover the last activation started to arrive (they clear
 ## their own bit on arrival), so the next activation is the graph's
 ## "second" and not the rest of the first. A continuous rotator (family
 ## rot with no angle in its slot) never arrives and is not waited for.
-func _settle(level) -> void:
-	for _i in SETTLE_FRAMES:
+##
+## How long that is allowed to take is the MOVERS' OWN: their travel
+## divided by their speed, the slowest of them deciding (_settle_budget).
+## A fixed count was either far more than a door needs or — on MAP.283's
+## 378-unit lift and MAP.201's 512-unit swing — near enough the truth
+## that a frame lost to a slow tick left the mover still running when the
+## second press went in, which is what made those rows come out
+## differently on two runs.
+func _settle(level, want: Array = []) -> void:
+	for _i in _settle_budget(level, want):
 		var moving: bool = false
 		for n in level.behaviour.mover_nodes():
 			if bool(n.spins()):
@@ -968,6 +1203,29 @@ func _settle(level) -> void:
 			break
 		await _drv.physics(1)
 	await _drv.frames(1)
+
+## How many frames the movers of this activation are worth: the longest
+## travel divided by its own speed, plus the tick it starts on and the
+## tick it clears its bit in. `want` is the graph's own promise, so the
+## movers are named before they have moved; a promise with no mover in it
+## still gets the floor, because a chain can start one the graph does not
+## write down as a move (a continuous rotator) and the loop above leaves
+## the moment nothing is running anyway.
+func _settle_budget(level, want: Array) -> int:
+	var frames: int = SETTLE_MIN_FRAMES
+	for t in want:
+		var tok: String = String(t)
+		if not tok.begins_with("move@"):
+			continue
+		var n: Node = level.behaviour.mover_node(tok.substr(5, 5).hex_to_int())
+		if n == null or bool(n.spins()):
+			continue
+		var speed: float = float(n.speed)
+		if speed <= 0.0:
+			continue                              # the DOS "jump" family: instant
+		frames = maxi(frames, int(ceil(float(n.span()) / speed
+			* float(Engine.physics_ticks_per_second))) + SETTLE_PAD_FRAMES)
+	return mini(frames, SETTLE_FRAMES)
 
 # ---------------------------------------------------------------------
 # Where to stand
@@ -1007,9 +1265,207 @@ func _stand_in(level, ep: Vector3, mode: Dictionary, cap: float = 0.0,
 		"why": ("no floor with a clear line inside the %.0f-unit measure" % r) if sight
 			else ("no floor inside the %.0f-unit measure" % r)}
 
+## Where the CROSSHAIR answers this wall button from. The rings of the
+## near search first (a player presses a panel from in front of it), then
+## the wider ones out to the reach the slot really carries — and the test
+## is the crosshair's own: the first collider along the line from the eye
+## that has an `activate` method has to be this record's node, because
+## that is the one fly_camera hands the key to (_try_activate, and a
+## target that takes the key never lets it through to use_nearby).
+##
+## `near` is what the near search already found; it is returned unchanged
+## when nothing here can better it, so this only ever moves a button
+## check to a place that works.
+func _button_spot(level, ep: Vector3, id: int, mode: Dictionary,
+		near: Dictionary) -> Dictionary:
+	var target: Node = level.behaviour.hit_node(id)
+	if target == null:
+		target = level.behaviour.prox_node(id)
+	if target == null:
+		return near
+	var aim: Vector3 = _aim_point(level, id)
+	var reach: float = float(mode.get("radius", Rules.USE_REACH)) + float(mode.get("pad", 0.0))
+	var near_r: float = Rules.PROX_GATE_RADIUS + Rules.PLAYER_RADIUS
+	for search in [near_r, Rules.USE_REACH, reach]:
+		for frac in RING_FRACTIONS:
+			for d in RING:
+				var at := Vector3(ep.x + d.x * search * frac, ep.y, ep.z + d.y * search * frac)
+				for feet in _floors_under(at, search):
+					if not _measures(feet, ep, mode, reach):
+						continue
+					if not _fits(feet):
+						continue
+					if not _ray_reaches(feet, aim, target):
+						continue
+					return {"ok": true, "feet": feet, "why": "", "shared": false}
+	return near
+
+## Does the crosshair, from `feet`, resolve to `target`? The walk up the
+## collider's parents is fly_camera._try_activate's own.
+func _ray_reaches(feet: Vector3, aim: Vector3, target: Node) -> bool:
+	var eye: Vector3 = feet + Vector3(0.0, _eye_h() + PlayerDriver.LIFT, 0.0)
+	var q := PhysicsRayQueryParameters3D.create(eye, aim)
+	q.collide_with_areas = true
+	q.exclude = [main.player.get_rid()]
+	var hit := _space.intersect_ray(q)
+	if not hit.has("collider"):
+		return false
+	var n: Node = hit["collider"] as Node
+	while n != null and not n.has_method("activate"):
+		n = n.get_parent()
+	if n == null:
+		return false
+	return n == target or target.is_ancestor_of(n) or n.is_ancestor_of(target)
+
+## Stand there, let the controller settle the body, and see where the
+## node's own handler would really measure the eye. A floor point is not
+## a standing point: `place` sets the capsule down and the controller
+## pushes it out of whatever it is touching and down onto what is under
+## it, and the eye ends somewhere else — 91 units from a gate the search
+## had at 84, which is outside the 86 the 0xEF handler measures, and the
+## key then did nothing at all. That is the test standing in the wrong
+## place, not the gate refusing a player.
+##
+## So the placement is MEASURED, and where it came out short the point is
+## stepped toward the record by the overshoot and measured again. The
+## best of the tries is what the check then uses, and a node with nowhere
+## better keeps the point the search gave it.
+func _nudge(level, feet: Vector3, ep: Vector3, mode: Dictionary) -> Vector3:
+	var r: float = float(mode.get("radius", Rules.PROX_GATE_RADIUS))
+	r += float(mode.get("pad", 0.0))
+	var best: Vector3 = feet
+	var best_d: float = INF
+	for _i in NUDGE_TRIES:
+		_drv.place(feet)
+		_drv.face(ep)
+		await _drv.frames(1)
+		var d: float = _reach_now(ep, mode)
+		if d < best_d:
+			best_d = d
+			best = feet
+		if d <= r:
+			return feet
+		var toward := Vector3(ep.x - feet.x, 0.0, ep.z - feet.z)
+		if toward.length() < 1.0:
+			break
+		var step: float = minf(d - r + 4.0, toward.length() * 0.6)
+		var at: Vector3 = feet + toward.normalized() * step
+		var f2: Vector3 = _floor_under(at, r)
+		if f2 == Vector3.INF or f2.distance_to(feet) < 0.5 or not _fits(f2):
+			break
+		feet = f2
+	return best
+
+## How far the node's handler measures the player as standing, NOW, from
+## where the body really is (main._eye_position, which is what the DOS
+## handlers read).
+func _reach_now(ep: Vector3, mode: Dictionary) -> float:
+	var from: Vector3 = main.player.global_position
+	if String(mode.get("origin", "eye")) == "eye":
+		from = _drv.eye()
+	if String(mode.get("metric", "3d")) == "2d+window":
+		if absf(from.y - ep.y) > float(mode.get("window", Rules.PROX_VERTICAL_WINDOW)):
+			return INF
+		return Vector2(from.x - ep.x, from.z - ep.z).length()
+	return from.distance_to(ep)
+
+## What a comparison comes to at a SHARED standing point.
+##
+## The key is one key and a step is one step. The 0xEF handler (v1.01
+## 0x1386a0) runs for every gate within its 60 units of the eye, the
+## sweep walking them in map order, and the 0xF1/0xF2 handler (0x138223)
+## for every chain trigger the player has just walked into — DOS fires
+## them all, and so does the port. Where the map leaves only one floor
+## inside this record's measure and that floor is inside another live
+## one's too (`shared`, which the search only falls back to), what the
+## game did is this node's row AND the neighbours': their effects are
+## there as well, and a chain the two of them SHARE is walked twice and
+## left where it started, so this node's own tokens can be missing.
+##
+## Neither is the node behaving differently from the graph, so what the
+## neighbours in reach promise is forgiven — and only that. Anything
+## outside their promise still fails, and at a spot that is not shared
+## nothing is forgiven at all.
+func _share(level, graph: Dictionary, mine: int, use_key: bool,
+		spot: Dictionary, res: Dictionary) -> Dictionary:
+	if bool(res.get("ok", false)) or not bool(spot.get("shared", false)):
+		return res
+	var pool: Dictionary = {}
+	# The eye AT THE STANDING POINT, which is where the key went down —
+	# not where the body has got to since, which for a gate that runs a
+	# lift is somewhere else entirely. The same measure _alone_at made
+	# when it called this point shared.
+	var eye: Vector3 = (spot["feet"] as Vector3) + Vector3(0.0, _eye_h(), 0.0)
+	if use_key:
+		for x in _doorways_at(spot["feet"] as Vector3):
+			if int(x) == mine:
+				continue
+			var xn: Dictionary = TriggerEquiv.node_of(graph, int(x))
+			for t in ((xn.get("first", []) as Array) + (xn.get("second", []) as Array)):
+				pool[String(t)] = true
+	for g in (level.behaviour.prox_nodes() as Array):
+		if int(g.id) == mine or not bool(g.runs()):
+			continue
+		# A step into the place trips every 0xF1/0xF2 whose radius covers
+		# it, whatever is being checked; the 0xEF gates need the key, so
+		# they only belong here when one is pressed. A wall button belongs
+		# to neither — it is off the sweep and answers the crosshair alone.
+		if g.is_wall_button():
+			continue
+		if g.act_now() == Rules.ACT_PROX_GATE and not use_key:
+			continue
+		var gp: Vector3 = (g.position as Vector3) + (level.origin as Vector3)
+		if eye.distance_to(gp) > float(g.measure()):
+			continue
+		var gn: Dictionary = TriggerEquiv.node_of(graph, int(g.id))
+		# BOTH of the neighbour's activations: the key is pressed twice
+		# here, so the neighbour is walked twice too, and what it comes to
+		# the second time is as much its doing as the first.
+		for t in ((gn.get("first", []) as Array) + (gn.get("second", []) as Array)):
+			pool[String(t)] = true
+			# A door the neighbour also runs is forgiven WHATEVER travel it
+			# makes, not only the full one: a leaf the neighbour started
+			# and this walk reversed half way is 115 units of a 128-unit
+			# slide, and no list of promised tokens can hold that number.
+			if String(t).begins_with("move@"):
+				pool["move@" + String(t).substr(5, 5)] = true
+	if pool.is_empty():
+		return res
+	var missing := PackedStringArray()
+	var extra := PackedStringArray()
+	for t in (res.get("missing", PackedStringArray()) as PackedStringArray):
+		if not _in_pool(pool, String(t)):
+			missing.append(String(t))
+	for t in (res.get("extra", PackedStringArray()) as PackedStringArray):
+		if not _in_pool(pool, String(t)):
+			extra.append(String(t))
+	return {"ok": missing.is_empty() and extra.is_empty(), "want": res.get("want", []),
+		"got": res.get("got", PackedStringArray()), "missing": missing, "extra": extra}
+
+static func _in_pool(pool: Dictionary, token: String) -> bool:
+	if pool.has(token):
+		return true
+	return token.begins_with("move@") and pool.has("move@" + token.substr(5, 5))
+
+## The DOORWAYS this point is inside, by their own touch measure
+## (MapExit.within: 2D with a vertical window). They matter to the use
+## key and to nothing else: main._on_use_pressed offers the press to
+## activate_teleport BEFORE anything else, so a key pressed at a gate
+## while the feet are in a doorway takes the doorway as well — which is
+## the game's own rule and more than the gate promised.
+func _doorways_at(feet: Vector3) -> Array:
+	var out: Array = []
+	for row in _exit_world:
+		var at: Vector3 = row[1]
+		if absf(feet.y - at.y) > Rules.PROX_VERTICAL_WINDOW:
+			continue
+		if Vector2(feet.x - at.x, feet.z - at.z).length() <= Rules.TELEPORT_TOUCH_RADIUS:
+			out.append(int(row[0]))
+	return out
+
 ## Is this the ONLY proximity trigger the player would be standing in?
 func _alone_at(feet: Vector3, mine: int) -> bool:
-	var eye: Vector3 = feet + Vector3(0.0, EYE, 0.0)
+	var eye: Vector3 = feet + Vector3(0.0, _eye_h(), 0.0)
 	for row in _prox_world:
 		if int(row[0]) == mine:
 			continue
@@ -1023,8 +1479,8 @@ func _alone_at(feet: Vector3, mine: int) -> bool:
 ## standing in a door: the key takes THAT, and rightly — it is the
 ## doorway's own rule, not the trigger being checked.
 func _clear_of_doorways(feet: Vector3) -> bool:
-	for p in _exit_world:
-		var at: Vector3 = p
+	for row in _exit_world:
+		var at: Vector3 = row[1]
 		if absf(feet.y - at.y) > Rules.PROX_VERTICAL_WINDOW:
 			continue
 		if Vector2(feet.x - at.x, feet.z - at.z).length() <= Rules.TELEPORT_TOUCH_RADIUS:
@@ -1054,12 +1510,88 @@ func _stand_out(level, ep: Vector3, mode: Dictionary, alone: int = -1) -> Dictio
 				return {"ok": true, "feet": feet, "why": ""}
 	return {"ok": false, "feet": Vector3.INF, "why": "nowhere outside it to stand"}
 
+## Every place a record can be answered from, in a ring of sixteen
+## directions at nine distances out to the edge of its own measure —
+## the search of last resort, when the one layer (c) uses has found
+## nowhere to stand. Layer (c) falls back to it as well (M4, 2026-09-22):
+## a node this cannot reach either is a node with no floor under it, and
+## the 204 rows layer (c) called UNREACHABLE were mostly the near search
+## missing a place the game itself puts the player in.
+##
+## That search is right for what it does: eight directions at nothing,
+## 35, 60 and 85 per cent of the reach, nearest first, because the DOS
+## player stood AT a thing rather than at the edge of it, and a point far
+## out is as likely to lie inside the next trigger along. A mission has to
+## REACH the record, and the two it could not reach are the objectives of
+## missions 4 and 8 — layer (c) calls both UNREACHABLE and the game plays
+## them perfectly well:
+##   MAP.292's objective sprite is answered from 83 units away, past the
+##   furthest ring the near search tries (73), and the solver's own flood
+##   stands in the same place (--solve, 2026-09-22);
+##   MAP.280's objective console is answered from 16 units away — nearer
+##   than the near search's FIRST ring but not straight under it, where
+##   the four downward rays are spent inside the console's own faces
+##   before they reach the floor it stands on.
+func _stand_wide(level, ep: Vector3, mode: Dictionary, sight: bool = false) -> Dictionary:
+	var r: float = float(mode.get("radius", Rules.PROX_GATE_RADIUS)) + float(mode.get("pad", 0.0))
+	var tried: int = 0
+	var blocked: int = 0
+	var near: float = INF
+	var tight: Vector3 = Vector3.INF
+	var tight_d: float = INF
+	for frac in [0.15, 0.2, 0.25, 0.3, 0.5, 0.7, 0.9, 0.95, 1.0]:
+		for i in 16:
+			var a: float = TAU * float(i) / 16.0
+			var at := Vector3(ep.x + cos(a) * r * frac, ep.y, ep.z + sin(a) * r * frac)
+			for feet in _floors_under(at, r):
+				tried += 1
+				var eye: Vector3 = (feet as Vector3) + Vector3(0.0, _eye_h() + PlayerDriver.LIFT, 0.0)
+				near = minf(near, eye.distance_to(ep))
+				if not _measures(feet, ep, mode, r):
+					continue
+				if sight and not level.behaviour.reachable(feet - (level.origin as Vector3),
+						ep - (level.origin as Vector3)):
+					continue                      # a shut door leaf in the way
+				if not _fits(feet):
+					blocked += 1
+					if eye.distance_to(ep) < tight_d:
+						tight_d = eye.distance_to(ep)
+						tight = feet
+					continue
+				return {"ok": true, "feet": feet, "why": "", "shared": false}
+	# Nowhere the capsule stands free — but the game puts the player in
+	# tighter places than this test allows, because a SPAWN never asks
+	# whether the capsule fits: it sets the body down and the controller's
+	# own margin pushes it out of whatever it is in (main._apply_pending
+	# _player, and every marker-set arrival). MAP.280's objective console
+	# is such a place — the key answers it from the floor beside it, which
+	# every one of these rings found and the capsule test refused — so the
+	# nearest of the refused points is where the player is put, and what
+	# then happens is the step's own answer.
+	if tight != Vector3.INF:
+		return {"ok": true, "feet": tight, "why": "", "shared": false, "tight": true}
+	# What the search saw, so a record nothing can reach is told apart
+	# from one the floor under it is simply missing for.
+	return {"ok": false, "feet": Vector3.INF, "shared": false,
+		"why": "nowhere in the %.0f-unit measure to stand (%d floor(s) tried, %d of them blocked, the nearest eye %.0f u off)"
+			% [r, tried, blocked, near]}
+
+
+## How high over his feet the running game has the player's eye right now
+## — what main._eye_position reports, and so what the DOS proximity
+## handlers measure from. A constant was right while every check was made
+## on foot and 35 units out in a seat (fly_camera.VEH_EYE).
+func _eye_h() -> float:
+	if main.player == null or not is_instance_valid(main.player):
+		return EYE
+	return main._eye_position().y - main.player.global_position.y
+
 ## The node's own measure, applied to a pair of positions.
 ## (The eye sits LIFT higher than the floor point, because that is where
 ## `place` puts the body — measuring from the floor itself said a gate
 ## was in reach that the running game then measured out of it.)
 func _measures(feet: Vector3, ep: Vector3, mode: Dictionary, r: float) -> bool:
-	var from: Vector3 = feet + Vector3(0.0, EYE + PlayerDriver.LIFT, 0.0) \
+	var from: Vector3 = feet + Vector3(0.0, _eye_h() + PlayerDriver.LIFT, 0.0) \
 		if String(mode.get("origin", "eye")) == "eye" else feet
 	if String(mode.get("metric", "3d")) == "2d+window":
 		if absf(from.y - ep.y) > float(mode.get("window", Rules.PROX_VERTICAL_WINDOW)):
@@ -1293,7 +1825,15 @@ static func xfail_key(num: int, id: int) -> String:
 ##                         with the destructibles, and left for a decision
 ##                         about the weapon code (step 5g, 2026-09-22)
 ##   port_use_reach        the key still fires it from outside the DOS
-##                         measure
+##                         measure. The one row left is a WALL BUTTON,
+##                         where that is the port's kept rule rather than
+##                         a fault: what limits a button is the 600-unit
+##                         crosshair and the crosshair finds the MESH, so
+##                         a point twenty units outside the record's own
+##                         reach still has the panel under the sights
+##                         (fly_camera._try_activate). The negative check
+##                         measures to the record, which a button is not
+##                         answered from
 ##   second_activation     the first activation agrees and the second does
 ##                         not
 ##   chain_silent          nothing happened at all where the graph says
@@ -1304,6 +1844,54 @@ static func xfail_key(num: int, id: int) -> String:
 ##   path_window           a marker-path vehicle only picks its path up
 ##                         inside the DOS five-cell actor window, which
 ##                         the graph does not model
+##   mover_absent          the graph names a mover the level built no node
+##                         for, so the travel it promises has nothing to
+##                         make it
+##   demolish_spent        a record whose own death fires a chain that
+##                         demolishes it: Behaviour.demolish refuses a
+##                         record already spent, and the simulation counts
+##                         the demolition it does not
+##   loaded_state          the simulation starts from the byte the MAP was
+##                         AUTHORED with, and some records have spent it
+##                         before a player can reach them: MAP.231's
+##                         eighteen lights are laid down with bit 0 up,
+##                         the light handler runs on the first tick of the
+##                         level and clears it (the DOS sweep does the
+##                         same), so the first press a player makes is the
+##                         graph's SECOND walk of them. The runtime is
+##                         right; the graph would have to settle a map
+##                         once before it simulates, which would move
+##                         every lock line that carries a record authored
+##                         enabled
+##   exit_forced           a doorway laid down with bit 0 already up, and a
+##                         gate whose chain ends in it. The walk turns the
+##                         bit OFF, so the graph's first activation takes
+##                         no map change and its second does. The port
+##                         walks the chain once and then arms and fires
+##                         the doorway anyway (Behaviour.use_exit_through,
+##                         the owner's rule of 2026-09-16: guarding the
+##                         walk on the exit's own bit is what lost the
+##                         door sound, and DOS performs one map change per
+##                         level instance either way). Runtime and graph
+##                         disagree by design until that rule is revisited
+## Gone with M4 (2026-09-22), all of them the HARNESS rather than the game
+## — the standing point, the clock or the body the checks put down:
+##   chain_silent, chain_short, chain_extra, second_activation,
+##   port_use_reach: 64 rows. Three causes. The player was left in the
+##   VEHICLE the mission table gives a map, and a gunship holds its own
+##   ground clearance, so twenty-four of MAP.272's gates were pressed
+##   from two hundred units over them; the body does not stay where it is
+##   put, so the key went down from a point the search had measured and
+##   the controller had since left; and where a map leaves only one floor
+##   inside a record's measure, that floor is inside the next record's
+##   too, so the one key fired both and the two chains that share a
+##   suffix cancelled it (_share forgives what the neighbours explain,
+##   and nothing else).
+##   path_window: 2 rows, the RUNTIME. The port announced the path where
+##   the machine picked it up; DOS commits at the flip, and that is what
+##   the graph writes down. Moved to Behaviour.present_fire.
+##   projectile_no_hit: 3 rows, the same on-foot rule — a soldier's rifle
+##   is a hitscan and reaches what a vehicle bolt flew through.
 ## Gone with M3 step 5b (2026-09-16): exit_chain_skipped (a gate whose
 ## chain ends in a doorway walks that chain now), demolish_once (the
 ## simulation reads its own spent flag), loop_no_handler (the SoundLoop
@@ -1319,6 +1907,7 @@ static func xfail_key(num: int, id: int) -> String:
 const XFAIL_TAGS: PackedStringArray = [
 	"port_use_reach", "projectile_no_hit", "second_activation",
 	"chain_silent", "chain_short", "chain_extra", "path_window",
+	"mover_absent", "demolish_spent", "loaded_state", "exit_forced",
 ]
 
 static func hygiene(text: String) -> PackedStringArray:
@@ -1329,7 +1918,11 @@ static func hygiene(text: String) -> PackedStringArray:
 		if line.is_empty():
 			continue
 		if line.begins_with("#"):
-			if line != XFAIL_HEAD[0] and line != XFAIL_HEAD[1]:
+			# The head is fixed text — the two lines that say what a row
+			# is, and the glossary that says what each tag claims (M4). A
+			# comment of anyone's own is still refused, so nothing of the
+			# game's words can reach the file this way.
+			if not XFAIL_HEAD.has(line):
 				bad.append(line)
 			continue
 		var tok: PackedStringArray = line.split(" ", false)
@@ -1342,9 +1935,30 @@ static func hygiene(text: String) -> PackedStringArray:
 			bad.append(line)
 	return bad
 
+## The head of the file: the only comment lines it may carry, and the
+## glossary of the tags, so a reader of the list alone knows what each
+## pinned row is claiming (M4, 2026-09-22). Kept to the same vocabulary
+## as the rows — keywords and numbers, no names, no paths, none of the
+## game's own words.
 const XFAIL_HEAD: PackedStringArray = [
 	"# known failures - map, id, act, kind, tag; the gate gives only on a new one",
 	"# ids lower hex, act bytes upper hex; keywords and numbers only",
+	"# what each tag means:",
+	"#   chain_silent       nothing happened where the graph says something should",
+	"#   chain_short        the chain did less than the walk says",
+	"#   chain_extra        ... or more",
+	"#   second_activation  the first activation agrees and the second does not",
+	"#   port_use_reach     the key still fires it from outside the DOS measure;",
+	"#                      a wall button is reached by the crosshair, not by that",
+	"#   projectile_no_hit  the only gun that reaches it fires a projectile, and a",
+	"#                      projectile is stopped by no prop",
+	"#   path_window        a marker path is only driven inside the DOS actor window",
+	"#   mover_absent       the graph names a mover the level built no node for",
+	"#   demolish_spent     the record is already spent when its own chain kills it",
+	"#   loaded_state       the graph simulates from the authored state byte, which",
+	"#                      the map has already spent by the time a player is there",
+	"#   exit_forced        the port takes a doorway a chain reaches whatever the",
+	"#                      walk did to its bit; the walk alone would shut it",
 ]
 
 # ---------------------------------------------------------------------

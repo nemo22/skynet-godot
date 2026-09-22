@@ -3,7 +3,6 @@
 mission 210
 	must_not wait 210 078d3 expect path@078d3
 	prox 210 0c084 expect path@078d3
-	xfail path_window
 	exit 210 07fcb expect snd40 exit214/0
 	exit 214 02f4e expect snd40 exit215/0
 	use 215 032cb expect snd77 obj0 voice21038 move@03125:slideZ+256 move@030eb:slideX-256 move@030b1:slideZ-256 move@03077:slideX+256

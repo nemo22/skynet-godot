@@ -113,8 +113,22 @@ static func compare(want: Array, got: PackedStringArray) -> Dictionary:
 static func _counts(list) -> Dictionary:
 	var out: Dictionary = {}
 	for t in list:
-		out[String(t)] = int(out.get(String(t), 0)) + 1
+		var k: String = canon(String(t))
+		out[k] = int(out.get(k, 0)) + 1
 	return out
+
+## A mover with NO TRAVEL has no direction, so the sign it is printed
+## with is not a fact about it. Acts 0xBD-0xC0 are the zero slides (the
+## handler table at 0x59b00 holds them with a travel word of 0), and two
+## of MAP.272's gates run one: the graph's simulation flips the stored
+## direction between the first activation and the second and prints
+## `slideX-0` then `slideX+0`, while the mover node flips its own the
+## other way round — two ways of writing the same nothing, which the
+## comparison read as a missing token and an extra one.
+static func canon(token: String) -> String:
+	if token.ends_with("-0") or token.ends_with("+0"):
+		return token.substr(0, token.length() - 2) + "0"
+	return token
 
 # ---------------------------------------------------------------------
 # Setting a node off in the running game

@@ -1,72 +1,30 @@
 # known failures - map, id, act, kind, tag; the gate gives only on a new one
 # ids lower hex, act bytes upper hex; keywords and numbers only
-202 069d6 F1 prox_chain chain_extra
-210 09551 EF prox_gate chain_short
-210 0c084 F1 prox_chain path_window
-213 02bfe EF prox_gate chain_short
-220 0c673 EF prox_gate chain_short
-220 0ea54 EF prox_gate chain_short
-220 0f74e F2 prox_chain chain_short
-229 02f67 EF prox_gate second_activation
-229 03e50 EF prox_gate chain_silent
-229 0527c EF prox_gate second_activation
-230 067a7 EF prox_gate chain_extra
-230 067cb EF prox_gate chain_extra
-230 06ba0 EF prox_gate chain_extra
-230 06bc4 EF prox_gate chain_extra
-231 03a11 EF prox_gate second_activation
-231 03a4b EF prox_gate second_activation
-231 03a85 EF prox_gate second_activation
-231 04aa4 1B demolish chain_short
-231 04c97 EF prox_gate chain_extra
-233 03c01 EF prox_gate second_activation
-233 054f8 EF prox_gate chain_silent
-239 02a73 EF prox_gate chain_short
-240 09fbb EF prox_gate chain_extra
-240 0a033 EF prox_gate chain_extra
-240 0a057 EF prox_gate chain_extra
-260 1427e B1 marker path_window
-260 182cb 19 destructible projectile_no_hit
-260 18312 19 destructible projectile_no_hit
-260 18447 19 destructible projectile_no_hit
-270 097f5 EF prox_gate chain_silent
-270 09e7f EF prox_gate chain_extra
-271 06db0 F0 exit chain_short
-272 085bb EF prox_gate chain_silent
-272 085f5 EF prox_gate chain_silent
-272 086bf EF prox_gate chain_silent
-272 0883f EF prox_gate second_activation
-272 08879 EF prox_gate chain_silent
-272 08913 EF prox_gate chain_silent
-272 0894d EF prox_gate chain_silent
-272 08987 EF prox_gate chain_silent
-272 089c1 EF prox_gate chain_silent
-272 089fb EF prox_gate chain_silent
-272 08d9b EF prox_gate chain_silent
-272 08e07 EF prox_gate chain_silent
-272 08e2b EF prox_gate chain_silent
-272 08ebb EF prox_gate chain_silent
-272 08f27 EF prox_gate chain_silent
-272 091e7 EF prox_gate chain_extra
-272 0925b EF prox_gate chain_extra
-272 09687 EF prox_gate chain_silent
-272 096c1 EF prox_gate chain_silent
-272 097bb EF prox_gate chain_silent
-272 097f5 EF prox_gate chain_silent
-272 0982f EF prox_gate chain_silent
-272 09a53 EF prox_gate chain_silent
-272 09b13 EF prox_gate second_activation
-272 09c17 EF prox_gate chain_silent
-272 09e7f EF prox_gate chain_short
-272 09f79 EF prox_gate chain_silent
-280 08616 EF prox_gate second_activation
+# what each tag means:
+#   chain_silent       nothing happened where the graph says something should
+#   chain_short        the chain did less than the walk says
+#   chain_extra        ... or more
+#   second_activation  the first activation agrees and the second does not
+#   port_use_reach     the key still fires it from outside the DOS measure;
+#                      a wall button is reached by the crosshair, not by that
+#   projectile_no_hit  the only gun that reaches it fires a projectile, and a
+#                      projectile is stopped by no prop
+#   path_window        a marker path is only driven inside the DOS actor window
+#   mover_absent       the graph names a mover the level built no node for
+#   demolish_spent     the record is already spent when its own chain kills it
+#   loaded_state       the graph simulates from the authored state byte, which
+#                      the map has already spent by the time a player is there
+#   exit_forced        the port takes a doorway a chain reaches whatever the
+#                      walk did to its bit; the walk alone would shut it
+213 02bfe EF prox_gate demolish_spent
+231 04aa4 1B demolish demolish_spent
+231 04c97 EF prox_gate loaded_state
+239 02a73 EF prox_gate mover_absent
 281 04ae4 EF prox_gate port_use_reach
-283 02f3a EF prox_gate second_activation
-283 0349a EF prox_gate second_activation
-283 03790 EF prox_gate chain_silent
-284 03565 EF prox_gate second_activation
-286 04db7 EF prox_gate second_activation
-461 03559 EF prox_gate chain_short
-470 02f89 EF prox_gate chain_short
-595 0260a EF prox_gate chain_extra
-595 046cc F0 exit chain_extra
+283 02f3a EF prox_gate chain_extra
+283 03790 EF prox_gate chain_extra
+284 03565 EF prox_gate chain_short
+286 04db7 EF prox_gate chain_extra
+461 03559 EF prox_gate demolish_spent
+470 02f89 EF prox_gate demolish_spent
+595 0260a EF prox_gate exit_forced

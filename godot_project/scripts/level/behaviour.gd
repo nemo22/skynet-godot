@@ -340,6 +340,22 @@ static func act_of(n: Node) -> int:
 ## 0xFF) reports back.
 func present_fire(id: int) -> Dictionary:
 	_ensure_index()
+	# A VEHICLE MARKER a chain has just switched on. DOS has no handler
+	# here at all — ObjFlipLink sets the bit and the machine's own AI
+	# state 11 (v1.01 0x127400) reads it on whatever later frame the
+	# engine ticks that actor in — so the moment the PATH IS ON is the
+	# flip, and that is what the graph writes down (trigger_graph._edge,
+	# `path@<the vehicle's marker>`). The port used to announce it where
+	# the machine picks the path up instead, which is a different event
+	# in two ways: it waits for the player to come within the DOS
+	# five-cell actor window, and it happens even when the path is off.
+	# So MAP.210's lever said nothing at all on the tick it started the
+	# truck (M3 step 4 read that as path_window). The marker keeps its
+	# bit — it is a level kind, and {} is what tells the runtime so.
+	var veh: Node = _vehicles.get(id)
+	if veh != null:
+		say(id, "marker", "path", {"head": int(veh.head), "vehicle": int(veh.vehicle)})
+		return {}
 	var n: Node = _by_id.get(id)
 	if n == null or not n.has_method("fire"):
 		return {}

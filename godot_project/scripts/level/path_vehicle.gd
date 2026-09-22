@@ -114,9 +114,13 @@ func path_watch(delta: float, player_pos: Vector3) -> void:
 		target = cur.file_off
 		speed = 0.0
 		target_speed = Rules.PATH_SPEED_K * actor.position.distance_to(dos_pos(cur))
-		# The vehicle has picked its path up — what the graph calls
-		# path@<the vehicle's own marker> (M3 step 3).
-		branch.say(id, "marker", "path", {"head": head, "vehicle": vehicle})
+		# Picking the path up is NOT the event the graph calls path@<the
+		# vehicle's own marker>: DOS reaches this code on whatever frame
+		# the engine first ticks the actor in, path on or off, while the
+		# graph's token stands for the flip that switched the markers on.
+		# That is announced where the flip happens (Behaviour
+		# .present_fire); here there is only the print.
+		print("[action] path vehicle @%05x picks up its path at @%05x" % [id, head])
 	elif not _enabled(cur.file_off):
 		# The path is off (nobody has thrown the lever): brake, and clear
 		# the bit down the whole chain, as the DOS stop case does.

@@ -415,66 +415,6 @@ func _do_use(level, id: int, kind: String, mode: Dictionary, below: bool) -> Dic
 	return {"ok": true, "why": "", "tokens": await _stand_and_record(
 		level, spot["feet"], spot["aim"], bool(spot["gate"]), 1)}
 
-## Every place a record can be answered from, in a ring of sixteen
-## directions at nine distances out to the edge of its own measure —
-## the search of last resort, when the one layer (c) uses has found
-## nowhere to stand.
-##
-## That search is right for what it does: eight directions at nothing,
-## 35, 60 and 85 per cent of the reach, nearest first, because the DOS
-## player stood AT a thing rather than at the edge of it, and a point far
-## out is as likely to lie inside the next trigger along. A mission has to
-## REACH the record, and the two it could not reach are the objectives of
-## missions 4 and 8 — layer (c) calls both UNREACHABLE and the game plays
-## them perfectly well:
-##   MAP.292's objective sprite is answered from 83 units away, past the
-##   furthest ring the near search tries (73), and the solver's own flood
-##   stands in the same place (--solve, 2026-09-22);
-##   MAP.280's objective console is answered from 16 units away — nearer
-##   than the near search's FIRST ring but not straight under it, where
-##   the four downward rays are spent inside the console's own faces
-##   before they reach the floor it stands on.
-func _stand_wide(level, ep: Vector3, mode: Dictionary) -> Dictionary:
-	var r: float = float(mode.get("radius", Rules.PROX_GATE_RADIUS)) + float(mode.get("pad", 0.0))
-	var tried: int = 0
-	var blocked: int = 0
-	var near: float = INF
-	var tight: Vector3 = Vector3.INF
-	var tight_d: float = INF
-	for frac in [0.15, 0.2, 0.25, 0.3, 0.5, 0.7, 0.9, 0.95, 1.0]:
-		for i in 16:
-			var a: float = TAU * float(i) / 16.0
-			var at := Vector3(ep.x + cos(a) * r * frac, ep.y, ep.z + sin(a) * r * frac)
-			for feet in _floors_under(at, r):
-				tried += 1
-				var eye: Vector3 = (feet as Vector3) + Vector3(0.0, EYE + PlayerDriver.LIFT, 0.0)
-				near = minf(near, eye.distance_to(ep))
-				if not _measures(feet, ep, mode, r):
-					continue
-				if not _fits(feet):
-					blocked += 1
-					if eye.distance_to(ep) < tight_d:
-						tight_d = eye.distance_to(ep)
-						tight = feet
-					continue
-				return {"ok": true, "feet": feet, "why": "", "shared": false}
-	# Nowhere the capsule stands free — but the game puts the player in
-	# tighter places than this test allows, because a SPAWN never asks
-	# whether the capsule fits: it sets the body down and the controller's
-	# own margin pushes it out of whatever it is in (main._apply_pending
-	# _player, and every marker-set arrival). MAP.280's objective console
-	# is such a place — the key answers it from the floor beside it, which
-	# every one of these rings found and the capsule test refused — so the
-	# nearest of the refused points is where the player is put, and what
-	# then happens is the step's own answer.
-	if tight != Vector3.INF:
-		return {"ok": true, "feet": tight, "why": "", "shared": false, "tight": true}
-	# What the search saw, so a record nothing can reach is told apart
-	# from one the floor under it is simply missing for.
-	return {"ok": false, "feet": Vector3.INF, "shared": false,
-		"why": "nowhere in the %.0f-unit measure to stand (%d floor(s) tried, %d of them blocked, the nearest eye %.0f u off)"
-			% [r, tried, blocked, near]}
-
 ## The key from UNDER the record: inside the horizontal radius and the
 ## vertical window the port used to measure a proximity record with,
 ## and outside the true 3D reach the DOS handler measures from the eye
