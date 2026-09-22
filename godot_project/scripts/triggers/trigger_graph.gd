@@ -587,9 +587,10 @@ static func _node(ctx: Dictionary, id: int, warn: Array) -> Dictionary:
 	return node
 
 ## hash(kind, act, state, hit points, name/sprite, position, and the
-## signature of the next entity down the chain). Two maps that re-author
-## the same object give it the same signature, which is what the variant
-## carry and the lock compare (plan §1).
+## signature of the next entity down the chain) — plan §1. This is what
+## the lock pins, and what tells one authored trigger from another where
+## the records alone look alike; `record_sig` below is its first half and
+## is what the variant carry pairs records by.
 static func _sig(ctx: Dictionary, id: int) -> String:
 	var memo: Dictionary = ctx["sig"]
 	if memo.has(id):
@@ -610,20 +611,74 @@ static func _sig_walk(ctx: Dictionary, id: int, stack: Dictionary) -> String:
 	if e.link_next > 0:
 		nxt = _sig_walk(ctx, e.link_next, stack) if ctx["ents"].has(e.link_next) else "dangling"
 	stack.erase(id)
+	var h: String = ("%s>%s" % [_sig_self(ctx["map"], e), nxt]).sha256_text().substr(0, 12)
+	memo[id] = h
+	return h
+
+## The half of a signature that is the record ITSELF — what it is, the
+## three bytes it was authored with, its hit points and where it stands.
+## Everything below it on the chain is the other half.
+static func _sig_self(map, e) -> String:
 	var what: String = ""
 	if (e.flags & 3) == 1:
-		what = "1|" + MapFile.entity_name(ctx["map"], e)
+		what = "1|" + MapFile.entity_name(map, e)
 	elif (e.flags & 3) == 2:
 		what = "L"
 	elif e.marker_type >= 0:
 		what = "M|%d|%d" % [e.marker_type, e.enemy_type]
 	else:
 		what = "S|%d" % e.sprite_index
-	var s: String = "%s/%02x/%02x/%d/%d,%d,%d>%s" % [what, e.link_act_type,
-		e.state_byte, e.hp, e.x, e.y, e.z, nxt]
-	var h: String = s.sha256_text().substr(0, 12)
-	memo[id] = h
-	return h
+	return "%s/%02x/%02x/%d/%d,%d,%d" % [what, e.link_act_type,
+		e.state_byte, e.hp, e.x, e.y, e.z]
+
+# ---------------------------------------------------------------------
+# Signatures for readers outside the build
+# ---------------------------------------------------------------------
+## The signature of one record ALONE, chain excluded: two maps that place
+## the same object with the same three bytes, the same hit points and the
+## same coordinates give it the same one.
+##
+## This is the key the variant carry pairs records by (main._carry_records).
+## It stops where the node signature above goes on, because what hangs
+## BELOW an entity is the chain's business, not the entity's: MAP.210's
+## gate chain runs BIGDOOR → BIGDOOR → BIGDOORC → the truck and MAP.216's
+## ends at the door, yet the two leaves are the same doors in the same
+## place and the gate the player opened has to stay open. For an entity
+## whose chain IS its meaning — a trigger that fires one by itself — the
+## carry asks for `node_sig` as well.
+static func record_sig(map, e) -> String:
+	return _sig_self(map, e).sha256_text().substr(0, 12)
+
+## The full signature of one entity, the chain below it folded in — the
+## `sig` its node carries in the built graph.
+static func node_sig(map, id: int) -> String:
+	return _sig_walk(_sig_ctx(map), id, {})
+
+## Every entity's full signature, by file offset. Built in one walk (the
+## memo is shared), so it costs one pass over the map.
+static func signatures(map) -> Dictionary:
+	var ctx: Dictionary = _sig_ctx(map)
+	var out: Dictionary = {}
+	for e in map.entities:
+		out[e.file_off] = _sig_walk(ctx, e.file_off, {})
+	return out
+
+## One fingerprint for a whole map's trigger surface — the sum of the
+## signatures above, of a table already in hand (a runtime keeps one per
+## level). A per-map overlay records it (TriggerRuntime.snapshot) so a
+## save can tell whether the MAP file it was made against is still the
+## file being played: plan §1's graph_sha.
+static func sha_of(sigs: Dictionary) -> String:
+	var offs: Array = sigs.keys()
+	offs.sort()
+	var parts: PackedStringArray = PackedStringArray()
+	for off in offs:
+		parts.append("%05x=%s" % [int(off), String(sigs[off])])
+	return ";".join(parts).sha256_text().substr(0, 16)
+
+## The least context `_sig_walk` needs: the records and a memo.
+static func _sig_ctx(map) -> Dictionary:
+	return {"map": map, "ents": map.entities_by_off, "sig": {}}
 
 # ---------------------------------------------------------------------
 # Resolved effects

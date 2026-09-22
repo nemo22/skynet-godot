@@ -38,6 +38,7 @@ extends Node
 const MainScene := preload("res://scenes/main.tscn")
 const SaveGame := preload("res://scripts/save_game.gd")
 const MapFile := preload("res://scripts/loaders/map_file.gd")
+const Rules := preload("res://scripts/triggers/rules_skynet.gd")
 
 ## The suite's scratch slot, wiped when it ends.
 const SAVE_SLOT: int = 8
@@ -214,8 +215,9 @@ func _spoil_here() -> Dictionary:
 ## about afterwards. On the level that is up:
 ##   robot  one killed
 ##   item   one taken, by standing on it as the game takes one
-##   dent   one damageable object that behaves alike on both maps, hit
-##          once through the action system (its hit points must carry)
+##   dent   one damageable object with the same SIGNATURE on both maps
+##          (main._same_signature, the rule the carry itself applies since
+##          step 5i), hit once through its node — its hit points must carry
 ## Returns {robot, item, dent: identity key or "", hp: what the dent left}.
 func _spoil_shared(next_name: String) -> Dictionary:
 	var out: Dictionary = {"robot": "", "item": "", "dent": "", "hp": 0.0}
@@ -271,7 +273,7 @@ func _spoil_shared(next_name: String) -> Dictionary:
 					or (st.get("destr", {}) as Dictionary).has(off) or float(hp[off]) <= 40.0:
 				continue
 			var k: String = String(_main.call("_entity_key", lvl.map, e))
-			if not keys.has(k) or not bool(_main.call("_same_behaviour", lvl.map, e, other, keys[k])):
+			if not keys.has(k) or not bool(_main.call("_same_signature", lvl.map, e, other, keys[k])):
 				continue
 			lvl.behaviour.obj_hit(int(off), 10.0)
 			out["dent"] = k
@@ -365,6 +367,28 @@ func _check_phase_source_map() -> void:
 	_check(rec != null and int(rec.link_act_type) == 0x1C and (int(rec.state_byte) & 1) == 0,
 		"a phase carries MAP.210's records as the MAP file has them, not as play left them")
 
+## Which maps may carry into which is a COMMITTED list since step 5i
+## (Rules.VARIANTS), not a search for whatever visited map looked alike:
+## the two worlds the shipped data holds twice over are mission 1's base
+## and mission 3's bunker plateau, and both are what the mission census
+## says. The pair that keeps the list honest is MAP.240 / MAP.250 — the
+## harbour of mission 4 and the harbour of mission 5 share 93 % of their
+## meshes at the same coordinates and are NOT one world; the old search
+## missed them only because the two sit in different decades.
+func _check_variant_table() -> void:
+	var t: Dictionary = Rules.VARIANTS
+	_check(int(t.get(216, 0)) == 210 and int(t.get(217, 0)) == 210
+		and int(t.get(234, 0)) == 230 and int(t.get(235, 0)) == 230 and t.size() == 4,
+		"the committed variant list is mission 1's 216/217 and mission 3's 234/235 (%s)" % str(t))
+	_check(bool(_main.call("_same_world", "MAP.210", "MAP.216"))
+		and bool(_main.call("_same_world", "MAP.216", "MAP.217"))
+		and bool(_main.call("_same_world", "MAP.230", "MAP.235")),
+		"a phase edge is a carry: the world and its phases are one")
+	_check(not bool(_main.call("_same_world", "MAP.240", "MAP.250"))
+		and not bool(_main.call("_same_world", "MAP.210", "MAP.220"))
+		and not bool(_main.call("_same_world", "MAP.217", "MAP.217")),
+		"and two missions' harbours, two missions' bases and a map with itself are not")
+
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	# THE DEFAULT is what this suite plays (step 8): Settings.mission_scenes
@@ -427,6 +451,7 @@ func _run() -> void:
 	_check(key_before == 210 and left_before > 0,
 		"mission key %d, %d objectives left" % [key_before, left_before])
 	_check_phase_source_map()
+	_check_variant_table()
 
 	# The baked doorway table says where the hatch leads.
 	var hatch: Node3D = _portal("Portal_MAP_210_0cabb")

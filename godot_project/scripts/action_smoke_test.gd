@@ -680,6 +680,31 @@ func _run_transition_checks(level210: LevelLoader.Level) -> void:
 		_check(l210b.triggers.spent(off), "restore re-applies the spent flag")
 		_check(l210b.triggers.state(off) == int(snap["states"][off]),
 			"restore re-applies entity state bytes")
+		_check(String(snap.get("graph_sha", "")) == l210b.triggers.graph_sha()
+			and (snap.get("sigs", {}) as Dictionary).has(off),
+			"the overlay says which map file it was taken against, and vouches for the records it changed")
+		# The same overlay against ANOTHER map file (a mod, another release
+		# of the data): a file offset is no longer a promise, so only the
+		# records whose recorded signature still stands are laid back and
+		# the rest keep what the map has (plan §4, migration step 5i).
+		var l210d: LevelLoader.Level = LevelLoader.new().load_level("MAP.210")
+		if l210d != null:
+			var foreign: Dictionary = snap.duplicate(true)
+			foreign["graph_sha"] = "another map file"
+			(foreign["sigs"] as Dictionary)[off] = "a record that moved"
+			var other_off: int = -1
+			for o in (foreign["sigs"] as Dictionary):
+				var id: int = int(o)
+				var rec = l210d.triggers.record(id)
+				if id != off and rec != null and (foreign["states"] as Dictionary).has(id) \
+						and int(foreign["states"][id]) != int(rec.state_byte):
+					other_off = id
+					break
+			l210d.triggers.restore(foreign)
+			_check(not l210d.triggers.spent(off),
+				"an overlay from another map file leaves the record whose signature moved as the file has it")
+			_check(other_off < 0 or l210d.triggers.state(other_off) == int(foreign["states"][other_off]),
+				"…and still lays back the records that are the same (@%05x)" % other_off)
 
 	# Doorway touch: standing on a 0xF0 exit sprite arms it directly.
 	var l210c: LevelLoader.Level = LevelLoader.new().load_level("MAP.210")

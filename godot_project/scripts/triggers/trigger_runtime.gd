@@ -59,6 +59,7 @@ extends RefCounted
 
 const MapFile := preload("res://scripts/loaders/map_file.gd")
 const Rules := preload("res://scripts/triggers/rules_skynet.gd")
+const TriggerGraph := preload("res://scripts/triggers/trigger_graph.gd")
 
 ## The parsed MAP. READ ONLY from here on — the records are the data,
 ## this object is the state.
@@ -83,6 +84,11 @@ var _light_intensity: Dictionary = {}
 ## pool has run out and which answer nothing any more.
 var _hp: Dictionary = {}
 var _spent: Dictionary = {}
+## The records' own signatures and their fingerprint, worked out on first
+## use and kept: the records are read-only, so neither can change while
+## this level lives (see snapshot / restore).
+var _sigs: Dictionary = {}
+var _graph_sha: String = ""
 ## Every entity whose bit 0 went UP during THIS tick, even if a later
 ## flip in the same tick took it back down again.
 ##
@@ -100,6 +106,8 @@ var _armed: Dictionary = {}
 
 func setup(m: MapFile.MapFile) -> void:
 	map = m
+	_sigs.clear()                            # another map, other records
+	_graph_sha = ""
 	reset()
 
 ## Every entity back to the byte its MAP record carries. DOS re-reads the
@@ -390,6 +398,16 @@ func _adopt(off: int) -> bool:
 ## Every key in it is a MAP FILE OFFSET, which is what makes an overlay
 ## carryable to a variant map (main._carry_records) and an older save
 ## readable as it stands.
+##
+## It also records WHICH MAP it is an overlay of, in the only terms that
+## survive a file changing under it: `graph_sha`, the fingerprint of every
+## record's signature, and `sigs`, the signature of each offset it
+## actually changes (plan §1). A save is a file players keep for months,
+## and the offsets in it mean nothing against a MAP that has been edited
+## since — a mod, another release of the data. With these, restore() can
+## still lay back the entities that ARE the same and leave the rest as
+## the file has them, instead of writing a bit into whatever record now
+## happens to sit at that offset.
 func snapshot() -> Dictionary:
 	var states: Dictionary = {}
 	var acts: Dictionary = {}
@@ -409,7 +427,47 @@ func snapshot() -> Dictionary:
 		var theirs: Dictionary = presenter.present_snapshot()
 		for part in ["movers", "destr", "spawned"]:
 			out[part] = theirs.get(part, {})
+	out["graph_sha"] = graph_sha()
+	out["sigs"] = _sigs_of(out)
 	return out
+
+## The signature of every offset this overlay CHANGES — the acts, the
+## links, the pools, the movers, the wrecks, the robots let out and the
+## state bytes that are no longer the record's own. The rest of `states`
+## says only "as authored", which needs no guarding: an offset left out
+## keeps whatever the map being loaded has there.
+func _sigs_of(snap: Dictionary) -> Dictionary:
+	var want: Dictionary = {}
+	for part in ["acts", "links", "spent", "movers", "destr", "spawned"]:
+		for off in (snap.get(part, {}) as Dictionary):
+			want[int(off)] = true
+	for off in (snap.get("states", {}) as Dictionary):
+		var e = _record(int(off))
+		if e == null or int(snap["states"][off]) != int(e.state_byte):
+			want[int(off)] = true
+	for off in (snap.get("hp", {}) as Dictionary):
+		var e = _record(int(off))
+		if e == null or not is_equal_approx(float(snap["hp"][off]), float(e.hp)):
+			want[int(off)] = true
+	var all: Dictionary = sigs()
+	var out: Dictionary = {}
+	for off in want:
+		out[off] = String(all.get(off, ""))
+	return out
+
+## Every record's signature, by file offset (TriggerGraph.signatures) —
+## built once per level and kept, since the records never change.
+func sigs() -> Dictionary:
+	if _sigs.is_empty() and map != null:
+		_sigs = TriggerGraph.signatures(map)
+	return _sigs
+
+## The fingerprint of the whole table above: the map an overlay belongs
+## to, told by what its records ARE rather than by its name.
+func graph_sha() -> String:
+	if _graph_sha.is_empty() and map != null:
+		_graph_sha = TriggerGraph.sha_of(sigs())
+	return _graph_sha
 
 ## Lay a snapshot back over the state. Sparse: an offset the snapshot
 ## does not mention keeps what it has — a variant map's carry brings only
@@ -418,27 +476,79 @@ func snapshot() -> Dictionary:
 ## An EMPTY snapshot is nothing to lay: a level with no overlay of its own
 ## keeps the bytes its records were read with, and the pool below is not
 ## emptied out from under it.
+##
+## An overlay that names a graph_sha which is NOT this map's was made
+## against another MAP file — the same map edited, another release of the
+## data, a mod. Then an offset is no longer a promise, and only the
+## entities whose recorded signature still matches the record now at that
+## offset are laid back; the others keep what the file has (plan §4: on a
+## graph_sha mismatch apply only ids with matching sig). An overlay with
+## no graph_sha at all is a save from before this was written down and
+## converts 1:1 by file offset, as it always did.
 func restore(snap: Dictionary) -> void:
 	if snap.is_empty():
 		return
+	var sha: String = String(snap.get("graph_sha", ""))
+	var all: bool = sha.is_empty() or sha == graph_sha()
+	var ok: Dictionary = {} if all else _restorable(snap, sha)
 	for off in (snap.get("states", {}) as Dictionary):
-		_state[int(off)] = int(snap["states"][off]) & 0xFF
+		if all or ok.has(int(off)):
+			_state[int(off)] = int(snap["states"][off]) & 0xFF
 	for off in (snap.get("acts", {}) as Dictionary):
-		_act[int(off)] = int(snap["acts"][off]) & 0xFF
+		if all or ok.has(int(off)):
+			_act[int(off)] = int(snap["acts"][off]) & 0xFF
 	for off in (snap.get("links", {}) as Dictionary):
-		_link[int(off)] = int(snap["links"][off])
+		if all or ok.has(int(off)):
+			_link[int(off)] = int(snap["links"][off])
 	# The pool and the wrecks are laid back WHOLE, not sparsely: the
 	# overlay carries every pool the map has, and a snapshot that names
 	# neither (an old save, a hand-built one) puts both back empty — which
-	# is what the long loop did with them before step 5g.
-	_hp = (snap.get("hp", {}) as Dictionary).duplicate()
-	_spent = (snap.get("spent", {}) as Dictionary).duplicate()
+	# is what the long loop did with them before step 5g. Against another
+	# file it is the other way round: this map's own pools stand, and only
+	# the records the overlay can still vouch for are taken from it.
+	if all:
+		_hp = (snap.get("hp", {}) as Dictionary).duplicate()
+		_spent = (snap.get("spent", {}) as Dictionary).duplicate()
+	else:
+		for off in (snap.get("hp", {}) as Dictionary):
+			if ok.has(int(off)):
+				_hp[int(off)] = float(snap["hp"][off])
+		for off in (snap.get("spent", {}) as Dictionary):
+			if ok.has(int(off)):
+				_spent[int(off)] = true
 	if presenter != null:
 		presenter.sync_from_runtime()
 		# …and what the nodes themselves remember: the movers back where
 		# the overlay left them, mesh and all, every wreck at the stage it
 		# had reached, and the robots an 0xF3 chain had already let out.
-		presenter.present_restore(snap)
+		presenter.present_restore(snap if all else _only(snap, ok))
+
+## Which offsets of an overlay made against ANOTHER map file may still be
+## laid back: those whose recorded signature is the signature of the
+## record standing there now.
+func _restorable(snap: Dictionary, sha: String) -> Dictionary:
+	var theirs: Dictionary = snap.get("sigs", {})
+	var mine: Dictionary = sigs()
+	var out: Dictionary = {}
+	for off in theirs:
+		var id: int = int(off)
+		if String(theirs[off]) == String(mine.get(id, "")):
+			out[id] = true
+	print("[triggers] the overlay was made against another map file: %d of its %d changed records are still the same (%s ≠ %s)"
+		% [out.size(), theirs.size(), sha, graph_sha()])
+	return out
+
+## `snap` with the movers, wrecks and spawns of the offsets in `ok` only
+## — what a presenter is given for an overlay from another file.
+func _only(snap: Dictionary, ok: Dictionary) -> Dictionary:
+	var out: Dictionary = snap.duplicate()
+	for part in ["movers", "destr", "spawned"]:
+		var kept: Dictionary = {}
+		for off in (snap.get(part, {}) as Dictionary):
+			if ok.has(int(off)):
+				kept[off] = snap[part][off]
+		out[part] = kept
+	return out
 
 ## Act bytes and links back to what the MAP file has, the state bytes
 ## left alone — what the step-4 verifier needs between two checks of the

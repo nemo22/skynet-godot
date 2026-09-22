@@ -24,6 +24,7 @@ const WldTerrain  := preload("res://scripts/loaders/wld_terrain.gd")
 const LevelScene  := preload("res://scripts/level_scene.gd")
 const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
 const Rules       := preload("res://scripts/triggers/rules_skynet.gd")
+const TriggerGraph := preload("res://scripts/triggers/trigger_graph.gd")
 const CamPath     := preload("res://scripts/cam_path.gd")
 const PauseState  := preload("res://scripts/pause_state.gd")
 const HudPanel    := preload("res://scripts/hud_panel.gd")
@@ -3222,7 +3223,7 @@ func _enter_zone(target: String, marker_set: int) -> void:
 ## the dead, the taken and the switch/mover/damage state of everything
 ## both variants have in the same place comes across by entity identity —
 ## never an act or a link, which belong to the map they are authored in
-## (_carry_variant_state, _same_behaviour).
+## (_carry_variant_state, _same_signature).
 
 ## The map the zone `entry` is in becomes `target`: the key it is filed
 ## under, the node's own exports and whatever is still standing under it.
@@ -3658,6 +3659,14 @@ func _save_map_state() -> void:
 ## mission scene keeps several of them alive at once and snapshots them all
 ## for a save or when it comes down (_zone_snapshot); `with_water` belongs
 ## to the ACTIVE one, which is the only level whose surface is in the world.
+##
+## It carries no table of its entities any more (an identity key per
+## record, the map's grid, its outdoor flag): those were there for a
+## search through the visited maps for something that looked like a
+## variant, and since step 5i the variants are a committed list and the
+## map an overlay carries into is read again from its file. What an
+## overlay says about the records it was taken against is now the trigger
+## state's own graph_sha (TriggerRuntime.snapshot).
 func _level_snapshot(lvl: LevelLoader.Level, with_water: bool = false) -> Dictionary:
 	var dead: Dictionary = {}
 	for off in lvl.enemy_marker_offs:
@@ -3681,12 +3690,6 @@ func _level_snapshot(lvl: LevelLoader.Level, with_water: bool = false) -> Dictio
 		# plan §4). Written under "triggers" since step 5h — a save from
 		# before keeps the same dictionary under "action" (_trigger_state).
 		"triggers": lvl.triggers.snapshot() if lvl.triggers != null else {},
-		# Entity signature for variant maps (MAP.216/217 are the base of
-		# MAP.210 re-authored): file offset → identity key, see
-		# _import_variant_state.
-		"sig": _map_signature(lvl.map),
-		"grid": Vector2i(lvl.map.grid_width, lvl.map.grid_height),
-		"outdoor": lvl.is_outdoor,
 		# The mission it was played in (step 6): a mission scene takes no
 		# overlay of another mission's (_take_scene_overlays). Absent in
 		# saves from before; the per-map runtime does not read it.
@@ -3718,50 +3721,60 @@ static func _entity_key(m: LevelLoader.MapFile.MapFile, e) -> String:
 		id = "S|%d" % e.sprite_index
 	return "%s|%d,%d,%d" % [id, e.x, e.y, e.z]
 
-static func _map_signature(m: LevelLoader.MapFile.MapFile) -> Dictionary:
-	var sig: Dictionary = {}
-	if m == null:
-		return sig
-	for e in m.entities:
-		sig[e.file_off] = _entity_key(m, e)
-	return sig
+## Which record of `dst_map` each record of `src_map` IS, where both maps
+## have it: source file offset → this map's. Identity only — the same
+## kind of thing, of the same name or type, at the same DOS coordinates.
+## Whether its play state may cross as well is the signature's question
+## (_same_signature), asked per record in _carry_records.
+static func _variant_remap(src_map: LevelLoader.MapFile.MapFile,
+		dst_map: LevelLoader.MapFile.MapFile) -> Dictionary:
+	var out: Dictionary = {}
+	if src_map == null or dst_map == null:
+		return out
+	var mine: Dictionary = {}                # identity key → my file offset
+	for e in dst_map.entities:
+		mine[_entity_key(dst_map, e)] = e.file_off
+	for e in src_map.entities:
+		var key: String = _entity_key(src_map, e)
+		if mine.has(key):
+			out[e.file_off] = mine[key]
+	return out
 
-## The chain `e` starts, as the MAP data has it: identity, act and state
-## byte of every entity down the links, to the actor the walk stops at
-## (ObjFlipLink), the end, a loop or a link to nothing ("?").
-static func _chain_signature(m: LevelLoader.MapFile.MapFile, e) -> String:
-	var parts: PackedStringArray = PackedStringArray()
-	var seen: Dictionary = {}
-	var cur = e
-	while cur != null and not seen.has(cur.file_off) and parts.size() < 64:
-		seen[cur.file_off] = true
-		parts.append("%s/%02x/%02x" % [_entity_key(m, cur), cur.link_act_type, cur.state_byte])
-		if (cur.flags & 0x40) != 0 or cur.link_next <= 0:
-			break
-		cur = m.entities_by_off.get(cur.link_next)
-		if cur == null:
-			parts.append("?")
-	return ">".join(parts)
-
-## May the state of `s` (variant map `sm`, as parsed) stand for `d` (this
-## map, as parsed), the entity with the same identity key? Only when both
-## behave alike: the same act and state byte, and for an entity that fires
-## a chain by itself (LevelBehaviour.starts_chain) the same chain all the way
-## down. The variants re-author exactly these: MAP.210/216's jeep is hint
-## [G1] where MAP.217's is [M3], and MAP.217's 210BASE3 is an armed 0xF2
-## trigger where MAP.210's is scenery.
-static func _same_behaviour(sm: LevelLoader.MapFile.MapFile, s, dm: LevelLoader.MapFile.MapFile, d) -> bool:
-	if s.link_act_type != d.link_act_type or s.state_byte != d.state_byte:
+## May the play state of `s` (variant map `sm`, as parsed) stand for `d`
+## (this map, as parsed), the record with the same identity key?
+##
+## The question the generated graph already answers: the two records must
+## have the same SIGNATURE — the same kind of thing, the same act, state
+## and hit points, the same name or sprite, the same place
+## (TriggerGraph.record_sig, the first half of the `sig` every node of the
+## graph carries and the lock pins). That takes in the act and state bytes
+## the port used to compare by hand, and the hit points it did not: a
+## variant that gives the same crate another pool is not the same crate
+## for a carry.
+##
+## For an entity whose CHAIN is its meaning — a trigger that fires one by
+## itself (LevelBehaviour.starts_chain) — the whole chain below it has to
+## be the same too, which is the graph's full node signature. The variants
+## re-author exactly these: MAP.210/216's jeep is hint [G1] where
+## MAP.217's is [M3], and MAP.217's 210BASE3 is an armed 0xF2 trigger
+## where MAP.210's is scenery. For everything else the chain below is the
+## chain's business and not the record's: MAP.210's gate chain runs on
+## from BIGDOORC to the truck and MAP.216's ends at the door, and the two
+## gate leaves are still the same doors — the gate the player opened on
+## one stands open on the other.
+static func _same_signature(sm: LevelLoader.MapFile.MapFile, s,
+		dm: LevelLoader.MapFile.MapFile, d) -> bool:
+	if TriggerGraph.record_sig(sm, s) != TriggerGraph.record_sig(dm, d):
 		return false
 	if not LevelBehaviour.starts_chain(s):
 		return true
-	return _chain_signature(sm, s) == _chain_signature(dm, d)
+	return TriggerGraph.node_sig(sm, s.file_off) == TriggerGraph.node_sig(dm, d.file_off)
 
 ## The records a PHASE SWITCH carries from: `from` as the MAP file has
 ## them, never the live copy the world has been played on.
 ##
-## _same_behaviour compares the act byte and the state byte of the two
-## maps, and both have to be the PARSED ones or the comparison is about
+## _same_signature compares the authored bytes of the two maps, and both
+## have to be the PARSED ones or the comparison is about
 ## the wrong thing: play retires a cue's act to 0xFF, swaps a water
 ## valve's 0xd9/0xda, cuts a finished path's link and flips a state bit on
 ## everything the player switched — exactly the entities whose state the
@@ -3802,17 +3815,38 @@ static func _parse_map(map_name: String) -> LevelLoader.MapFile.MapFile:
 			bytes = mb
 	return LevelLoader.MapFile.parse(bytes) if not bytes.is_empty() else null
 
+## The rule module of the game being PLAYED. The port runs SkyNET's act
+## tables on Future Shock's maps (the shock table is not decoded), but
+## which maps are variants of one world is a fact about the data, and
+## the two games number their maps differently — so that one question is
+## asked of the right module.
+static func _rules() -> Script:
+	return TriggerGraph.rules_for(TriggerGraph.current_game())
+
+## Are these two maps the same world shipped twice — a world and one of
+## its later phases, or two phases of it (Rules.VARIANTS)?
+static func _same_world(a: String, b: String) -> bool:
+	return bool(_rules().same_world(_suffix(a), _suffix(b)))
+
 ## First visit to a map that is a VARIANT of one already played (the
 ## base after the truck ride = MAP.216, after the lasers = MAP.217):
 ## DOS keeps its Mst overlay per map number, so the base would come
 ## back with every switch reset — the player asked for the state to
-## carry over. Find the best-matching visited map (same grid, ≥ 60 % of
-## this map's meshes present at the same coordinates) and translate its
-## snapshot by entity identity: dead enemies, taken pickups, and — for the
-## entities that behave the same on both maps (_same_behaviour) — switch
-## and mover states, damage, destruction. Objects the variant adds
-## (reinforcements) or re-authors keep this map's own state, objects it
-## drops are skipped.
+## carry over.
+##
+## WHICH maps those are is the committed list in the rules module
+## (Rules.VARIANTS, migration step 5i), not a search any more: until now
+## this looked through every visited map of the same mission for one
+## sharing 60 % of this map's meshes at the same coordinates, which is a
+## guess about the data made afresh on every first visit, and a guess
+## that would have let mission 4's harbour hand its dead to mission 5's
+## had the two not sat in different decades by luck.
+##
+## What crosses is the same as ever: dead enemies and taken pickups by
+## entity identity, and — for the records whose signature is the same on
+## both maps (_same_signature) — switch and mover states, damage,
+## destruction. Objects the variant adds (reinforcements) or re-authors
+## keep this map's own state, objects it drops are skipped.
 ##
 ## Never an act byte or a link. A retired cue (act 0xFF) belongs to the
 ## map it fired on: 2026-09-14 imported them, the jeep's [G1] hint fired on
@@ -3820,55 +3854,34 @@ static func _parse_map(map_name: String) -> LevelLoader.MapFile.MapFile:
 ## 1 could not end ("let's roll" and nothing, playtest 2026-09-15). On a
 ## variant the cue is fresh, as DOS has every map number's own overlay.
 func _import_variant_state(level: LevelLoader.Level, name: String) -> Dictionary:
-	# Outdoor maps only: interiors built from the same room kit (the two
-	# truck boxes MAP.211/212 share 72 % of their pieces) are different
-	# places, not variants of one.
-	if level.map == null or not level.is_outdoor:
+	if level.map == null:
 		return {}
-	var mine: Dictionary = {}            # key → my file offset
-	var mesh_total: int = 0
-	for e in level.map.entities:
-		mine[_entity_key(level.map, e)] = e.file_off
-		if (e.flags & 3) == 1:
-			mesh_total += 1
-	if mesh_total == 0:
-		return {}
+	# The overlay to carry from: a visited map of this world. Two of them
+	# can be waiting — MAP.217 is walked into with both MAP.210 and
+	# MAP.216 behind it — and the one holding most of this map's records
+	# is its nearest phase, which is the one the world was last played in
+	# (MAP.217 shares 420 records with MAP.216 against MAP.210's 383).
 	var best: String = ""
-	var best_ratio: float = 0.6
+	var best_map: LevelLoader.MapFile.MapFile = null
 	var best_remap: Dictionary = {}
 	for other in _map_state:
-		# Variants are of the same mission: _map_state spans the whole
-		# session, and MAP.250's harbour shares MAP.240's grid and much of
-		# its scenery — it could inherit mission 4's dead and picked-up.
-		if other == name or _mission_of(String(other)) != _mission_of(name):
+		if not _same_world(String(other), name):
 			continue
-		var snap: Dictionary = _map_state[other]
-		if snap.get("grid", Vector2i.ZERO) != Vector2i(level.map.grid_width, level.map.grid_height):
+		var m: LevelLoader.MapFile.MapFile = _parse_map(String(other))
+		if m == null:
+			push_warning("[skynet] %s: cannot read %s — its switches and damage stay behind"
+				% [name, String(other)])
 			continue
-		if bool(snap.get("outdoor", false)) != level.is_outdoor:
-			continue
-		var sig: Dictionary = snap.get("sig", {})
-		var remap: Dictionary = {}       # other offset → my offset
-		var mesh_hits: int = 0
-		for off in sig:
-			var key: String = sig[off]
-			if mine.has(key):
-				remap[off] = mine[key]
-				if key.begins_with("1|"):
-					mesh_hits += 1
-		var ratio: float = float(mesh_hits) / float(mesh_total)
-		if ratio >= best_ratio:
-			best_ratio = ratio
-			best = other
+		var remap: Dictionary = _variant_remap(m, level.map)
+		if not remap.is_empty() and remap.size() >= best_remap.size():
+			best = String(other)
+			best_map = m
 			best_remap = remap
 	if best.is_empty():
 		return {}
-	var src_map: LevelLoader.MapFile.MapFile = _parse_map(best)
-	if src_map == null and level.triggers != null:
-		push_warning("[skynet] %s: cannot read variant %s — its switches and damage stay behind" % [name, best])
-	var out: Dictionary = _carry_records(level, src_map, _map_state[best], best_remap)
-	print("[skynet] %s: first visit — importing state from variant %s (%d%% of meshes shared, %d dead, %d taken, %d entities carried, %d re-authored kept fresh)"
-		% [name, best, int(best_ratio * 100.0), out["dead"].size(), out["taken"].size(),
+	var out: Dictionary = _carry_records(level, best_map, _map_state[best], best_remap)
+	print("[skynet] %s: first visit — importing state from %s, the same world re-authored (%d of its entities are here too, %d dead, %d taken, %d entities carried, %d re-authored kept fresh)"
+		% [name, best, best_remap.size(), out["dead"].size(), out["taken"].size(),
 		   int(out.get("carried", 0)), int(out.get("kept", 0))])
 	out.erase("carried")
 	out.erase("kept")
@@ -3879,36 +3892,50 @@ func _import_variant_state(level: LevelLoader.Level, name: String) -> Dictionary
 ## `level` is the same zone built again from the variant's records. There
 ## is nothing to search for and nothing to parse — the source map is the
 ## one that has just come down — and the rule is the one above, to the
-## letter: identity by kind + name + DOS position, no act, no link.
+## letter: identity by kind + name + DOS position, the signature for what
+## may carry, no act, no link.
 func _carry_variant_state(level: LevelLoader.Level, name: String,
 		carry: Dictionary) -> Dictionary:
 	var src_map: LevelLoader.MapFile.MapFile = carry.get("map")
+	var from: String = String(carry.get("name", ""))
 	if level.map == null or src_map == null:
 		return {}
-	var mine: Dictionary = {}                # key → my file offset
-	for e in level.map.entities:
-		mine[_entity_key(level.map, e)] = e.file_off
-	var remap: Dictionary = {}               # its offset → my offset
-	for e in src_map.entities:
-		var key: String = _entity_key(src_map, e)
-		if mine.has(key):
-			remap[e.file_off] = mine[key]
+	# A phase edge comes out of the mission scene's own census, the list
+	# out of the rules module: where the two disagree, nothing carries
+	# rather than something wrong.
+	if not _same_world(from, name):
+		push_warning("[mission] %s and %s are not one world — the phase carries nothing" % [from, name])
+		return {}
+	var remap: Dictionary = _variant_remap(src_map, level.map)
 	var out: Dictionary = _carry_records(level, src_map, carry.get("snap", {}), remap)
 	print("[mission] %s ← %s: %d of its entities are here too (%d dead, %d taken, %d carried, %d re-authored kept fresh)"
-		% [name, String(carry.get("name", "?")), remap.size(), out["dead"].size(),
+		% [name, from, remap.size(), out["dead"].size(),
 		   out["taken"].size(), int(out.get("carried", 0)), int(out.get("kept", 0))])
 	out.erase("carried")
 	out.erase("kept")
 	return out
 
 ## Translate one map's overlay onto another's records through `remap`
-## (source file offset → this level's). Dead robots and taken pickups
-## always; the switch, mover, damage and destruction state only for the
-## entities that behave the same on both maps (_same_behaviour) — and
-## never an act byte or a link, which belong to the map they were
-## authored in. The HP table starts as this map's own: restore_state
-## replaces it whole, and an import that left the objects only this map
-## has out of it made them undamageable.
+## (source file offset → this level's, by entity identity). Dead robots
+## and taken pickups always; the switch, mover, damage and destruction
+## state only for the records whose SIGNATURE is the same on both maps
+## (_same_signature) — and never an act byte or a link, which belong to
+## the map they were authored in.
+##
+## The plan's rule for the state bits is that the authored act must match
+## as well (§4). It does, by construction: the act byte is IN the
+## signature, so a bit only ever lands on a record the variant authored
+## with the same act. The plan reads as if a retired act (0xFF) might
+## then cross too — it does not, and this is the one place where the
+## shipped rule is narrower than the plan. A cue belongs to the map it
+## fired on (DOS has an overlay per map number and replays every cue),
+## and that is the rule the port was fixed to after the 2026-09-15
+## playtest; opening it is a decision about what the player hears twice,
+## not a migration step.
+##
+## The hit points start as this map's own: restore lays an overlay's pool
+## back whole, and an import that left the objects only this map has out
+## of it made them undamageable.
 func _carry_records(level: LevelLoader.Level, src_map: LevelLoader.MapFile.MapFile,
 		src: Dictionary, remap: Dictionary) -> Dictionary:
 	var out: Dictionary = {"dead": {}, "taken": {}, "triggers": {},
@@ -3922,16 +3949,18 @@ func _carry_records(level: LevelLoader.Level, src_map: LevelLoader.MapFile.MapFi
 	var act_src: Dictionary = _trigger_state(src)
 	var act: Dictionary = {}
 	if level.triggers != null:
-		act = {"states": {}, "movers": {}, "destr": {}, "spent": {},
-			"hp": level.triggers.snapshot().get("hp", {})}
+		var mine_hp: Dictionary = {}
+		for off in level.triggers.hp_offs():
+			mine_hp[off] = level.triggers.hp(int(off))
+		act = {"states": {}, "movers": {}, "destr": {}, "spent": {}, "hp": mine_hp}
 	if src_map != null and not act.is_empty():
 		for off in remap:
 			var s = src_map.entities_by_off.get(off)
 			var dst: int = int(remap[off])
 			var d = level.map.entities_by_off.get(dst)
-			if s == null or d == null or _entity_key(src_map, s) != _entity_key(level.map, d):
-				continue                     # (the variant's file changed since)
-			if not _same_behaviour(src_map, s, level.map, d):
+			if s == null or d == null:
+				continue
+			if not _same_signature(src_map, s, level.map, d):
 				out["kept"] = int(out["kept"]) + 1
 				continue
 			out["carried"] = int(out["carried"]) + 1

@@ -54,6 +54,13 @@ const TELEPORT_TOUCH_RADIUS: float = Skynet.TELEPORT_TOUCH_RADIUS
 const PROX_VERTICAL_WINDOW: float = Skynet.PROX_VERTICAL_WINDOW
 const DESTRUCT_DAMAGE_PER_STAGE: float = Skynet.DESTRUCT_DAMAGE_PER_STAGE
 
+## No world of this game is known to be shipped twice. Future Shock's
+## maps have never been censused for it, and the two games number their
+## maps their own way, so SkyNET's list must not be read into this one.
+## Empty means nothing carries between Future Shock maps — which is what
+## DOS does anyway, an overlay per map number.
+const VARIANTS: Dictionary = {}
+
 static var _rules: Dictionary = {}
 static var _hash: String = ""
 
@@ -81,6 +88,12 @@ static func rule_for_record(act: int, variant: int) -> Dictionary:
 	if variant != 2 and String(r["kind"]) == "light":
 		return NOT_A_LIGHT
 	return r
+
+static func world_of(map_num: int) -> int:
+	return int(VARIANTS.get(map_num, map_num))
+
+static func same_world(a: int, b: int) -> bool:
+	return a != b and world_of(a) == world_of(b)
 
 static func informational() -> bool:
 	return INFORMATIONAL

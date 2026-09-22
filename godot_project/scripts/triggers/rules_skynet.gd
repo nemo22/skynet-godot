@@ -321,6 +321,45 @@ const MARKER_PATH_LOOP: int = 105
 const MARKER_BORDER_FIRST: int = 30
 const MARKER_BORDER_LAST: int = 39
 
+# ---------------------------------------------------------------------
+# Variant maps — one world, shipped several times over
+# ---------------------------------------------------------------------
+## Which map numbers are RE-AUTHORED VERSIONS of one world, and of which
+## world: MAP.216 is MAP.210 after the truck ride and MAP.217 is MAP.210
+## after the lasers — the same ground, the same buildings, another crop of
+## robots and other chains. DOS keeps an Mst overlay per map NUMBER, so
+## it carries nothing between them and the player meets his own dead
+## again; the port carries what he did across (main._carry_records), and
+## this table is the committed list of where that may happen at all
+## (docs/trigger_graph_plan.md §4). It replaces a search that took any
+## visited map of the same mission sharing 60 % of its meshes — which
+## could only ever guess.
+##
+## The two worlds are the census of the shipped data (map_dump
+## --mission=all, 2026-09-16: "MAP.210 → MAP.216 → MAP.217" and
+## "MAP.230 → MAP.235 → MAP.234"), and the mesh census (--variants=)
+## agrees: the members of each share 89-98 % of their placed meshes at
+## the same coordinates. Not the ground under them — mission 1's phases
+## bring a heightmap of their own, and only mission 3's keep MAP.230's —
+## which is why a phase is loaded whole rather than patched.
+##
+## What is deliberately NOT here, though the mesh census pairs them:
+##   240 ~ 250 (93 %)  mission 4's harbour and mission 5's are two
+##                     missions, each with an overlay of its own
+##   210 ~ 220 (82 %)  the same about mission 1's base and mission 2's
+##   270 ~ 272 (82 %)  no mission reaches MAP.272 — nothing can carry
+##   200 ~ 202 (98 %)  loose maps outside the campaign
+const VARIANTS: Dictionary = {216: 210, 217: 210, 234: 230, 235: 230}
+
+## The world a map number belongs to — itself, unless it is a variant.
+static func world_of(map_num: int) -> int:
+	return int(VARIANTS.get(map_num, map_num))
+
+## May state carry from map `a` into map `b`? Only between two DIFFERENT
+## members of one world.
+static func same_world(a: int, b: int) -> bool:
+	return a != b and world_of(a) == world_of(b)
+
 ## Is this table informational only (Future Shock's is)? A static call
 ## rather than a plain constant, so a caller holding either module in a
 ## variable can ask the same question of both.
