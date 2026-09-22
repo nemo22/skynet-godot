@@ -60,7 +60,7 @@ func _ready() -> void:
 		if level == null:
 			continue
 		print("[smoke] %s: movers=%d destr=%d prox=%d teleports=%d"
-			% [m, level.behaviour.mover_nodes().size(), level.action._destr.size(),
+			% [m, level.behaviour.mover_nodes().size(), level.behaviour.wreck_nodes().size(),
 			   level.behaviour.prox_nodes().size(), level.action._teleports.size()])
 		if m == "MAP.210":
 			level210 = level
@@ -194,8 +194,9 @@ func _run_map210_checks(level: LevelLoader.Level) -> void:
 	for nm in by_name:
 		if nm.begins_with("CARHIP") or nm.begins_with("COPCAR"):
 			for e in by_name[nm]:
-				if action._destr.has(e.file_off) \
-						and action._destr[e.file_off]["meshes"].size() > 1 \
+				# The stages are the record's own node's since step 5g.
+				var w: Node = level.behaviour.wreck_node(e.file_off)
+				if w != null and (w.get("meshes") as Array).size() > 1 \
 						and (e.state_byte & 6) != 0:
 					car = e
 					break
@@ -395,7 +396,7 @@ func _run_behaviour_checks() -> void:
 			var tnode: Node3D = l213.action._nodes[top.file_off]
 			l213.action.on_player_hit(base.file_off, 500.0)
 			l213.action.tick(0.016, Vector3(1e9, 0.0, 1e9))
-			_check(l213.action._spent.has(top.file_off) and not tnode.visible,
+			_check(l213.action.is_spent(top.file_off) and not tnode.visible,
 				"0x1B: the stacked crate is demolished with the one shot")
 
 	# MAP.210: the 0xF1 lever at the canyon exit opens BIGDOOR, the 0xF2
@@ -458,7 +459,7 @@ func _run_behaviour_checks() -> void:
 			_check(not l232.action.enabled(relay.file_off),
 				"at one objective left the relay fires and switches off")
 			_check(out >= 7, "the relay's chain lets the robots out (%d)" % out)
-			_check(l232.action._spent.has(0x3512), "232DOOR6 gives way")
+			_check(l232.action.is_spent(0x3512), "232DOOR6 gives way")
 
 	# MAP.210: the cargo truck (type 46, AI state 11) stands still until
 	# the lever @0c084 flips its path markers on; then it drives its path
@@ -671,9 +672,9 @@ func _run_transition_checks(level210: LevelLoader.Level) -> void:
 	var l210b: LevelLoader.Level = LevelLoader.new().load_level("MAP.210")
 	if l210b != null and not spent_offs.is_empty():
 		var off: int = spent_offs[0]
-		_check(not l210b.action._spent.has(off), "fresh MAP.210 parse starts unspent")
+		_check(not l210b.action.is_spent(off), "fresh MAP.210 parse starts unspent")
 		l210b.action.restore_state(snap)
-		_check(l210b.action._spent.has(off), "restore_state re-applies the spent flag")
+		_check(l210b.action.is_spent(off), "restore_state re-applies the spent flag")
 		_check(l210b.triggers.state(off) == int(snap["states"][off]),
 			"restore_state re-applies entity state bytes")
 

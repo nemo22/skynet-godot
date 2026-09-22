@@ -253,15 +253,17 @@ func _run() -> void:
 	# --- 2b. Blast damage reaches destructible map objects (cars) ---
 	var car: Node3D = null
 	var action = _main.get("_current_level").action
+	var branch = _main.get("_current_level").behaviour
 	for h in get_tree().get_nodes_in_group("hittable"):
 		var hoff: int = int(h.call("file_off"))
-		if action._destr.has(hoff) and int(action._destr[hoff]["stage"]) == 0 and not action._spent.has(hoff) and (String(h.name).begins_with("CARHIP") or String(h.name).begins_with("COPCAR")):
+		var w: Node = branch.wreck_node(hoff)
+		if w != null and int(w.get("stage")) == 0 and not action.is_spent(hoff) and (String(h.name).begins_with("CARHIP") or String(h.name).begins_with("COPCAR")):
 			car = h
 			break
 	_check(car != null, "a staged destructible car is in the hittable group")
 	if car != null:
 		var off: int = car.call("file_off")
-		var stage0: int = int(action._destr[off]["stage"]) if action._destr.has(off) else -1
+		var stage0: int = int(branch.wreck_node(off).get("stage")) if branch.wreck_node(off) != null else -1
 		var rocket := preload("res://scripts/projectile.gd").new()
 		add_child(rocket)
 		# Straight down onto the roof — nothing but the car in the way.
@@ -269,7 +271,7 @@ func _run() -> void:
 			{"speed": 3000.0, "life": 1.0, "splash": 512.0, "hits": "enemy"}, player)
 		for f in 45:
 			await get_tree().physics_frame
-		var stage1: int = int(action._destr[off]["stage"]) if action._destr.has(off) else -1
+		var stage1: int = int(branch.wreck_node(off).get("stage")) if branch.wreck_node(off) != null else -1
 		_check(stage1 > stage0, "rocket blast advanced the car's damage stage (%d → %d)" % [stage0, stage1])
 
 	# --- 3. Enemy bolt at the player ---
@@ -485,10 +487,10 @@ func _run() -> void:
 		_check(crate != null and crate.hp == 50 and crate.uses_defaults,
 			"crates take 50 HP from the map's per-name defaults")
 		var drops: Array = []
-		lvl.action.drop_requested.connect(func(at: Vector3, t: int) -> void: drops.append(t))
+		lvl.behaviour.item_dropped.connect(func(at: Vector3, t: int) -> void: drops.append(t))
 		if crate != null:
 			lvl.action.on_player_hit(crate.file_off, 60.0)
-			_check(lvl.action._spent.has(crate.file_off), "a 60-damage hit destroys the crate")
+			_check(lvl.action.is_spent(crate.file_off), "a 60-damage hit destroys the crate")
 			_check(drops == [3], "the crate's destruction rolls an ammo drop (type 3)")
 		for f in 5:
 			await get_tree().physics_frame
@@ -1328,12 +1330,12 @@ func _check_ram_wall() -> void:
 	# The START BOX is pressed, not walked into, and the girder has to ram
 	# the wall several times before it gives (the DOS run, 2026-09-11).
 	var presses: int = 0
-	while presses < 12 and not lvl.action._spent.has(wall.file_off):
+	while presses < 12 and not lvl.action.is_spent(wall.file_off):
 		lvl.action.press_use()
 		lvl.action.tick(0.016, at)
 		lvl.action.tick(0.016, at)
 		presses += 1
-	_check(lvl.action._spent.has(wall.file_off) and presses > 1,
+	_check(lvl.action.is_spent(wall.file_off) and presses > 1,
 		"the START BOX chain breaks the wall open after several rams (%d)" % presses)
 
 ## Marker 103/104 is the map's water level (DOS 0x120bf9): the harbour

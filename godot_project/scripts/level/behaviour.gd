@@ -58,6 +58,16 @@
 ## It is deliberately NOT in the map's node index below — nothing flips a
 ## marker and nothing presents one.
 ##
+## Step 5g brought what BREAKS: ObjHit itself, the TRANSFRM.PRS damage
+## stages of acts 0x18/0x19, the 0x1B killing blow and the destruction
+## that follows a spent pool of hit points. The stage a wreck is showing
+## is its own node's (scripts/level/destructible.gd), which is the only
+## thing that remembers one; the pool and the spent flag went where every
+## other per-entity byte went in step 5a, to the one writer; and the
+## sweeps, the blast and the drop are here, because a blast reaches
+## everything around it and a drop belongs to the level, not to the thing
+## that died.
+##
 ## The `state` export on the nodes is the byte the MAP was AUTHORED with
 ## and stays that: nothing writes it at run time any more, so there is no
 ## second copy to disagree with the runtime. The one node-side mirror
@@ -82,6 +92,9 @@ extends Node3D
 
 const Rules := preload("res://scripts/triggers/rules_skynet.gd")
 const PathVehicle := preload("res://scripts/level/path_vehicle.gd")
+const Explosion := preload("res://scripts/explosion.gd")
+const Projectile := preload("res://scripts/projectile.gd")
+const PickupData := preload("res://scripts/pickup_data.gd")
 
 ## The container the path vehicles are built into. Not a baked one — see
 ## the header — so the index below steps over it by name.
@@ -97,6 +110,11 @@ signal mission_failed()
 ## new target. `absolute` = go to this Y, otherwise add it to the target.
 ## MAP.254's sewers flood and drain as the walls and valves are opened.
 signal water_level(value: float, absolute: bool)
+## A destroyed object drops an item — a crate its ammo, a locker a medkit
+## (DOS FUN_00124293 → FUN_00124119, the 0x423d6 table's third word). The
+## position is ZONE-LOCAL: the drop becomes a child of the level's sprites
+## and is put on the map's own heightmap (LevelLoader.spawn_item).
+signal item_dropped(pos: Vector3, drop_type: int)
 
 ## How often the flicker and the strobe are allowed to change a lamp. The
 ## DOS handlers (0x137713 / 0x13773b) run on the engine tick, which is
@@ -116,11 +134,10 @@ var runtime: RefCounted = null
 ## is the normal case in a test that builds a branch by hand, and nothing
 ## below reads anything back.
 var bus: RefCounted = null
-## The classes that have not moved off the records yet — the exits, the
-## destructibles, the hit points and the per-tick bookkeeping of a chain
-## walk (scripts/action_system.gd). The proximity nodes reach three things
-## through it: whether a record is a spent wreck, the MAP record's own
-## read-only data, and the doorway a gate's chain ends in.
+## The classes that have not moved off the records yet — the exits and the
+## per-tick bookkeeping of a chain walk (scripts/action_system.gd). Two
+## things are reached through it: the MAP record's own read-only data, and
+## the doorway a gate's chain ends in.
 ## Step 5h takes it away with the rest of ActionSystem; null is an
 ## ordinary state (a branch built by hand in a test) and the nodes fall
 ## back to what the bake wrote on them.
@@ -171,6 +188,20 @@ var _movers: Dictionary = {}
 ## marker file_off → its PathVehicle node. Built at registration (see the
 ## header); a map with no vehicle never builds the container either.
 var _vehicles: Dictionary = {}
+
+## The step-5g classes. `_hittable` is the mesh the level loader built for
+## a record, by file offset — what a blast goes off at and what leaves the
+## world when a pool runs out; every action target is in it, movers
+## included, exactly as ActionSystem's own node index was. `_wrecks` are
+## the records with TRANSFRM.PRS damage stages (registration IS membership,
+## and it makes the same test the DOS lookup does — by the object's own
+## mesh name), `_rams` the ones a CHAIN can break (act 0x18/0x19) and
+## `_demolishers` the ones a chain KILLS (act 0x1B), both in the order the
+## MAP lists them.
+var _hittable: Dictionary = {}
+var _wrecks: Dictionary = {}
+var _rams: Array = []
+var _demolishers: Array = []
 
 func _ready() -> void:
 	_ensure_index()
@@ -235,6 +266,19 @@ func _ensure_index() -> void:
 					"relay": _relays.append(n)
 					"water": _water.append(n)
 					"light": _lights.append(n)
+			elif n.has_method("break_down"):      # a wreck with damage stages
+				n.set("branch", self)
+			elif n.has_method("adopt"):           # a plain damageable mesh
+				n.set("branch", self)
+			# A chain that reaches one of these breaks it or kills it, and
+			# which of the two is the act byte's business, not the node
+			# class's: a demolition prop whose mesh HAS damage stages is
+			# baked as a wreck (level_behaviour.kind_of), so the sweeps go
+			# by the byte the record was authored with, as the one long
+			# loop's own lists did (ActionSystem.setup).
+			match act_of(n):
+				Rules.ACT_DESTRUCT_A, Rules.ACT_DESTRUCT_B: _rams.append(n)
+				Rules.ACT_DEMOLISH: _demolishers.append(n)
 
 ## The node of entity `id` (the MAP file offset), or null.
 func node(id: int) -> Node:
@@ -360,7 +404,7 @@ func prox_tick(eye: Vector3) -> void:
 	for t in _prox:
 		if t.is_wall_button():
 			continue
-		if action != null and bool(action.is_spent(int(t.id))):
+		if runtime != null and runtime.spent(int(t.id)):
 			continue
 		t.prox_watch(eye, _use_edge)
 	_use_edge = false
@@ -407,7 +451,7 @@ func use_nearby(eye: Vector3) -> bool:
 	var best: Node = null
 	var best_d: float = INF
 	for t in _prox:
-		if action != null and bool(action.is_spent(int(t.id))):
+		if runtime != null and runtime.spent(int(t.id)):
 			continue
 		if not t.is_wall_button():
 			continue
@@ -432,7 +476,7 @@ func gate_to_exit(eye: Vector3) -> Node:
 	for t in _prox:
 		if t.act_now() != Rules.ACT_PROX_GATE:
 			continue
-		if action != null and bool(action.is_spent(int(t.id))):
+		if runtime != null and runtime.spent(int(t.id)):
 			continue
 		if not t.inside(eye):
 			continue
@@ -645,6 +689,302 @@ func path_restore(snap: Dictionary) -> void:
 func path_forget() -> void:
 	for off in _vehicles:
 		_vehicles[off].path_forget()
+
+# ---------------------------------------------------------------------
+# The destructibles, the demolition and the ram (step 5g)
+# ---------------------------------------------------------------------
+## ObjHit (v1.01 0x139019) and everything it leads to. The bits it tests
+## and the pool it drains are the runtime's — this writes none of them —
+## and the damage STAGES are the record's own node
+## (scripts/level/destructible.gd), which is the only thing that
+## remembers how far a wreck has come.
+
+## The level loader has built the mesh of `e`: remember it, and hand it to
+## the record's own node where there is one to take it. Every action
+## target comes through here, movers included — a door with hit points
+## can be shot to pieces like anything else, and what leaves the world
+## then is this mesh.
+func register_hittable(e, node: Node3D) -> void:
+	_ensure_index()
+	_hittable[e.file_off] = node
+	var n: Node = _by_id.get(e.file_off)
+	if n != null and n.has_method("adopt") and not n.has_method("mover_watch"):
+		if n.has_method("break_down"):
+			return                               # its stages arrive with it
+		n.call("adopt", node)
+
+## …and the damage stages the loader read out of TRANSFRM.PRS for it.
+## Being registered IS being a wreck: a name with no template never
+## reaches this, and the DOS handler returns at once for one of those
+## (0x120833 → the lookup at 0x12078a sets carry, `jb` leaves).
+func register_destructible(e, meshes: Array) -> void:
+	_ensure_index()
+	var n: Node = _by_id.get(e.file_off)
+	if n == null or not n.has_method("break_down"):
+		push_warning("[behaviour] no Destructible node for the wreck @%05x" % e.file_off)
+		return
+	n.call("adopt", _hittable.get(e.file_off), meshes)
+	_wrecks[e.file_off] = n
+
+## The Destructible node of `id` — one with damage stages — or null.
+func wreck_node(id: int) -> Node:
+	_ensure_index()
+	return _wrecks.get(id)
+
+## Every one of them, in the order the loader registered them.
+func wreck_nodes() -> Array:
+	_ensure_index()
+	return _wrecks.values()
+
+## Does the record at `id` take damage at all (a pool of hit points, or
+## damage stages)? What the crosshair and a grenade ask before they burst.
+func is_damageable(id: int) -> bool:
+	_ensure_index()
+	if runtime == null or runtime.spent(id):
+		return false
+	return runtime.has_hp(id) or _wrecks.has(id)
+
+## Every record of the map that can be damaged — the pool of hit points
+## the MAP gave out, plus the wrecks, which stage under fire whether they
+## carry one or not.
+func damageable_offs() -> Array:
+	_ensure_index()
+	if runtime == null:
+		return []
+	var offs: Dictionary = {}
+	for off in runtime.hp_offs():
+		offs[int(off)] = true
+	for off in _wrecks:
+		offs[int(off)] = true
+	var out: Array = []
+	for off in offs:
+		if is_damageable(int(off)):
+			out.append(int(off))
+	return out
+
+## ObjHit FUN_00139019. Returns true when the hit was consumed by an
+## action, so a caller can skip its generic hit effects.
+##
+## State bit 1 = act on every hit, and it is tested BEFORE the pool is, so
+## a wreck goes on staging after its hit points are gone; bit 2 = act on
+## the hit that depletes the pool. The pool drains whatever the bits say,
+## which is why a crate with state 0 still breaks and drops its ammo.
+func obj_hit(id: int, damage: float) -> bool:
+	_ensure_index()
+	var e = record_of(id)
+	if e == null or runtime == null:
+		return false
+	var was_spent: bool = runtime.spent(id)
+	var has_hp: bool = runtime.has_hp(id) and (e.flags & 3) == 1 and not was_spent
+	var depleted: bool = has_hp and runtime.hp(id) - damage <= 0.0
+	var acted: bool = false
+	var st: int = runtime.state(id)
+	if (st & 6) != 0:
+		var w: Node = _wrecks.get(id)
+		if w != null:
+			acted = bool(w.call("advance"))
+		elif not was_spent and ((st & 2) != 0 or ((st & 4) != 0 and depleted)):
+			# The chain walk and then the record's own handler, DOS order.
+			# The bookkeeping of a walk is still the action system's (step
+			# 5h moves it), so that is what is asked to do it.
+			if action != null:
+				action.trigger(id)
+			else:
+				runtime.flip(id)
+			acted = true
+	if has_hp:
+		runtime.set_hp(id, runtime.hp(id) - damage)
+		acted = true
+		if depleted:
+			runtime.set_spent(id)
+			destroy(id)
+	return acted
+
+## Destructibles a CHAIN switched on (0x18/0x19). Normally these only
+## break under fire, but a machine can break one for you: on MAP.248 a
+## START BOX (0xEF) runs a sound node into the IBEM64 girder (a 0x73
+## slide) and on into 248WALL — the ram that punches the hole you walk
+## through. Nothing in the map data starts a destructible enabled, so bit
+## 0 here always means "a chain just fired me".
+##
+## Run from the level's per-tick sweep (ActionSystem.tick) in the place it
+## has always held: after the proximity triggers, whose walk is what arms
+## one of these.
+func destruct_tick() -> void:
+	_ensure_index()
+	for n in _rams:
+		var id: int = id_of(n)
+		if not fires(id):
+			continue
+		runtime.clear_enable(id)
+		if _wrecks.has(id):
+			n.call("break_down")
+
+## Demolition (0x1B, v1.01 handler 0x1380bf): a chain that enables one of
+## these deals it HP + 1 through ObjHit. The crate stack on MAP.213 comes
+## down with the crate you shot, the desk takes the PC on it, the NODE00
+## gate on MAP.280 drops the fence ring.
+func demolish_tick() -> void:
+	_ensure_index()
+	for n in _demolishers:
+		var id: int = id_of(n)
+		if not fires(id):
+			continue
+		runtime.clear_enable(id)
+		demolish(id)
+
+## One demolition. `hp = max(hp, 1)` first, so a prop the map gave no hit
+## points goes too, then ObjHit(hp + 1) — the object dies through the
+## ordinary destruction path (blast, drop, sound, and the chain if its own
+## state bits ask for it). A record already spent has nothing left to
+## kill, and the simulation reads the same flag back (trigger_graph._edge).
+func demolish(id: int) -> void:
+	var e = record_of(id)
+	if e == null or runtime.spent(id) or (e.flags & 3) != 1:
+		return
+	if not runtime.has_hp(id) or runtime.hp(id) <= 0.0:
+		runtime.set_hp(id, 1.0)
+	var left: float = runtime.hp(id)
+	print("[action] demolish @%05x (act 0x1b, hp %.0f)" % [id, left])
+	say(id, "demolish", "demolish", {"hp": left})
+	obj_hit(id, left + 1.0)
+
+## DOS FUN_00124293 — the hit points are gone. The link record's byte 0
+## picks the destruction type (Skynet.exe 0x423d6): effect sprites
+## scattered within `spread`, a random drop from the type's list (crates →
+## ammo, lockers → medkits) and a sound (-2 = one of 33..36); type 0 is a
+## plain blast (effect 358) sized by the i16 parameter, no drop. Staged
+## wrecks keep their final mesh; everything else leaves the world.
+##
+## zone-local ↔ world: the record's own position is zone-local and the
+## mesh's global transform is already world; both are carried as WORLD
+## here, because the audio, the effects and the blast all live there.
+func destroy(id: int) -> void:
+	var e = record_of(id)
+	if e == null:
+		return
+	var node: Node3D = _hittable.get(id)
+	var origin := Vector3(float(e.x), -float(e.y), -float(e.z)) + zone_origin
+	var centre: Vector3 = origin
+	var radius: float = 120.0
+	var alive: bool = node != null and is_instance_valid(node)
+	if alive and node is MeshInstance3D:
+		var aabb: AABB = (node as MeshInstance3D).get_aabb()
+		centre = node.global_transform * (aabb.position + aabb.size * 0.5)
+		radius = maxf(aabb.size.length() * 0.35, 120.0)
+	var fx: Array = [0xB300]
+	var spread: int = maxi(absi(e.destroy_param), 128)
+	var drop: int = -1
+	var snd: int = -2
+	var t: int = e.destroy_type
+	if t > 0 and t < PickupData.DESTRUCT.size():
+		var d: Array = PickupData.DESTRUCT[t]
+		fx = d[0]
+		spread = int(d[1])
+		drop = int(d[2])
+		snd = int(d[3])
+	if snd == -2:
+		var pool: Array = PickupData.DESTRUCT_RANDOM_SOUNDS
+		snd = int(pool[randi() % pool.size()])
+	if snd >= 0 and not Audio.sound_name(snd).is_empty():
+		Audio.play_id_3d(snd, centre, -3.0)
+	else:
+		Audio.play_sfx_3d("EXPLO3.RAW", centre, -3.0)
+	if alive and node.is_inside_tree():
+		var scene := node.get_tree().current_scene
+		if scene != null:
+			var k: int = 0
+			for s in fx:
+				var at: Vector3 = centre
+				if k > 0:
+					at += Vector3(randf_range(-0.5, 0.5) * spread, 0.0,
+						randf_range(-0.5, 0.5) * spread)
+				Explosion.spawn(scene, at, radius * 1.6, int(s) >> 7)
+				k += 1
+		radial_blast(node, centre, absi(e.destroy_param))
+	# Gone from the world, whether or not it was in a tree to blow up in.
+	if alive and not _wrecks.has(id):
+		node.visible = false
+		disable_collision(node)
+	if drop >= 0:
+		item_dropped.emit(Vector3(centre.x, origin.y, centre.z) - zone_origin, drop)
+
+## Explosion at a wreck's centre; the final stage also throws the object's
+## own blast (the i16 at its link record +1 — the cars of MAP.210 carry
+## 200-300, the gas tanker 600, a crate nothing).
+func blast(id: int, node: Node3D, final: bool) -> void:
+	var e = record_of(id)
+	var strength: int = absi(e.destroy_param) if e != null else 0
+	var aabb: AABB = (node as MeshInstance3D).get_aabb() if node is MeshInstance3D else AABB()
+	var centre: Vector3 = node.global_transform * (aabb.position + aabb.size * 0.5)
+	var radius: float = maxf(aabb.size.length() * 0.35, 120.0)
+	Audio.play_sfx_3d("EXPLO3.RAW" if final else "EXPLO1.RAW", centre, -3.0)
+	if not node.is_inside_tree():
+		return
+	var scene := node.get_tree().current_scene
+	if scene != null:
+		Explosion.spawn(scene, centre, radius * (1.6 if final else 1.0))
+	if final:
+		radial_blast(node, centre, strength)
+
+## A dying object's blast, the DOS radial one (FUN_00124386 through
+## Projectile.dos_blast): `s` points at the centre + 40, nothing past half
+## of it — on the player (from his DOS point, with line of sight), on the
+## robots (ObjHit) and on the other destructibles in reach, which is how a
+## row of cars goes up one after another. Until 2026-09-15 the port dealt
+## a flat 450 points to the player from every wreck, crates included.
+func radial_blast(source: Node3D, centre: Vector3, s: int) -> void:
+	if s <= 0 or not source.is_inside_tree():
+		return
+	var tree: SceneTree = source.get_tree()
+	Projectile.blast_player(centre, float(s), float(s), null, tree)
+	for e in tree.get_nodes_in_group("enemy"):
+		if e is Node3D and e.has_method("obj_hit"):
+			var d: float = e.blast_distance(centre) if e.has_method("blast_distance") \
+				else (e as Node3D).global_position.distance_to(centre)
+			var bd: float = Projectile.dos_blast(float(s), d)
+			if bd > 0.0:
+				e.call("obj_hit", bd)
+	for h in tree.get_nodes_in_group("hittable"):
+		if h is Node3D and h != source and h.has_method("take_damage"):
+			var bh: float = Projectile.dos_blast(float(s),
+				(h as Node3D).global_position.distance_to(centre))
+			if bh > 0.0:
+				h.call_deferred("take_damage", bh)
+
+static func disable_collision(node: Node3D) -> void:
+	for c in node.get_children():
+		if c is CollisionObject3D:
+			for s in c.get_children():
+				if s is CollisionShape3D:
+					s.disabled = true
+
+## The map overlay's share of the wrecks: how far each has come. The shape
+## is unchanged (step 5h moves the save format itself), so an older save
+## still reads.
+func destruct_snapshot() -> Dictionary:
+	_ensure_index()
+	var out: Dictionary = {}
+	for off in _wrecks:
+		out[off] = _wrecks[off].call("snapshot")
+	return out
+
+## …and the way back: every wreck to the stage the overlay left it at, and
+## the plain props the overlay says are spent out of the world again (a
+## staged wreck keeps its last mesh instead, which restore() puts back).
+func destruct_restore(snap: Dictionary) -> void:
+	_ensure_index()
+	for off in _hittable:
+		if not runtime.spent(off) or _wrecks.has(off):
+			continue
+		var gone = _hittable[off]
+		if gone != null and is_instance_valid(gone):
+			(gone as Node3D).visible = false
+			disable_collision(gone)
+	for off in snap:
+		var w: Node = _wrecks.get(int(off))
+		if w != null:
+			w.call("restore", snap[off] as Array)
 
 # ---------------------------------------------------------------------
 # The relays, the spawns, the water and the lights (step 5d)

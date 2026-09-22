@@ -511,19 +511,35 @@ static func _build() -> Dictionary:
 		r[a] = _row("inert", {"prov": "dos", "on_fire": "none",
 			"note": "empty handler slot; 0xfe/0xff are what DOS writes into a spent act byte"})
 	# --- Destruction ---------------------------------------------------
-	# 0x18 and 0x19 are NOT the same handler, and neither the graph nor the
-	# runtime tells them apart yet (M3 step 4, 2026-09-16). 0x19 clears its
-	# own bit at entry, so it is one damage stage per enable — which is what
-	# both rows say here. 0x18 does not: it carries p4 = 4 and RAMPS four
-	# stages a second for as long as its bit is up, which is the machine
-	# chewing through a wall rather than a single blow. Implementing that
-	# belongs with the destructibles (migration step 5g); until then this
-	# note is the record of it, and 0x18's rows in the lock are 0x19's.
+	# 0x18 and 0x19 are ONE handler (both slots of the 0x59e00 table hold
+	# 0x000f0833, i.e. v1.01 0x120833) told apart by the slot's p4 word.
+	# With p4 = 0 — that is 0x19 — the handler clears its own enable bit at
+	# entry (0x120845 tests the word, 0x120858 calls the state routine with
+	# 0xfe) and then adds a flat 16 to the damage counter: one stage per
+	# enable, which is what both rows say here. With p4 = 4 — 0x18 — it
+	# clears nothing and adds p4 << 4 scaled by the frame time (0x120893),
+	# four stages a second for as long as its bit is up: a machine chewing
+	# through a wall rather than a single blow.
+	# That ramp is NOT modelled, and it cannot be reached to be tested:
+	# the shipped data holds 15 act-0x18 records, every one of them with no
+	# way in at all (mode `-` in the lock — no state bits, no use key) and
+	# no chain in any map walks into one, so nothing can ever set their bit
+	# (checked over the whole lock, 2026-09-22). Modelling it would be
+	# writing code no player can run.
+	#
+	# What DOES decide whether either of them does anything is the object's
+	# own mesh: the handler's first move is to look it up in the transform
+	# table (0x120879 `call 0x12078a`, carry set when the name is not in
+	# it) and the next instruction is `jb` to the exit. Half the cars the
+	# maps place have no template because they ARE another car's last stage
+	# (CARHIP0C is the third frame of CARHIP0A's), and shooting one of
+	# those does nothing at all. The generated graph reads TRANSFRM.PRS for
+	# exactly that since step 5g (trigger_graph.stage_templates).
 	for a in [ACT_DESTRUCT_A, ACT_DESTRUCT_B]:
 		r[a] = _row("destructible", {"dos": "0x120433", "prov": "dos",
-			"note": "one TRANSFRM.PRS damage stage per enable; the %.0f points a stage is the port's step%s"
+			"note": "one TRANSFRM.PRS damage stage per enable, and nothing at all when the mesh has no template; the %.0f points a stage is the port's step%s"
 				% [DESTRUCT_DAMAGE_PER_STAGE,
-				   " (0x18 really ramps p4 = 4 stages a second while enabled, and only 0x19 clears its bit at entry — not modelled yet, see step 5g)"
+				   " (0x18 carries p4 = 4 and ramps four stages a second while enabled instead, and clears no bit of its own — not modelled, and unreachable in the shipped data)"
 					if a == ACT_DESTRUCT_A else ""]})
 	r[ACT_DEMOLISH] = _row("demolish", {"dos": "0x1378bf", "prov": "dos",
 		"note": "variant 1 only: hp = max(hp, 1) then ObjHit(hp + 1)"})

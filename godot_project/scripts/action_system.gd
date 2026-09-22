@@ -18,8 +18,6 @@
 ##                          handler 0x137d41) or an 11-bit angle
 ##                          accumulator (0x137a28 family), committing
 ##                          via ObjSetPos. Not mesh-frame animation.
-##   0x18/0x19            — destructible mesh-swap per TRANSFRM.PRS
-##                          damage stages (handler 0x120433).
 ##   0xF0                 — interior teleport (0x137881): target map at
 ##                          sub+2, spawn-marker set at sub+4; one-shot.
 ##
@@ -31,7 +29,11 @@
 ## MOVERS — every slide, swing, jump and rotator of the table above —
 ## left in step 5e, onto scripts/level/mover.gd: each one steps its own
 ## travel and moves the mesh this class registered for it. The PATH
-## VEHICLES left in step 5f, onto scripts/level/path_vehicle.gd.)
+## VEHICLES left in step 5f, onto scripts/level/path_vehicle.gd. The
+## DESTRUCTIBLES, the demolition and the ram — ObjHit itself, the
+## TRANSFRM.PRS damage stages of 0x18/0x19 and the 0x1B killing blow —
+## left in step 5g, onto scripts/level/behaviour.gd and the records' own
+## scripts/level/destructible.gd.)
 ##
 ## Where the state lives: NOT here, and not in the parsed MapFile
 ## either. Since step 5a of docs/trigger_graph_plan.md every state byte,
@@ -40,8 +42,8 @@
 ## only thing that writes one; the records this sweeps are the DATA the
 ## map was authored with — position, radius, flags, hit points, the
 ## destruction table — and are read-only. What is still kept here is the
-## machinery of the classes that have not moved yet: damage stages, hit
-## points, the latches of the sweeps.
+## machinery of the classes that have not moved yet: the exits and the
+## latches of the sweeps.
 ##
 ## Reloading a map re-parses it and the runtime starts from the records
 ## again, which matches DOS (maps are always reloaded from disk; the Mst
@@ -63,23 +65,18 @@
 ## their nodes — the PROXIMITY class, which watches the player and
 ## answers the use key from its own nodes since step 5c, the four
 ## classes that watch no player at all since step 5d (the relays, the
-## spawn sprites, the water and the lights), the MOVERS since step 5e and
-## the PATH VEHICLES since step 5f. Still here: exits, destructibles,
-## demolition.
+## spawn sprites, the water and the lights), the MOVERS since step 5e, the
+## PATH VEHICLES since step 5f and the DESTRUCTIBLES, the demolition and
+## the ram since step 5g. Still here: the exits.
 
 extends RefCounted
 
-const Explosion := preload("res://scripts/explosion.gd")
-const Projectile := preload("res://scripts/projectile.gd")
-
 signal teleport_requested(target_map: int, marker_set: int)
-## A destroyed object drops an item (FUN_00124293 → FUN_00124119).
-signal drop_requested(pos: Vector3, drop_type: int)
-## (The water level is asked for on the Behaviour branch's own signal
-## since step 5d — the movers that move it are its nodes.)
+## (The water level and a destroyed object's drop are asked for on the
+## Behaviour branch's own signals — the movers that move the water are its
+## nodes since step 5d, and ObjHit is its work since step 5g.)
 
 const MapFile := preload("res://scripts/loaders/map_file.gd")
-const PickupData := preload("res://scripts/pickup_data.gd")
 ## What each action id MEANS now lives on its own, next to the generated
 ## trigger graph that reads the same rows (scripts/triggers/rules_skynet.gd,
 ## M3 step 1). The tables below are those rows by reference, so every
@@ -143,8 +140,6 @@ var _teleports: Array = []        # entities with act 0xF0
 ## Their world positions, index for index — tick() tests them every
 ## physics step, and the records never move.
 var _teleport_pos: PackedVector3Array = PackedVector3Array()
-var _destruct_nodes: Array = []   # entities with acts 0x18/0x19
-var _demolish_nodes: Array = []   # entities with act 0x1B
 ## The level's trigger state (scripts/triggers/trigger_runtime.gd, step
 ## 5a): the chain walk, the cues, and every state byte, act byte and link
 ## the sweeps below read. Set by the level loader.
@@ -156,7 +151,8 @@ var triggers: RefCounted = null
 ## lights, since step 5e the movers and since step 5f the path vehicles.
 ## This is how all of them are reached.
 ## Null is an ordinary state — an ActionSystem built by hand has no
-## branch and none of those.
+## branch and none of those, and since step 5g nothing that takes damage
+## either.
 var behaviour: Node = null
 ## The level's trigger event bus (scripts/triggers/trigger_bus.gd, M3
 ## step 3): every handler run below announces itself on it. An OBSERVER
@@ -167,9 +163,6 @@ var bus: RefCounted = null
 ## Physics access for reachability tests (set by the level controller).
 var space: PhysicsDirectSpaceState3D = null
 var player_body: CollisionObject3D = null
-var _destr: Dictionary = {}       # file_off → destructible runtime state
-var _hp: Dictionary = {}          # file_off → remaining HP
-var _spent: Dictionary = {}       # file_off → true (HP-depleted, inert)
 ## One-shot nodes (message, sound, voice) whose bit 0 went UP during this
 ## tick, even if a later flip in the same tick took it back down.
 ##
@@ -241,16 +234,14 @@ func setup(map: MapFile.MapFile) -> void:
 		# node on the Behaviour branch, scripts/level/trigger.gd. Nor are
 		# the lights, the relays and the water movers: since step 5d each of
 		# them runs from its own node too, scripts/level/raw_action.gd,
-		# which reads the same act byte and variant off the bake.)
+		# which reads the same act byte and variant off the bake. Nor the
+		# destructibles and the demolition targets: since step 5g the branch
+		# sweeps those by the act byte the bake wrote on their nodes, and
+		# the pool of hit points every record may carry is seeded straight
+		# off the records by the trigger runtime.)
 		if act == ACT_TELEPORT:
 			_teleports.append(e)
 			_teleport_pos.append(_dos_pos(e))
-		elif is_destructible(act):
-			_destruct_nodes.append(e)
-		elif act == ACT_DEMOLISH:
-			_demolish_nodes.append(e)
-		if (e.flags & 3) == 1 and e.hp > 0:
-			_hp[e.file_off] = float(e.hp)
 
 ## (The DOS geometry of a mover — the 11-bit Euler basis, the swing that
 ## advances one of its three components, the world direction of a DOS axis
@@ -290,11 +281,11 @@ static func starts_chain(e: MapFile.Entity) -> bool:
 func record(off: int) -> MapFile.Entity:
 	return _map.entities_by_off.get(off) if _map != null else null
 
-## Has this entity been shot to pieces? Hit points and damage stages are
-## still this class's (step 5g), and a spent wreck answers nothing — not
-## the key, not the player walking into it.
+## Has this entity been shot to pieces? The pool and the flag are the one
+## writer's since step 5g, and a spent wreck answers nothing — not the
+## key, not the player walking into it.
 func is_spent(off: int) -> bool:
-	return _spent.has(off)
+	return triggers != null and triggers.spent(off)
 
 ## Does this act type get a visual/interactive node treatment?
 static func is_mover(act: int) -> bool:
@@ -307,19 +298,26 @@ static func is_destructible(act: int) -> bool:
 ## damageable meshes). A MOVER's node is handed straight on to the
 ## record's own Mover (step 5e, scripts/level/mover.gd): that node moves
 ## it from here on, and takes the transform it was placed at as the rest
-## pose — so this is called with the transform already final.
+## pose — so this is called with the transform already final. Every one of
+## them is also the branch's HITTABLE since step 5g: what a blast goes off
+## at, and what leaves the world when a pool of hit points runs out.
 func register_node(e: MapFile.Entity, node: Node3D) -> void:
 	_nodes[e.file_off] = node
-	if behaviour != null and is_mover(e.link_act_type):
+	if behaviour == null:
+		return
+	if is_mover(e.link_act_type):
 		behaviour.register_mover(e, node)
+	behaviour.register_hittable(e, node)
 
-## Register the damage-stage meshes for a destructible entity (built by
-## the level loader from TRANSFRM.PRS; may be empty → vanish on kill).
-## Does the entity at `off` take damage (HP pool or destruction stages)?
+## Does the entity at `off` take damage (a pool of hit points, or
+## destruction stages)? The branch's since step 5g.
 func is_damageable_off(off: int) -> bool:
-	if _spent.has(off):
-		return false
-	return _hp.has(off) or _destr.has(off)
+	return behaviour != null and bool(behaviour.is_damageable(off))
+
+## …and every one of them in the map, which is what the solver looks
+## through for something to shoot.
+func damageable_offs() -> Array:
+	return behaviour.damageable_offs() if behaviour != null else []
 
 ## One line per mover: what it is, how far it has moved and which way —
 ## the console's `movers`. The movers are Behaviour nodes since step 5e
@@ -337,45 +335,17 @@ func is_mover_off(off: int) -> bool:
 func is_solid_mover(off: int) -> bool:
 	return behaviour != null and bool(behaviour.is_solid_mover(off))
 
+## The damage-stage meshes of a destructible entity, built by the level
+## loader from TRANSFRM.PRS — handed to the record's own Destructible node
+## (step 5g, scripts/level/destructible.gd), which stages it from here on.
 func register_destructible(e: MapFile.Entity, stage_meshes: Array) -> void:
-	_destr[e.file_off] = {
-		"meshes": stage_meshes,   # ArrayMesh per stage, [0] = intact
-		"stage": 0,
-		"accum": 0.0,
-	}
+	if behaviour != null:
+		behaviour.register_destructible(e, stage_meshes)
 
-## ObjHit port. Returns true when the hit was consumed by an action
-## (so callers can skip generic hit effects).
+## ObjHit port — the branch's since step 5g. Returns true when the hit was
+## consumed by an action (so callers can skip generic hit effects).
 func on_player_hit(file_off: int, damage: float) -> bool:
-	var e: MapFile.Entity = _map.entities_by_off.get(file_off) \
-		if _map != null else null
-	if e == null:
-		return false
-	# ObjHit FUN_00139019: bit1 = act on every hit (before the HP test,
-	# so a wreck keeps staging after its HP is gone), bit2 = act once
-	# the HP is gone; the HP itself drains independently of those bits,
-	# so a crate with state 0 still breaks (and drops its ammo).
-	var spent: bool = _spent.has(file_off)
-	var has_hp: bool = _hp.has(file_off) and (e.flags & 3) == 1 and not spent
-	var depleted: bool = has_hp and _hp[file_off] - damage <= 0.0
-	var acted: bool = false
-	var st: int = state_of(file_off)
-	if (st & 6) != 0:
-		# Destructible damage accumulates every qualifying hit. Membership
-		# comes from registration (act 0x18/0x19 OR a TRANSFRM.PRS name
-		# match — cars carry bit1 + HP but act 0x00 in the MAP data).
-		if _destr.has(file_off):
-			acted = _advance_destructible(e)
-		elif not spent and ((st & 2) != 0 or ((st & 4) != 0 and depleted)):
-			_trigger(e)
-			acted = true
-	if has_hp:
-		_hp[file_off] -= damage
-		acted = true
-		if depleted:
-			_spent[file_off] = true
-			_destroy(e)
-	return acted
+	return behaviour != null and bool(behaviour.obj_hit(file_off, damage))
 
 ## Activate-key port. The DOS use-key path is untraced; we honour the
 ## same bit1 ("act on hit") gate without applying damage, which covers
@@ -391,7 +361,7 @@ func on_player_activate(file_off: int, player_pos: Vector3 = Vector3.INF,
 		eye: Vector3 = Vector3.INF) -> bool:
 	var e: MapFile.Entity = _map.entities_by_off.get(file_off) \
 		if _map != null else null
-	if e == null or _spent.has(file_off):
+	if e == null or is_spent(file_off):
 		return false
 	# A PROXIMITY record answers on its own node (step 5c,
 	# scripts/level/trigger.gd): its DOS handler runs for a player inside
@@ -488,6 +458,14 @@ func teleport_refused() -> void:
 func _trigger(e: MapFile.Entity) -> void:
 	_flip_link(e)
 	_do_action(e)
+
+## The same, from a file offset — what ObjHit calls for a record whose
+## state bits say a hit runs it (the branch's since step 5g; the
+## bookkeeping of a walk is still this class's, so it is asked to do it).
+func trigger(off: int) -> void:
+	var e: MapFile.Entity = _map.entities_by_off.get(off) if _map != null else null
+	if e != null:
+		_trigger(e)
 
 ## The same walk, from a file offset — what the proximity nodes call when
 ## they flip their own chain (step 5c, through behaviour.flip_chain).
@@ -617,26 +595,14 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 		behaviour.prox_tick(eye)
 	# (Sound one-shots, voice lines, hints and objectives fire from their
 	# Behaviour nodes as the chain is flipped — F2.)
-	# Destructibles a CHAIN switched on (0x18/0x19). Normally these only
-	# break under fire, but a machine can break one for you: on MAP.248 a
-	# START BOX (0xEF) runs a sound node into the IBEM64 girder (a 0x73
-	# slide) and on into 248WALL — the ram that punches the hole you walk
-	# through. Nothing in the map data starts a destructible enabled, so
-	# bit 0 here always means "a chain just fired me".
-	for e in _destruct_nodes:
-		if not _fires(e):
-			continue
-		_clear_enable(e)
-		_break_down(e)
-	# Demolition (0x1B, handler 0x1378bf): a chain that enables one of
-	# these deals it HP + 1 through ObjHit. The crate stack on MAP.213
-	# comes down with the crate you shot, the desk takes the PC on it,
-	# the NODE00 gate on MAP.280 drops the fence ring.
-	for e in _demolish_nodes:
-		if not _fires(e):
-			continue
-		_clear_enable(e)
-		_demolish(e)
+	# The destructibles a chain breaks (0x18/0x19 — MAP.248's girder ram)
+	# and the props a chain kills outright (0x1B), both on their own nodes
+	# since step 5g (scripts/level/destructible.gd,
+	# scripts/level/damageable.gd) — here, where they have always run:
+	# after the proximity sweep, whose walk is what arms one of them.
+	if behaviour != null:
+		behaviour.destruct_tick()
+		behaviour.demolish_tick()
 	# The countdown relays (0x2C) and the spawn sprites (0xF3), both on
 	# their own nodes since step 5d. The counter a relay watches is main's
 	# and is handed over as it stands this tick.
@@ -835,24 +801,23 @@ func save_state() -> Dictionary:
 	# ("acts" / "links", 2026-09-14; a snapshot without them restores as
 	# before) — the trigger runtime's, which is where they live. They
 	# belong to this map number only: main.gd never carries them to a
-	# variant map.
+	# variant map. Since step 5g the pool of hit points and the records
+	# that have none left come out of the same place.
 	var bytes: Dictionary = triggers.snapshot() if triggers != null \
-		else {"states": {}, "acts": {}, "links": {}}
+		else {"states": {}, "acts": {}, "links": {}, "hp": {}, "spent": {}}
 	# How far each mover has travelled and which way it goes next — the
 	# movers' own since step 5e, and asked of them here so the snapshot's
-	# shape is unchanged (step 5h moves the save format itself).
+	# shape is unchanged (step 5h moves the save format itself). The same
+	# goes for the wrecks, whose stage is their own node's since step 5g.
 	var movers: Dictionary = behaviour.mover_snapshot() if behaviour != null else {}
-	var destr: Dictionary = {}
-	for off in _destr:
-		var d: Dictionary = _destr[off]
-		destr[off] = [d["stage"], d["accum"]]
+	var destr: Dictionary = behaviour.destruct_snapshot() if behaviour != null else {}
 	# The robots an 0xF3 chain has let out: the sprites' own since step 5d,
 	# and asked of them here so the snapshot's shape is unchanged (step 5h
 	# moves the save format itself).
 	var spawned: Dictionary = behaviour.spawned_offs() if behaviour != null else {}
 	return {
 		"states": bytes["states"], "movers": movers, "destr": destr,
-		"hp": _hp.duplicate(), "spent": _spent.duplicate(),
+		"hp": bytes["hp"], "spent": bytes["spent"],
 		"spawned": spawned,
 		"acts": bytes["acts"], "links": bytes["links"],
 	}
@@ -868,21 +833,10 @@ func restore_state(snap: Dictionary) -> void:
 	# that fired is retired (0xFF), a water valve remembers which way it
 	# goes next. The runtime takes them and puts the retirement back onto
 	# the cue nodes, or an objective would count again on the next flip.
+	# (The pool of hit points and the spent flags come back with them since
+	# step 5g — they are the one writer's like every other byte.)
 	if triggers != null:
 		triggers.restore(snap)
-	_hp = (snap.get("hp", {}) as Dictionary).duplicate()
-	_spent = (snap.get("spent", {}) as Dictionary).duplicate()
-	# A plain HP object that was destroyed left the world (_destroy: mesh
-	# and collision gone, as DOS unlinks it). The overlay brought its
-	# `spent` back but left it standing, inert. Staged wrecks keep their
-	# last mesh (below).
-	for off in _spent:
-		if _destr.has(off):
-			continue
-		var gone = _nodes.get(off)
-		if gone != null and is_instance_valid(gone):
-			(gone as Node3D).visible = false
-			_disable_collision(gone)
 	# Robots an 0xF3 chain already let out come back out (the dead ones
 	# the map overlay removes on its own). They were counted for the
 	# STATISTICS page when they first appeared.
@@ -891,224 +845,22 @@ func restore_state(snap: Dictionary) -> void:
 		for off in (snap.get("spawned", {}) as Dictionary):
 			behaviour.spawn_reveal(int(off))
 	Stats.hold_enemy_count = false
-	# …and the movers back where the overlay left them, mesh and all: the
-	# nodes' own work since step 5e.
+	# …and the movers back where the overlay left them, mesh and all, and
+	# every wreck at the stage it had reached — a plain prop the overlay
+	# says was destroyed leaves the world again with them. All of it the
+	# nodes' own work, since steps 5e and 5g.
 	if behaviour != null:
 		behaviour.mover_restore(snap.get("movers", {}))
-	var destr: Dictionary = snap.get("destr", {})
-	for off in destr:
-		if not _destr.has(off):
-			continue
-		var d: Dictionary = _destr[off]
-		d["stage"] = int(destr[off][0])
-		d["accum"] = float(destr[off][1])
-		var node: Node3D = _nodes.get(off)
-		if node == null or not is_instance_valid(node):
-			continue
-		var meshes: Array = d["meshes"]
-		if meshes.size() > 1:
-			if node is MeshInstance3D and d["stage"] < meshes.size() \
-					and meshes[d["stage"]] != null:
-				(node as MeshInstance3D).mesh = meshes[d["stage"]]
-		elif _spent.has(off):
-			node.visible = false
-			_disable_collision(node)
+		behaviour.destruct_restore(snap.get("destr", {}))
 
 ## (The mover step, the transform it comes to and the travel it announces
 ## are the Mover nodes' own since step 5e — scripts/level/mover.gd
 ## mover_watch / apply_transform / travel_to, with every reading that was
 ## bought for them.)
-
-## Destructible damage-stage advance (handler 0x120833, act 0x19). The
-## handler is never told HOW HARD the object was hit — ObjHit calls it
-## with no damage value at all; it adds 16 to the object's counter and
-## takes the stage as counter >> 4. So one qualifying hit moves a
-## TRANSFRM.PRS wreck on by EXACTLY ONE stage, whether it was a pipe or
-## a rocket, and what decides how many blows an object takes is its hit
-## points, not its stage count.
 ##
-## The port stepped `damage / DESTRUCT_DAMAGE_PER_STAGE` stages, so a
-## single 50-point pipe blow jumped three stages at once and a car fell
-## apart in one swing. The counter is kept in DOS units so the constant
-## still means what its name says.
-##
-## Past the last stage the object is a spent wreck (or, with no stage
-## meshes, vanishes).
-func _advance_destructible(e: MapFile.Entity) -> bool:
-	var d: Dictionary = _destr[e.file_off]
-	var meshes: Array = d["meshes"]
-	if d["stage"] >= meshes.size() - 1 and (meshes.size() > 1 or _spent.has(e.file_off)):
-		return false                          # final wreck / already gone
-	d["accum"] += DESTRUCT_DAMAGE_PER_STAGE
-	var want: int = int(d["accum"] / DESTRUCT_DAMAGE_PER_STAGE)
-	var node: Node3D = _nodes.get(e.file_off)
-	if meshes.size() > 1:
-		var new_stage: int = mini(want, meshes.size() - 1)
-		if new_stage != d["stage"]:
-			d["stage"] = new_stage
-			# One announcement per stage that actually happens, wherever the
-			# damage came from — gunfire as well as a chain (M3 step 3; the
-			# call used to sit in _break_down alone, so a prop shot to pieces
-			# went past the bus in silence).
-			_say(e.file_off, "destructible", "destruct",
-				{"stage": new_stage, "stages": meshes.size()})
-			if node != null and is_instance_valid(node) \
-					and node is MeshInstance3D and meshes[new_stage] != null:
-				(node as MeshInstance3D).mesh = meshes[new_stage]
-				_blast(node, new_stage == meshes.size() - 1, absi(e.destroy_param))
-			if new_stage == meshes.size() - 1:
-				_spent[e.file_off] = true
-	elif want >= 1:
-		# No stage meshes — vanish (rubble piles etc.).
-		_spent[e.file_off] = true
-		_say(e.file_off, "destructible", "destruct", {"stage": 1, "stages": 1})
-		if node != null and is_instance_valid(node):
-			_blast(node, true, absi(e.destroy_param))
-			node.visible = false
-			_disable_collision(node)
-	return true
-
-## Handler 0x1378bf (act 0x1B): a killing blow through ObjHit — HP + 1,
-## after an HP of 0 is raised to 1 so a prop with no hit points goes
-## too. Everything else (blast, drop, sound, the chain if the state
-## bits ask for it) is the ordinary destruction path.
-func _demolish(e: MapFile.Entity) -> void:
-	if _spent.has(e.file_off) or (e.flags & 3) != 1:
-		return
-	if not _hp.has(e.file_off) or float(_hp[e.file_off]) <= 0.0:
-		_hp[e.file_off] = 1.0
-	print("[action] demolish @%05x (act 0x1b, hp %.0f)" % [e.file_off, float(_hp[e.file_off])])
-	_say(e.file_off, "demolish", "demolish", {"hp": float(_hp[e.file_off])})
-	on_player_hit(e.file_off, float(_hp[e.file_off]) + 1.0)
-
-## Run a destructible through every one of its TRANSFRM.PRS stages at
-## once — what a machine (or a scripted demolition) does to it, as
-## opposed to the slow chipping away of gunfire.
-func _break_down(e: MapFile.Entity) -> void:
-	if not _destr.has(e.file_off):
-		return
-	# One stage per blow: MAP.248's girder has to ram 248WALL several
-	# times before it gives (the DOS run, 2026-09-11) — each press of
-	# the START BOX swings the girder and enables the wall once. Until then
-	# the port ran every stage at the first enable and the wall fell at
-	# the first touch.
-	print("[action] destructible @%05x struck by a chain" % e.file_off)
-	var was_spent: bool = _spent.has(e.file_off)
-	# (The stage itself is announced by _advance_destructible, which every
-	# way of damaging the thing goes through — one stage a call.)
-	_advance_destructible(e)
-	if was_spent or not _spent.has(e.file_off):
-		return                                   # still standing, or long gone
-	_hp[e.file_off] = 0.0
-	_destroy(e)
-	var node: Node3D = _nodes.get(e.file_off)
-	if node != null and is_instance_valid(node):
-		_disable_collision(node)
-
-## DOS FUN_00124293 — HP gone. The link record's byte 0 picks the
-## destruction type (Skynet.exe 0x423d6): effect sprites scattered
-## within `spread`, a random drop from the type's list (crates → ammo,
-## lockers → medkits) and a sound (-2 = one of 33..36); type 0 is a
-## plain blast (effect 358) sized by the i16 parameter, no drop. Staged
-## destructibles (0x18/0x19 wrecks) keep their final mesh; everything
-## else leaves the world.
-##
-## zone-local ↔ world: the record's own position is zone-local and the
-## node's global transform is already world; both are carried as WORLD
-## here, because the audio, the effects and the blast all live there.
-func _destroy(e: MapFile.Entity) -> void:
-	var node: Node3D = _nodes.get(e.file_off)
-	var origin := Vector3(float(e.x), -float(e.y), -float(e.z)) + zone_origin
-	var centre: Vector3 = origin
-	var radius: float = 120.0
-	var alive: bool = node != null and is_instance_valid(node)
-	if alive and node is MeshInstance3D:
-		var aabb: AABB = (node as MeshInstance3D).get_aabb()
-		centre = node.global_transform * (aabb.position + aabb.size * 0.5)
-		radius = maxf(aabb.size.length() * 0.35, 120.0)
-	var fx: Array = [0xB300]
-	var spread: int = maxi(absi(e.destroy_param), 128)
-	var drop: int = -1
-	var snd: int = -2
-	var t: int = e.destroy_type
-	if t > 0 and t < PickupData.DESTRUCT.size():
-		var d: Array = PickupData.DESTRUCT[t]
-		fx = d[0]
-		spread = int(d[1])
-		drop = int(d[2])
-		snd = int(d[3])
-	if snd == -2:
-		var pool: Array = PickupData.DESTRUCT_RANDOM_SOUNDS
-		snd = int(pool[randi() % pool.size()])
-	if snd >= 0 and not Audio.sound_name(snd).is_empty():
-		Audio.play_id_3d(snd, centre, -3.0)
-	else:
-		Audio.play_sfx_3d("EXPLO3.RAW", centre, -3.0)
-	if alive and node.is_inside_tree():
-		var scene := node.get_tree().current_scene
-		if scene != null:
-			var k: int = 0
-			for s in fx:
-				var at: Vector3 = centre
-				if k > 0:
-					at += Vector3(randf_range(-0.5, 0.5) * spread, 0.0, randf_range(-0.5, 0.5) * spread)
-				Explosion.spawn(scene, at, radius * 1.6, int(s) >> 7)
-				k += 1
-		_radial_blast(node, centre, absi(e.destroy_param))
-	# Gone from the world, whether or not it was in a tree to blow up in.
-	if alive and not _destr.has(e.file_off):
-		node.visible = false
-		_disable_collision(node)
-	if drop >= 0:
-		# zone-local ↔ world: the drop becomes a child of level.sprites and
-		# is put on the map's own heightmap (LevelLoader.spawn_item), so it
-		# is asked for in ZONE-LOCAL coordinates.
-		drop_requested.emit(
-			Vector3(centre.x, origin.y, centre.z) - zone_origin, drop)
-
-## Explosion at a destructible's centre; the final stage also throws the
-## object's own blast (`strength`, the i16 at its link record +1 — the
-## cars of MAP.210 carry 200-300, the gas tanker 600, a crate nothing).
-func _blast(node: Node3D, final: bool, strength: int = 0) -> void:
-	var aabb: AABB = (node as MeshInstance3D).get_aabb() if node is MeshInstance3D else AABB()
-	var centre: Vector3 = node.global_transform * (aabb.position + aabb.size * 0.5)
-	var radius: float = maxf(aabb.size.length() * 0.35, 120.0)
-	Audio.play_sfx_3d("EXPLO3.RAW" if final else "EXPLO1.RAW", centre, -3.0)
-	if not node.is_inside_tree():
-		return
-	var scene := node.get_tree().current_scene
-	if scene != null:
-		Explosion.spawn(scene, centre, radius * (1.6 if final else 1.0))
-	if final:
-		_radial_blast(node, centre, strength)
-
-## A dying object's blast, the DOS radial one (FUN_00124386 through
-## Projectile.dos_blast): `s` points at the centre + 40, nothing past half
-## of it — on the player (from his DOS point, with line of sight), on the
-## robots (ObjHit) and on the other destructibles in reach, which is how a
-## row of cars goes up one after another. Until 2026-09-15 the port dealt
-## a flat 450 points to the player from every wreck, crates included.
-func _radial_blast(source: Node3D, centre: Vector3, s: int) -> void:
-	if s <= 0 or not source.is_inside_tree():
-		return
-	var tree: SceneTree = source.get_tree()
-	Projectile.blast_player(centre, float(s), float(s), null, tree)
-	for e in tree.get_nodes_in_group("enemy"):
-		if e is Node3D and e.has_method("obj_hit"):
-			var d: float = e.blast_distance(centre) if e.has_method("blast_distance") \
-				else (e as Node3D).global_position.distance_to(centre)
-			var bd: float = Projectile.dos_blast(float(s), d)
-			if bd > 0.0:
-				e.call("obj_hit", bd)
-	for h in tree.get_nodes_in_group("hittable"):
-		if h is Node3D and h != source and h.has_method("take_damage"):
-			var bh: float = Projectile.dos_blast(float(s), (h as Node3D).global_position.distance_to(centre))
-			if bh > 0.0:
-				h.call_deferred("take_damage", bh)
-
-static func _disable_collision(node: Node3D) -> void:
-	for c in node.get_children():
-		if c is CollisionObject3D:
-			for s in c.get_children():
-				if s is CollisionShape3D:
-					s.disabled = true
+## (ObjHit itself, the TRANSFRM.PRS damage stages of 0x18/0x19, the 0x1B
+## killing blow and the destruction that follows a spent pool of hit
+## points — the blast, the radial one it throws, the drop and the sound —
+## are the Behaviour branch's since step 5g: scripts/level/behaviour.gd
+## obj_hit / destruct_tick / demolish_tick / destroy, and the stage a
+## wreck is showing is the record's own scripts/level/destructible.gd.)

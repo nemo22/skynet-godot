@@ -802,7 +802,7 @@ func _reach_point(ep: Vector3, reach: float) -> Vector3:
 func _candidates(a, name: String, shoot: bool) -> Array:
 	var out: Array = []
 	if shoot:
-		for off in _damageable(a):
+		for off in a.damageable_offs():
 			var k: String = "s%05x" % off
 			if _done.has(name + ":" + k):
 				continue
@@ -917,18 +917,6 @@ func _settle(a) -> void:
 		await get_tree().create_timer(0.25).timeout
 		t += 0.25
 	await _frames(3)
-
-func _damageable(a) -> Array:
-	var offs: Dictionary = {}
-	for off in a._hp:
-		offs[off] = true
-	for off in a._destr:
-		offs[off] = true
-	var out: Array = []
-	for off in offs:
-		if a.is_damageable_off(off):
-			out.append(off)
-	return out
 
 func _aim_point(a, off: int, e) -> Vector3:
 	var n = a._nodes.get(off)

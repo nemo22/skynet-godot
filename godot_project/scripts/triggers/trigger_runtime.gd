@@ -20,6 +20,12 @@
 ##   state / act / link      the live bytes of one entity, by MAP file
 ##                           offset; act0 / link0 are the record's own,
 ##                           which is what the save's deltas are against
+##   hp / spent              what ObjHit (FUN_00139019) leaves behind: the
+##                           hit points still in the pool and the record
+##                           that has none left. Play state like the rest
+##                           — plan §1 lists both in TriggerState — and
+##                           they came here in step 5g with the
+##                           destructibles
 ##   flip                    ObjFlipLink (FUN_001394aa): walk the chain
 ##                           from an entity toggling bit 0, an 0xEF gate
 ##                           forcing its bit back on, stopping AFTER an
@@ -64,6 +70,11 @@ var _link: Dictionary = {}
 ## — most maps never touch either.
 var _light_enable: Dictionary = {}
 var _light_intensity: Dictionary = {}
+## ObjHit's own two: the hit points a record has LEFT (seeded by reset
+## from every variant-1 record the map gives any) and the records whose
+## pool has run out and which answer nothing any more.
+var _hp: Dictionary = {}
+var _spent: Dictionary = {}
 
 func setup(m: MapFile.MapFile) -> void:
 	map = m
@@ -78,12 +89,19 @@ func reset() -> void:
 	_link.clear()
 	_light_enable.clear()
 	_light_intensity.clear()
+	_hp.clear()
+	_spent.clear()
 	if map == null:
 		return
 	for e in map.entities:
 		_state[e.file_off] = e.state_byte
 		_act[e.file_off] = e.link_act_type
 		_link[e.file_off] = e.link_next
+		# A pool only exists where the map gave the record one, and only on
+		# a variant-1 mesh: ObjHit drains it whatever the state bits say, so
+		# a crate with state 0 still breaks and drops its ammo.
+		if (e.flags & 3) == 1 and e.hp > 0:
+			_hp[e.file_off] = float(e.hp)
 
 # ---------------------------------------------------------------------
 # Reading
@@ -163,6 +181,33 @@ func light_intensity(off: int) -> int:
 
 func set_light_intensity(off: int, value: int) -> void:
 	_light_intensity[off] = value
+
+# --- ObjHit's pool ----------------------------------------------------
+## Has this record a pool of hit points at all? (The MAP's per-name
+## defaults give one to crates, cars, generators and doors alike; a
+## record with none is simply never worn down.)
+func has_hp(off: int) -> bool:
+	return _hp.has(off)
+
+func hp(off: int) -> float:
+	return float(_hp.get(off, 0.0))
+
+## Every record that has one, in map order — what the solver goes through
+## looking for something to shoot.
+func hp_offs() -> Array:
+	return _hp.keys()
+
+func set_hp(off: int, value: float) -> void:
+	_hp[off] = value
+
+## Shot to pieces: the pool ran out. A spent record answers nothing any
+## more — not the key, not the player walking into it — and the sweeps
+## that watch it step over it.
+func spent(off: int) -> bool:
+	return _spent.has(off)
+
+func set_spent(off: int) -> void:
+	_spent[off] = true
 
 # ---------------------------------------------------------------------
 # ObjFlipLink
@@ -291,7 +336,8 @@ func snapshot() -> Dictionary:
 	for off in _link:
 		if int(_link[off]) != link0(off):
 			links[off] = int(_link[off])
-	return {"states": states, "acts": acts, "links": links}
+	return {"states": states, "acts": acts, "links": links,
+		"hp": _hp.duplicate(), "spent": _spent.duplicate()}
 
 ## Lay a snapshot back over the state. Sparse: an offset the snapshot
 ## does not mention keeps what it has — a variant map's carry brings only
@@ -303,6 +349,12 @@ func restore(snap: Dictionary) -> void:
 		_act[int(off)] = int(snap["acts"][off]) & 0xFF
 	for off in (snap.get("links", {}) as Dictionary):
 		_link[int(off)] = int(snap["links"][off])
+	# The pool and the wrecks are laid back WHOLE, not sparsely: the
+	# overlay carries every pool the map has, and a snapshot that names
+	# neither (an old save, a hand-built one) puts both back empty — which
+	# is what ActionSystem did with them before step 5g.
+	_hp = (snap.get("hp", {}) as Dictionary).duplicate()
+	_spent = (snap.get("spent", {}) as Dictionary).duplicate()
 	if presenter != null:
 		presenter.sync_from_runtime()
 

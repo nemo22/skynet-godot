@@ -287,8 +287,10 @@ func _verify_map(name: String) -> void:
 	_intercept(level)
 	# Slot 2 (ASSAULT RIFLE): 20 damage points, which is one damage stage
 	# — and chosen on the number key, so even that goes through the input
-	# path. fly_camera reads KEY_1..KEY_9 straight off the event.
-	_drv.press_key(KEY_3)
+	# path. fly_camera reads KEY_1..KEY_9 straight off the event. Every
+	# shot check picks it again (_check_shot): the checks put the player
+	# down all over the map and a weapon he is set down on ARMS ITSELF.
+	_drv.press_key(KEY_1 + SHOT_WEAPON)
 	_prox_world = []
 	for pn in (level.behaviour.prox_nodes() as Array):
 		_prox_world.append([int(pn.id),
@@ -754,6 +756,14 @@ func _check_shot(level, node: Dictionary, num: int, id: int, act: int,
 		return
 	_drv.place(spot["feet"])
 	_drv.face(aim)
+	# The rifle again, and not once per map: a check that walked or was
+	# put down on a weapon PICKUP is holding that one from then on, and
+	# the bolt of a laser or a plasma gun flies straight through a prop
+	# (projectile._is_target stops only on the `enemy` group), so the
+	# cars further down a map's list were being shot with something that
+	# cannot break them. Twelve of the pinned "no damage stage" failures
+	# were only that.
+	_drv.press_key(KEY_1 + SHOT_WEAPON)
 	await _drv.frames(PRE_FRAMES)
 	var bus = level.bus
 	bus.record(true)
@@ -768,7 +778,7 @@ func _check_shot(level, node: Dictionary, num: int, id: int, act: int,
 	# whole way through the input path; the rest of the hit points are
 	# taken off through the same ObjHit the bullet calls.
 	if how == "shot_death" and a.is_damageable_off(id) and bus.history().is_empty():
-		var left: float = float(a._hp.get(id, 0.0))
+		var left: float = float(level.triggers.hp(id))
 		if left > 0.0:
 			drained = true
 			a.on_player_hit(id, left)
@@ -1246,12 +1256,17 @@ static func xfail_key(num: int, id: int) -> String:
 ## lock keeps (trigger_lock.hygiene): numbers, hex ids, the kind names
 ## the rules module has and a tag out of the list below, nothing else.
 ## What a pinned failure is, in one word:
-##   destruct_stage_count  the graph promises one damage stage per enable;
-##                         the object's TRANSFRM.PRS entry has fewer (or
-##                         none at all, and DOS does nothing either). Act
-##                         0x18 is in here twice over: it ramps four
-##                         stages a second while its bit is up and neither
-##                         side models that yet (rules_skynet, step 5g)
+##   projectile_no_hit     a damage stage the player cannot reach because
+##                         he is DRIVING: on the jeep and HK maps the only
+##                         gun is the vehicle's, whose bolt is a
+##                         projectile, and projectile._is_target stops a
+##                         bolt only on the `enemy` group — so it flies
+##                         straight through every prop and the car is
+##                         never hit at all. The same holds on foot for
+##                         the laser and plasma guns; a rocket only
+##                         reaches one through its splash. Nothing to do
+##                         with the destructibles, and left for a decision
+##                         about the weapon code (step 5g, 2026-09-22)
 ##   port_use_reach        the key still fires it from outside the DOS
 ##                         measure
 ##   second_activation     the first activation agrees and the second does
@@ -1268,8 +1283,16 @@ static func xfail_key(num: int, id: int) -> String:
 ## chain ends in a doorway walks that chain now), demolish_once (the
 ## simulation reads its own spent flag), loop_no_handler (the SoundLoop
 ## node has a handler), button_walk (never seen).
+## Gone with step 5g (2026-09-22): destruct_stage_count, all 74 of them.
+## Twelve were this file picking the rifle once a map while the checks
+## walked the player over weapon pickups that arm themselves; forty-three
+## were the GRAPH promising a damage stage to a car that is already some
+## other car's last stage and has no TRANSFRM.PRS template of its own, on
+## which the DOS handler returns at once (0x120833 → the lookup at
+## 0x12078a sets carry, `jb` leaves); the nineteen that are left are the
+## vehicle maps and are pinned as projectile_no_hit.
 const XFAIL_TAGS: PackedStringArray = [
-	"port_use_reach", "destruct_stage_count", "second_activation",
+	"port_use_reach", "projectile_no_hit", "second_activation",
 	"chain_silent", "chain_short", "chain_extra", "path_window",
 ]
 

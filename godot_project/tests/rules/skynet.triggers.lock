@@ -1,9 +1,9 @@
 # generated - rewrite with --accept-lock, check with --verify-graph
 # ids are lower hex offsets, act bytes upper hex; keywords, numbers and hashes only
 format skynet.triggers.lock 1
-graph 2
+graph 3
 game skynet
-rules 482b893e7f2031e4
+rules bb6d8978ea44ca92
 maps 122
 nodes 4763
 chains 3538
@@ -18,7 +18,7 @@ map 200 src 7039291fb668bdfb nodes 25 chains 16 warn unreachable:4
 200 07475 3B death:hp65/never chain[07475 073fe:1E 086f2:ED] first[hint2 voice20030] second[voice20030 spin@07475] dfd13010
 200 074a5 19 shot:always chain[074a5] first[break@074a5:1] second[break@074a5:2] c175e273
 200 074ec 19 shot:always chain[074ec] first[break@074ec:1] second[break@074ec:2] 031a0201
-200 07533 19 shot:always chain[07533] first[break@07533:1] second[break@07533:2] 84ad8cf7
+200 07533 19 shot:always chain[07533] first[-] second[-] 7472a22c
 200 0757a 19 shot:always chain[0757a] first[break@0757a:1] second[break@0757a:2] f167fc8d
 200 075c1 19 shot:always chain[075c1] first[break@075c1:1] second[break@075c1:2] b033b507
 200 07638 19 shot:always chain[07638] first[break@07638:1] second[break@07638:2] 48a0162e
@@ -64,7 +64,7 @@ map 202 src 648411b3f6999a7e nodes 35 chains 26 warn unreachable:12
 202 073fe 1E - chain[073fe] first[-] second[-] 87799649
 202 074a5 19 shot:always chain[074a5] first[break@074a5:1] second[break@074a5:2] c175e273
 202 074ec 19 shot:always chain[074ec] first[break@074ec:1] second[break@074ec:2] 031a0201
-202 07533 19 shot:always chain[07533] first[break@07533:1] second[break@07533:2] 84ad8cf7
+202 07533 19 shot:always chain[07533] first[-] second[-] 7472a22c
 202 0757a 19 shot:always chain[0757a] first[break@0757a:1] second[break@0757a:2] f167fc8d
 202 075c1 19 shot:always chain[075c1] first[break@075c1:1] second[break@075c1:2] b033b507
 202 07638 19 shot:always chain[07638] first[break@07638:1] second[break@07638:2] 48a0162e
@@ -195,12 +195,12 @@ map 210 src f08342679600abde nodes 116 chains 87 warn even_fan_in:6
 210 0ca73 EF use:eye/3d/r60+26/always/nolatch chain[0ca73* 0ca97:DF 0cabb:F0] first[snd44 exit218/0] second[-] 975966c3
 210 0ca97 DF chain chain[0ca97 0cabb:F0] first[-] second[-] 6b4ff74f
 210 0cabb F0 touch:feet/2dw/r90/w512,chain chain[0cabb] first[exit218/0] second[-] 99737cb1
-210 0cb23 19 shot:always chain[0cb23] first[break@0cb23:1] second[break@0cb23:2] 1e83615e
+210 0cb23 19 shot:always chain[0cb23] first[-] second[-] 9672b157
 210 0cb53 19 shot:always chain[0cb53] first[break@0cb53:1] second[break@0cb53:2] 7d30463a
-210 0cb9a 19 shot:always chain[0cb9a] first[break@0cb9a:1] second[break@0cb9a:2] a8670612
+210 0cb9a 19 shot:always chain[0cb9a] first[-] second[-] 72ff8cdf
 210 0cbca 19 shot:always chain[0cbca] first[break@0cbca:1] second[break@0cbca:2] 8db5bf70
 210 0cc11 19 shot:always chain[0cc11] first[break@0cc11:1] second[break@0cc11:2] 3d280ecb
-210 0cc58 18 - chain[0cc58] first[-] second[-] d018f08a
+210 0cc58 18 - chain[0cc58] first[-] second[-] a18b81d0
 map 211 src eb036dc328a57b4f nodes 8 chains 7
 211 027ab 00 - chain[027ab] first[-] second[-] 34e3faeb
 211 027f2 00 - chain[027f2] first[-] second[-] 1a1fa42e
@@ -442,8 +442,8 @@ map 216 src 7987b16dd1926c5d nodes 109 chains 84 warn unreachable:1,even_fan_in:
 216 0ce60 F0 touch:feet/2dw/r90/w512,chain chain[0ce60] first[exit218/0] second[-] eee870c1
 216 0ce8e 19 shot:always chain[0ce8e] first[break@0ce8e:1] second[break@0ce8e:2] 129f79a7
 216 0ced5 19 shot:always chain[0ced5] first[break@0ced5:1] second[break@0ced5:2] b2dc68dd
-216 0cf1c 19 shot:always chain[0cf1c] first[break@0cf1c:1] second[break@0cf1c:2] 1b55f9bd
-216 0cf4c 18 - chain[0cf4c] first[-] second[-] b3c7e555
+216 0cf1c 19 shot:always chain[0cf1c] first[-] second[-] 369cc0f3
+216 0cf4c 18 - chain[0cf4c] first[-] second[-] 09c3eed7
 map 217 src 9d57c0cdbbe1ba85 nodes 99 chains 77 warn even_fan_in:2
 217 06644 00 - chain[06644] first[-] second[-] e8808629
 217 06793 00 - chain[06793] first[-] second[-] e8f723f0
@@ -540,10 +540,10 @@ map 217 src 9d57c0cdbbe1ba85 nodes 99 chains 77 warn even_fan_in:2
 217 0d3e0 DF chain chain[0d3e0 0d404:F0] first[-] second[-] e7e0aa33
 217 0d404 F0 touch:feet/2dw/r90/w512,chain chain[0d404] first[exit218/0] second[-] 7e04a34a
 217 0d470 00 - chain[0d470] first[-] second[-] e9375da9
-217 0d4f1 19 shot:always chain[0d4f1] first[break@0d4f1:1] second[break@0d4f1:2] 8bab9a5a
+217 0d4f1 19 shot:always chain[0d4f1] first[-] second[-] 3d196183
 217 0d538 19 shot:always chain[0d538] first[break@0d538:1] second[break@0d538:2] a86e3204
-217 0d57f 19 shot:always chain[0d57f] first[break@0d57f:1] second[break@0d57f:2] 7705c0b6
-217 0d5af 18 - chain[0d5af] first[-] second[-] 6ac86237
+217 0d57f 19 shot:always chain[0d57f] first[-] second[-] 6fe72ca0
+217 0d5af 18 - chain[0d5af] first[-] second[-] ca47fdf7
 map 218 src a944c92997f9e523 nodes 15 chains 12 warn unreachable:1
 218 025c3 AA chain chain[025c3 02a7d:DF] first[-] second[-] bf0bc8f9
 218 0260a 00 - chain[0260a] first[-] second[-] 7c8fcd5f
@@ -692,12 +692,12 @@ map 220 src 0a90f1f029ea4273 nodes 137 chains 111 warn unreachable:1
 220 0f8a5 EF death:hp200/never chain[0f8a5* 0f8df:EE] first[-] second[loop64] 7649c8cf
 220 0f8df EE chain chain[0f8df] first[-] second[-] ac8c67eb
 220 104e7 00 - chain[104e7] first[-] second[-] 9608f042
-220 10517 19 shot:always chain[10517] first[break@10517:1] second[break@10517:2] 7f329997
+220 10517 19 shot:always chain[10517] first[-] second[-] 9eb56d60
 220 10547 00 - chain[10547] first[-] second[-] dcc2b84b
 220 105a7 19 shot:always chain[105a7] first[break@105a7:1] second[break@105a7:2] 75a18d4e
-220 10607 19 shot:always chain[10607] first[break@10607:1] second[break@10607:2] 30d148fc
+220 10607 19 shot:always chain[10607] first[-] second[-] 0061be40
 220 10637 19 shot:always chain[10637] first[break@10637:1] second[break@10637:2] d416b1de
-220 10667 18 - chain[10667] first[-] second[-] 68edf9aa
+220 10667 18 - chain[10667] first[-] second[-] 2842835d
 map 229 src 10433248c23b4bee nodes 152 chains 146
 229 02c00 5C chain chain[02c00] first[-] second[-] 50079e66
 229 02c30 C3 chain chain[02c30 02c00:5C] first[-] second[-] 41d66dde
@@ -893,7 +893,7 @@ map 230 src d70b5f3615d8d6cb nodes 113 chains 96 warn even_fan_in:4
 230 0a89c 00 - chain[0a89c] first[-] second[-] 2fbe9345
 230 0a8cc 00 - chain[0a8cc] first[-] second[-] afbe9435
 230 0aefb 00 - chain[0aefb] first[-] second[-] 9d2911a0
-230 0af97 18 - chain[0af97] first[-] second[-] 98578ed8
+230 0af97 18 - chain[0af97] first[-] second[-] 1b3a51bb
 230 0b183 00 - chain[0b183] first[-] second[-] 7fa2693e
 230 0b1b3 00 - chain[0b1b3] first[-] second[-] ea5a1acf
 230 0b5ad 00 - chain[0b5ad] first[-] second[-] b626fec9
@@ -958,11 +958,11 @@ map 230 src d70b5f3615d8d6cb nodes 113 chains 96 warn even_fan_in:4
 230 0edeb EF use:eye/3d/r60+26/always/nolatch chain[0edeb* 0edc7:DF 0eda3:F0] first[snd44 exit239/10] second[-] 4728e09e
 230 0f0d8 19 shot:always chain[0f0d8] first[break@0f0d8:1] second[break@0f0d8:2] 1a322975
 230 0f108 19 shot:always chain[0f108] first[break@0f108:1] second[break@0f108:2] 67c8cdde
-230 0f14f 19 shot:always chain[0f14f] first[break@0f14f:1] second[break@0f14f:2] 0ed1fc19
+230 0f14f 19 shot:always chain[0f14f] first[-] second[-] 1a588b48
 230 0f196 19 shot:always chain[0f196] first[break@0f196:1] second[break@0f196:2] e75112ef
 230 0f1dd 19 shot:always chain[0f1dd] first[break@0f1dd:1] second[break@0f1dd:2] 14ddd8bc
 230 0f224 19 shot:always chain[0f224] first[break@0f224:1] second[break@0f224:2] 6e62511d
-230 0f26b 19 shot:always chain[0f26b] first[break@0f26b:1] second[break@0f26b:2] 0c13795b
+230 0f26b 19 shot:always chain[0f26b] first[-] second[-] 44b7f690
 230 0f2b2 19 shot:always chain[0f2b2] first[break@0f2b2:1] second[break@0f2b2:2] 2da0d0ab
 230 0f2f9 19 shot:always chain[0f2f9] first[break@0f2f9:1] second[break@0f2f9:2] 3fd2f29d
 map 231 src d6f361d067e71cdd nodes 112 chains 57 warn unreachable:2,even_fan_in:2
@@ -1715,8 +1715,8 @@ map 240 src 65fb9268f3af6377 nodes 186 chains 158 warn even_fan_in:2
 240 145d7 19 shot:always chain[145d7] first[break@145d7:1] second[break@145d7:2] 5bcdf4b3
 240 14607 19 shot:always chain[14607] first[break@14607:1] second[break@14607:2] b145c1d3
 240 1464e 19 shot:always chain[1464e] first[break@1464e:1] second[break@1464e:2] fe605114
-240 1467e 19 shot:always chain[1467e] first[break@1467e:1] second[break@1467e:2] b190f695
-240 146c5 19 shot:always chain[146c5] first[break@146c5:1] second[break@146c5:2] 36db69b9
+240 1467e 19 shot:always chain[1467e] first[-] second[-] 3f007867
+240 146c5 19 shot:always chain[146c5] first[-] second[-] 871c8a8a
 240 146f5 19 shot:always chain[146f5] first[break@146f5:1] second[break@146f5:2] f3d65c8a
 map 241 src 871f03bbf525bcc9 nodes 30 chains 24
 241 0257c F2 prox:eye/3d/r1024/onchain/latch chain[0257c 0286b:1E 03433:ED] first[hint2 voice24030] second[-] d4701131
@@ -2023,15 +2023,15 @@ map 250 src c3b3fc44bd626a8d nodes 167 chains 140 warn even_fan_in:2
 250 131dc EF use:eye/3d/r60+26/always/nolatch,chain chain[131dc* 13200:E2 13224:F0] first[snd47 exit254/0] second[-] 8fcaea4e
 250 13200 E2 chain chain[13200 13224:F0] first[-] second[-] b9ee0b70
 250 13224 F0 touch:feet/2dw/r90/w512,chain chain[13224] first[exit254/0] second[-] 57c83cbc
-250 13370 19 shot:always chain[13370] first[break@13370:1] second[break@13370:2] 1b255473
+250 13370 19 shot:always chain[13370] first[-] second[-] c1fe5d43
 250 133b7 19 shot:always chain[133b7] first[break@133b7:1] second[break@133b7:2] 745f72cd
 250 133fe 19 shot:always chain[133fe] first[break@133fe:1] second[break@133fe:2] 4b4940e7
-250 13445 19 shot:always chain[13445] first[break@13445:1] second[break@13445:2] 1cc901f8
+250 13445 19 shot:always chain[13445] first[-] second[-] 2103f4be
 250 1348c 19 shot:always chain[1348c] first[break@1348c:1] second[break@1348c:2] 9df247fd
 250 134bc 19 shot:always chain[134bc] first[break@134bc:1] second[break@134bc:2] 3f225bdd
-250 13503 19 shot:always chain[13503] first[break@13503:1] second[break@13503:2] b06322bc
+250 13503 19 shot:always chain[13503] first[-] second[-] 607a7348
 250 1354a 19 shot:always chain[1354a] first[break@1354a:1] second[break@1354a:2] 50c423ed
-250 1357a 19 shot:always chain[1357a] first[break@1357a:1] second[break@1357a:2] b8e19507
+250 1357a 19 shot:always chain[1357a] first[-] second[-] e1ca722f
 map 251 src 6820d19ff21bea00 nodes 17 chains 12 warn unreachable:1
 251 0286b 1E - chain[0286b] first[-] second[-] fee7bfc1
 251 02a30 00 - chain[02a30] first[-] second[-] b68e08c0
@@ -2293,7 +2293,7 @@ map 260 src 398c006102977031 nodes 258 chains 150 warn even_fan_in:42,outside_bo
 260 11a53 19 shot:always chain[11a53] first[break@11a53:1] second[break@11a53:2] 8019e8f5
 260 11d8f 00 - chain[11d8f] first[-] second[-] f1c682ae
 260 11e67 00 - chain[11e67] first[-] second[-] c90f9593
-260 11e97 19 shot:always chain[11e97] first[break@11e97:1] second[break@11e97:2] 1b8813f0
+260 11e97 19 shot:always chain[11e97] first[-] second[-] 339bc817
 260 11f86 19 shot:always chain[11f86] first[break@11f86:1] second[break@11f86:2] 522782a7
 260 11fb6 19 shot:always chain[11fb6] first[break@11fb6:1] second[break@11fb6:2] baaf542e
 260 1205e 00 - chain[1205e] first[-] second[-] 1fe18989
@@ -2461,8 +2461,8 @@ map 260 src 398c006102977031 nodes 258 chains 150 warn even_fan_in:42,outside_bo
 260 182cb 19 shot:always chain[182cb] first[break@182cb:1] second[break@182cb:2] c4714857
 260 18312 19 shot:always chain[18312] first[break@18312:1] second[break@18312:2] 9b141e4b
 260 18342 19 shot:always chain[18342] first[break@18342:1] second[break@18342:2] 94ecc166
-260 18372 19 shot:always chain[18372] first[break@18372:1] second[break@18372:2] 2e76824e
-260 183b9 19 shot:always chain[183b9] first[break@183b9:1] second[break@183b9:2] 30e19893
+260 18372 19 shot:always chain[18372] first[-] second[-] c8328d54
+260 183b9 19 shot:always chain[183b9] first[-] second[-] d2c110d4
 260 18400 19 shot:always chain[18400] first[break@18400:1] second[break@18400:2] f2cbbc01
 260 18447 19 shot:always chain[18447] first[break@18447:1] second[break@18447:2] b97c91af
 260 18477 19 shot:always chain[18477] first[break@18477:1] second[break@18477:2] dd71b889
@@ -2486,7 +2486,7 @@ map 270 src 990b5a0e0f0f0b6c nodes 143 chains 138 warn unreachable:41
 270 0730e 00 - chain[0730e] first[-] second[-] c97c1774
 270 0739e 00 - chain[0739e] first[-] second[-] 857e0c19
 270 07469 19 shot:always chain[07469] first[break@07469:1] second[break@07469:2] 9d0f5af5
-270 07527 19 shot:always chain[07527] first[break@07527:1] second[break@07527:2] d227630e
+270 07527 19 shot:always chain[07527] first[-] second[-] 75cb7dd6
 270 0757b 00 - chain[0757b] first[-] second[-] 73d05653
 270 0766b 00 - chain[0766b] first[-] second[-] 9818c3e3
 270 0786e 00 - chain[0786e] first[-] second[-] e2f921d0
@@ -2601,8 +2601,8 @@ map 270 src 990b5a0e0f0f0b6c nodes 143 chains 138 warn unreachable:41
 270 0d156 1B - chain[0d156] first[-] second[-] e41b6ddb
 270 0d1b6 1B - chain[0d1b6] first[-] second[-] a641dba2
 270 0d216 1B - chain[0d216] first[-] second[-] 499f5290
-270 0d601 18 - chain[0d601] first[-] second[-] e414bfe6
-270 0d9d4 18 - chain[0d9d4] first[-] second[-] 4bf071f9
+270 0d601 18 - chain[0d601] first[-] second[-] c97a0f97
+270 0d9d4 18 - chain[0d9d4] first[-] second[-] 525b87ce
 270 0df56 F1 prox:eye/3d/r256/onchain/latch chain[0df56 0df90:F0] first[exit271/0] second[-] 40b84ade
 270 0df90 F0 touch:feet/2dw/r90/w512,chain chain[0df90] first[exit271/0] second[-] e8c0fe16
 270 0dffc F1 prox:eye/3d/r256/onchain/latch chain[0dffc 0e036:F0] first[exit271/10] second[-] 223b3ce2
@@ -2611,14 +2611,14 @@ map 270 src 990b5a0e0f0f0b6c nodes 143 chains 138 warn unreachable:41
 270 0e9a0 ED chain chain[0e9a0] first[-] second[-] 11df3d32
 270 0e9c4 19 shot:always chain[0e9c4] first[break@0e9c4:1] second[break@0e9c4:2] eaac7d33
 map 271 src 72dfdef6295a2945 nodes 10 chains 10
-271 0686e 18 - chain[0686e] first[-] second[-] 02a6d182
-271 068b5 18 - chain[068b5] first[-] second[-] 9f2878ac
-271 0692c 18 - chain[0692c] first[-] second[-] 1d52ea4b
-271 06973 18 - chain[06973] first[-] second[-] 9e3f509c
-271 069ba 18 - chain[069ba] first[-] second[-] c3d6e569
-271 06a01 18 - chain[06a01] first[-] second[-] 4623a944
+271 0686e 18 - chain[0686e] first[-] second[-] f217d51a
+271 068b5 18 - chain[068b5] first[-] second[-] 2d7f6828
+271 0692c 18 - chain[0692c] first[-] second[-] 385b9d81
+271 06973 18 - chain[06973] first[-] second[-] 30e7fa3c
+271 069ba 18 - chain[069ba] first[-] second[-] 1ddfd236
+271 06a01 18 - chain[06a01] first[-] second[-] 2949b1f0
 271 06a6b F1 prox:eye/3d/r256/onchain/latch chain[06a6b 06db0:F0] first[exit270/12] second[-] 8c4fce43
-271 06af6 18 - chain[06af6] first[-] second[-] a90f108d
+271 06af6 18 - chain[06af6] first[-] second[-] ea6192b0
 271 06b47 17 - chain[06b47] first[-] second[-] bf6a266c
 271 06db0 F0 touch:feet/2dw/r90/w512,chain chain[06db0] first[exit270/12] second[-] 59757281
 map 272 src 1c332a25f353a0dd nodes 129 chains 88 warn unreachable:2,even_fan_in:9
@@ -2750,7 +2750,7 @@ map 272 src 1c332a25f353a0dd nodes 129 chains 88 warn unreachable:2,even_fan_in:
 272 0d156 1B chain chain[0d156 0d1b6:1B] first[-] second[-] 0d206a1c
 272 0d1b6 1B chain chain[0d1b6] first[-] second[-] e0ed9fa5
 272 0d216 1B chain chain[0d216 0cddf:1B 0ce26:1B 0ceb6:1B 0cf16:1B 0cf46:1B 0cfd6:1B 0d036:1B 0d066:1B 0d0f6:1B 0d156:1B 0d1b6:1B] first[-] second[-] fd123a43
-272 0d601 18 - chain[0d601] first[-] second[-] e414bfe6
+272 0d601 18 - chain[0d601] first[-] second[-] c97a0f97
 map 280 src b03f14ccfe73ec8d nodes 266 chains 108 warn unreachable:3,even_fan_in:13
 280 06560 F3 chain chain[06560 076dd:5C] first[-] second[-] 5f5e6353
 280 06584 F3 chain chain[06584 06560:F3 076dd:5C] first[-] second[-] 8bba50b7
@@ -4548,18 +4548,18 @@ map 601 src 682245ed0437d154 nodes 42 chains 42
 601 0d2e7 19 shot:always chain[0d2e7] first[break@0d2e7:1] second[break@0d2e7:2] b594792b
 601 0d317 19 shot:always chain[0d317] first[break@0d317:1] second[break@0d317:2] 24b14557
 601 0d4db 19 shot:always chain[0d4db] first[break@0d4db:1] second[break@0d4db:2] 3f4def33
-601 0d515 19 shot:always chain[0d515] first[break@0d515:1] second[break@0d515:2] b358d82c
+601 0d515 19 shot:always chain[0d515] first[-] second[-] 8fa5a5be
 601 0d545 00 - chain[0d545] first[-] second[-] c3974053
-601 0d57f 19 shot:always chain[0d57f] first[break@0d57f:1] second[break@0d57f:2] 7705c0b6
-601 0d5af 19 shot:always chain[0d5af] first[break@0d5af:1] second[break@0d5af:2] 30523e84
+601 0d57f 19 shot:always chain[0d57f] first[-] second[-] 6fe72ca0
+601 0d5af 19 shot:always chain[0d5af] first[-] second[-] d1784f6b
 601 0d5df 19 shot:always chain[0d5df] first[break@0d5df:1] second[break@0d5df:2] 53583058
 601 0d60f 00 - chain[0d60f] first[-] second[-] 5ada0345
 601 0d6a9 19 shot:always chain[0d6a9] first[break@0d6a9:1] second[break@0d6a9:2] e7f7e2a9
 601 0d6d9 19 shot:always chain[0d6d9] first[break@0d6d9:1] second[break@0d6d9:2] b0f50302
-601 0d739 19 shot:always chain[0d739] first[break@0d739:1] second[break@0d739:2] 635d6265
+601 0d739 19 shot:always chain[0d739] first[-] second[-] e955436d
 601 0d769 19 shot:always chain[0d769] first[break@0d769:1] second[break@0d769:2] 0a39eb54
-601 0d889 19 shot:always chain[0d889] first[break@0d889:1] second[break@0d889:2] 17238969
-601 0d8b9 19 shot:always chain[0d8b9] first[break@0d8b9:1] second[break@0d8b9:2] c2f20968
+601 0d889 19 shot:always chain[0d889] first[-] second[-] 5f5d40db
+601 0d8b9 19 shot:always chain[0d8b9] first[-] second[-] 7b13455e
 601 0fb2d 00 - chain[0fb2d] first[-] second[-] f0819ab4
 601 0fb5d 00 - chain[0fb5d] first[-] second[-] cb793a38
 601 0fb8d 00 - chain[0fb8d] first[-] second[-] cd625ab4
@@ -4582,7 +4582,7 @@ map 602 src 24501d712c51136f nodes 19 chains 19
 602 0c0aa 19 shot:always chain[0c0aa] first[break@0c0aa:1] second[break@0c0aa:2] fc42978b
 602 0c0da 19 shot:always chain[0c0da] first[break@0c0da:1] second[break@0c0da:2] 72564df1
 602 0c10a 19 shot:always chain[0c10a] first[break@0c10a:1] second[break@0c10a:2] d76efc7e
-602 0c13a 19 shot:always chain[0c13a] first[break@0c13a:1] second[break@0c13a:2] a354ccf1
+602 0c13a 19 shot:always chain[0c13a] first[-] second[-] c5c6d86d
 map 603 src 1c153121bd5d611c nodes 101 chains 101
 603 0665b 00 - chain[0665b] first[-] second[-] 48f95647
 603 06904 00 - chain[06904] first[-] second[-] 84280116
@@ -4657,20 +4657,20 @@ map 603 src 1c153121bd5d611c nodes 101 chains 101
 603 0d2f1 00 - chain[0d2f1] first[-] second[-] 1bc5a676
 603 0d37f 00 - chain[0d37f] first[-] second[-] f2a0eb8e
 603 0d3c6 00 - chain[0d3c6] first[-] second[-] 8a85b904
-603 0d40d 19 shot:always chain[0d40d] first[break@0d40d:1] second[break@0d40d:2] 42972049
-603 0d454 19 shot:always chain[0d454] first[break@0d454:1] second[break@0d454:2] 1b7812d1
+603 0d40d 19 shot:always chain[0d40d] first[-] second[-] 85b14a62
+603 0d454 19 shot:always chain[0d454] first[-] second[-] 145b90cf
 603 0d49b 00 - chain[0d49b] first[-] second[-] 79a7fe2b
 603 0d4e2 00 - chain[0d4e2] first[-] second[-] c996d572
-603 0d529 19 shot:always chain[0d529] first[break@0d529:1] second[break@0d529:2] 34b8832b
+603 0d529 19 shot:always chain[0d529] first[-] second[-] ceef3924
 603 0d570 19 shot:always chain[0d570] first[break@0d570:1] second[break@0d570:2] 531cb7cd
-603 0d5b7 19 shot:always chain[0d5b7] first[break@0d5b7:1] second[break@0d5b7:2] 213fd92d
+603 0d5b7 19 shot:always chain[0d5b7] first[-] second[-] 376dd639
 603 0d5fe 00 - chain[0d5fe] first[-] second[-] 45a9a84f
 603 0d62e 00 - chain[0d62e] first[-] second[-] 51dfec92
 603 0d675 00 - chain[0d675] first[-] second[-] 48ab47f5
 603 0d6a5 00 - chain[0d6a5] first[-] second[-] 973c0b9c
 603 0d6d5 19 shot:always chain[0d6d5] first[break@0d6d5:1] second[break@0d6d5:2] 64968bc9
 603 0d705 00 - chain[0d705] first[-] second[-] 14c1e43f
-603 0d78f 19 shot:always chain[0d78f] first[break@0d78f:1] second[break@0d78f:2] a42ebcc1
+603 0d78f 19 shot:always chain[0d78f] first[-] second[-] cc66aa29
 603 0d7bf 00 - chain[0d7bf] first[-] second[-] a8a37432
 603 0d7f9 00 - chain[0d7f9] first[-] second[-] 5d64fb3d
 603 0d833 00 - chain[0d833] first[-] second[-] edbe432d
@@ -4678,11 +4678,11 @@ map 603 src 1c153121bd5d611c nodes 101 chains 101
 603 0d8a7 00 - chain[0d8a7] first[-] second[-] 21b314fb
 603 0d8e1 00 - chain[0d8e1] first[-] second[-] 0aa568a1
 603 0d91b 19 shot:always chain[0d91b] first[break@0d91b:1] second[break@0d91b:2] b191dd14
-603 0d94b 19 shot:always chain[0d94b] first[break@0d94b:1] second[break@0d94b:2] 5ab300ef
-603 0d97b 19 shot:always chain[0d97b] first[break@0d97b:1] second[break@0d97b:2] a279eaa2
+603 0d94b 19 shot:always chain[0d94b] first[-] second[-] 2005115e
+603 0d97b 19 shot:always chain[0d97b] first[-] second[-] 604e6a57
 603 0d9ab 19 shot:always chain[0d9ab] first[break@0d9ab:1] second[break@0d9ab:2] 148d1a61
-603 0d9f9 19 shot:always chain[0d9f9] first[break@0d9f9:1] second[break@0d9f9:2] dea910c3
-603 0da29 19 shot:always chain[0da29] first[break@0da29:1] second[break@0da29:2] 76aa309d
+603 0d9f9 19 shot:always chain[0d9f9] first[-] second[-] 10a7bf39
+603 0da29 19 shot:always chain[0da29] first[-] second[-] 7040acff
 603 0da59 00 - chain[0da59] first[-] second[-] 658b256d
 603 0dae9 19 shot:always chain[0dae9] first[break@0dae9:1] second[break@0dae9:2] da11a623
 map 604 src fc5dfce9fbac2406 nodes 10 chains 3
@@ -4773,9 +4773,9 @@ map 606 src a6f533435fed9d8d nodes 11 chains 11
 606 08366 00 - chain[08366] first[-] second[-] 51f9d453
 606 08396 00 - chain[08396] first[-] second[-] 0f1967ff
 606 08cdf 00 - chain[08cdf] first[-] second[-] 61aae337
-606 0abbf 19 shot:always chain[0abbf] first[break@0abbf:1] second[break@0abbf:2] 611dc098
-606 0abef 19 shot:always chain[0abef] first[break@0abef:1] second[break@0abef:2] 120be903
-606 0ac1f 19 shot:always chain[0ac1f] first[break@0ac1f:1] second[break@0ac1f:2] b7238d01
+606 0abbf 19 shot:always chain[0abbf] first[-] second[-] 99d74206
+606 0abef 19 shot:always chain[0abef] first[-] second[-] 4511f0e9
+606 0ac1f 19 shot:always chain[0ac1f] first[-] second[-] 639bec6a
 606 0ac4f 19 shot:always chain[0ac4f] first[break@0ac4f:1] second[break@0ac4f:2] 7e3daf16
 606 0ac7f 00 - chain[0ac7f] first[-] second[-] 06ebfce4
 map 607 src 88dfec15365e7e59 nodes 3 chains 3
@@ -4839,9 +4839,9 @@ map 609 src cbbfe41d52132a2f nodes 11 chains 11
 609 08366 00 - chain[08366] first[-] second[-] 51f9d453
 609 08396 00 - chain[08396] first[-] second[-] 0f1967ff
 609 08cdf 00 - chain[08cdf] first[-] second[-] 61aae337
-609 0abbf 19 shot:always chain[0abbf] first[break@0abbf:1] second[break@0abbf:2] 611dc098
-609 0abef 19 shot:always chain[0abef] first[break@0abef:1] second[break@0abef:2] 120be903
-609 0ac1f 19 shot:always chain[0ac1f] first[break@0ac1f:1] second[break@0ac1f:2] b7238d01
+609 0abbf 19 shot:always chain[0abbf] first[-] second[-] 99d74206
+609 0abef 19 shot:always chain[0abef] first[-] second[-] 4511f0e9
+609 0ac1f 19 shot:always chain[0ac1f] first[-] second[-] 639bec6a
 609 0ac4f 19 shot:always chain[0ac4f] first[break@0ac4f:1] second[break@0ac4f:2] 7e3daf16
 609 0ac7f 00 - chain[0ac7f] first[-] second[-] 06ebfce4
 map 610 src 86192029a826ce47 nodes 10 chains 3
@@ -4873,9 +4873,9 @@ map 616 src 1a6ab39682812137 nodes 14 chains 14
 616 08366 00 - chain[08366] first[-] second[-] 51f9d453
 616 08396 00 - chain[08396] first[-] second[-] 0f1967ff
 616 08cdf 00 - chain[08cdf] first[-] second[-] 61aae337
-616 0abbf 19 - chain[0abbf] first[-] second[-] e2edc8a5
-616 0abef 19 - chain[0abef] first[-] second[-] d096a71c
-616 0ac1f 19 - chain[0ac1f] first[-] second[-] 5b3308d5
+616 0abbf 19 - chain[0abbf] first[-] second[-] 15ccd8e1
+616 0abef 19 - chain[0abef] first[-] second[-] 7b7eeded
+616 0ac1f 19 - chain[0ac1f] first[-] second[-] dc49f8b8
 616 0ac4f 19 - chain[0ac4f] first[-] second[-] 282ba720
 616 0ac7f 00 - chain[0ac7f] first[-] second[-] 06ebfce4
 616 0b2bf 00 - chain[0b2bf] first[-] second[-] 9979c144

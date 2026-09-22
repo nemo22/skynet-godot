@@ -40,13 +40,18 @@ const MapFile := preload("res://scripts/loaders/map_file.gd")
 const RulesSkynet := preload("res://scripts/triggers/rules_skynet.gd")
 const RulesShock := preload("res://scripts/triggers/rules_shock.gd")
 const AIData := preload("res://scripts/enemy_ai_data.gd")
+const TransfrmPRS := preload("res://scripts/loaders/transfrm_prs.gd")
+const BSAReader := preload("res://scripts/loaders/bsa_reader.gd")
 
 const FORMAT: String = "skynet.triggers"
 ## Bump when the SHAPE of the graph changes (every saved graph is then
 ## rebuilt). A change to the rules alone moves rules_hash instead.
 ## 2 (2026-09-16): the simulation reads the `spent` flag a demolition
 ## leaves behind, so a second activation no longer promises a second kill.
-const GRAPH_VERSION: int = 2
+## 3 (2026-09-22): a destructible is only staged where TRANSFRM.PRS has a
+## template for its mesh — the graph reads that file now, so it has an
+## input it did not have before.
+const GRAPH_VERSION: int = 3
 ## No real chain is anywhere near this long; a crafted one stops here.
 const WALK_LIMIT: int = 256
 ## AI state 11 = a vehicle that drives a marker path (v1.01 0x127400).
@@ -237,6 +242,56 @@ static func build(map, map_num: int, source_hash: int, game: String,
 		"ticks": _ticks(ctx),
 		"warn": warn,
 	}
+
+# ---------------------------------------------------------------------
+# The damage-stage templates (TRANSFRM.PRS)
+# ---------------------------------------------------------------------
+## Which mesh names have damage stages, as TransformInit reads them
+## (FUN_00120000 → the table 0x12078a searches). Read ONCE per run out of
+## MDMDBRIF.BSA; the file is shipped data and never changes under us.
+##
+## Why the graph needs it at all: the act-0x18/0x19 handler (v1.01
+## 0x120833) opens by looking the object's own mesh up in that table —
+## `call 0x12078a` at 0x120879, which walks the templates and comes back
+## with the CARRY FLAG SET when the name is not among them — and the very
+## next instruction is `jb 0x120966`, a return. An object with no template
+## therefore does nothing at all when it is hit: no stage, no mesh swap,
+## no blast. Half the cars the maps place are exactly that, because they
+## ARE another car's last stage (CARHIP0C is the third frame of
+## CARHIP0A's template and has none of its own), and the game has always
+## had this right — the level loader only registers a destructible when
+## the name has a template. The graph promised every one of them a damage
+## stage, which was 43 of the pinned "no damage stage" failures.
+static var _stage_tpl: Dictionary = {}
+static var _stage_tpl_read: bool = false
+
+static func stage_templates() -> Dictionary:
+	if _stage_tpl_read:
+		return _stage_tpl
+	_stage_tpl_read = true
+	var brif := BSAReader.new()
+	if brif.open(SkynetPaths.gamedata_path("MDMDBRIF.BSA"), SkynetPaths.variant):
+		_stage_tpl = TransfrmPRS.parse(brif.read("TRANSFRM.PRS"))
+		brif.close()
+	if _stage_tpl.is_empty():
+		# No archive to read (a test fixture, a broken install): say so and
+		# let every destructible keep its stage, which is what the graph
+		# did before this was known. Silence here would quietly empty the
+		# damage stages out of every map.
+		push_warning("[triggers] TRANSFRM.PRS unreadable — every destructible is taken as staged")
+	return _stage_tpl
+
+## Has the record at `id` a template of its own? Only a variant-1 mesh can
+## have one: the lookup is by the mesh handle, and the other variants keep
+## other data where a mesh keeps its name.
+static func _staged(ctx: Dictionary, id: int) -> bool:
+	var tpl: Dictionary = stage_templates()
+	if tpl.is_empty():
+		return true                         # unreadable — see stage_templates
+	var e = ctx["ents"].get(id)
+	if e == null or (e.flags & 3) != 1:
+		return false
+	return tpl.has(MapFile.entity_name(ctx["map"], e).to_lower())
 
 ## Everything the per-node work shares: the records, who links to whom,
 ## which entities become nodes, the rule of each, the chain each starts
@@ -600,7 +655,11 @@ static func _effects(ctx: Dictionary, id: int) -> Dictionary:
 			return {"water": int(rule["p4"]), "absolute": int(rule["p4"]) == 0,
 				"swap": int(rule["p6"])}
 		"destructible":
-			return {"stage": 1, "per_stage": RulesSkynet.DESTRUCT_DAMAGE_PER_STAGE}
+			# `stage` 0 = the mesh has no TRANSFRM.PRS template of its own, and
+			# the DOS handler returns without doing anything at all for one of
+			# those (see stage_templates).
+			return {"stage": 1 if _staged(ctx, id) else 0,
+				"per_stage": RulesSkynet.DESTRUCT_DAMAGE_PER_STAGE}
 		"demolish":
 			return {"demolish": true, "hp": e.hp}
 		"spawn":
@@ -757,9 +816,15 @@ static func _edge(ctx: Dictionary, id: int, st: Dictionary, fx: Array) -> void:
 				fx.append("demolish@%05x" % id)
 				st["spent"][id] = true
 		"destructible":
-			var n: int = int(st["stage"].get(id, 0)) + 1
-			st["stage"][id] = n
-			fx.append("break@%05x:%d" % [id, n])
+			# One stage per enable — but only where the mesh HAS stages. The
+			# handler (v1.01 0x120833) clears its own bit first (p4 == 0 →
+			# 0x120858), then looks the template up and returns on `jb`
+			# (0x120879/0x12087e) when there is none, so a car that is
+			# already some other car's last stage answers a hit with nothing.
+			if _staged(ctx, id):
+				var n: int = int(st["stage"].get(id, 0)) + 1
+				st["stage"][id] = n
+				fx.append("break@%05x:%d" % [id, n])
 		"water":
 			var delta: int = int(rule["p4"])
 			fx.append("waterabs" if delta == 0 else "water%+d" % delta)

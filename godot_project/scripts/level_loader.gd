@@ -660,10 +660,13 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 			# Behaviour.register_mover → Mover.adopt).
 			level.action.register_node(e, mi)
 			# Staged wrecks need a TRANSFRM.PRS template for the name; a
-			# 0x19 act without one (CARHIP2C via the defaults) just runs
-			# the plain HP path.
-			if has_transfrm:
-				level.action.register_destructible(e,
+			# 0x19 act without one (CARHIP2C, which IS another car's last
+			# stage) just runs the plain HP path, exactly as the DOS
+			# handler does when its lookup comes back empty (0x120833 →
+			# 0x12078a sets carry, `jb` leaves). The record's own
+			# Destructible node stages it from here on (step 5g).
+			if has_transfrm and level.behaviour != null:
+				level.behaviour.register_destructible(e,
 					_destruct_stage_meshes(name, transfrm, objs,
 						mesh_cache, provider))
 		sum_x += pos.x; sum_y += pos.y; sum_z += pos.z
