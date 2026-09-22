@@ -234,6 +234,7 @@ drives every trigger in the running game.
 | `--verify-out=PATH` | a file | Write one line per checked node — map, id, act byte, kind, mode, result, reason — for triage. |
 | `--verify-limit=N` | a count | Check at most N nodes per map. |
 | `--verify-nodes=ID,ID` | hex ids | Check only those node ids (as `--verify-graph` and the dump print them). |
+| `--verify-missions[=SPEC]` | `all`, or mission start maps | Play the hand-written mission specs (`tests/rules/skynet.missions.txt`) — one block per campaign mission, the steps in the order a player performs them, across the maps of the mission and through the real input path. Says PASS/FAIL/XFAIL per step and per mission, and exits non-zero only on a failure the spec does not excuse with an `xfail` tag. `--verify-missions=240,280` plays only those. |
 | `--triggers=SPEC` | a map, or `all` | Print a map's generated trigger graph for review: what each node is, the bytes it came from, the rule that applies, how a player sets it off, the chain it flips, and what the first and second activation do. `all` prints one line per map plus the warning totals. Runs in the map dump scene, so it needs the `=` form. |
 
 `--verify-triggers=` takes `all` (or nothing), `mission:210` for the whole
@@ -246,8 +247,22 @@ start on and let it go.
 godot --headless --path godot_project -- --verify-graph
 godot --headless --path godot_project -- --map=MAP.200 --no-briefing \
       --no-mission-scene --verify-triggers=all --verify-out=rows.txt
+godot --headless --path godot_project -- --map=MAP.210 --no-briefing \
+      --no-mission-scene --verify-missions=all --verify-out=rows.txt
 godot --headless --path godot_project res://scenes/map_dump.tscn -- --triggers=215
 ```
+
+`--verify-missions=` is the layer above `--verify-triggers`: the verifier
+proves one trigger at a time on a map put back as its file has it, and
+this plays a whole MISSION — the doorways taken, the map changing under
+the run, nothing reset between steps and the mission counter the one the
+game keeps. A step is `use|prox|shoot|exit|wait <map> <id> expect
+<effects>`, read as "these effects happened" and not "exactly these";
+`must_not` says what an action must NOT come to (the four regressions the
+spec pins), `counter N` is what the mission counter must read at the end,
+and `xfail <tag>` excuses a step, or a whole mission, that cannot be
+played through yet. The effect names are the graph's own, as `--triggers=`
+and the lock print them.
 
 ## The solver
 

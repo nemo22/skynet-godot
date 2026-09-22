@@ -1,0 +1,62 @@
+# mission specs - run with --verify-missions (see COMMANDS.md)
+# map numbers decimal, ids lower hex, effects as the graph writes them
+mission 210
+	must_not wait 210 078d3 expect path@078d3
+	prox 210 0c084 expect path@078d3
+	xfail path_window
+	exit 210 07fcb expect snd40 exit214/0
+	exit 214 02f4e expect snd40 exit215/0
+	use 215 032cb expect snd77 obj0 voice21038 move@03125:slideZ+256 move@030eb:slideX-256 move@030b1:slideZ-256 move@03077:slideX+256
+	use 215 02f8f expect snd77 obj1 voice21039 move@047f0:slideY-1024 move@04719:slideY-1024 move@03515:slideY-128
+	exit 215 04130 expect snd41 exit217/15
+	use 217 0ba48 expect obj2 voice21040
+	counter 0
+mission 220
+	prox 220 06f12 expect obj0
+	counter 0
+mission 230
+	exit 230 0e770 expect snd44 exit231/0
+	exit 231 02d98 expect snd40 exit232/0
+	use 232 0325c expect snd46 obj0 move@031c4:rotY+1024
+	use 232 04461 expect snd46 obj0 move@0449b:rotY+1024
+	use 232 04966 expect snd46 obj0 move@0492c:rotY+1024
+	use 232 049a0 expect snd46 obj0 move@048f2:rotY+1024
+	use 232 04a14 expect snd46 obj0 move@049da:rotY+1024
+	use 232 058a5 expect snd46 obj0 move@058df:rotY+1024
+	use 232 05919 expect snd46 obj0 move@05953:rotY+1024
+	use 232 05fb0 expect snd46 obj0 move@05f76:rotY+1024
+	use 232 05fea expect snd46 obj0 move@05f3c:rotY+1024 hint4 voice23032 demolish@03512 spawn@04f42 spawn@04f66 spawn@04f8a spawn@036b2 spawn@04612 spawn@04636 spawn@0465a
+	exit 232 03678 expect snd40 exit233/0
+	exit 233 04e8d expect snd44 exit234/0
+	wait 234 0ea0c expect path@0ea0c obj1 voice23039
+	xfail no_ride
+	counter 0
+	xfail no_ride
+mission 240
+	exit 240 11766 expect snd44 exit248/10
+	must_not use 248 0381d expect break@035a6:2
+	use 248 0381d expect break@035a6:2
+	exit 248 036dc expect snd44 exitback/24
+	exit 240 14035 expect snd113 exit241/0
+	exit 241 0316d expect snd113 exit292/0
+	use 292 03728 expect obj0 snd45 voice24038 move@036e1:swingY+512
+	counter 0
+mission 252
+	must_not use 252 0342c expect obj0
+	exit 252 0362d expect snd113 exit253/0
+	exit 253 02f5e expect snd113 hint0 voice25028 exit250/10 move@02f0d:swingY+512
+	must_not use_below 250 09f73 expect obj0
+	use 250 09f73 expect obj0 voice25038
+	counter 0
+mission 260
+	prox 260 14fb6 expect obj0 voice26038
+	counter 0
+mission 270
+	prox 270 0cd0a expect obj0 voice27038
+	counter 0
+mission 280
+	exit 280 0723f expect snd41 exit284/12
+	use 284 03565 expect snd41 obj0 break@0335f:1 move@03471:swingY-512
+	exit 284 02681 expect snd41 exit280/52
+	use 280 09178 expect obj1 obj1
+	counter 0

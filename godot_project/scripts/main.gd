@@ -599,6 +599,7 @@ func _cli_after_level() -> void:
 				print("[cli] ] %s → %s" % [c.strip_edges(), await run_command(c.strip_edges())])
 	_solver_level_ready()
 	_verifier_level_ready()
+	_mission_runner_level_ready()
 	if _cli.has("console-open"):
 		# Automation: drop the console itself (a screenshot of its UI).
 		open_console(String(_cli["console-open"]))
@@ -680,6 +681,22 @@ func _verifier_level_ready() -> void:
 	v.set("main", self)
 	add_child(v)
 	v.call("begin")
+
+## --verify-missions=all|210,240: the mission spec runner
+## (scripts/triggers/mission_verifier.gd, M3 step 6) — layer (b), which
+## plays tests/rules/skynet.missions.txt across the maps of each mission.
+## Like the verifier it drives its own level changes, so this only starts
+## it; the first world it is given is the one it begins on.
+func _mission_runner_level_ready() -> void:
+	if not _cli.has("verify-missions"):
+		return
+	if get_node_or_null("MissionVerifier") != null:
+		return
+	var m: Node = load("res://scripts/triggers/mission_verifier.gd").new()
+	m.name = "MissionVerifier"
+	m.set("main", self)
+	add_child(m)
+	m.call("begin_missions")
 
 ## Frame-time probe. Prints the distribution, not just the average: a
 ## mean of 8 ms with a 90 ms worst frame is exactly what "docela dost to

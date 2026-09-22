@@ -35,6 +35,8 @@ const TriggerLock := preload("res://scripts/triggers/trigger_lock.gd")
 const TriggerBus := preload("res://scripts/triggers/trigger_bus.gd")
 const TriggerEquiv := preload("res://scripts/triggers/trigger_equiv.gd")
 const TriggerVerifier := preload("res://scripts/triggers/trigger_verifier.gd")
+const MissionVerifier := preload("res://scripts/triggers/mission_verifier.gd")
+const MainScript := preload("res://scripts/main.gd")
 
 const CAMPAIGN: Array = [
 	"MAP.210", "MAP.220", "MAP.230", "MAP.240",
@@ -1347,6 +1349,61 @@ func _run_xfail_checks() -> void:
 		"it refuses a name, an unknown kind and a comment of its own (%d of 3)" % planted)
 	_check(TriggerVerifier.hygiene(text.replace("\n", "\r\n")).is_empty(),
 		"it still reads clean with carriage returns in it")
+	_run_mission_spec_checks()
+
+## The MISSION SPEC layer (b) plays (tests/rules/skynet.missions.txt,
+## --verify-missions). It travels in the public repository beside the lock
+## and the known-failure list and keeps the same discipline: map numbers,
+## hex ids, the effect names the GRAPH itself writes, the verbs it can
+## perform and one tag out of a fixed list - no entity names, no
+## coordinates, no quotes, none of the game's own words. And it has to
+## parse: a spec the runner cannot read is a mission nobody is checking.
+func _run_mission_spec_checks() -> void:
+	var path: String = MissionVerifier.SPEC_PATH
+	_check(FileAccess.file_exists(path), "the mission spec is present")
+	if not FileAccess.file_exists(path):
+		return
+	var text: String = FileAccess.get_file_as_string(path)
+	var dirty: PackedStringArray = MissionVerifier.hygiene(text)
+	_check(dirty.is_empty(), "the mission spec holds only numbers, hex, effects and keywords%s"
+		% ("" if dirty.is_empty() else " - " + ", ".join(dirty.slice(0, 3))))
+	# ...and the check bites: an entity name where an effect belongs, a
+	# quoted line of the game's own text, a coordinate and a verb nobody
+	# can perform must each be refused.
+	var planted: int = 0
+	for line in ["use 215 032cb expect BUTTON01",
+			"# the console says \"ACCESS GRANTED\"",
+			"use 215 032cb expect obj0 at 1420,-380,-2900",
+			"jump 215 032cb expect obj0"]:
+		if not MissionVerifier.hygiene(text + line + "\n").is_empty():
+			planted += 1
+	_check(planted == 4,
+		"it refuses a name, a quoted line, a coordinate and an unknown verb (%d of 4)" % planted)
+	_check(MissionVerifier.hygiene(text.replace("\n", "\r\n")).is_empty(),
+		"the spec still reads clean with carriage returns in it")
+
+	var spec: Dictionary = MissionVerifier.parse(text)
+	var errors: Array = spec["errors"]
+	_check(errors.is_empty(), "the spec parses%s"
+		% ("" if errors.is_empty() else " - " + String(errors[0])))
+	var missions: Array = spec["missions"]
+	var keys := PackedStringArray()
+	var counted: int = 0
+	for m in missions:
+		var mission: Dictionary = m
+		keys.append(str(int(mission["key"])))
+		var steps: Array = mission["steps"]
+		if not steps.is_empty() and String((steps[steps.size() - 1] as Dictionary)["kind"]) == "counter":
+			counted += 1
+	# One block per campaign mission, each one played to its counter - the
+	# eight maps a mission starts on (main.gd CAMPAIGN_SEQUENCE).
+	var want := PackedStringArray()
+	for mn in MainScript.CAMPAIGN_SEQUENCE:
+		want.append(String(mn).get_extension())
+	_check(missions.size() == want.size() and counted == missions.size(),
+		"one block per campaign mission, each ending on its counter (%d of %d, %d counted)"
+		% [missions.size(), want.size(), counted])
+	_check(keys == want, "and they are the campaign's own start maps (%s)" % " ".join(keys))
 
 ## M3 step 3 — the event BUS, and what it is for.
 ##

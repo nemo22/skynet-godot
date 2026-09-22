@@ -272,34 +272,9 @@ func _changed_maps(all: PackedStringArray) -> PackedStringArray:
 func _verify_map(name: String) -> void:
 	_map_t0 = Time.get_ticks_msec()
 	var level = main._current_level
-	if level == null or level.behaviour == null:
-		_row(-1, 0, 0, "-", "-", FAIL, "no level")
-		return
-	var num: int = int(level.map_suffix)
-	var graph: Dictionary = TriggerEquiv.graph_of(level)
+	var graph: Dictionary = _open_map(level, true)
 	if graph.is_empty():
-		_row(num, 0, 0, "-", "-", FAIL, "no graph")
 		return
-	# The player cannot be killed between checks; the robots are left
-	# alone, because a path vehicle IS one of them (a dead actor stops
-	# driving its markers, and `killall` took the truck with it).
-	main.player.set("god_mode", true)
-	_intercept(level)
-	# Slot 2 (ASSAULT RIFLE): 20 damage points, which is one damage stage
-	# — and chosen on the number key, so even that goes through the input
-	# path. fly_camera reads KEY_1..KEY_9 straight off the event. Every
-	# shot check picks it again (_check_shot): the checks put the player
-	# down all over the map and a weapon he is set down on ARMS ITSELF.
-	_drv.press_key(KEY_1 + SHOT_WEAPON)
-	_prox_world = []
-	for pn in (level.behaviour.prox_nodes() as Array):
-		_prox_world.append([int(pn.id),
-			(pn.position as Vector3) + (level.origin as Vector3),
-			float(pn.measure())])
-	_exit_world = []
-	for x in (level.behaviour.exit_nodes() as Array):
-		_exit_world.append((x.position as Vector3) + (level.origin as Vector3))
-	_snap = _pristine(level, graph, _snapshot(level))
 	var snap: Dictionary = _snap
 	var nodes: Array = (graph.get("nodes", []) as Array).duplicate()
 	nodes.sort_custom(func(a, b): return int((a as Dictionary)["id"]) < int((b as Dictionary)["id"]))
@@ -318,6 +293,47 @@ func _verify_map(name: String) -> void:
 	_release(level)
 	print("[verify] %s: %d node(s) in %.1f s" % [name, done,
 		float(Time.get_ticks_msec() - _map_t0) / 1000.0])
+
+## The level that has just come up, made ready to be driven: its graph,
+## the player unkillable, the rifle in his hands, and the two lists a
+## standing point is measured against (every live proximity radius and
+## every doorway). `intercept` keeps the exits and the objective counter
+## here instead of in main.gd — which is right for a map being checked
+## node by node and wrong for the MISSION RUNNER (layer (b),
+## scripts/triggers/mission_verifier.gd), which has to TAKE the exits and
+## let the counter be the mission's own. Returns {} when there is nothing
+## to check, having said so.
+func _open_map(level, intercept: bool) -> Dictionary:
+	if level == null or level.behaviour == null:
+		_row(-1, 0, 0, "-", "-", FAIL, "no level")
+		return {}
+	var num: int = int(level.map_suffix)
+	var graph: Dictionary = TriggerEquiv.graph_of(level)
+	if graph.is_empty():
+		_row(num, 0, 0, "-", "-", FAIL, "no graph")
+		return {}
+	# The player cannot be killed between checks; the robots are left
+	# alone, because a path vehicle IS one of them (a dead actor stops
+	# driving its markers, and `killall` took the truck with it).
+	main.player.set("god_mode", true)
+	if intercept:
+		_intercept(level)
+	# Slot 2 (ASSAULT RIFLE): 20 damage points, which is one damage stage
+	# — and chosen on the number key, so even that goes through the input
+	# path. fly_camera reads KEY_1..KEY_9 straight off the event. Every
+	# shot check picks it again (_check_shot): the checks put the player
+	# down all over the map and a weapon he is set down on ARMS ITSELF.
+	_drv.press_key(KEY_1 + SHOT_WEAPON)
+	_prox_world = []
+	for pn in (level.behaviour.prox_nodes() as Array):
+		_prox_world.append([int(pn.id),
+			(pn.position as Vector3) + (level.origin as Vector3),
+			float(pn.measure())])
+	_exit_world = []
+	for x in (level.behaviour.exit_nodes() as Array):
+		_exit_world.append((x.position as Vector3) + (level.origin as Vector3))
+	_snap = _pristine(level, graph, _snapshot(level))
+	return graph
 
 ## Everything that would end or leave the level while one node is being
 ## checked, taken over for the run: an exit is recorded and refused, the
@@ -504,23 +520,24 @@ func _check_node(level, graph: Dictionary, node: Dictionary) -> void:
 			_row(num, id, act, kind, how, SKIP, "no driver for this mode")
 
 # --- the use key (0xEF gates and the wall buttons) --------------------
-func _check_use(level, node: Dictionary, num: int, id: int, act: int,
-		kind: String, mode: Dictionary) -> void:
+## Where the player stands to press this record's key, and what he looks
+## at while he does it: {ok, feet, aim, gate, shared, why}.
+##
+## An 0xEF gate is a sprite with no collider: DOS fires the gates in reach
+## on the KEY itself (press_use → the tick sweep), the crosshair has
+## nothing to do with it, and aiming at whatever stands behind the gate
+## would operate THAT instead (fly_camera._try_activate walks the ray's
+## collider up to an ActionTarget). So a gate is used looking at the
+## floor. A wall button is the opposite: it IS the mesh the ray has to
+## find, and the player stands at it.
+## …unless the 0xEF record is a named variant-1 mesh with state bit 3.
+## The runtime takes THOSE off the proximity sweep altogether (walking
+## past a button must not press it) and leaves them to the crosshair, so
+## a key pressed at the floor beside one does nothing at all. The graph
+## says the same of them since 2026-09-16 (trigger_graph._button_mode).
+func _use_spot(level, id: int, kind: String, mode: Dictionary) -> Dictionary:
 	var ep: Vector3 = _epos(level, id)
-	# An 0xEF gate is a sprite with no collider: DOS fires the gates in
-	# reach on the KEY itself (press_use → the tick sweep), the crosshair
-	# has nothing to do with it, and aiming at whatever stands behind the
-	# gate would operate THAT instead (fly_camera._try_activate walks the
-	# ray's collider up to an ActionTarget). So a gate is used looking at
-	# the floor. A wall button is the opposite: it IS the mesh the ray has
-	# to find, and the player stands at it.
-	# …unless the 0xEF record is a named variant-1 mesh with state bit 3.
-	# The runtime takes THOSE off the proximity sweep altogether (walking
-	# past a button must not press it) and leaves them to the crosshair, so
-	# a key pressed at the floor beside one does nothing at all. The graph
-	# says the same of them since 2026-09-16 (trigger_graph._button_mode).
 	var gate: bool = kind == "prox_gate" and not _is_wall_button(level, id)
-	var aim: Vector3 = ep if gate else _aim_point(level, id)
 	# A button is pressed from in FRONT of it, so the search starts at the
 	# DOS gate measure and only widens to the hand's reach when there is
 	# nowhere that near to stand. The mode's own 600 units are how far the
@@ -536,6 +553,17 @@ func _check_use(level, node: Dictionary, num: int, id: int, act: int,
 		# search a shot uses — put a hundred and thirty of these out of
 		# reach that the running game presses perfectly well.)
 		spot = _stand_in(level, ep, mode, Rules.USE_REACH, id, true)
+	spot["gate"] = gate
+	spot["aim"] = ep if gate else _aim_point(level, id)
+	spot["ep"] = ep
+	return spot
+
+func _check_use(level, node: Dictionary, num: int, id: int, act: int,
+		kind: String, mode: Dictionary) -> void:
+	var spot: Dictionary = _use_spot(level, id, kind, mode)
+	var ep: Vector3 = spot["ep"]
+	var gate: bool = bool(spot["gate"])
+	var aim: Vector3 = spot["aim"]
 	if not bool(spot["ok"]):
 		_row(num, id, act, kind, "use", UNREACHABLE, String(spot["why"]))
 		return
