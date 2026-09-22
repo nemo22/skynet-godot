@@ -26,7 +26,6 @@ A handful of switches are read **only** from the list after `--`, because
 the code that reads them asks for that list alone:
 
 - `--load-trace`
-- `--import-map-scenes`
 - `--no-client` (the network test suite)
 - everything the map audit takes (`--maps=`, `--settle=`)
 
@@ -63,8 +62,6 @@ Everything else on this page is a developer tool. It is all marked
 | `--import` | — | Convert the game data into the cache behind the progress screen, then quit. Also the way to rebuild a cache: it runs even when the import is already complete. |
 | `--import-missions` | — | Bake only the mission scenes (a whole mission as one Godot scene) and quit. Exit code 0 when every mission the data holds came out. **(dev)** |
 | `--import-triggers` | — | Rebuild only the generated trigger graphs and quit. Seconds rather than minutes — the whole rebuild after a change to the trigger rules. **(dev)** |
-| `--import-map-scenes` | — | Modifier for `--import`: also build the editor's data view of every map. On its own it does nothing; an editor run builds them anyway. Read only from the list after `--`. **(dev)** |
-| `--map-scene=MAP.210` | one map | Build that one editor map scene and quit. This is what the editor dock runs. **(dev)** |
 | `--level-scene=MAP.210` | one map | Bake that one level scene — the world in Godot's own format — and quit. **(dev)** |
 
 The import switches are all checked *after* `--host`, `--screen`, `--join`
@@ -75,6 +72,40 @@ those: the one that comes first wins and the import never runs.
 godot --headless --path godot_project -- --import
 godot --headless --path godot_project -- --gamedata=DIR --import
 ```
+
+## Source, derived, mod
+
+There is exactly one source for a map: the original DOS `MAP.NNN` file in
+the game's archive. Nothing in the port ever writes one, and there is no
+way back from Godot into that format — you are not asked to edit game
+data.
+
+Everything under `converted/` is **derived** from that source. It is
+generated, it is rewritten by every `--import`, and it carries a
+`README.txt` saying so. Delete the folder whenever you like; do not edit
+anything in it and do not check it in.
+
+Your own changes are **mods**, in the `mods/` folder beside the game data
+(`res://mods` in a development checkout):
+
+| File | What it does |
+| --- | --- |
+| `mods/maps/MAP.210.level.scn` | Replaces the whole level scene of that map. The game instances this instead of `converted/maps/MAP.210.level.scn` — no import, no rebake, picked up the next time the map is loaded. The way to make one is to open the converted level in the editor (SkyNET Maps dock → *Open LEVEL*) and save it here under the same name. |
+| `mods/maps/MAP.210.detail.tscn` | Added *on top of* whichever level is playing, instead of replacing it. Plain data only — it is scanned before it is loaded. |
+
+A modded scene changes **what is presented and where it stands**, and
+nothing else. Every trigger — every door, gate, button, exit, objective
+and destructible — is read from the DOS `MAP` records, which the mod
+cannot reach. So a node you add to a modded scene has no record behind
+it and can never fire, and one you delete is still there as far as the
+trigger runtime is concerned.
+
+Two more things follow from that. A mission scene
+(`converted/missions/MISSION.NNN.scn`) always stands on the derived
+level scenes; the mod is put in the zone's place when the zone is built,
+so the mission bake never has to be rerun for one. And a modded map is
+left **unpinned** by `--verify-graph`: the trigger lock speaks for the
+maps as shipped and as generated, which a modded one is not.
 
 ## Starting the game
 
@@ -91,8 +122,8 @@ screen.
 
 **How the menu chooses.** The menu acts on the first of these it finds, in
 this order, and then does nothing else: `--host`, `--screen`, `--join`,
-`--map`, `--verify-graph`, `--accept-lock`, `--map-scene`,
-`--import-missions`, `--import-triggers`, `--level-scene`, `--import`.
+`--map`, `--verify-graph`, `--accept-lock`, `--import-missions`,
+`--import-triggers`, `--level-scene`, `--import`.
 `--name` and `--menu-shot` are handled before all of them and combine with
 any of them.
 
@@ -409,8 +440,6 @@ godot --headless --path godot_project --script res://tools/probe_scene.gd \
   `--variants`, `--borders`, `--header` and `--find` are all documented in
   the tool sources as bare flags; written that way they do nothing. Write
   `--variants=`, `--borders=`, `--header=1`.
-- **`--import-map-scenes` does nothing on its own.** It only widens what
-  `--import` (or a first start) converts.
 - **`--faces=` runs two dumps.** One flag, two different reports, one after
   the other.
 - **`--quit-after-shot` also ends a `--perf` run**, which has nothing to do

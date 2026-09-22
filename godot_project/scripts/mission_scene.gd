@@ -35,10 +35,18 @@
 ## inside SPAN_LIMIT.
 ##
 ## The zones are INSTANCES of the level scenes, not copies: rebake
-## MAP.213 and the mission scene picks it up. The bake is a build artefact
-## like every other cache file — a sidecar carries the bake version, the
-## maps it was built from and a hash of their bytes, and a mission whose
-## data moved is written again (Assets.mission_scene).
+## MAP.213 and the mission scene picks it up. The instance is always the
+## DERIVED converted/maps/MAP.NNN.level.scn, never a mod — a cache file
+## may only reference cache files (asset_cache._dep_ok), and a mission
+## scene pointing into mods/ would fail its own trust check and be rebaked
+## on every start. A mod is put in the zone's place when the zone is
+## BUILT, by the loader (level_loader.load_zone), so dropping one in or
+## taking it out is picked up on the next start with nothing to rebake.
+##
+## The bake is a build artefact like every other cache file — a sidecar
+## carries the bake version, the maps it was built from and a hash of
+## their bytes, and a mission whose data moved is written again
+## (Assets.mission_scene).
 ##
 ## Everything here is DATA. The runtime that walks a portal is step 4 of
 ## the plan and the one that applies a phase is step 5; until then the
@@ -451,7 +459,9 @@ static func _zone_node(num: int, z: Dictionary, at: Vector3,
 		phase_names: PackedStringArray, cache: Dictionary) -> Node3D:
 	var map_name := "MAP.%03d" % num
 	# The level scene is the bake's input: make sure it is there and
-	# current before the mission scene points at it.
+	# current before the mission scene points at it. The DERIVED one — see
+	# the header on why a mod cannot be instanced here and where it comes
+	# in instead.
 	var lp: String = Assets.level_scene(map_name)
 	if lp.is_empty() or not FileAccess.file_exists(lp):
 		push_warning("[mission] %s has no level scene to stand on" % map_name)

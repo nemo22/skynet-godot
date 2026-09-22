@@ -1,10 +1,10 @@
 ## Root of a baked level scene (converted/maps/MAP.NNN.level.scn).
 ##
 ## Everything here is provenance: which MAP the scene was built from
-## and by which version of the bake. The loader checks both and
-## rebuilds the scene when either has moved on — editing a map (SkyNET
-## Maps dock → export to mods/maps/) changes the hash, so an edited map
-## never plays with stale geometry.
+## and by which version of the bake. The loader checks both and rebuilds
+## the scene when either has moved on, so no map ever plays with stale
+## geometry. A MOD scene (mods/maps/MAP.NNN.level.scn) carries these
+## fields too, but is never judged by them: it is not ours to rebuild.
 ##
 ## See scripts/level_scene.gd for the node layout.
 

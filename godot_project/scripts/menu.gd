@@ -295,7 +295,7 @@ func _maybe_import() -> void:
 				% [int(w["maps"]), int(w["nodes"]), int(w["chains"]),
 				   int(w["bytes"]), float(w["ms"]) / 1000.0])
 			for m in (w["modded"] as PackedStringArray):
-				print("[lock] %s left unpinned — replaced outside the shipped data" % m)
+				print("[lock] %s left unpinned — a mod scene presents it" % m)
 		else:
 			push_error("[lock] not written: %s" % String(w["why"]))
 		get_tree().quit(0 if bool(w["ok"]) else 1)
@@ -303,13 +303,6 @@ func _maybe_import() -> void:
 	if not Assets.enabled:
 		return
 	var forced: bool = "--import" in args
-	# `--map-scene=MAP.210`: build one editor map scene and quit.
-	for a in args:
-		if a.begins_with("--map-scene="):
-			var p: String = Assets.map_scene(a.substr(12).strip_edges())
-			print("[menu] map scene: %s" % (p if not p.is_empty() else "FAILED"))
-			get_tree().quit(0 if not p.is_empty() else 1)
-			return
 	# `--import-missions`: bake only the mission scenes (a whole mission as
 	# one Godot scene) and quit. The full conversion is minutes of work a
 	# change to the mission bake alone does not need.

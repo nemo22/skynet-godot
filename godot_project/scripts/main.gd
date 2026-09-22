@@ -2144,7 +2144,8 @@ func _radiation_dose(at: Vector3) -> float:
 ## map itself: the occluders that stop the engine submitting the valley
 ## behind a ridge. `mods/maps/<MAP>.detail.tscn` is a scene of your own,
 ## instantiated on top and never touched by the conversion
-## (level.overlay).
+## (level.overlay); `mods/maps/<MAP>.level.scn` replaces the baked level
+## altogether (scripts/level_scene.gd).
 var _overlay: Node3D = null
 var _occluders: Node3D = null
 
@@ -3817,19 +3818,14 @@ func _phase_source_map(from: String, lvl) -> LevelLoader.MapFile.MapFile:
 	push_warning("[mission] %s cannot be read again — the phase carries its live records" % from)
 	return lvl.map if lvl != null else null
 
-## `map_name` parsed fresh, the way LevelLoader reads it (the archive entry,
-## or an edited map in mods/maps/), or null.
+## `map_name` parsed fresh, the way LevelLoader reads it — the archive
+## entry, which is the only source of a map's records. Or null.
 static func _parse_map(map_name: String) -> LevelLoader.MapFile.MapFile:
 	var bytes := PackedByteArray()
 	var bsa := BSAReader.new()
 	if bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant):
 		bytes = bsa.read(map_name)
 		bsa.close()
-	var mod: String = SkynetPaths.mods_dir() + ("/maps/%s" % map_name.to_upper())
-	if FileAccess.file_exists(mod):
-		var mb := SkynetPaths.read_bytes(mod)
-		if not mb.is_empty():
-			bytes = mb
 	return LevelLoader.MapFile.parse(bytes) if not bytes.is_empty() else null
 
 ## The rule module of the game being PLAYED. The port runs SkyNET's act

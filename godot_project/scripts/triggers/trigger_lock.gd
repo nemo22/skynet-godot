@@ -38,14 +38,15 @@
 ## hygiene() holds the whole permitted vocabulary and fails on anything
 ## else, so the file can live in the public repository.
 ##
-## Maps the shipped archive does not hold — an edited map under mods/,
-## another game's data — cannot be pinned by a file generated from the
-## shipped ones: those are reported "unpinned" and pass.
+## Maps this file cannot speak for — one another game shipped, one a mod
+## presents with a level scene of its own — are reported "unpinned" and
+## pass.
 
 extends RefCounted
 
 const TriggerGraph := preload("res://scripts/triggers/trigger_graph.gd")
 const BSAReader := preload("res://scripts/loaders/bsa_reader.gd")
+const LevelScene := preload("res://scripts/level_scene.gd")
 
 const FORMAT: String = "skynet.triggers.lock"
 ## Bump when the LINE SHAPE changes (the lock is then rewritten wholesale).
@@ -88,10 +89,14 @@ static func lock_text(game: String = "") -> String:
 		return ""
 	return FileAccess.get_file_as_string(p)
 
-## Is this map replaced by an edited copy outside the shipped archive?
-## Such a map's graph is whatever the mod says; the lock cannot speak for it.
+## Is this map presented by a level scene of the player's own
+## (mods/maps/<MAP>.level.scn)? The records — and with them the graph the
+## lock pins — still come from the shipped MAP; what the mod changes is
+## where everything stands and what is drawn, which is the half of a
+## trigger a line like `use:3d/r60+26` measures. The lock speaks for the
+## map as shipped AND as generated, so a modded one is left unpinned.
 static func is_modded(map_name: String) -> bool:
-	return FileAccess.file_exists(SkynetPaths.mods_dir() + ("/maps/%s" % map_name.to_upper()))
+	return LevelScene.is_modded(map_name)
 
 # ---------------------------------------------------------------------
 # Generating
@@ -404,7 +409,7 @@ static func verify(spec: String = "") -> Dictionary:
 		seen[num] = true
 		if is_modded(name):
 			unpinned += 1
-			report.append("[lock] MAP.%03d unpinned — replaced outside the shipped data" % num)
+			report.append("[lock] MAP.%03d unpinned — a mod scene presents it" % num)
 			continue
 		if not (lock["maps"] as Dictionary).has(num):
 			unpinned += 1

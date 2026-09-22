@@ -288,6 +288,10 @@ class Level:
 	var baked: bool = false
 	var occluders: Node3D = null          # OccluderInstance3D for the map
 	var overlay: Node3D = null            # mods/maps/<MAP>.detail.tscn
+	## The level scene the baked branches came from: the derived
+	## converted/maps/<MAP>.level.scn, or a mod that replaced it. "" when
+	## nothing was baked and the records did the work.
+	var baked_from: String = ""
 	## The map's behaviour as nodes (scripts/level_behaviour.gd), out of
 	## the baked scene or built here; scripts/level/behaviour.gd on its
 	## root runs the chains and the cues (F2).
@@ -353,19 +357,15 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 		return null
 
 	# MAP ----------------------------------------------------------
+	# The DOS MAP is the SOURCE and it is never overridden: what a map
+	# DOES is the game's, and a mod replaces its level SCENE (the
+	# presentation) instead — scripts/level_scene.gd.
 	var maps := BSAReader.new()
 	if not maps.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant):
 		push_error("[level] cannot open %s" % SkynetPaths.map_archive)
 		return null
 	var map_bytes := maps.read(map_name)
 	maps.close()
-	# An edited map (editor export) overrides the archive entry.
-	var mod: String = SkynetPaths.mods_dir() + ("/maps/%s" % map_name.to_upper())
-	if FileAccess.file_exists(mod):
-		var mb := SkynetPaths.read_bytes(mod)
-		if not mb.is_empty():
-			map_bytes = mb
-			print("[level] %s: using mod file %s" % [map_name, mod])
 	if map_bytes.is_empty():
 		push_error("[level] MAP not found: %s" % map_name)
 		return null
@@ -440,20 +440,28 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 	_phase("wld")
 	# The baked level scene: terrain, static geometry and their collision
 	# and the occluders, all in Godot's own format
-	# (scripts/level_scene.gd). It carries a hash of this MAP, so an
-	# edited map falls straight back to building from the data.
+	# (scripts/level_scene.gd). It carries a hash of this MAP, so data
+	# that moved falls straight back to building from the records.
 	var baked: Dictionary = {}
 	if use_baked:
 		# A zone's copy is already instantiated by the mission scene; when
 		# it turns out to be stale the ordinary path still gets a chance to
 		# rebuild the file before the records have to do the work.
-		if baked_root != null:
+		#
+		# A MOD beats that instance. The mission bake stands on the
+		# DERIVED scene on purpose (a cache file may only reference cache
+		# files — asset_cache._dep_ok), so the mission scene never points
+		# into mods/; the substitution happens here instead, once per zone
+		# build, which is also why dropping a mod in is picked up on the
+		# next start with no rebake at all.
+		if baked_root != null and not LevelScene.is_modded(map_name):
 			baked = LevelScene.take_from(baked_root, map_bytes)
 		if baked.is_empty():
 			baked = LevelScene.take(map_name, map_bytes)
 	var baked_static: Node = null
 	if not baked.is_empty():
 		level.baked = true
+		level.baked_from = String(baked.get("source", ""))
 		level.terrain = baked.get("terrain")
 		level.occluders = baked.get("occluders")
 		baked_static = baked.get("static")

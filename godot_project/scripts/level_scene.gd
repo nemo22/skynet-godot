@@ -37,19 +37,30 @@
 ##     between every copy of a mesh AND between maps (converted/shape/)
 ##     instead of being rebuilt per instance.
 ##
-## The scene is a build artefact: it carries the hash of the MAP file it
-## was built from, so editing a map (the dock's export to mods/maps/)
-## invalidates it and the next load rebuilds it. That provenance is also
+## SOURCE, DERIVED, MOD. The DOS MAP is the source and nobody edits it;
+## converted/maps/MAP.210.level.scn is derived from it; and a MOD is a
+## Godot scene of your own that WINS over the derived one —
+## mods/maps/MAP.210.level.scn is taken in its place, with no import and
+## no rebake (mod_path / take below). A modded scene changes what is
+## presented and where it stands; it does not change what the map DOES.
+## Every trigger still comes from the DOS records, so a node the mod adds
+## has no record behind it and can never fire, and one it deletes is
+## still there as far as the trigger runtime is concerned.
+##
+## The derived scene is a build artefact: it carries the hash of the MAP
+## file it was built from, so a change in the data invalidates it and the
+## next load rebuilds it. That provenance is also
 ## written to a plain-text sidecar (MAP.210.level.txt) which is checked
 ## BEFORE the scene is touched — a Godot scene can run code as it loads,
 ## so a stale or foreign one must never get that far — and the scene
 ## itself is loaded only when the asset cache's trust manifest says this
 ## installation wrote it (asset_cache.gd).
 ##
-## To add detail BY HAND that survives a rebuild, put it in a scene of
-## your own: mods/maps/MAP.210.detail.tscn is instantiated on top of any
-## level whose name it matches, after overlay_problem() has made sure it
-## is plain data (see "Hand-made overlays" below).
+## To ADD detail without replacing the level, put it in a scene of your
+## own: mods/maps/MAP.210.detail.tscn is instantiated on top of any level
+## whose name it matches, after overlay_problem() has made sure it is
+## plain data (see "Hand-made overlays" below). Replacing the level
+## outright is the .level.scn mod above.
 
 extends RefCounted
 
@@ -71,13 +82,35 @@ const BAKE_VERSION: int = 13
 # ---------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------
-## Where this map's level scene lives ("" without a cache, or for a map
-## name that is not a plain file name).
+## Where the DERIVED level scene of this map lives ("" without a cache,
+## or for a map name that is not a plain file name). This is where the
+## bake writes; what the game PLAYS is resolved_scene_path().
 static func scene_path(map_name: String) -> String:
 	if Assets.root.is_empty():
 		return ""
 	var m: String = _map_file_name(map_name)
 	return "" if m.is_empty() else "%s/maps/%s.level.scn" % [Assets.root, m]
+
+## A level scene of the player's own, which replaces the derived one
+## everywhere this map is presented. "" when there is none. Never
+## generated, never deleted and never rebuilt by us: it is the mod.
+static func mod_path(map_name: String) -> String:
+	var m: String = _map_file_name(map_name)
+	if m.is_empty():
+		return ""
+	var p: String = "%s/maps/%s.level.scn" % [SkynetPaths.mods_dir(), m]
+	return p if FileAccess.file_exists(p) else ""
+
+## Is this map presented by a mod scene rather than by the derived one?
+static func is_modded(map_name: String) -> bool:
+	return not mod_path(map_name).is_empty()
+
+## The level scene this map is actually played from: the mod when there
+## is one, the derived scene otherwise. Everything that RESOLVES a level
+## scene asks this; only the bake itself asks scene_path().
+static func resolved_scene_path(map_name: String) -> String:
+	var m: String = mod_path(map_name)
+	return m if not m.is_empty() else scene_path(map_name)
 
 ## A hand-made overlay for this map, instantiated on top of the baked
 ## level and never touched by the conversion.
@@ -130,6 +163,9 @@ static func is_current(scene: String) -> bool:
 ## bake, or not by this installation). Keys: terrain / static / occluders
 ## / behaviour — all detached Node3Ds ready to be added to the level.
 static func take(map_name: String, map_bytes: PackedByteArray) -> Dictionary:
+	var mp := mod_path(map_name)
+	if not mp.is_empty():
+		return _take_mod(map_name, mp)
 	var p := scene_path(map_name)
 	if p.is_empty() or not FileAccess.file_exists(p):
 		return {}
@@ -170,6 +206,37 @@ static func take(map_name: String, map_bytes: PackedByteArray) -> Dictionary:
 		Assets.trust_forget(p)
 		return {}
 	var out: Dictionary = _lift_branches(root)
+	_mark_source(out, p)
+	root.free()
+	return out
+
+## A MOD level scene, taken as it is. None of the checks below it apply:
+## the provenance sidecar and the trust manifest say "this installation
+## generated this file", which is the one thing a mod is not, and a stale
+## derived scene is deleted and built again — which must never happen to
+## somebody's own work. It is the player's file in the player's mods
+## folder, and it is used because it is there.
+##
+## What it cannot do is change the map: the trigger records come from the
+## DOS MAP either way (level_loader.gd), so the mod decides what is shown
+## and where, and nothing else. A bake version it was not made for is
+## said out loud rather than silently dropped — the branches are lifted
+## by name and an old scene usually still has them.
+static func _take_mod(map_name: String, p: String) -> Dictionary:
+	var packed := ResourceLoader.load(p, "PackedScene",
+		ResourceLoader.CACHE_MODE_IGNORE) as PackedScene
+	if packed == null:
+		push_warning("[level] %s: the mod scene %s will not load" % [map_name, p])
+		return {}
+	var root: Node = packed.instantiate()
+	if root == null:
+		return {}
+	if int(root.get("bake_version")) != BAKE_VERSION:
+		push_warning("[level] %s: mod scene from bake %s, this is %d — used anyway"
+			% [map_name, str(root.get("bake_version")), BAKE_VERSION])
+	print("[level] %s: presented by the mod scene %s" % [map_name, p])
+	var out: Dictionary = _lift_branches(root)
+	_mark_source(out, p)
 	root.free()
 	return out
 
@@ -188,7 +255,17 @@ static func take_from(root: Node, map_bytes: PackedByteArray) -> Dictionary:
 	if int(root.get("bake_version")) != BAKE_VERSION \
 			or int(root.get("source_hash")) != hash(map_bytes):
 		return {}
-	return _lift_branches(root)
+	var out: Dictionary = _lift_branches(root)
+	_mark_source(out, root.scene_file_path)
+	return out
+
+## Which file the branches came from, for the log and for the tests that
+## ask which scene was instanced. Only ever added to an answer that
+## carries branches: an empty dictionary means "nothing baked", and a
+## lone note about where the nothing came from would read as one.
+static func _mark_source(out: Dictionary, p: String) -> void:
+	if not out.is_empty():
+		out["source"] = p
 
 ## Detach the four baked branches from an instantiated level scene.
 static func _lift_branches(root: Node) -> Dictionary:

@@ -48,7 +48,6 @@ const Mesh3D     := preload("res://scripts/loaders/mesh_3d.gd")
 const WldTerrain := preload("res://scripts/loaders/wld_terrain.gd")
 const CFAFile    := preload("res://scripts/loaders/cfa_file.gd")
 const FramePack  := preload("res://scripts/loaders/frame_pack.gd")
-const MapScene   := preload("res://scripts/editor/map_scene.gd")
 const LevelScene := preload("res://scripts/level_scene.gd")
 const MissionScene := preload("res://scripts/mission_scene.gd")
 const TriggerGraph := preload("res://scripts/triggers/trigger_graph.gd")
@@ -79,9 +78,23 @@ const VERSION_MARKER := "skynet-godot-cache"
 const IMPORT_STAMP := "IMPORTED"
 const LOCK_FILE := "LOCK"
 const PROBE_FILE := ".write_probe"
+## Written by every import: the folder says out loud what it is. It has
+## to come from the import — the folder is git-ignored, so no note can be
+## checked in beside it.
+const README_FILE := "README.txt"
+const README_TEXT := """This folder is GENERATED. Every file in it is derived from the original
+game data (the DOS MAP, WLD, BSA and PRS files), which is the only source
+there is. Delete the folder whenever you like: the next start builds it
+again. Do not edit anything in here by hand, and do not check it in -
+an import overwrites it without asking. Changes of your own belong in the
+mods folder beside the game data: mods/maps/MAP.NNN.level.scn replaces
+the level scene generated here, and mods/maps/MAP.NNN.detail.tscn is
+added on top of it.
+"""
 const TRASH_PREFIX := ".trash-"
 ## Files of our own at the top of the cache folder.
-const ROOT_FILES: PackedStringArray = [VERSION_FILE, IMPORT_STAMP, LOCK_FILE, PROBE_FILE]
+const ROOT_FILES: PackedStringArray = [VERSION_FILE, IMPORT_STAMP, LOCK_FILE, PROBE_FILE,
+	README_FILE]
 ## A running game rewrites its LOCK this often; one older than
 ## LOCK_STALE_SEC belongs to a process that is gone.
 ## (Short, so a game that was killed does not block a rebuild for long.)
@@ -190,7 +203,6 @@ func _forget_session() -> void:
 	_palette = PackedColorArray()
 	_fp = ""
 	_hires_ok = -1
-	_map_scenes_checked = false
 	_cfa_hires_memo.clear()
 	_cfa_offset_memo.clear()
 	_cfa_lo_memo.clear()
@@ -336,7 +348,6 @@ func _wipe(dir: String) -> void:
 	_trust_reset()
 	_mem.clear()
 	_used.clear()
-	_map_scenes_checked = false
 	var trash := "%s/%s%d-%d" % [dir, TRASH_PREFIX,
 		int(Time.get_unix_time_from_system()), OS.get_process_id()]
 	for k in KINDS:
@@ -1179,61 +1190,11 @@ func _read_hires_header(name: String) -> void:
 	_cfa_hires_memo[name] = hires
 	_cfa_offset_memo[name] = off
 
-## Editor map scenes carry a build number; when map_scene.gd changes what
-## it puts in them (sprite sizing, say) every cached one is dropped in
-## one go rather than being checked scene by scene.
-var _map_scenes_checked: bool = false
-
-func _check_map_scenes() -> void:
-	if _map_scenes_checked or root.is_empty() or not enabled:
-		return
-	_map_scenes_checked = true
-	var stamp := root + "/maps/VERSION"
-	var have: int = -1
-	var f := FileAccess.open(stamp, FileAccess.READ)
-	if f != null:
-		have = int(f.get_line().strip_edges())
-		f.close()
-	if have == MapScene.BUILD_VERSION:
-		return
-	var d := DirAccess.open(root + "/maps")
-	if d != null:
-		var n := 0
-		for fn in d.get_files():
-			if fn.ends_with(".scn") and not fn.ends_with(".level.scn"):
-				d.remove(fn)
-				trust_forget(root + "/maps/" + fn)
-				n += 1
-		if n > 0:
-			print("[assets] %d editor map scenes are from build %d, dropped" % [n, have])
-	DirAccess.make_dir_recursive_absolute(root + "/maps")
-	var w := FileAccess.open(stamp, FileAccess.WRITE)
-	if w != null:
-		w.store_line(str(MapScene.BUILD_VERSION))
-		w.close()
-
-## Editor scene of a map (built on demand, saved under converted/maps/).
-## The editor only opens it from a development checkout, where the cache
-## is res://converted and every mesh/texture it references is a res://
-## path (SkynetPaths.converted_dir_for).
-##
-## The game never loads these — the editor opens them from the
-## developer's own disk — so an existing one stands even when it is not
-## in the trust manifest (a scene saved from the editor after an edit).
-func map_scene(map_name: String) -> String:
-	_check_map_scenes()
-	var p := MapScene.scene_path(map_name)
-	if p.is_empty():
-		return ""
-	if FileAccess.file_exists(p):
-		hits += 1
-		return p
-	misses += 1
-	return MapScene.save(map_name)
-
-## The MAP file the level loader would read: the archive entry, or an
-## edited map in mods/maps/ (level_loader.gd load_level). The import pass
-## keeps the archive open; on its own this opens one.
+## The MAP file the level loader would read — the archive entry. The DOS
+## data is the SOURCE and nobody edits it: a mod is a Godot scene that
+## wins over the derived one (scripts/level_scene.gd mod_path), never a
+## rewritten MAP. The import pass keeps the archive open; on its own this
+## opens one.
 func map_bytes(map_name: String) -> PackedByteArray:
 	var bytes := PackedByteArray()
 	var bsa: BSAReader = _readers.get(SkynetPaths.map_archive)
@@ -1244,11 +1205,6 @@ func map_bytes(map_name: String) -> PackedByteArray:
 		if mine.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant):
 			bytes = mine.read(map_name)
 			mine.close()
-	var mod: String = SkynetPaths.mods_dir() + ("/maps/%s" % map_name.to_upper())
-	if FileAccess.file_exists(mod):
-		var mb := SkynetPaths.read_bytes(mod)
-		if not mb.is_empty():
-			bytes = mb
 	return bytes
 
 ## The generated trigger graph of a map (scripts/triggers/trigger_graph.gd)
@@ -1272,9 +1228,13 @@ func triggers(map_name: String) -> String:
 	misses += 1
 	return TriggerGraph.save(map_name, bytes)
 
-## Bake the level scene for `map_name` (scripts/level_scene.gd) —
+## Bake the DERIVED level scene for `map_name` (scripts/level_scene.gd) —
 ## terrain, static geometry with its collision and the occluders. Loading
 ## the map writes it as a side effect, so this just makes the loader run.
+##
+## This is the bake, so it always answers with the generated file, even
+## for a map a mod presents: the mod is nothing we build, and which scene
+## is PLAYED is LevelScene.resolved_scene_path.
 func level_scene(map_name: String) -> String:
 	var p := LevelScene.scene_path(map_name)
 	if p.is_empty():
@@ -1487,17 +1447,10 @@ func import_missions(progress: Callable = Callable()) -> int:
 ## Convert everything the game can use up front. `progress` receives
 ## (done: int, total: int, label: String); yields between items so a
 ## caller can draw a progress screen. Returns the number of items.
-##
-## The editor's data view of every map (converted/maps/MAP.NNN.scn — a
-## complete level load each) is only built in an editor build, or when
-## `map_scenes` / `--import-map-scenes` asks for it: a game install never
-## opens one.
-func import_all(progress: Callable = Callable(), map_scenes: bool = false) -> int:
+func import_all(progress: Callable = Callable()) -> int:
 	if not enabled or _importing:
 		return 0
 	_importing = true
-	map_scenes = map_scenes or OS.has_feature("editor") \
-		or "--import-map-scenes" in OS.get_cmdline_user_args()
 	# One open reader per archive for the whole pass (read_3d, the CFA
 	# sets and the sounds used to open an archive per item).
 	_open_readers()
@@ -1547,18 +1500,15 @@ func import_all(progress: Callable = Callable(), map_scenes: bool = false) -> in
 	var audio: Node = get_node_or_null("/root/Audio")
 	if audio != null and audio.has_method("prewarm_music"):
 		jobs.append(["music instruments", func() -> void: audio.call("prewarm_music")])
-	# Map scenes: the level itself (MAP.NNN.level.scn — the world in
-	# Godot's own format, which is what the game loads) and, for the
-	# editor, the data view (MAP.NNN.scn — one node per MAP record, what
-	# the SkyNET Maps dock edits and exports). Built here so the first run
-	# pays for the whole conversion and nothing is derived during play.
+	# The level scene of every map (MAP.NNN.level.scn — the world in
+	# Godot's own format, which is what the game loads). Built here so the
+	# first run pays for the whole conversion and nothing is derived
+	# during play.
 	var maps: BSAReader = _readers.get(SkynetPaths.map_archive)
 	if maps != null:
 		for e in maps.entries():
 			var mn: String = e.name.to_upper()
 			if mn.begins_with("MAP."):
-				if map_scenes:
-					jobs.append([mn, func() -> void: map_scene(mn)])
 				# The trigger graph first: it is the DESCRIPTION of the
 				# map's behaviour and the level scene one presentation of
 				# it, so the graph is never the older of the two.
@@ -1592,6 +1542,8 @@ func import_all(progress: Callable = Callable(), map_scenes: bool = false) -> in
 	_close_readers()
 	_importing = false
 	if enabled and not root.is_empty():
+		# The folder says what it is (README_TEXT).
+		_write_text(root + "/" + README_FILE, README_TEXT)
 		# Last: the menu takes this file as "the conversion has run".
 		_write_text(root + "/" + IMPORT_STAMP, _marker_text())
 	trust_save()

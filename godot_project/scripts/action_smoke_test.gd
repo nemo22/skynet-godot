@@ -21,11 +21,6 @@ const LevelLoader := preload("res://scripts/level_loader.gd")
 const Rules := preload("res://scripts/triggers/rules_skynet.gd")
 const EnemyAI := preload("res://scripts/enemy_ai.gd")
 const AIData := preload("res://scripts/enemy_ai_data.gd")
-const MapScene := preload("res://scripts/editor/map_scene.gd")
-const MapWriter := preload("res://scripts/editor/map_writer.gd")
-const MapFileC := preload("res://scripts/loaders/map_file.gd")
-const MapMeshN := preload("res://scripts/editor/map_mesh.gd")
-const MapEntityRecR := preload("res://scripts/editor/map_entity_rec.gd")
 const LevelScene := preload("res://scripts/level_scene.gd")
 const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
 const MissionScene := preload("res://scripts/mission_scene.gd")
@@ -72,8 +67,7 @@ func _ready() -> void:
 		_run_transition_checks(level210)
 	_run_zone_origin_checks()
 	_run_ai_checks()
-	_run_map_scene_checks()
-	_run_map_writer_checks()
+	_run_cache_resource_checks()
 	_run_level_scene_checks()
 	_run_mission_scene_checks()
 	_run_trigger_lock_checks()
@@ -917,148 +911,25 @@ func _run_ai_checks() -> void:
 		hk.tick(EnemyAI.TICK, {"see": true, "dist": 3000.0, "bearing": 0, "angle": 0})
 	_check(hk.vars.has(56), "hk_ftr script sets its altitude target (var 56)")
 
-## Editor map scenes: MAP.210 builds, packs, saves and reloads with
-## every entity family present.
-func _run_map_scene_checks() -> void:
-	var p: String = MapScene.save("MAP.210")
-	_check(not p.is_empty() and ResourceLoader.exists(p), "MAP.210 editor scene saved (%s)" % p)
-	if p.is_empty():
-		return
-	var ps: PackedScene = ResourceLoader.load(p, "", ResourceLoader.CACHE_MODE_IGNORE)
-	_check(ps != null, "MAP.210 scene loads back as a PackedScene")
-	if ps == null:
-		return
-	var root: Node = ps.instantiate()
-	var ents: int = root.get_node("Entities").get_child_count()
-	var enemies: int = root.get_node("Enemies").get_child_count()
-	var sprites: int = root.get_node("Sprites").get_child_count()
-	var markers: int = root.get_node("Markers").get_child_count()
-	_check(ents == 176 and enemies == 19 and sprites == 235 and markers > 20,
-		"scene holds 176 meshes, 19 enemies, 235 sprites, %d markers (got %d/%d/%d)" % [markers, ents, enemies, sprites])
-	var first: Node = root.get_node("Entities").get_child(0)
-	_check(first is MeshInstance3D and (first as MeshInstance3D).mesh != null
-		and first.get("rec") != null and int(first.get("rec").get("file_off")) > 0,
-		"entity nodes carry a mesh from the cache and their MAP record")
-	_check(root.get_node("Terrain") != null and (root.get_node("Terrain") as MeshInstance3D).mesh != null,
-		"scene carries the cached terrain mesh")
-	var f := FileAccess.open(p, FileAccess.READ)
-	var sz: int = f.get_length() if f != null else 0
-	if f != null:
-		f.close()
-	_check(sz > 0 and sz < 2_000_000, "scene file references cache resources instead of embedding them (%d bytes)" % sz)
-	root.free()
-	# Cached textures must carry their pixels on disk (a fresh load, not
-	# the in-memory object) and meshes must reference them by path.
+## What every baked scene stands on: the cache files it references have
+## to carry their own data on disk, not just in the memory of the process
+## that made them. (Kept from the editor map-scene checks, which went with
+## that pipeline — the invariant is the cache's, not theirs.)
+func _run_cache_resource_checks() -> void:
 	var tp: String = Assets.texture(302, 17, false).resource_path
 	var fresh: Texture2D = ResourceLoader.load(tp, "", ResourceLoader.CACHE_MODE_IGNORE)
 	_check(fresh != null and fresh.get_width() > 0 and fresh.get_height() > 0,
-		"cached texture reloads from disk with pixels (%s %s)" % [tp, str(fresh.get_size()) if fresh else "null"])
-	var mesh_res: ArrayMesh = ResourceLoader.load(Assets.mesh("BIGDOOR.3D").resource_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+		"cached texture reloads from disk with pixels (%s %s)"
+			% [tp, str(fresh.get_size()) if fresh else "null"])
+	var mesh_res: ArrayMesh = ResourceLoader.load(
+		Assets.mesh("BIGDOOR.3D").resource_path, "", ResourceLoader.CACHE_MODE_IGNORE)
 	var mat: BaseMaterial3D = mesh_res.surface_get_material(0) if mesh_res else null
 	_check(mat != null and mat.albedo_texture != null
-		and mat.albedo_texture.resource_path.begins_with(Assets.root + "/") and mat.albedo_texture.resource_path.contains("/tex/")
+		and mat.albedo_texture.resource_path.begins_with(Assets.root + "/")
+		and mat.albedo_texture.resource_path.contains("/tex/")
 		and mat.albedo_texture.get_width() > 0,
-		"cached mesh references a cache texture file (%s)" % (mat.albedo_texture.resource_path if mat and mat.albedo_texture else "none"))
-
-## MAP writer: byte-exact round trip, then move / rotate / delete /
-## duplicate entities and re-parse the result.
-func _run_map_writer_checks() -> void:
-	var root: Node3D = MapScene.build("MAP.210")
-	if root == null:
-		_check(false, "MAP.210 scene builds for the writer")
-		return
-	var raw: PackedByteArray = root.get("raw")
-	var out: PackedByteArray = MapWriter.write(root)
-	_check(out.size() == raw.size() and out == raw,
-		"unedited scene round-trips byte for byte (%d bytes)" % out.size())
-	# Angle decomposition reproduces every entity's rotation (an
-	# equivalent Euler triple is fine — 180/180/180 is the identity).
-	var bad_ang := 0
-	for c in root.get_node("Entities").get_children():
-		var r = c.get("rec")
-		var b0: Basis = MapWriter.basis_from_angles(r.pitch, r.yaw, r.roll)
-		var back: Vector3i = MapWriter.angles_from_basis(b0)
-		var b1: Basis = MapWriter.basis_from_angles(back.x, back.y, back.z)
-		if not b1.is_equal_approx(b0):
-			bad_ang += 1
-	_check(bad_ang == 0, "angle decomposition reproduces every mesh rotation (%d bad)" % bad_ang)
-	# Edit: move the first mesh 3 cells along +X, rotate it 90°, delete
-	# the second, duplicate the third.
-	var ents: Node = root.get_node("Entities")
-	var n0: Node3D = ents.get_child(0)
-	var n1: Node3D = ents.get_child(1)
-	var n2: Node3D = ents.get_child(2)
-	var off0: int = int(n0.get("rec").get("file_off"))
-	var off1: int = int(n1.get("rec").get("file_off"))
-	var off2: int = int(n2.get("rec").get("file_off"))
-	var old_pos: Vector3 = n0.position
-	n0.position.x += 3.0 * 1024.0
-	n0.rotation.y += PI * 0.5
-	ents.remove_child(n1)
-	n1.free()
-	var dup: Node3D = n2.duplicate()
-	dup.position.z -= 500.0
-	ents.add_child(dup)
-	var log: Array = []
-	var edited: PackedByteArray = MapWriter.write(root, log)
-	var m = MapFileC.parse(edited)
-	_check(m != null, "edited MAP parses")
-	if m != null:
-		var e0 = m.entities_by_off.get(off0)
-		_check(e0 != null and e0.x == int(round(old_pos.x)) + 3072
-			and e0.cell_x == e0.x / 1024 and e0.cell_z == e0.z / 1024,
-			"moved entity re-parses in its new cell (x=%d cell=%d)" % [e0.x if e0 else -1, e0.cell_x if e0 else -1])
-		var yaw0: int = int(n0.get("rec").get("yaw"))
-		_check(e0 != null and ((e0.off_y & 0x7FF) - yaw0 - 512) % 2048 == 0,
-			"rotated entity carries yaw+512 (%d → %d)" % [yaw0, (e0.off_y & 0x7FF) if e0 else -1])
-		_check(not m.entities_by_off.has(off1), "deleted entity is gone after re-parse")
-		var e2 = m.entities_by_off.get(off2)
-		var copies: int = 0
-		for e in m.entities:
-			if e.name_index == e2.name_index and e.x == e2.x and e.z == e2.z + 500:
-				copies += 1
-		_check(copies == 1 and m.entities.size() == 490,
-			"duplicated entity appended and linked (%d entities, %d copies)" % [m.entities.size(), copies])
-	# New entities from templates: a mesh (name from the table) and an
-	# enemy marker, placed by node position only.
-	var nm: MeshInstance3D = MapMeshN.new()
-	var r1: Resource = MapEntityRecR.new()
-	r1.variant = 1
-	r1.flags = 1
-	r1.mesh_name = String((root.get("names") as PackedStringArray)[0])
-	r1.file_off = -1
-	nm.rec = r1
-	nm.position = Vector3(30000.0, -50.0, -30000.0)
-	nm.rotation.y = PI * 0.5
-	ents.add_child(nm)
-	var en: MeshInstance3D = MapMeshN.new()
-	var r2: Resource = MapEntityRecR.new()
-	r2.variant = 3
-	r2.flags = 3
-	r2.marker_type = 2
-	r2.enemy_type = 33
-	r2.sprite_index = (299 << 7) | 2
-	r2.file_off = -1
-	en.rec = r2
-	en.position = Vector3(31000.0, 100.0, -30500.0)
-	root.get_node("Enemies").add_child(en)
-	var edited2: PackedByteArray = MapWriter.write(root)
-	var m2 = MapFileC.parse(edited2)
-	var new_mesh = null
-	var new_enemy = null
-	if m2 != null:
-		for e in m2.entities:
-			if (e.flags & 3) == 1 and e.x == 30000 and e.z == 30000:
-				new_mesh = e
-			if e.marker_type == 2 and e.enemy_type == 33 and e.x == 31000:
-				new_enemy = e
-	_check(m2 != null and m2.entities.size() == 492, "two created entities re-parse (%d entities)" % (m2.entities.size() if m2 else -1))
-	_check(new_mesh != null and new_mesh.name_index == 0 and new_mesh.y == 50
-		and (new_mesh.off_y & 0x7FF) == 512 and new_mesh.cell_x == 29 and new_mesh.cell_z == 29,
-		"created mesh has name 0, DOS y=50, yaw 512, cell 29/29")
-	_check(new_enemy != null and new_enemy.y == -100 - 0x10 and new_enemy.cell_x == 30,
-		"created enemy marker sits at y-0x10 in cell 30")
-	root.free()
+		"cached mesh references a cache texture file (%s)"
+			% (mat.albedo_texture.resource_path if mat and mat.albedo_texture else "none"))
 
 ## F1 (docs/map_format_plan.md) — the baked level scene carries the
 ## map's behaviour as nodes (scripts/level_behaviour.gd). MAP.216, the

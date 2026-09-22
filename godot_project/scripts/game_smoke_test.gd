@@ -14,6 +14,11 @@ const LevelLoader := preload("res://scripts/level_loader.gd")
 const SaveGame := preload("res://scripts/save_game.gd")
 const Enemy := preload("res://scripts/enemy.gd")
 const Projectile := preload("res://scripts/projectile.gd")
+const LevelScene := preload("res://scripts/level_scene.gd")
+
+## The map _check_scene_mod stands a mod scene over: an interior, so the
+## copy is small, and one this suite has already loaded once.
+const MOD_MAP := "MAP.248"
 
 var _fails: int = 0
 var _main: Node = null
@@ -677,6 +682,7 @@ func _run() -> void:
 	await _check_jeep_objective()
 	await _check_ram_wall()
 	await _check_water()
+	await _check_scene_mod()
 	await _check_trigger_verifier()
 	await _check_restart(player)
 	_finish()
@@ -1372,6 +1378,52 @@ func _check_water() -> void:
 	pl.set("global_position", Vector3(5000.0, 2000.0, -13300.0))
 	pl.call("_water_check")
 	_check(not bool(pl.get("in_water")), "above the surface he is out of it again")
+
+## SOURCE, DERIVED, MOD. A level scene of the player's own,
+## mods/maps/<MAP>.level.scn, is what the map is presented from — instead
+## of the derived converted/maps/<MAP>.level.scn, with no import and no
+## rebake. Copied here, played, and taken away again; the copy is byte for
+## byte the derived scene, so nothing about the map can change and the
+## only question this asks is WHICH FILE was instanced (level.baked_from).
+##
+## What a mod does not touch is what the map DOES: the records, and with
+## them every trigger, still come from the DOS MAP.
+func _check_scene_mod() -> void:
+	var src: String = LevelScene.scene_path(MOD_MAP)
+	var dir: String = SkynetPaths.mods_dir() + "/maps"
+	var dst: String = "%s/%s.level.scn" % [dir, MOD_MAP]
+	if src.is_empty() or not FileAccess.file_exists(src):
+		_check(false, "%s has a baked level scene to copy" % MOD_MAP)
+		return
+	DirAccess.make_dir_recursive_absolute(dir)
+	var bytes := FileAccess.get_file_as_bytes(src)
+	var f := FileAccess.open(dst, FileAccess.WRITE)
+	if f == null or bytes.is_empty():
+		_check(false, "the mod scene can be written to %s" % dst)
+		return
+	f.store_buffer(bytes)
+	f.close()
+	_check(LevelScene.resolved_scene_path(MOD_MAP) == dst,
+		"the map now resolves to the mod scene (%s)" % LevelScene.resolved_scene_path(MOD_MAP))
+	# Away and back: the map has to be LOADED again for the mod to be
+	# picked up, which is the promise — "on the next start", never mid-map.
+	_main.call("_on_teleport_requested", int(MOD_MAP.get_extension()), 0)
+	var ok: bool = await _wait(func() -> bool:
+		return _level_is(MOD_MAP.get_extension()) and _settled(), 180.0)
+	_check(ok, "%s loads with the mod in place" % MOD_MAP)
+	var lvl = _main.get("_current_level")
+	_check(ok and lvl != null and String(lvl.baked_from) == dst,
+		"the mod scene is the one instanced (%s)"
+			% (String(lvl.baked_from) if lvl != null else "no level"))
+	_check(ok and lvl != null and lvl.map != null and not lvl.map.entities.is_empty(),
+		"the map's records still come from the DOS MAP")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(dst))
+	_check(LevelScene.resolved_scene_path(MOD_MAP) == src,
+		"with the mod gone the derived scene is back")
+	# Both folders go too — but only when the test made them and nothing
+	# else is in them; remove_absolute refuses a folder that is not empty.
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(SkynetPaths.mods_dir()))
 
 ## Gate geometry dump: leaf node/body transforms and a capsule sweep
 ## along the gate line (x - 400 .. x + 400) — '#' blocked, '.' free.

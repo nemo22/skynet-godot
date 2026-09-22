@@ -1,16 +1,18 @@
-## Editor dock for the SkyNET map tools: open a converted map scene,
-## export the edited scene back to a MAP file (mods/maps/), rebuild a
-## scene from its MAP, and play a map in the game.
+## Editor dock for the SkyNET map tools: open the baked LEVEL scene of a
+## map, convert the game data, and play a map in the game.
+##
+## SOURCE, DERIVED, MOD. The DOS MAP file is the source and nobody edits
+## it — there is no way back from Godot into it and the port does not ask
+## for one. converted/maps/MAP.NNN.level.scn is DERIVED from it and is
+## rewritten by every import. To change a map, save your own copy of that
+## scene as mods/maps/MAP.NNN.level.scn: the game takes it instead of the
+## derived one (scripts/level_scene.gd). It changes what is presented and
+## where — the triggers still come from the DOS records, so a node you
+## add has no record behind it and can never fire.
 
 @tool
 extends EditorPlugin
 
-const MapWriter := preload("res://scripts/editor/map_writer.gd")
-const MapMesh := preload("res://scripts/editor/map_mesh.gd")
-const MapSprite := preload("res://scripts/editor/map_sprite.gd")
-const MapMarker := preload("res://scripts/editor/map_marker.gd")
-const MapEntityRec := preload("res://scripts/editor/map_entity_rec.gd")
-const AIData := preload("res://scripts/enemy_ai_data.gd")
 const Paths := preload("res://scripts/skynet_paths.gd")
 const ExportFilter := preload("res://addons/skynet_maps/export_filter.gd")
 
@@ -19,13 +21,14 @@ const ExportFilter := preload("res://addons/skynet_maps/export_filter.gd")
 ## reference res:// paths and open in the editor directly.
 const CACHE := "res://converted"
 
-const KINDS := ["Mesh (name from map table)", "Sprite (bank,record)", "Enemy (type id)", "Marker (type id)", "Light (intensity)"]
+## Where a map's own scene goes when it is modded — the same folder the
+## GAME reads (SkynetPaths.mods_dir, res://mods in a checkout).
+static func _mod_dir() -> String:
+	return Paths.mods_dir() + "/maps"
 
 var _dock: VBoxContainer
 var _maps: OptionButton
 var _log: RichTextLabel
-var _kind: OptionButton
-var _param: LineEdit
 var _export_filter: EditorExportPlugin
 
 func _enter_tree() -> void:
@@ -40,21 +43,10 @@ func _enter_tree() -> void:
 	refresh.pressed.connect(_fill_maps)
 	row.add_child(refresh)
 	_dock.add_child(row)
-	_dock.add_child(_button("Open map DATA — every MAP record, editable", _open))
-	_dock.add_child(_button("Open baked LEVEL — geometry + behaviour", _open_level))
-	_dock.add_child(_button("Export edited scene → mods/maps/", _export))
-	_dock.add_child(_button("Rebuild scene from MAP", _rebuild))
+	_dock.add_child(_button("Open LEVEL — the map as a Godot scene", _open_level))
+	_dock.add_child(_button("Rebake LEVEL from the MAP", _rebuild))
 	_dock.add_child(_button("Play map", _play))
 	_dock.add_child(_button("Import / convert game data", _import))
-	_dock.add_child(HSeparator.new())
-	_kind = OptionButton.new()
-	for k in KINDS:
-		_kind.add_item(k)
-	_dock.add_child(_kind)
-	_param = LineEdit.new()
-	_param.placeholder_text = "BIGDOOR | 200,3 | 33 | 100 | 500"
-	_dock.add_child(_param)
-	_dock.add_child(_button("Add at editor camera", _add))
 	_log = RichTextLabel.new()
 	_log.custom_minimum_size = Vector2(0, 160)
 	_log.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -99,14 +91,22 @@ func _fill_maps() -> void:
 				names.append(nm)
 		bsa.close()
 	names.sort()
+	# ✓ = a level scene is baked, MOD = the player's own scene wins over it.
 	var have: Dictionary = {}
 	var d := DirAccess.open(CACHE + "/maps")
 	if d != null:
 		for f in d.get_files():
-			if f.ends_with(".scn"):
-				have[f.get_basename()] = true
+			if f.ends_with(".level.scn"):
+				have[f.trim_suffix(".level.scn")] = true
+	var modded: Dictionary = {}
+	var md := DirAccess.open(_mod_dir())
+	if md != null:
+		for f in md.get_files():
+			if f.ends_with(".level.scn"):
+				modded[f.trim_suffix(".level.scn")] = true
 	for n in names:
-		_maps.add_item(("%s  ✓" % n) if have.has(n) else n)
+		var mark: String = "  MOD" if modded.has(n) else ("  ✓" if have.has(n) else "")
+		_maps.add_item(n + mark)
 	if names.is_empty():
 		_say("no maps in %s/MDMDMAP2.BSA" % gd)
 
@@ -158,43 +158,27 @@ func _godot_args(extra: Array) -> PackedStringArray:
 	args.append_array(PackedStringArray(extra))
 	return args
 
-## Build the map's data scene, then call `then(scene_path)`.
-func _build_scene(m: String, then: Callable) -> void:
-	var scn := "%s/maps/%s.scn" % [CACHE, m]
-	_run_game("building %s scene …" % m, ["--map-scene=%s" % m], func(code: int, output: String) -> void:
-		if code != 0 or not FileAccess.file_exists(scn):
-			_say("build failed (%d): %s" % [code, output.right(600)])
-			return
-		_fill_maps()
-		then.call(scn))
-
-func _open() -> void:
-	var m := _selected()
-	if m.is_empty():
-		return
-	var scn := "%s/maps/%s.scn" % [CACHE, m]
-	if FileAccess.file_exists(scn):
-		_open_scene(scn)
-	else:
-		_build_scene(m, _open_scene)
-
 func _open_scene(scn: String) -> void:
 	EditorInterface.open_scene_from_path(scn)
 	_say("opened %s" % scn)
 
-## The baked LEVEL scene — the world itself in Godot format (terrain,
-## static geometry with its collision and the occluders). Built by the
-## conversion; this bakes it on demand
-## the same way _build_scene does for the data view.
+## The LEVEL scene — the world itself in Godot format (terrain, static
+## geometry with its collision, the occluders and the behaviour branch).
 ##
-## The data view (Open map) is what you EDIT — move an entity there and
-## export it to mods/maps/. The level scene is a build artefact: it is
-## rebuilt whenever the MAP it came from changes. To add scenery by hand
-## and keep it, put it in mods/maps/<MAP>.detail.tscn, which the game
-## instantiates on top of every level.
+## The MOD is opened when there is one: mods/maps/<MAP>.level.scn is the
+## file the game plays, and it is the file to edit. Without one this
+## opens the DERIVED scene, which every import rewrites — save it into
+## mods/maps/ under the same name to make an edit of it stick. (To ADD to
+## a level instead of replacing it, mods/maps/<MAP>.detail.tscn is
+## instantiated on top of whichever level is playing.)
 func _open_level() -> void:
 	var m := _selected()
 	if m.is_empty():
+		return
+	var mod: String = "%s/%s.level.scn" % [_mod_dir(), m]
+	if FileAccess.file_exists(mod):
+		_open_scene(mod)
+		_say("this map is modded — the game plays this file, not the converted one")
 		return
 	var scn: String = "%s/maps/%s.level.scn" % [CACHE, m]
 	if FileAccess.file_exists(scn):
@@ -211,125 +195,23 @@ func _import() -> void:
 		_say("import finished (%d)" % code)
 		_fill_maps())
 
-func _export() -> void:
-	var root := EditorInterface.get_edited_scene_root()
-	if root == null or root.get("raw") == null:
-		_say("the edited scene is not a SkyNET map scene")
-		return
-	var log: Array = []
-	var ok := MapWriter.export_map(root, "", log)
-	for l in log:
-		_say(String(l))
-	if ok:
-		EditorInterface.mark_scene_as_unsaved()
-		_say("save the scene (Ctrl+S) to keep the updated raw data")
-
-## Create a new entity node in the edited map scene. The writer turns
-## nodes with file_off = -1 into fresh blocks on export.
-func _add() -> void:
-	var root := EditorInterface.get_edited_scene_root()
-	if root == null or root.get("raw") == null:
-		_say("open a SkyNET map scene first")
-		return
-	var cam: Camera3D = EditorInterface.get_editor_viewport_3d(0).get_camera_3d()
-	var pos: Vector3 = cam.global_position - cam.global_transform.basis.z * 400.0
-	var p: String = _param.text.strip_edges()
-	var rec: Resource = MapEntityRec.new()
-	rec.file_off = -1
-	var node: Node3D = null
-	var group := ""
-	match _kind.selected:
-		0:
-			var nm := p.to_upper()
-			if not (root.get("names") as PackedStringArray).has(nm):
-				_say("'%s' is not in this map's name table" % nm)
-				return
-			node = MapMesh.new()
-			rec.variant = 1
-			rec.flags = 1
-			rec.mesh_name = nm
-			node.set("mesh", _res("%s/mesh/%s.res" % [CACHE, nm]))
-			group = "Entities"
-		1:
-			var parts := p.split(",")
-			if parts.size() != 2:
-				_say("sprite needs bank,record")
-				return
-			var bank := int(parts[0])
-			var ri := int(parts[1])
-			node = MapSprite.new()
-			rec.variant = 3
-			rec.flags = 3
-			rec.sprite_index = (bank << 7) | (ri & 0x7F)
-			var tex := _res("%s/tex/T%03d_%03d_A.res" % [CACHE, bank, ri])
-			if tex != null:
-				node.set("texture", tex)
-			node.set("pixel_size", 2.0)
-			node.set("billboard", BaseMaterial3D.BILLBOARD_FIXED_Y)
-			node.set("shaded", false)
-			group = "Sprites"
-		2:
-			var t := int(p)
-			if t < 0 or t >= AIData.TYPES.size():
-				_say("enemy type 0..%d" % (AIData.TYPES.size() - 1))
-				return
-			node = MapMesh.new()
-			rec.variant = 3
-			rec.flags = 3
-			rec.marker_type = 2
-			rec.enemy_type = t
-			rec.sprite_index = (299 << 7) | 2
-			node.set("mesh", _res("%s/mesh/%s.res" % [CACHE, String(AIData.TYPES[t]["n"]).to_upper()]))
-			group = "Enemies"
-		3:
-			var t := int(p)
-			node = MapMarker.new()
-			rec.variant = 3
-			rec.flags = 3
-			rec.marker_type = t
-			rec.sprite_index = (299 << 7) | (t & 0x7F)
-			node.call("setup_gizmo", "M%d" % t, Color(1.0, 0.2, 0.9), {})
-			group = "Markers"
-		4:
-			node = MapMarker.new()
-			rec.variant = 2
-			rec.flags = 2
-			rec.light_intensity = maxi(int(p), 1)
-			rec.light_enable = 1
-			node.call("setup_gizmo", "L%d" % rec.light_intensity, Color(1.0, 0.9, 0.3), {})
-			group = "Markers"
-	var parent := root.get_node_or_null(group)
-	if parent == null:
-		_say("scene has no %s group" % group)
-		return
-	node.set("rec", rec)
-	node.name = "NEW_%s_%d" % [group.to_upper(), Time.get_ticks_msec() % 100000]
-	parent.add_child(node)
-	node.position = pos
-	_own(node, root)
-	EditorInterface.get_selection().clear()
-	EditorInterface.get_selection().add_node(node)
-	EditorInterface.mark_scene_as_unsaved()
-	_say("added %s at %s — export writes it as a new block" % [node.name, pos])
-
-static func _own(n: Node, owner: Node) -> void:
-	n.owner = owner
-	for c in n.get_children():
-		_own(c, owner)
-
-static func _res(path: String) -> Resource:
-	return ResourceLoader.load(path) if ResourceLoader.exists(path) else null
-
+## Throw the derived level scene away and build it from the MAP again —
+## after a change to the bake, which the cached scene knows nothing about.
+## A mod is not touched: it is not ours to rebuild.
 func _rebuild() -> void:
 	var m := _selected()
 	if m.is_empty() or _busy():
 		return
-	var scn := "%s/maps/%s.scn" % [CACHE, m]
+	var scn := "%s/maps/%s.level.scn" % [CACHE, m]
 	if FileAccess.file_exists(scn):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(scn))
-	_build_scene(m, func(path: String) -> void:
-		EditorInterface.reload_scene_from_path(path)
-		_say("rebuilt %s" % path))
+	_run_game("baking %s level scene …" % m, ["--level-scene=%s" % m], func(code: int, output: String) -> void:
+		if code != 0 or not FileAccess.file_exists(scn):
+			_say("bake failed (%d): %s" % [code, output.right(600)])
+			return
+		_fill_maps()
+		EditorInterface.reload_scene_from_path(scn)
+		_say("rebuilt %s" % scn))
 
 ## The game itself, as its own process (not the editor's Play: that would
 ## need the map on the project's main run arguments).
