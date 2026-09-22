@@ -7,11 +7,21 @@
 ## screen. Bots get a BotBrain on the server.
 ##
 ## Keys: TAB (hold) scoreboard · T or ENTER chat.
+##
+## It is also where the arena's TRIGGER state meets the net code (M5).
+## The server's level plays as it does in the campaign, with its runtime
+## journalling what it writes; this sends that on every physics frame and
+## answers the three things net_game.gd asks of a level (trigger_snapshot
+## / trigger_pos / trigger_intent). On a client the level is put in
+## Behaviour.ROLE_CLIENT — it presents and never writes — the welcome's
+## overlay is laid over it before it is played, and every delta after
+## that goes in through the runtime's own presenter path.
 extends Node
 
 const DmAvatar := preload("res://scripts/net/dm_avatar.gd")
 const BotBrain := preload("res://scripts/net/bot_brain.gd")
 const LevelLoader := preload("res://scripts/level_loader.gd")
+const LevelBehaviour := preload("res://scripts/level/behaviour.gd")
 const WldTerrain := preload("res://scripts/loaders/wld_terrain.gd")
 const Pickup := preload("res://scripts/pickup.gd")
 const Tracer := preload("res://scripts/tracer.gd")
@@ -40,6 +50,9 @@ var _avatars: Dictionary = {}           # id → DmAvatar
 var _pickup_nodes: Dictionary = {}      # key → Pickup
 var _brains: Dictionary = {}            # bot id → BotBrain
 var _spawned: bool = false
+## The server's trigger state is usable here: false only when it turned
+## out to be of another MAP file, and then nothing of it is taken (M5).
+var _trig_ok: bool = true
 var _dead_local: bool = false
 var _last_hp: float = 100.0
 
@@ -93,6 +106,7 @@ func setup(m: Node, p: CharacterBody3D) -> void:
 	Net.class_changed.connect(_on_class_changed)
 	Net.class_requested.connect(_on_class_requested)
 	Net.vehicle_changed.connect(_on_vehicle_changed)
+	Net.trigger_delta.connect(_on_trigger_delta)
 	if player != null and not player.use_pressed.is_connected(_on_use_pressed):
 		player.use_pressed.connect(_on_use_pressed)
 	if player != null:
@@ -106,9 +120,11 @@ func _exit_tree() -> void:
 			["chat_received", _on_chat], ["match_over", _on_match_over],
 			["match_restarted", _on_restarted], ["disconnected", _on_disconnected],
 			["class_changed", _on_class_changed], ["class_requested", _on_class_requested],
-			["vehicle_changed", _on_vehicle_changed]]:
+			["vehicle_changed", _on_vehicle_changed], ["trigger_delta", _on_trigger_delta]]:
 		if Net.is_connected(sig[0], sig[1]):
 			Net.disconnect(sig[0], sig[1])
+	if Net.trigger_world == self:
+		Net.trigger_world = null
 
 ## The player's weapon table (fly_camera.gd) — shared with bots/avatars.
 func weapon_record(idx: int) -> Dictionary:
@@ -193,6 +209,7 @@ func on_level_ready(lvl) -> void:
 		if not bool(Net.pickups[key]["taken"]):
 			_spawn_pickup_node(key)
 	_spawn_vehicle_nodes()
+	_setup_triggers()
 	_refresh_scores()
 	Net.report_level_ready()
 
@@ -281,10 +298,102 @@ func _on_respawned(id: int, pos: Vector3, yaw: float) -> void:
 			_brains[id].on_respawn()
 
 # ---------------------------------------------------------------------
+# The arena's triggers (M5)
+# ---------------------------------------------------------------------
+## The level the arena is being played on, told who is playing it.
+##
+## On the SERVER nothing about play changes — the same branch, the same
+## runtime, the same writer — except that the runtime keeps a journal, so
+## `net_delta` can say what moved without walking the whole map every
+## frame.
+##
+## On a CLIENT the runtime stops being an authority and the branch goes
+## into ROLE_CLIENT: the loop presents and the flips come off the wire.
+## The server's overlay is laid down HERE, before the first tick, so a
+## late joiner walks into the doors that are already open rather than
+## seeing them shut and then jump.
+func _setup_triggers() -> void:
+	if level == null or level.behaviour == null or level.triggers == null:
+		return
+	if Net.is_server():
+		level.behaviour.net_role = LevelBehaviour.ROLE_SERVER
+		level.triggers.journal = true
+		level.triggers.net_delta()              # start from a clean page
+		Net.trigger_world = self
+		return
+	level.behaviour.net_role = LevelBehaviour.ROLE_CLIENT
+	level.behaviour.net_intent = _send_trigger_intent
+	level.triggers.authority = false
+	_trig_ok = level.triggers.net_restore(Net.trigger_snapshot)
+	Net.trigger_snapshot = {}
+	if not _trig_ok:
+		# The server is playing another copy of the data. Nothing of the
+		# map is taken from it then — deltas included — and this peer
+		# plays the arena as its own files have it.
+		_center_msg("MAP DATA DIFFERS FROM THE SERVER", 6.0)
+
+## A client's hand on something the server owns (Behaviour.net_intent):
+## the entity, what was done to it, and where this peer says it was
+## standing when it did — which the server checks against the last pose
+## it had of us before it runs anything.
+func _send_trigger_intent(off: int, kind: int, amount: float) -> void:
+	if not _trig_ok or player == null or not is_instance_valid(player):
+		return
+	var at: Vector3 = player.global_position
+	var eye: Vector3 = at + Vector3(0.0, DmAvatar.EYE_HEIGHT, 0.0)
+	if player.has_method("dos_point"):
+		# Where the DOS proximity handlers measure from — the eye on foot,
+		# the seat in a vehicle (fly_camera.dos_point).
+		eye = player.call("dos_point")
+	Net.send_trigger(off, kind, at, eye, amount)
+
+## Client: what the server has just changed, through the runtime's own
+## presenter path (TriggerRuntime.apply_delta).
+func _on_trigger_delta(delta: Dictionary) -> void:
+	if _trig_ok and level != null and level.triggers != null and not Net.is_server():
+		level.triggers.apply_delta(delta)
+
+# --- what net_game.gd asks of the arena (server) ----------------------
+## The whole trigger overlay, for a joiner's welcome.
+func trigger_snapshot() -> Dictionary:
+	if level == null or level.triggers == null:
+		return {}
+	return level.triggers.net_snapshot()
+
+## Where record `off` stands, in world space — Vector3.INF for an offset
+## this map has no record for, which is how a forged id is caught.
+func trigger_pos(off: int) -> Vector3:
+	if level == null or level.triggers == null:
+		return Vector3.INF
+	var e = level.triggers.record(off)
+	if e == null:
+		return Vector3.INF
+	# zone-local → world: a record is in the map's own space.
+	return Vector3(float(e.x), -float(e.y), -float(e.z)) + (level.origin as Vector3)
+
+## Run one intent through the REAL entry point of the server's level —
+## the same call the host's own key and crosshair make, so the record's
+## measure, its state bits and its chain decide what happens, not the
+## wire. Bots reach these two calls directly (they run on the server and
+## have no RPC to make).
+func trigger_intent(off: int, kind: int, at: Vector3, eye: Vector3, amount: float) -> void:
+	if level == null or level.behaviour == null:
+		return
+	if kind == Net.TRIG_HIT:
+		level.behaviour.obj_hit(off, amount)
+	else:
+		level.behaviour.on_player_activate(off, at, eye)
+
+# ---------------------------------------------------------------------
 # Local player replication
 # ---------------------------------------------------------------------
 
 func _physics_process(delta: float) -> void:
+	# Before the pose, and before the spawn gate below: the map changes
+	# while a peer is still dead or still loading, and what the server's
+	# level wrote this frame has to leave it whichever way.
+	if Net.is_server() and level != null and level.triggers != null:
+		Net.srv_send_trigger(level.triggers.net_delta())
 	if player == null or not Net.active or not _spawned:
 		return
 	var f: int = 0

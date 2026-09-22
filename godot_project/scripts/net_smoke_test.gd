@@ -12,6 +12,16 @@ extends Node
 const MainScene := preload("res://scenes/main.tscn")
 const DmGameScript := preload("res://scripts/net/dm_game.gd")
 const NetDiscovery := preload("res://scripts/net/net_discovery.gd")
+const LevelLoader := preload("res://scripts/level_loader.gd")
+const LevelBehaviour := preload("res://scripts/level/behaviour.gd")
+
+## The one arena that has a DOOR: MAP.604's DRAINBOX gates (0xEF) each
+## drive a WATRWEEL swing (map_dump --triggers=604). The match itself is
+## played on MAP.605, which is the arena with the spawn sets, the weapon
+## spots and the vehicles this suite checks, so the wire is driven on a
+## pair of MAP.604 levels loaded here — one in the server's role, one in
+## a client's, with the server's real delta carried between them.
+const DOOR_ARENA: String = "MAP.604"
 
 var _fails: int = 0
 var _main: Node = null
@@ -319,6 +329,7 @@ func _run() -> void:
 		ok = await _wait(func() -> bool: return bool(Net.pickups[key]["taken"]), 3.0)
 		_check(ok, "walking over a DM pickup takes it via the server")
 	await _forged_input_checks(dm, avatars)
+	_trigger_wire_checks(dm)
 	# Second process joins as a client.
 	var args: PackedStringArray = OS.get_cmdline_user_args()
 	if not args.has("--no-client"):
@@ -463,6 +474,172 @@ func _forged_input_checks(dm: Node, avatars: Array) -> void:
 			"killed by a bot names the bot ('%s')" % (center.text if center != null else "-"))
 		var back: bool = await _wait(func() -> bool: return Net.is_alive(1), Net.RESPAWN_DELAY + 5.0)
 		_check(back, "and the host respawns after it")
+
+## The arena's trigger state on the wire (M5).
+##
+## Two halves. The first drives a real DOOR on a pair of MAP.604 levels -
+## the server's branch, which flips, and a client's, which may not — and
+## carries the server's own delta from one to the other, so what is
+## checked is the wire's own data and not a second copy of the rules. The
+## second feeds forged intents to the live server's handler on MAP.605,
+## the way the checks above feed it forged hits and pickups.
+func _trigger_wire_checks(dm: Node) -> void:
+	var srv = LevelLoader.new().load_level(DOOR_ARENA)
+	var cli = LevelLoader.new().load_level(DOOR_ARENA)
+	if srv == null or cli == null or srv.behaviour == null or cli.behaviour == null:
+		_check(false, "%s loads twice for the trigger-wire checks" % DOOR_ARENA)
+		return
+	# The gate whose chain reaches a mover — the door of this arena.
+	var gate: int = -1
+	var mover: int = -1
+	for t in srv.behaviour.prox_nodes():
+		var nxt: int = int(srv.triggers.link(int(t.id)))
+		if int(t.act_now()) == 0xEF and srv.behaviour.has_mover(nxt):
+			gate = int(t.id)
+			mover = nxt
+			break
+	if gate < 0:
+		_check(false, "%s has a gate that drives a mover" % DOOR_ARENA)
+		return
+	srv.behaviour.net_role = LevelBehaviour.ROLE_SERVER
+	srv.triggers.journal = true
+	srv.triggers.net_delta()                   # start from a clean page
+	var intents: Array = []
+	cli.behaviour.net_role = LevelBehaviour.ROLE_CLIENT
+	cli.triggers.authority = false
+	cli.behaviour.net_intent = func(off: int, kind: int, amount: float) -> void:
+		intents.append([off, kind, amount])
+
+	# --- the host uses the door ---------------------------------------
+	var gnode: Node3D = srv.behaviour.prox_node(gate)
+	var at: Vector3 = gnode.position
+	srv.behaviour.on_player_activate(gate, at, at)
+	_check(srv.triggers.enabled(mover),
+		"the host uses %s's gate @%05x and the mover @%05x is set going" % [DOOR_ARENA, gate, mover])
+	var delta: Dictionary = srv.triggers.net_delta()
+	_check((delta.get("st", {}) as Dictionary).has(mover)
+		and (delta.get("movers", {}) as Dictionary).has(mover),
+		"the delta carries the flip and the mover's own state (%s)" % str(delta.keys()))
+	_check(not cli.triggers.enabled(mover), "the client has not moved it by itself")
+	cli.triggers.apply_delta(delta)
+	_check(cli.triggers.enabled(mover) and cli.triggers.state(mover) == srv.triggers.state(mover),
+		"the client sees the same flip (state %02x)" % cli.triggers.state(mover))
+	var sm: Node = srv.behaviour.mover_node(mover)
+	var cm: Node = cli.behaviour.mover_node(mover)
+	_check(sm != null and cm != null and is_equal_approx(float(sm.progress), float(cm.progress))
+		and is_equal_approx(float(sm.dir), float(cm.dir)),
+		"…and the same mover state (progress %.1f dir %+.0f)"
+		% [float(cm.progress) if cm != null else -1.0, float(cm.dir) if cm != null else 0.0])
+
+	# Both animate it themselves from that one flip: no position crosses
+	# the wire between the start of the travel and the end of it.
+	var away := Vector3(1e9, 0.0, 1e9)
+	for _f in 10:
+		srv.behaviour.tick(0.05, away, away)
+		cli.behaviour.tick(0.05, away, away)
+	_check(float(cm.progress) > 0.0 and is_equal_approx(float(sm.progress), float(cm.progress)),
+		"the client animates the door from its own copy of the map (progress %.0f vs %.0f)"
+		% [float(cm.progress), float(sm.progress)])
+	# ...and the arrival, which is the server clearing the bit.
+	for _f in 200:
+		srv.behaviour.tick(0.05, away, away)
+	cli.triggers.apply_delta(srv.triggers.net_delta())
+	for _f in 5:
+		cli.behaviour.tick(0.05, away, away)
+	_check(not srv.triggers.enabled(mover) and not cli.triggers.enabled(mover)
+		and is_equal_approx(float(sm.progress), float(cm.progress))
+		and is_equal_approx(float(sm.dir), float(cm.dir)),
+		"the door stops on both when the server's handler clears the bit (progress %.0f dir %+.0f)"
+		% [float(cm.progress), float(cm.dir)])
+
+	# --- a late joiner ------------------------------------------------
+	var snap: Dictionary = srv.triggers.net_snapshot()
+	_check(not snap.has("sigs")
+		and (snap.get("states", {}) as Dictionary).size() < srv.map.entities.size(),
+		"the welcome's overlay is sparse (%d of %d records, no signature table)"
+		% [(snap.get("states", {}) as Dictionary).size(), srv.map.entities.size()])
+	var late = LevelLoader.new().load_level(DOOR_ARENA)
+	late.behaviour.net_role = LevelBehaviour.ROLE_CLIENT
+	late.triggers.authority = false
+	_check(late.triggers.net_restore(snap), "a late joiner takes the server's overlay")
+	var lm: Node = late.behaviour.mover_node(mover)
+	_check(late.triggers.state(mover) == srv.triggers.state(mover)
+		and lm != null and is_equal_approx(float(lm.progress), float(sm.progress)),
+		"…and walks into the door already open (progress %.0f)"
+		% [float(lm.progress) if lm != null else -1.0])
+	var foreign: Dictionary = snap.duplicate(true)
+	foreign["graph_sha"] = "0000000000000000"
+	var other = LevelLoader.new().load_level(DOOR_ARENA)
+	other.triggers.authority = false
+	var om: Node = other.behaviour.mover_node(mover)
+	_check(not other.triggers.net_restore(foreign) and om != null
+		and float(om.progress) == 0.0 and float(sm.progress) > 0.0,
+		"an overlay of another map file is refused whole, not half applied (door at %.0f, the server's at %.0f)"
+		% [float(om.progress) if om != null else -1.0, float(sm.progress)])
+
+	# --- a client writes nothing --------------------------------------
+	var st0: int = cli.triggers.state(gate)
+	_check((cli.triggers.flip(gate) as Array).is_empty() and cli.triggers.state(gate) == st0,
+		"a client's runtime walks no chain of its own")
+	cli.triggers.arm(gate)
+	cli.triggers.clear_enable(mover)
+	cli.triggers.set_spent(gate)
+	_check(cli.triggers.state(gate) == st0 and not cli.triggers.spent(gate),
+		"…and none of its writers take")
+	intents.clear()
+	cli.behaviour.on_player_activate(gate, at, at)
+	_check(intents.size() == 1 and int(intents[0][0]) == gate and int(intents[0][1]) == Net.TRIG_USE,
+		"the use key becomes an intent for the server (%s)" % str(intents))
+	var hittable: int = -1
+	for off in cli.behaviour.damageable_offs():
+		hittable = int(off)
+		break
+	if hittable >= 0:
+		intents.clear()
+		var hp0: float = cli.triggers.hp(hittable)
+		_check(not cli.behaviour.obj_hit(hittable, 50.0)
+			and is_equal_approx(cli.triggers.hp(hittable), hp0)
+			and intents.size() == 1 and int(intents[0][1]) == Net.TRIG_HIT,
+			"a shot on a destructible becomes an intent and costs it nothing locally")
+
+	# --- forged intents against the live server (MAP.605) --------------
+	_check(Net.trigger_world == dm, "the server offers its arena to the net code")
+	var live: int = -1
+	for off in dm.level.behaviour.damageable_offs():
+		if dm.level.triggers.hp(int(off)) > Net.MAX_HIT_DAMAGE:
+			live = int(off)
+			break
+	if live < 0:
+		_check(false, "MAP.605 has a record with a pool to shoot at")
+		return
+	var lhp: float = dm.level.triggers.hp(live)
+	var lpos: Vector3 = dm.trigger_pos(live)
+	var far: Vector3 = lpos + Vector3(Net.MAX_HIT_RANGE * 2.0, 0.0, 0.0)
+	var pos0: Vector3 = Net.players[1]["pos"]
+	Net.players[1]["pos"] = far
+	Net._srv_client_trigger(1, live, Net.TRIG_HIT, far, far, 100.0)
+	Net._srv_client_trigger(1, live, Net.TRIG_USE, far, far, 0.0)
+	_check(is_equal_approx(dm.level.triggers.hp(live), lhp),
+		"a trigger intent from across the map is refused (hp %.0f)" % dm.level.triggers.hp(live))
+	Net.players[1]["pos"] = lpos
+	Net._srv_client_trigger(1, live, Net.TRIG_HIT, far, far, 100.0)
+	Net._srv_client_trigger(987654, live, Net.TRIG_HIT, lpos, lpos, 100.0)
+	Net._srv_client_trigger(1, 0x7FFFFF, Net.TRIG_HIT, lpos, lpos, 100.0)
+	Net._srv_client_trigger(1, live, 99, lpos, lpos, 100.0)
+	Net._srv_client_trigger(1, live, Net.TRIG_HIT, lpos, lpos, NAN)
+	Net._srv_client_trigger(1, live, Net.TRIG_HIT, lpos, lpos, -100.0)
+	_check(is_equal_approx(dm.level.triggers.hp(live), lhp),
+		"a forged sender, place, id, kind and damage are all refused (hp %.0f)"
+		% dm.level.triggers.hp(live))
+	Net._srv_client_trigger(1, live, Net.TRIG_HIT, lpos, lpos, 1e9)
+	_check(is_equal_approx(lhp - dm.level.triggers.hp(live), Net.MAX_HIT_DAMAGE),
+		"a real one lands, clamped to %.0f (%.0f → %.0f)"
+		% [Net.MAX_HIT_DAMAGE, lhp, dm.level.triggers.hp(live)])
+	var wire: Dictionary = Net._trigger_wire()
+	_check((wire.get("hp", {}) as Dictionary).has(live)
+		and is_equal_approx(float(wire["hp"][live]), dm.level.triggers.hp(live)),
+		"and the next joiner's welcome carries it")
+	Net.players[1]["pos"] = pos0
 
 func _finish() -> void:
 	print("[net-e2e] %s — %d failure(s)" % ["OK" if _fails == 0 else "FAILED", _fails])

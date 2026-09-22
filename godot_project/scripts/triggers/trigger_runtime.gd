@@ -52,6 +52,17 @@
 ## one call out, no state coming back. Every flip and every cue is
 ## announced on the level's event bus exactly as before.
 ##
+## In a DEATHMATCH the state is the SERVER'S (M5). The server's runtime is
+## the writer it has always been, with `journal` on so it can say which
+## offsets play has touched since the last frame (net_delta); a client's
+## runtime has `authority` off — every writer below turns into a no-op and
+## the chain walk refuses to run at all — and the only thing that moves it
+## is what the server sends, laid in through net_restore (the welcome) and
+## apply_delta (a flip while the game runs), both of which take the
+## presenter down the same path a local flip does. `fire` is deliberately
+## NOT blocked on a client: it PLAYS the cue, and what it would write is
+## blocked one level down, so an arena's ambient loops still start.
+##
 ## Owned by LevelLoader.Level (`level.triggers`) and dies with it, so a
 ## mission scene holding several zones has one of these per zone.
 
@@ -89,6 +100,25 @@ var _spent: Dictionary = {}
 ## this level lives (see snapshot / restore).
 var _sigs: Dictionary = {}
 var _graph_sha: String = ""
+## May this runtime write at all? False on a network CLIENT, where the
+## trigger state is the server's and this holds a copy of it: every
+## writer below then does nothing unless the write is the server's own
+## coming in (`_applying`). A campaign level and the server's own are
+## authorities, as they have always been.
+var authority: bool = true
+## Record which offsets are written, so the server can send those and no
+## more (net_delta). Off by default: a single-player run allocates
+## nothing for it.
+var journal: bool = false
+var _dirty: Dictionary = {}
+## The offsets `fire` ran on since the last net_delta — the cues a client
+## has to PLAY, which no state byte would tell it about (a one-shot sound
+## goes up and down inside one tick).
+var _fired: Array = []
+## The server's own state coming in: the writers below are open for it
+## however `authority` stands.
+var _applying: bool = false
+
 ## Every entity whose bit 0 went UP during THIS tick, even if a later
 ## flip in the same tick took it back down again.
 ##
@@ -122,6 +152,10 @@ func reset() -> void:
 	_hp.clear()
 	_spent.clear()
 	_armed.clear()
+	# Nothing is owed to a client any more either: everything is back to
+	# the records, which is what its own copy of the map already has.
+	_dirty.clear()
+	_fired.clear()
 	if map == null:
 		return
 	for e in map.entities:
@@ -193,30 +227,51 @@ func _record(off: int):
 # ---------------------------------------------------------------------
 # Writing — the whole of it
 # ---------------------------------------------------------------------
+## May this offset be written now, and note it if it may — the one gate
+## every writer below passes through (see `authority` and `journal`).
+func _may_write(off: int) -> bool:
+	if not authority and not _applying:
+		return false
+	if journal:
+		_dirty[off] = true
+	return true
+
 func set_state(off: int, value: int) -> void:
+	if not _may_write(off):
+		return
 	_state[off] = value & 0xFF
 
 ## A chain, a touch or a spawn point arms an entity (bit 0 up).
 func arm(off: int) -> void:
+	if not _may_write(off):
+		return
 	_state[off] = int(_state.get(off, 0)) | 1
 
 ## What the DOS handlers do to themselves when they are done: `state &=
 ## 0xFE` (0x139644 with dl = 0xFE), the mover on arrival, the exit as it
 ## asks for the map change, the one-shot cue as it fires.
 func clear_enable(off: int) -> void:
+	if not _may_write(off):
+		return
 	_state[off] = int(_state.get(off, 0)) & ~1
 
 func set_act(off: int, value: int) -> void:
+	if not _may_write(off):
+		return
 	_act[off] = value & 0xFF
 
 ## A cue DOS RETIRES — the hint and the objective handlers write 0xFF
 ## into the act byte, and the entity does nothing at all from then on.
 func retire(off: int) -> void:
+	if not _may_write(off):
+		return
 	_act[off] = 0xFF
 
 ## A marker path that has run its course: the DOS stop case leaves the
 ## last marker pointing at nothing.
 func cut_link(off: int) -> void:
+	if not _may_write(off):
+		return
 	_link[off] = 0
 
 # --- variant-2 lights -------------------------------------------------
@@ -229,6 +284,8 @@ func light_enable(off: int) -> int:
 	return int(_light_enable[off])
 
 func set_light_enable(off: int, value: int) -> void:
+	if not _may_write(off):
+		return
 	_light_enable[off] = value
 
 func light_intensity(off: int) -> int:
@@ -238,6 +295,8 @@ func light_intensity(off: int) -> int:
 	return int(_light_intensity[off])
 
 func set_light_intensity(off: int, value: int) -> void:
+	if not _may_write(off):
+		return
 	_light_intensity[off] = value
 
 # --- ObjHit's pool ----------------------------------------------------
@@ -256,6 +315,8 @@ func hp_offs() -> Array:
 	return _hp.keys()
 
 func set_hp(off: int, value: float) -> void:
+	if not _may_write(off):
+		return
 	_hp[off] = value
 
 ## Shot to pieces: the pool ran out. A spent record answers nothing any
@@ -265,6 +326,8 @@ func spent(off: int) -> bool:
 	return _spent.has(off)
 
 func set_spent(off: int) -> void:
+	if not _may_write(off):
+		return
 	_spent[off] = true
 
 # ---------------------------------------------------------------------
@@ -281,6 +344,12 @@ func set_spent(off: int) -> void:
 ## the shipped maps hold none — but `visited` keeps a broken one from
 ## spinning here.
 func flip(start_off: int) -> Array:
+	# A client walks no chain of its own: what it would have flipped went
+	# to the server as an intent (Behaviour.flip_chain) and comes back as
+	# a delta. Blocking the writers alone is not enough — the walk also
+	# announces, presents and fires as it goes.
+	if not authority and not _applying:
+		return []
 	var out: Array = []
 	var visited: Dictionary = {}
 	var stack: Array = [start_off]
@@ -326,6 +395,8 @@ func flip(start_off: int) -> Array:
 ## its bit and runs on), and a cue DOS retires has its act byte set to
 ## 0xFF here.
 func fire(off: int) -> void:
+	if journal:
+		_fired.append(off)
 	if presenter == null:
 		return
 	var done: Dictionary = presenter.present_fire(off)
@@ -562,3 +633,156 @@ func reset_acts() -> void:
 		_link[e.file_off] = e.link_next
 	if presenter != null:
 		presenter.sync_from_runtime()
+
+# ---------------------------------------------------------------------
+# The wire (M5): the server writes, the clients are told
+# ---------------------------------------------------------------------
+## The welcome's share of the state — the same overlay `snapshot` makes,
+## trimmed to what a client that is about to read the SAME MAP FILE
+## needs. `states` keeps only the bytes play has changed (restore is
+## sparse: an offset left out keeps what the record has), and the per-
+## offset signature table goes: a save is a file kept for months and has
+## to survive the data changing under it, a welcome is answered by a peer
+## that loaded the map seconds ago. `graph_sha` stays, and it is the whole
+## guard — net_restore refuses an overlay that names another map file
+## rather than laying half of it down.
+##
+## The pools and the spent list are carried WHOLE, because restore lays
+## them back whole (a trimmed `hp` would empty the client's own pools).
+func net_snapshot() -> Dictionary:
+	var out: Dictionary = snapshot()
+	var states: Dictionary = {}
+	for off in (out["states"] as Dictionary):
+		var e = _record(int(off))
+		if e == null or int(out["states"][off]) != int(e.state_byte):
+			states[off] = out["states"][off]
+	out["states"] = states
+	out.erase("sigs")
+	return out
+
+## Lay a server's overlay over this client's state, once, before it plays
+## (the welcome). An overlay of ANOTHER map file is refused outright and
+## says so: a deathmatch is one arena that everybody loaded from their own
+## copy of the data, and half-applying one peer's offsets into another
+## peer's records would be worse than playing the map as the file has it.
+func net_restore(snap: Dictionary) -> bool:
+	if snap.is_empty():
+		return true
+	var sha: String = String(snap.get("graph_sha", ""))
+	if not sha.is_empty() and sha != graph_sha():
+		push_warning("[triggers] the server's trigger state is of another map file (%s != %s) — not applied"
+			% [sha, graph_sha()])
+		return false
+	_applying = true
+	restore(snap)
+	# An ambient loop (0xEE) runs for as long as its bit is up, and the
+	# branch has already started every loop the RECORDS have enabled
+	# (Behaviour._ready). One the server has since switched off arrives
+	# here as a bit that is down, and nothing else would stop it.
+	if presenter != null:
+		for off in (snap.get("states", {}) as Dictionary):
+			if (int(snap["states"][off]) & 1) == 0:
+				presenter.present_silence(int(off))
+	_applying = false
+	return true
+
+## What has changed on the server since the last call, and what a client
+## needs to show it — cleared as it is taken, so an arena where nothing
+## happens sends nothing at all.
+##
+## The shape is the overlay's, cut down to the offsets `journal` saw
+## written: `st` the state bytes, `ac`/`lk` the act bytes and links play
+## has moved off the record's own, `hp`/`sp` ObjHit's pool and what it has
+## spent, `movers`/`destr`/`spawned` the three things the nodes remember,
+## and `fx` the cues `fire` ran — the sound a chain plays, which no state
+## byte could tell a client about because a one-shot's bit goes up and
+## down inside one tick.
+##
+## A mover is in here TWICE and both times deliberately: the state byte
+## that sets it going, and where it stood when it did. Between those two
+## the client animates it itself (Mover.mover_watch off the bit this
+## delta put up) — there is no per-frame position on this wire.
+func net_delta() -> Dictionary:
+	if _dirty.is_empty() and _fired.is_empty():
+		return {}
+	var out: Dictionary = {}
+	var st: Dictionary = {}
+	var ac: Dictionary = {}
+	var lk: Dictionary = {}
+	var hp: Dictionary = {}
+	var sp: Array = []
+	for off in _dirty:
+		var id: int = int(off)
+		st[id] = state(id)
+		if act(id) != act0(id):
+			ac[id] = act(id)
+		if link(id) != link0(id):
+			lk[id] = link(id)
+		if _hp.has(id):
+			hp[id] = float(_hp[id])
+		if _spent.has(id):
+			sp.append(id)
+	out["st"] = st
+	if not ac.is_empty():
+		out["ac"] = ac
+	if not lk.is_empty():
+		out["lk"] = lk
+	if not hp.is_empty():
+		out["hp"] = hp
+	if not sp.is_empty():
+		out["sp"] = sp
+	if presenter != null:
+		var theirs: Dictionary = presenter.present_snapshot()
+		for part in ["movers", "destr", "spawned"]:
+			var kept: Dictionary = {}
+			for off in (theirs.get(part, {}) as Dictionary):
+				if _dirty.has(int(off)):
+					kept[off] = theirs[part][off]
+			if not kept.is_empty():
+				out[part] = kept
+	if not _fired.is_empty():
+		out["fx"] = _fired.duplicate()
+	_dirty.clear()
+	_fired.clear()
+	return out
+
+## …and the same on a client. Everything here goes through the presenter
+## by the paths a local flip takes — present_flip for the lit face of a
+## button, present_silence for a loop whose bit has gone, present_fire for
+## the cue, present_restore for the movers, the wrecks and the robots —
+## so what a client SHOWS is the branch's own code and not a second
+## rendering of the same rules.
+func apply_delta(d: Dictionary) -> void:
+	if d.is_empty():
+		return
+	_applying = true
+	for off in (d.get("st", {}) as Dictionary):
+		var id: int = int(off)
+		var was: bool = enabled(id)
+		_state[id] = int(d["st"][off]) & 0xFF
+		if presenter != null:
+			presenter.present_flip(id)
+			if was and not enabled(id):
+				presenter.present_silence(id)
+	for off in (d.get("ac", {}) as Dictionary):
+		_act[int(off)] = int(d["ac"][off]) & 0xFF
+	for off in (d.get("lk", {}) as Dictionary):
+		_link[int(off)] = int(d["lk"][off])
+	for off in (d.get("hp", {}) as Dictionary):
+		_hp[int(off)] = float(d["hp"][off])
+	var newly: Array = []
+	for off in (d.get("sp", []) as Array):
+		if not _spent.has(int(off)):
+			newly.append(int(off))
+		_spent[int(off)] = true
+	if presenter != null:
+		for off in (d.get("fx", []) as Array):
+			presenter.present_fire(int(off))
+		presenter.sync_from_runtime()
+		presenter.present_restore(d)
+		# The blast, the sound and the prop leaving the world: the server
+		# ran destroy() when the pool ran out, and this is the same call on
+		# the peer that only heard about it.
+		for off in newly:
+			presenter.destroy(int(off))
+	_applying = false

@@ -13,6 +13,37 @@
 ##     respawns and pickups — the only authoritative state
 ##   * bots live on the server (bot_brain.gd) and are just more players
 ##     with NEGATIVE ids; clients see them as avatars like anyone
+##   * the arena's TRIGGER STATE is the server's too (M5): doors, levers,
+##     destructibles, ambient loops
+##
+## What is on the wire, and what is not. Until M5 the welcome carried the
+## roster, the pickups and the vehicles and NOTHING of the map itself, so
+## a door one peer opened was open for that peer alone. Now:
+##
+##   sent to the server   `_c_trigger`: "I used / I shot entity N" — an
+##                        INTENT, never a result. The server runs it
+##                        through the real entry point of its own level
+##                        (Behaviour.on_player_activate / obj_hit), which
+##                        measures the DOS radius, tests the state bits
+##                        and walks the chain exactly as it does in the
+##                        campaign.
+##   sent to a client     `_s_trigger`: what changed since the last frame
+##                        — state bytes, act bytes, links, ObjHit's pool
+##                        and what it spent, the movers' travel, the
+##                        wrecks' stage, the robots let out, and the cues
+##                        to play. Reliable and ordered, and sent only
+##                        when something changed.
+##   sent on joining      `_s_welcome` carries the server's whole trigger
+##                        overlay, so a late joiner walks into the doors
+##                        that are already open.
+##
+## NOT on the wire, and each for a reason: a mover's POSITION (the delta
+## brings the flip and where the mover stood, and every peer animates the
+## rest from its own copy of the map — the travel is the same data on
+## both sides); the enemies and the objectives (an arena has neither);
+## the map EXITS (an arena is one map — a client asks for no map change);
+## and what a broken crate DROPS (the pickups on the wire are the
+## arena's, placed by the server from NETLEVEL.PRS).
 ##
 ## Method prefixes: `_c_*` = client → server RPC (the sender is the actor),
 ## `_s_*` = server → client RPC (also invoked locally on the host so one
@@ -39,6 +70,9 @@ signal time_changed(sec: int)
 signal class_changed(id: int, cls: int)
 ## The local player picked a class; it is worn from the next spawn.
 signal class_requested(cls: int)
+## The server has changed something in the map (TriggerRuntime.net_delta);
+## the DM controller lays it over its level.
+signal trigger_delta(delta: Dictionary)
 signal welcome_received
 signal connection_failed(reason: String)
 signal disconnected(reason: String)
@@ -75,7 +109,7 @@ const F_DEAD: int = 4
 ## other. That is why the hello and the kick travel as raw bytes
 ## (send_bytes), outside that list — a mismatch still gets its reason
 ## across instead of hanging on "Connecting...".
-const PROTOCOL_VERSION: int = 2
+const PROTOCOL_VERSION: int = 3
 const HELLO_TAG: String = "SKYNET_HELLO"      # HELLO_TAG|version|class|name
 const KICK_TAG: String = "SKYNET_KICK"        # KICK_TAG|reason
 const MAX_RAW_BYTES: int = 256
@@ -119,9 +153,27 @@ const VEHICLE_REACH: float = 1400.0
 ## are human-speed actions. RL_DAMAGE counts hit points dealt to others,
 ## each hit capped at the victim's full health so overkill is free: a
 ## satchel in a full arena at once, then the SUPER UZI's 1000 a second.
-enum { RL_POSE, RL_FIRE, RL_HIT, RL_SELF_HIT, RL_CHAT, RL_PICKUP, RL_VEHICLE, RL_CLASS, RL_DAMAGE }
+## RL_TRIGGER is a door being used and a shot landing on a destructible:
+## the same human speed as a pickup, with room for one burst of gunfire
+## emptying into a car.
+enum { RL_POSE, RL_FIRE, RL_HIT, RL_SELF_HIT, RL_CHAT, RL_PICKUP, RL_VEHICLE, RL_CLASS, RL_DAMAGE,
+	RL_TRIGGER }
 const RATE_LIMITS: Array = [[30.0, 15.0], [20.0, 20.0], [60.0, 60.0], [300.0, 300.0], [2.0, 4.0],
-	[10.0, 10.0], [4.0, 4.0], [2.0, 3.0], [1500.0, 6000.0]]
+	[10.0, 10.0], [4.0, 4.0], [2.0, 3.0], [1500.0, 6000.0], [20.0, 30.0]]
+
+## What a client says it did to an entity of the map. USE is every way a
+## player sets a chain off — walking into a trigger, the use key, the
+## crosshair on a lever — because they all end in one call on the
+## server's branch (Behaviour.on_player_activate), which applies the
+## record's own measure whichever way the key arrived. HIT is a shot or a
+## blast on something that takes damage.
+const TRIG_USE: int = 0
+const TRIG_HIT: int = 1
+## How far the place a client reports may be from where the server last
+## saw it, and how far the ENTITY may be from there for a use — an HK
+## hull plus pose lag, the vehicle reach. A shot may come from as far as
+## a hitscan carries.
+const TRIGGER_REACH: float = 1400.0
 
 ## NETLEVEL item category → sprite indices to pick from (PickupData.ITEMS).
 const ITEM_SPRITES: Dictionary = {
@@ -159,6 +211,23 @@ var match_running: bool = false
 ## is up; pending hellos wait for it.
 var spawn_points: Array = []
 var level_ready: bool = false
+
+## The arena as an object the net code may ask things of — the DM
+## controller (scripts/net/dm_game.gd), set on the server once its level
+## is up and cleared when it goes. Net knows nothing of levels, records
+## or trigger runtimes; it asks this for the three things the wire needs:
+##
+##   trigger_snapshot()                  the overlay the welcome carries
+##   trigger_pos(off) -> Vector3         where that record stands (INF:
+##                                       no such record), for the reach
+##   trigger_intent(off, kind, at, eye, amount)
+##                                       run it through the real entry
+##                                       point of the server's level
+var trigger_world: Node = null
+## Client: the overlay that came in the welcome, laid over the level's
+## runtime as soon as the arena is up (the welcome arrives long before
+## it). Cleared once it has been used.
+var trigger_snapshot: Dictionary = {}
 
 ## A note for the main menu to flash after a forced return (kicked,
 ## server gone).
@@ -322,6 +391,9 @@ func leave() -> void:
 	_kick_reason = ""
 	_respawn_at.clear()
 	_pickup_respawn_at.clear()
+	# The arena's level is going with the session (M5).
+	trigger_world = null
+	trigger_snapshot.clear()
 
 func _new_player(name: String, bot: bool, cls: int = CLASS_HUMAN) -> Dictionary:
 	return {"name": name, "kills": 0, "deaths": 0, "hp": MAX_HEALTH, "armor": 0.0,
@@ -490,7 +562,8 @@ func _srv_admit(id: int, name: String, cls: int = CLASS_HUMAN) -> void:
 		nm = "%s%d" % [base, n]
 		n += 1
 	players[id] = _new_player(nm, false, clampi(cls, 0, 1))
-	_s_welcome.rpc_id(id, settings, players, _pickups_wire(), int(time_left), match_running, _vehicles_wire())
+	_s_welcome.rpc_id(id, settings, players, _pickups_wire(), int(time_left), match_running,
+		_vehicles_wire(), _trigger_wire())
 	for p in multiplayer.get_peers():
 		if p != id:
 			_s_player_add.rpc_id(p, id, players[id])
@@ -504,6 +577,14 @@ func _name_taken(nm: String) -> bool:
 			return true
 	return false
 
+## The server's whole trigger overlay for a joiner — every door play has
+## opened, every crate it has broken. Empty in the campaign and on a peer
+## whose level is not up yet (nothing has happened there either).
+func _trigger_wire() -> Dictionary:
+	if trigger_world == null or not is_instance_valid(trigger_world):
+		return {}
+	return trigger_world.trigger_snapshot()
+
 func _pickups_wire() -> Dictionary:
 	var out: Dictionary = {}
 	for k in pickups:
@@ -512,9 +593,11 @@ func _pickups_wire() -> Dictionary:
 	return out
 
 @rpc("authority", "call_remote", "reliable")
-func _s_welcome(cfg: Dictionary, roster: Dictionary, wire: Dictionary, tl: int, running: bool, veh: Dictionary = {}) -> void:
+func _s_welcome(cfg: Dictionary, roster: Dictionary, wire: Dictionary, tl: int, running: bool,
+		veh: Dictionary = {}, trig: Dictionary = {}) -> void:
 	settings = cfg
 	_apply_vehicles_wire(veh)
+	trigger_snapshot = trig
 	players = roster
 	pickups.clear()
 	for k in wire:
@@ -1047,6 +1130,66 @@ func _s_pickup_spawn(key: int) -> void:
 	if pickups.has(key):
 		pickups[key]["taken"] = false
 	pickup_spawned.emit(key)
+
+# ---------------------------------------------------------------------
+# The map's own state (M5)
+# ---------------------------------------------------------------------
+
+## Client: "I used / I shot entity `off`". An INTENT and nothing more —
+## the answer is the server's, and comes back as a delta. On the host
+## this is never called: its own branch flips what it touches directly,
+## which is the same code path the server runs for everyone else.
+func send_trigger(off: int, kind: int, at: Vector3, eye: Vector3, amount: float = 0.0) -> void:
+	if active and not is_server():
+		_c_trigger.rpc_id(1, off, kind, at, eye, amount)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _c_trigger(off: int, kind: int, at: Vector3, eye: Vector3, amount: float) -> void:
+	if is_server():
+		_srv_client_trigger(multiplayer.get_remote_sender_id(), off, kind, at, eye, amount)
+
+## Server: run a client's intent through the real entry point of its own
+## level, or drop it.
+##
+## What is checked here is what a client could LIE about; what the entity
+## itself allows — the DOS radius, the state bits, a record already shot
+## to pieces — is the branch's, and it applies to everybody. So: an
+## admitted sender, within its budget, alive, reporting a place near where
+## the server last saw it (the pickup rule, PICKUP_REACH's reasoning at
+## vehicle range), and an entity that the server can find and that stands
+## within reach of that place — a hitscan's range for a shot, arm's reach
+## for a use. Damage is clamped like a reported hit on a player.
+func _srv_client_trigger(id: int, off: int, kind: int, at: Vector3, eye: Vector3,
+		amount: float) -> void:
+	if trigger_world == null or not is_instance_valid(trigger_world):
+		return
+	if kind != TRIG_USE and kind != TRIG_HIT:
+		return
+	if not _gate(id, RL_TRIGGER) or not is_alive(id):
+		return
+	if not _sane_pos(at) or not _sane_pos(eye) or not is_finite(amount) or amount < 0.0:
+		return
+	var known: Vector3 = players[id]["pos"]
+	if at.distance_to(known) > TRIGGER_REACH or eye.distance_to(known) > TRIGGER_REACH:
+		return
+	var where: Vector3 = trigger_world.trigger_pos(off)
+	if not where.is_finite():
+		return                                 # no such record on this map
+	if where.distance_to(known) > (MAX_HIT_RANGE if kind == TRIG_HIT else TRIGGER_REACH):
+		return
+	trigger_world.trigger_intent(off, kind, at, eye, minf(amount, MAX_HIT_DAMAGE))
+
+## Server: what its level has just changed, out to everybody. Called
+## every physics frame by the DM controller with whatever the runtime's
+## journal collected, which in a quiet arena is nothing at all.
+func srv_send_trigger(delta: Dictionary) -> void:
+	if not is_server() or delta.is_empty() or multiplayer.get_peers().is_empty():
+		return
+	_s_trigger.rpc(delta)
+
+@rpc("authority", "call_remote", "reliable")
+func _s_trigger(delta: Dictionary) -> void:
+	trigger_delta.emit(delta)
 
 # ---------------------------------------------------------------------
 # Bots (server)

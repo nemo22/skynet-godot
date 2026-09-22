@@ -251,6 +251,23 @@ godot --path godot_project -- --host=MAP.605 --bots=3 --skill=2 --frags=20
 godot --path godot_project -- --join=192.168.1.20 --name=SECOND
 ```
 
+The host owns the arena, the map included. A door someone opens, a lever
+someone pulls, a car someone shoots to pieces and an ambient loop a chain
+switches off are all the server's to decide: a client that walks into a
+trigger, presses the use key or lands a shot on something breakable sends
+that as an **intent**, the server runs it through the same entry point its
+own player's key reaches — the record's own radius, its state bits, its
+chain — and sends back what changed. A joiner's welcome carries the whole
+of it, so somebody arriving in the middle of a round walks into the doors
+that are already open. Positions are not on that wire: the flip goes out
+with where the mover stood, and every peer animates the travel from its
+own copy of the map. The campaign is single-player and is untouched by
+any of this.
+
+Both sides must be the same build — the wire protocol version is checked
+when a client says hello, and a mismatch is refused with a message saying
+so.
+
 ## The trigger tooling
 
 All **(dev)**. Three layers: the graph as it was reviewed and pinned (the

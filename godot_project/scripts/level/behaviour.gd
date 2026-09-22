@@ -227,6 +227,30 @@ var _exits: Array = []
 ## outcome needs saying out loud.
 var _exit_taken: bool = false
 
+## Who plays this level (M5 — deathmatch only; the campaign is
+## single-player and is always ROLE_LOCAL).
+##
+##   ROLE_LOCAL   nobody else is watching: the sweeps below run and the
+##                runtime writes, as they always have.
+##   ROLE_SERVER  the same, and the runtime keeps a journal so the DM
+##                controller can send what changed (TriggerRuntime).
+##   ROLE_CLIENT  the loop still PRESENTS — the movers animate, the
+##                sounds play, the buttons light — but nothing here may
+##                change a state byte. What would have flipped goes to
+##                the server as an intent (`net_intent`), the server runs
+##                it through the real entry point of ITS branch, and the
+##                flip comes back as a delta.
+enum { ROLE_LOCAL, ROLE_SERVER, ROLE_CLIENT }
+var net_role: int = ROLE_LOCAL
+## A client's way to the server: `cb(id: int, kind: int, amount: float)`,
+## filled in by scripts/net/dm_game.gd, which knows where the player
+## stands and owns the RPC. Never called on a server or in the campaign.
+var net_intent: Callable = Callable()
+## The intent kinds, which are Net.TRIG_USE / Net.TRIG_HIT — kept here as
+## plain ints so this file needs nothing of the net code.
+const NET_USE: int = 0
+const NET_HIT: int = 1
+
 func _ready() -> void:
 	_ensure_index()
 	# One-shots armed in the MAP data fire once at level start (a door
@@ -558,7 +582,9 @@ func gate_to_exit(eye: Vector3) -> Node:
 ## (prox_arm) and which would then swallow the very first walk in the
 ## truck interiors.
 func use_exit_through(gate: Node) -> bool:
-	if _exit_taken or runtime == null:
+	# A client asks for no map change: a deathmatch arena is one map and
+	# the exits are not on its wire (net_game.gd's header).
+	if _exit_taken or runtime == null or net_role == ROLE_CLIENT:
 		return false
 	var t: Node = exit_node(chain_exit(int(gate.id)))
 	if t == null:
@@ -587,6 +613,15 @@ func chain_exit(id: int) -> int:
 ## tick and the lit face of a BUTTON it passes are the runtime's own
 ## bookkeeping and its call back out here (present_flip).
 func flip_chain(id: int) -> void:
+	if net_role == ROLE_CLIENT:
+		# Every way a player sets a chain off arrives here — the proximity
+		# sweep, the use key through a wall button, the crosshair on a
+		# lever — so this one line is the whole of a client's trigger
+		# input. The server runs it through on_player_activate on its own
+		# branch, which measures the radius the record's handler measures
+		# and flips exactly what a local press would have.
+		_raise_intent(id, NET_USE)
+		return
 	if runtime != null:
 		runtime.flip(id)
 
@@ -844,6 +879,12 @@ func damageable_offs() -> Array:
 ## which is why a crate with state 0 still breaks and drops its ammo.
 func obj_hit(id: int, damage: float) -> bool:
 	_ensure_index()
+	if net_role == ROLE_CLIENT:
+		# Hits are detected by the SHOOTER here as they are on players
+		# (net_game.gd), and the server owns what they came to. False, so
+		# the caller shows its ordinary impact and does not claim a kill.
+		_raise_intent(id, NET_HIT, damage)
+		return false
 	var e = record_of(id)
 	if e == null or runtime == null:
 		return false
@@ -977,7 +1018,10 @@ func destroy(id: int) -> void:
 	if alive and not _wrecks.has(id):
 		node.visible = false
 		disable_collision(node)
-	if drop >= 0:
+	# What a broken crate leaves behind is the server's to place — a
+	# client that dropped its own would hold an item nobody else can see
+	# (net_game.gd's header: the drops are not on the wire).
+	if drop >= 0 and net_role != ROLE_CLIENT:
 		item_dropped.emit(Vector3(centre.x, origin.y, centre.z) - zone_origin, drop)
 
 ## Explosion at a wreck's centre; the final stage also throws the object's
@@ -1256,6 +1300,9 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 	_ensure_index()
 	var here: Vector3 = player_pos - zone_origin
 	var eye: Vector3 = here if eye_pos == Vector3.INF else eye_pos - zone_origin
+	if net_role == ROLE_CLIENT:
+		_client_tick(delta, here, eye)
+		return
 	# The variant-2 map lights a chain switches, flickers, strobes or
 	# fades, at the head of the tick where they have always run.
 	light_tick(delta)
@@ -1289,6 +1336,41 @@ func tick(delta: float, player_pos: Vector3, eye_pos: Vector3 = Vector3.INF) -> 
 	# …and that arming is news for one tick only.
 	if runtime != null:
 		runtime.clear_armed()
+
+## The same tick on a network CLIENT: everything that only SHOWS the
+## state, and nothing that makes it.
+##
+## The lights, the movers and the path vehicles are here because all
+## three are animations of a bit the server owns — a mover steps from
+## its own enable bit and the delta that raised it brought where it
+## stood, so the leaf swings on this peer without a single position
+## crossing the wire. The proximity sweep is here for a different
+## reason: the latch is per PLAYER and this player is the one standing
+## here, so the frame he walks into a radius has to be noticed here.
+## What the sweep then does is not a flip — flip_chain turns it into an
+## intent — and the one-shot's `state &= 0xFE` that follows it is
+## refused one level down (TriggerRuntime.authority).
+##
+## What is NOT here is everything that reads the state to CHANGE it: the
+## destructibles and the demolitions a chain fires, the countdown relays,
+## the 0xF3 spawns, the water and the doorways. Those run on the server,
+## whose delta brings the result. An arena has no objectives, no water
+## valve and no map change anyway — this is the rule that keeps it that
+## way if one ever does.
+func _client_tick(delta: float, here: Vector3, eye: Vector3) -> void:
+	light_tick(delta)
+	mover_tick(delta)
+	prox_tick(eye)
+	path_tick(delta, here)
+	if runtime != null:
+		runtime.clear_armed()
+
+## A client's hand on something the server owns: the id it would have
+## flipped or hit, and how hard. Where the player stands goes on in
+## dm_game, which owns the RPC.
+func _raise_intent(id: int, kind: int, amount: float = 0.0) -> void:
+	if net_intent.is_valid():
+		net_intent.call(id, kind, amount)
 
 ## The crosshair found the mesh of record `id` and the use key went down
 ## (scripts/action_target.gd).
@@ -1346,7 +1428,11 @@ func on_player_activate(id: int, player_pos: Vector3 = Vector3.INF,
 ## the records' own space here.
 func activate_teleport(player_pos: Vector3, eye: Vector3 = Vector3.INF) -> bool:
 	_ensure_index()
-	if _exit_taken:
+	# A deathmatch arena is one map and nobody's key changes it (M5). The
+	# doorways below fire from the node, not through flip_chain, so this
+	# is where a client is stopped; the wall buttons the caller falls
+	# through to afterwards go out as intents like everything else.
+	if _exit_taken or net_role == ROLE_CLIENT:
 		return false
 	var here: Vector3 = player_pos - zone_origin
 	var from_eye: Vector3 = (eye - zone_origin) if eye.is_finite() else here
