@@ -22,6 +22,9 @@ const LevelBehaviour := preload("res://scripts/level/behaviour.gd")
 ## pair of MAP.604 levels loaded here — one in the server's role, one in
 ## a client's, with the server's real delta carried between them.
 const DOOR_ARENA: String = "MAP.604"
+## A campaign map with a walk-in chain trigger (0xF1/0xF2), for the
+## per-body latch — no arena has one.
+const BOT_LATCH_MAP: String = "MAP.200"
 
 var _fails: int = 0
 var _main: Node = null
@@ -330,6 +333,8 @@ func _run() -> void:
 		_check(ok, "walking over a DM pickup takes it via the server")
 	await _forged_input_checks(dm, avatars)
 	_trigger_wire_checks(dm)
+	_bot_latch_checks()
+	_drop_wire_checks(dm)
 	# Second process joins as a client.
 	var args: PackedStringArray = OS.get_cmdline_user_args()
 	if not args.has("--no-client"):
@@ -640,6 +645,107 @@ func _trigger_wire_checks(dm: Node) -> void:
 		and is_equal_approx(float(wire["hp"][live]), dm.level.triggers.hp(live)),
 		"and the next joiner's welcome carries it")
 	Net.players[1]["pos"] = pos0
+
+## A walk-in trigger answers every body on the SERVER, each with a latch of
+## its own: one body standing inside must not hold it shut for another. No
+## arena carries an 0xF1/0xF2 (they have 0xEF gates only, which are the use
+## key's), so the measure is taken on MAP.200's chain triggers, loaded here
+## in the server's role, and once more in the campaign's, where nothing
+## but the one player may ever trip one.
+func _bot_latch_checks() -> void:
+	var srv = LevelLoader.new().load_level(BOT_LATCH_MAP)
+	if srv == null or srv.behaviour == null or srv.triggers == null:
+		_check(false, "%s loads for the per-body latch checks" % BOT_LATCH_MAP)
+		return
+	var t: Node = null
+	for n in srv.behaviour.prox_nodes():
+		var a: int = int(n.act_now())
+		if (a == 0xF1 or a == 0xF2) and not n.is_wall_button():
+			t = n
+			break
+	if t == null:
+		_check(false, "%s has a walk-in chain trigger" % BOT_LATCH_MAP)
+		return
+	var id: int = int(t.id)
+	var rt = srv.triggers
+	var b = srv.behaviour
+	var inside: Vector3 = t.position + b.zone_origin
+	var away := Vector3(1e9, 0.0, 1e9)
+	var bot: int = -1
+	var rearm := func() -> void: rt.set_state(id, rt.state(id) | 1)
+	b.net_role = LevelBehaviour.ROLE_SERVER
+	# The host stands in it: it fires once, and a chain re-arming it does
+	# not fire it again while he is still inside (the port's latch).
+	rearm.call()
+	b.tick(0.05, inside, inside)
+	var host_fired: bool = not rt.enabled(id)
+	rearm.call()
+	b.tick(0.05, inside, inside)
+	_check(host_fired and rt.enabled(id),
+		"the host trips @%05x once and his latch holds it while he stays inside" % id)
+	# A bot walks in while he is still there: its own latch, so it fires.
+	b.prox_body(bot, inside)
+	_check(not rt.enabled(id), "a bot walking in trips it past the host's latch")
+	rearm.call()
+	b.prox_body(bot, inside)
+	_check(rt.enabled(id), "…and its own latch holds it while the bot stays inside")
+	b.prox_body(bot, away)
+	b.prox_body(bot, inside)
+	_check(not rt.enabled(id), "…until the bot steps out and back in")
+	rearm.call()
+	b.prox_body_arm(bot, inside)
+	b.prox_body(bot, inside)
+	_check(rt.enabled(id), "a bot respawned inside waits to step out, as the player does")
+	# In the campaign there is one player and nothing else is swept.
+	b.net_role = LevelBehaviour.ROLE_LOCAL
+	b.prox_body(bot - 1, inside)
+	_check(rt.enabled(id), "a single-player level ignores the per-body sweep")
+
+## A broken crate's drop is a server-owned pickup: one key on the wire,
+## taken once, through the server's gate, and no respawn of its own.
+func _drop_wire_checks(dm: Node) -> void:
+	var n0: int = Net.pickups.size()
+	var sprites_before: int = dm.level.sprites.get_child_count() if dm.level.sprites != null else -1
+	var key: int = -1
+	var at: Vector3 = Net.spawn_points[0]["pos"] - dm.level.origin if not Net.spawn_points.is_empty() else Vector3.ZERO
+	# Drop type 4 is the lockers' list (health and armour), of which one in
+	# eight is nothing at all: tried until one lands.
+	for _i in 32:
+		_main.call("_on_drop_requested", at, 4)
+		if Net.pickups.size() > n0:
+			break
+	for k in Net.pickups:
+		if bool(Net.pickups[k].get("drop", false)):
+			key = int(k)
+	_check(key >= 0 and Net.pickups.size() == n0 + 1,
+		"a crate's drop on the server becomes one new pickup (%d → %d)" % [n0, Net.pickups.size()])
+	if key < 0:
+		return
+	var nodes: Dictionary = dm.get("_pickup_nodes")
+	_check(nodes.has(key) and (dm.level.sprites == null
+		or dm.level.sprites.get_child_count() == sprites_before),
+		"…shown as a DM pickup, not as a sprite of the host's own level")
+	var wire: Dictionary = Net._pickups_wire()
+	_check(wire.has(key) and (wire[key] as Array).size() == 4 and bool(wire[key][3])
+		and Net.PROTOCOL_VERSION == 4,
+		"…and a joiner's welcome carries it as a drop (protocol %d)" % Net.PROTOCOL_VERSION)
+	var pos0: Vector3 = Net.players[1]["pos"]
+	Net.players[1]["pos"] = (Net.pickups[key]["pos"] as Vector3) + Vector3(Net.PICKUP_REACH * 3.0, 0.0, 0.0)
+	Net._srv_client_pickup(1, key)
+	Net.players[1]["pos"] = pos0
+	_check(not bool(Net.pickups[key]["taken"]), "a client's request for it from across the map is refused")
+	var taker: int = 0
+	for id in Net.players:
+		if Net.is_bot(id) and Net.is_alive(id):
+			taker = int(id)
+			break
+	if taker == 0:
+		_check(false, "a live bot to take the drop")
+		return
+	Net.request_pickup(key, taker)
+	_check(bool(Net.pickups[key]["taken"]) and not nodes.has(key)
+		and not (Net.get("_pickup_respawn_at") as Dictionary).has(key),
+		"a bot takes it through the server, once, and it does not come back")
 
 func _finish() -> void:
 	print("[net-e2e] %s — %d failure(s)" % ["OK" if _fails == 0 else "FAILED", _fails])

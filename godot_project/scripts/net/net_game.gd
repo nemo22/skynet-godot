@@ -36,14 +36,24 @@
 ##   sent on joining      `_s_welcome` carries the server's whole trigger
 ##                        overlay, so a late joiner walks into the doors
 ##                        that are already open.
+##   what a crate DROPS   `_s_pickup_add`: the item a broken prop leaves
+##                        behind (DOS FUN_00124293 picks it from the
+##                        destruction type's list at Skynet.exe 0x423d6 and
+##                        writes it into the record list, v1.01
+##                        FUN_00124619). The server picks it, as it picks
+##                        the arena's own, and it is a server-owned pickup
+##                        from then on — one key, taken once, by whoever
+##                        the server says reached it first. It does not
+##                        come back (a drop is not a NETLEVEL spot) and a
+##                        new round starts without it. Protocol 4.
 ##
 ## NOT on the wire, and each for a reason: a mover's POSITION (the delta
 ## brings the flip and where the mover stood, and every peer animates the
 ## rest from its own copy of the map — the travel is the same data on
 ## both sides); the enemies and the objectives (an arena has neither);
 ## the map EXITS (an arena is one map — a client asks for no map change);
-## and what a broken crate DROPS (the pickups on the wire are the
-## arena's, placed by the server from NETLEVEL.PRS).
+## and a drop that is scenery rather than an item (a wreck's fire sprite:
+## the host shows its own, and nothing about it can be taken).
 ##
 ## Method prefixes: `_c_*` = client → server RPC (the sender is the actor),
 ## `_s_*` = server → client RPC (also invoked locally on the host so one
@@ -109,7 +119,9 @@ const F_DEAD: int = 4
 ## other. That is why the hello and the kick travel as raw bytes
 ## (send_bytes), outside that list — a mismatch still gets its reason
 ## across instead of hanging on "Connecting...".
-const PROTOCOL_VERSION: int = 3
+## 4: `_s_pickup_add` — a broken crate's drop is a server-owned pickup,
+## and the pickup wire carries whether each one is a drop.
+const PROTOCOL_VERSION: int = 4
 const HELLO_TAG: String = "SKYNET_HELLO"      # HELLO_TAG|version|class|name
 const KICK_TAG: String = "SKYNET_KICK"        # KICK_TAG|reason
 const MAX_RAW_BYTES: int = 256
@@ -203,7 +215,8 @@ var local_class: int = CLASS_HUMAN
 var settings: Dictionary = {}
 ## id → {name, kills, deaths, hp, armor, alive, bot, pos, weapon, cls}
 var players: Dictionary = {}
-## key → {si (sprite index), pos (Vector3), taken (bool)}
+## key → {si (sprite index), pos (Vector3), taken (bool), drop (bool:
+## left by a broken prop, not placed from NETLEVEL.PRS)}
 var pickups: Dictionary = {}
 var time_left: float = 0.0
 var match_running: bool = false
@@ -589,7 +602,7 @@ func _pickups_wire() -> Dictionary:
 	var out: Dictionary = {}
 	for k in pickups:
 		var p: Dictionary = pickups[k]
-		out[k] = [int(p["si"]), p["pos"], bool(p["taken"])]
+		out[k] = [int(p["si"]), p["pos"], bool(p["taken"]), bool(p.get("drop", false))]
 	return out
 
 @rpc("authority", "call_remote", "reliable")
@@ -602,7 +615,8 @@ func _s_welcome(cfg: Dictionary, roster: Dictionary, wire: Dictionary, tl: int, 
 	pickups.clear()
 	for k in wire:
 		var a: Array = wire[k]
-		pickups[int(k)] = {"si": int(a[0]), "pos": a[1], "taken": bool(a[2])}
+		pickups[int(k)] = {"si": int(a[0]), "pos": a[1], "taken": bool(a[2]),
+			"drop": a.size() > 3 and bool(a[3])}
 	time_left = float(tl)
 	match_running = running
 	active = true
@@ -1066,7 +1080,7 @@ func server_place_pickups(ammo_spots: Array, weapon_spots: Array) -> void:
 				pos = a[ai % a.size()]
 				ai += 1
 			var si: int = int(choices[randi() % choices.size()])
-			pickups[_next_pickup_key] = {"si": si, "pos": pos, "taken": false}
+			pickups[_next_pickup_key] = {"si": si, "pos": pos, "taken": false, "drop": false}
 			_next_pickup_key += 1
 	print("[net] placed %d pickups on %d ammo / %d weapon spots" % [pickups.size(), a.size(), w.size()])
 
@@ -1114,7 +1128,7 @@ func _srv_pickup(key: int, by: int) -> void:
 			v["armor"] = clampf(float(v["armor"]) + float(armor) / 65536.0, 0.0, 1.0)
 		if heal > 0 or armor > 0:
 			_srv_send_health(by, 0)
-	if bool(settings.get("replenish", true)):
+	if bool(settings.get("replenish", true)) and not bool(p.get("drop", false)):
 		_pickup_respawn_at[key] = Time.get_ticks_msec() + int(PICKUP_RESPAWN * 1000.0)
 	_s_pickup_taken.rpc(key, by)
 	_s_pickup_taken(key, by)
@@ -1124,6 +1138,36 @@ func _s_pickup_taken(key: int, by: int) -> void:
 	if pickups.has(key):
 		pickups[key]["taken"] = true
 	pickup_taken.emit(key, by)
+
+## Server: a broken prop has left item `si` at `pos` (world space, on
+## the ground). It becomes one more of the server's pickups, under a key
+## of its own, on every peer at once — the host's own call below is the
+## same path a client's RPC takes. Returns the key, or -1 off the server
+## or for a sprite that is no item.
+func server_drop_pickup(si: int, pos: Vector3) -> int:
+	if not is_server() or not PickupData.ITEMS.has(si) or not _sane_pos(pos):
+		return -1
+	var key: int = _next_pickup_key
+	_next_pickup_key += 1
+	_s_pickup_add.rpc(key, si, pos)
+	_s_pickup_add(key, si, pos)
+	return key
+
+@rpc("authority", "call_remote", "reliable")
+func _s_pickup_add(key: int, si: int, pos: Vector3) -> void:
+	pickups[key] = {"si": si, "pos": pos, "taken": false, "drop": true}
+	pickup_spawned.emit(key)
+
+## A new round is the arena as NETLEVEL.PRS placed it: what the last one's
+## crates left behind goes with it.
+func _forget_drops() -> void:
+	_due.clear()
+	for k in pickups:
+		if bool(pickups[k].get("drop", false)):
+			_due.append(k)
+	for k in _due:
+		pickups.erase(k)
+		_pickup_respawn_at.erase(k)
 
 @rpc("authority", "call_remote", "reliable")
 func _s_pickup_spawn(key: int) -> void:
@@ -1292,6 +1336,7 @@ func restart_match() -> void:
 		players[id]["alive"] = false
 	time_left = float(settings.get("time_limit", 0)) * 60.0
 	match_running = true
+	_forget_drops()
 	for k in pickups:
 		pickups[k]["taken"] = false
 	_pickup_respawn_at.clear()
@@ -1306,6 +1351,7 @@ func _s_restart() -> void:
 	for id in players:
 		players[id]["kills"] = 0
 		players[id]["deaths"] = 0
+	_forget_drops()
 	for k in pickups:
 		pickups[k]["taken"] = false
 	match_restarted.emit()

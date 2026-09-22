@@ -15,7 +15,6 @@
 #                      the map has already spent by the time a player is there
 #   exit_forced        the port takes a doorway a chain reaches whatever the
 #                      walk did to its bit; the walk alone would shut it
-231 04c97 EF prox_gate loaded_state
 239 02a73 EF prox_gate mover_absent
 281 04ae4 EF prox_gate port_use_reach
 283 02f3a EF prox_gate chain_extra

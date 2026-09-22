@@ -2501,6 +2501,10 @@ func _on_mission_failed() -> void:
 
 ## A destroyed object's drop (crate → ammo, locker → medkit).
 func _on_drop_requested(pos: Vector3, drop_type: int) -> void:
+	if _dm != null:
+		# A deathmatch: the drop is the server's pickup (dm_game.drop_item).
+		_dm.drop_item(pos, drop_type)
+		return
 	if _current_level != null:
 		LevelLoader.spawn_drop(_current_level, pos, drop_type)
 

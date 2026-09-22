@@ -33,6 +33,7 @@ const Explosion := preload("res://scripts/explosion.gd")
 const TerminatorVision := preload("res://scripts/net/terminator_vision.gd")
 const MotionDetector := preload("res://scripts/net/motion_detector.gd")
 const PauseState := preload("res://scripts/pause_state.gd")
+const PickupData := preload("res://scripts/pickup_data.gd")
 
 const SPRITE_PIXEL_SIZE: float = 2.0
 const FEED_LINES: int = 5
@@ -265,6 +266,8 @@ func _on_player_left(id: int) -> void:
 			_avatars[id].queue_free()
 		_avatars.erase(id)
 	_brains.erase(id)
+	if level != null and level.behaviour != null:
+		level.behaviour.prox_body_forget(id)
 	_refresh_scores()
 
 func _on_pose(id: int, pos: Vector3, yaw: float, pitch: float, flags: int) -> void:
@@ -296,6 +299,8 @@ func _on_respawned(id: int, pos: Vector3, yaw: float) -> void:
 		av.spawn_at(pos, yaw)
 		if _brains.has(id):
 			_brains[id].on_respawn()
+			if Net.is_server() and level != null and level.behaviour != null:
+				level.behaviour.prox_body_arm(id, av.eye())
 
 # ---------------------------------------------------------------------
 # The arena's triggers (M5)
@@ -383,6 +388,15 @@ func trigger_intent(off: int, kind: int, at: Vector3, eye: Vector3, amount: floa
 		level.behaviour.obj_hit(off, amount)
 	else:
 		level.behaviour.on_player_activate(off, at, eye)
+
+## Where a bot's eye is this physics frame (bot_brain.gd). A bot is the
+## server's own body and has no client to notice the frame it walks into
+## an 0xF1/0xF2 radius, so the server's branch is told directly, through
+## the per-body sweep (Behaviour.prox_body) — the one the handler 0x138223
+## would have run for it had DOS known a second player.
+func bot_proximity(id: int, eye: Vector3) -> void:
+	if Net.is_server() and level != null and level.behaviour != null:
+		level.behaviour.prox_body(id, eye)
 
 # ---------------------------------------------------------------------
 # Local player replication
@@ -525,6 +539,13 @@ func _on_restarted() -> void:
 	if _over != null:
 		_over.queue_free()
 		_over = null
+	# The last round's drops are gone from the server's list (net_game
+	# _forget_drops); what shows them goes too.
+	for key in _pickup_nodes.keys():
+		if not Net.pickups.has(key):
+			if is_instance_valid(_pickup_nodes[key]):
+				_pickup_nodes[key].queue_free()
+			_pickup_nodes.erase(key)
 	for key in Net.pickups:
 		if not _pickup_nodes.has(key):
 			_spawn_pickup_node(key)
@@ -559,6 +580,31 @@ func _spawn_pickup_node(key: int) -> void:
 	p.position = Vector3(pos.x, pos.y + world_h * 0.5, pos.z)
 	_pickups_root.add_child(p)
 	_pickup_nodes[key] = p
+
+## A prop broke on the server's level and its destruction type drops
+## something (Behaviour.item_dropped, zone-local `pos`). DOS FUN_00124293
+## picks one sprite of the type's drop list (Skynet.exe 0x423d6) and
+## writes it into the record list (v1.01 FUN_00124619), where it is a map
+## billboard like any other; the pick is the server's, as every pickup of
+## an arena is. An ITEM goes on the wire as a server-owned pickup
+## (Net.server_drop_pickup), so every peer sees one crate's one drop and
+## the server alone decides who took it. Anything else on a drop list is
+## scenery (a wreck's fire) and stays the host's own sprite.
+func drop_item(pos: Vector3, drop_type: int) -> void:
+	if not Net.is_server() or level == null:
+		return
+	if drop_type < 0 or drop_type >= PickupData.DROPS.size():
+		return
+	var choices: Array = PickupData.DROPS[drop_type]
+	if choices.is_empty():
+		return
+	var si: int = int(choices[randi() % choices.size()])
+	if si <= 0:
+		return
+	if not PickupData.ITEMS.has(si):
+		LevelLoader.spawn_item(level, pos, si)
+		return
+	Net.server_drop_pickup(si, _ground(pos))
 
 func _on_pickup_taken(key: int, by: int) -> void:
 	var node = _pickup_nodes.get(key)

@@ -65,6 +65,15 @@ var branch: Node = null
 ## the way IN and not again until they have been left (a port rule: DOS
 ## re-fires as soon as a chain re-arms the trigger, plan §8 question 3).
 var latched: bool = false
+## The same, for every OTHER body a deathmatch server watches — the bots,
+## which run on the server and have no client of their own to notice the
+## frame they walk in (body id → inside on its last sweep). DOS has one
+## player and so one test (0x138223 measures the eye at [0xd49b4/b8/bc]
+## and nothing else), and the port's leave/re-enter latch in `latched`
+## above was one bool for that one player; with two bodies in a radius,
+## one standing inside held it for both. Only a ROLE_SERVER branch ever
+## fills this (Behaviour.prox_body); single-player never touches it.
+var latched_by: Dictionary = {}
 ## The key has already flipped this gate during this press, so the sweep
 ## that runs later in the same tick must leave it alone or it would flip
 ## straight back.
@@ -213,6 +222,38 @@ func prox_watch(eye: Vector3, use_edge: bool) -> void:
 	elif not here and latched:
 		latched = false
 
+## One tick of this trigger for a body other than the local player — a
+## deathmatch bot, on the server (Behaviour.prox_body). Only the walk-in
+## kinds answer it: 0xF1/0xF2 (0x138223) fire for a body inside the slot's
+## radius, and do exactly what they do for the player — ObjFlipLink from
+## the trigger, then `state &= 0xFE` (0x139644 with -2). An 0xEF gate
+## (0x1386a0) runs only in the frame ACTIVATE goes down, and a bot has no
+## key, so a body walking through one is nothing to it.
+func body_watch(body: int, eye: Vector3) -> void:
+	var a: int = act_now()
+	if a != Rules.ACT_PROX_CHAIN_A and a != Rules.ACT_PROX_CHAIN_B:
+		return
+	if not enabled():
+		return
+	var here: bool = inside(eye)
+	var was: bool = bool(latched_by.get(body, false))
+	if here and not was:
+		latched_by[body] = true
+		print("[action] gate @%05x (act %02x) tripped by body %d at %s" % [id, a, body, position])
+		flip()
+		_clear_enable()
+	elif not here and was:
+		latched_by.erase(body)
+
+## A body just (re)spawned: whether it stands inside is where its latch
+## starts, as prox_arm does for the player — it waits to step out and back
+## in, and a latch left over from its last life does not hold it.
+func body_arm(body: int, eye: Vector3) -> void:
+	if inside(eye):
+		latched_by[body] = true
+	else:
+		latched_by.erase(body)
+
 ## The use key reached this record — through the crosshair ray that found
 ## its mesh, or through the nearest-button fallback.
 ##
@@ -297,6 +338,7 @@ func walk_once() -> void:
 ## not start with the player already "inside" a trigger he was standing in.
 func prox_forget() -> void:
 	latched = false
+	latched_by.clear()
 	edge_done = false
 	exit_walked = false
 

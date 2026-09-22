@@ -132,6 +132,14 @@ const PATH_SETTLE_FRAMES: int = 120
 ## Shots per node: the assault rifle's 20 points are one damage stage
 ## (DESTRUCT_DAMAGE_PER_STAGE = 16), so one shot is the usual whole test.
 const SHOT_MAX: int = 3
+## A death check with real rounds: the deepest pool it empties one round
+## at a time (twelve rifle rounds; the one pool deeper than that in the
+## shipped maps, MAP.280's 10500-point generator, goes by ObjHit instead),
+## the rounds it may fire over the count, and how many standing points it
+## tries for a clear one.
+const SHOT_DEATH_MAX: int = 12
+const SHOT_DEATH_SPARE: int = 2
+const SHOT_DEATH_SPOTS: int = 12
 ## Weapon slot 2 (ASSAULT RIFLE) — selected with the number key, so even
 ## that goes through the input path.
 const SHOT_WEAPON: int = 2
@@ -565,11 +573,39 @@ func _reset(level, snap: Dictionary) -> void:
 	# one map change this level instance is allowed (step 5h).
 	level.behaviour.exit_forget()
 	level.triggers.clear_armed()
+	_replay_load(level)
 	level.behaviour.objectives_left = int(snap["objectives"])
 	main.player.set("water_level", float(snap["water"]))
 	_exit_seen.clear()
 	if level.bus != null:
 		level.bus.record(false)
+
+## The map as its FIRST entity sweep leaves it, which is what the graph
+## simulates from (trigger_graph._first_sweep): ObjDoAction (FUN_00139698)
+## runs the handler of every record whose bit 0 is up from the first tick
+## of the level, so a cue laid down enabled has played and cleared its bit
+## (0x137dbd for the one-shot sounds, 0x13779d/0x1377d0 retire the
+## messages and objectives) before a player can press anything. The
+## running game does it once, as its branch enters the tree
+## (Behaviour._ready); a reset puts the authored bytes back and so has to
+## do it again. The lamps, movers, wrecks, demolitions, water and spawn
+## sprites need nothing here — they are the tick's, and the tick that
+## follows a reset runs them. The count the objectives take off is put
+## back by the caller.
+func _replay_load(level) -> void:
+	var rt = level.triggers
+	if rt == null or level.map == null:
+		return
+	for e in level.map.entities:
+		var off: int = int(e.file_off)
+		if e.marker_type >= 0 or not rt.enabled(off):
+			continue
+		var kind: String = String(Rules.rule_for_record(rt.act(off), e.flags & 3)["kind"])
+		if kind in LOAD_CUES:
+			rt.fire(off)
+
+## The one-shot cues _replay_load fires.
+const LOAD_CUES: PackedStringArray = ["hint", "objective", "fail", "sound_cue", "voice"]
 
 ## The act bytes and links as the MAP was parsed. A save's overlay only
 ## stores the ones play has CHANGED, so restore_state cannot undo a cue
@@ -973,6 +1009,15 @@ func _check_shot(level, node: Dictionary, num: int, id: int, act: int,
 	if not bool(spot["ok"]):
 		_row(num, id, act, kind, how, UNREACHABLE, String(spot["why"]))
 		return
+	if how == "shot_death":
+		# Real rounds first: a spot from where the round the rifle really
+		# fires reaches THIS record before anything else that breaks, and a
+		# pool the rifle can empty from there.
+		var clear: Dictionary = await _death_spot(level, id, aim)
+		if bool(clear["ok"]):
+			await _check_shot_death(level, node, num, id, act, kind, how, aim)
+			return
+		spot["why"] = String(clear["why"])
 	_drv.place(spot["feet"])
 	_drv.face(aim)
 	# The rifle again, and not once per map: a check that walked or was
@@ -991,6 +1036,7 @@ func _check_shot(level, node: Dictionary, num: int, id: int, act: int,
 	# the barrel — which, since the reset below, is every death there are
 	# hit points left to take off.
 	var by_hit: bool = false
+	var fallback: String = String(spot.get("why", ""))
 	for _i in SHOT_MAX:
 		await _fire_once()
 		if not b.is_damageable(id) or bus.history().size() > 0:
@@ -1032,10 +1078,157 @@ func _check_shot(level, node: Dictionary, num: int, id: int, act: int,
 	bus.record(false)
 	var why: String = _why(TriggerEquiv.compare(node.get("first", []), got))
 	why = _join(why, _mover_truth(level, node.get("first", [])))
+	var via: String = ""
+	if by_hit:
+		via = "by ObjHit" if fallback.is_empty() else "by ObjHit: " + fallback
 	if not why.is_empty():
-		_row(num, id, act, kind, how, FAIL, why + (" (by ObjHit)" if by_hit else ""))
+		_row(num, id, act, kind, how, FAIL, why + (" (%s)" % via if by_hit else ""))
 		return
-	_row(num, id, act, kind, how, PASS, "by ObjHit" if by_hit else "")
+	_row(num, id, act, kind, how, PASS, via)
+
+## A record set off by being SHOT TO DEATH (state bit 2, ObjHit
+## FUN_00139019 -> the depletion edge), proven with the rifle's own rounds:
+## fired from `_death_spot`, as many as its pool takes, and whatever the
+## chain did laid against the graph's `first`. The map is the one the
+## check was reset to, so what the graph simulated is what is shot at.
+func _check_shot_death(level, node: Dictionary, num: int, id: int, act: int,
+		kind: String, how: String, aim: Vector3) -> void:
+	var b = level.behaviour
+	var bus = level.bus
+	# The records the chain is to demolish, and whether each is still
+	# standing before the first round (see _blasted below).
+	var standing: Dictionary = {}
+	for t in (node.get("first", []) as Array):
+		var tok: String = String(t)
+		if tok.begins_with("demolish@") and tok.substr(9).is_valid_hex_number():
+			var off: int = tok.substr(9).hex_to_int()
+			standing[off] = not level.triggers.spent(off)
+	bus.record(true)
+	bus.clear()
+	var shots: int = 0
+	for _i in _shots_to_kill(level, id) + SHOT_DEATH_SPARE:
+		if not b.is_damageable(id):
+			break
+		_drv.face(aim)
+		await _fire_once()
+		shots += 1
+	var dead: bool = not b.is_damageable(id)
+	await _drv.frames(ACT_FRAMES)
+	for _i in mini(HEAR_FRAMES_PER_EFFECT * (node.get("first", []) as Array).size(),
+			HEAR_FRAMES_MAX):
+		if _heard_all(node.get("first", []), bus.history()):
+			break
+		await _drv.frames(1)
+	var got: PackedStringArray = TriggerEquiv.tokens(bus.take())
+	bus.record(false)
+	var why: String = "" if dead else "%d rifle rounds did not empty its pool" % shots
+	var res: Dictionary = TriggerEquiv.compare(node.get("first", []), got)
+	var blasted: PackedStringArray = _blasted(level, res, standing)
+	why = _join(why, _why(res))
+	why = _join(why, _mover_truth(level, node.get("first", [])))
+	if not why.is_empty():
+		_row(num, id, act, kind, how, FAIL, why + " (%d rounds)" % shots)
+		return
+	_row(num, id, act, kind, how, PASS,
+		"" if blasted.is_empty() else "the blast took %s first" % " ".join(blasted))
+
+## A demolition the graph promises and the game did not announce, because
+## the record went some other way first: the record that died throws its
+## own blast (FUN_00124293, the i16 at its link record +1 — Behaviour.
+## radial_blast), and a prop standing next to it can die in that blast
+## before the chain's 0x1B handler (0x1378bf) is dispatched on the next
+## sweep. That handler then finds a spent pool and does nothing — which is
+## the runtime's rule and DOS's (Behaviour.demolish). What it was there to
+## do has been done: the record is gone. The graph walks the links and
+## cannot see a blast, so a missing `demolish@X` is forgiven exactly where
+## X was standing before the first round and is spent now, and nowhere
+## else. (The death edge taken through ObjHit on a reset map could never
+## show this: the reset puts the bytes back, not the props the last check
+## blew away, so the blast found nothing there to kill.)
+func _blasted(level, res: Dictionary, standing: Dictionary) -> PackedStringArray:
+	var out := PackedStringArray()
+	var keep := PackedStringArray()
+	for t in (res.get("missing", PackedStringArray()) as PackedStringArray):
+		var tok: String = String(t)
+		var off: int = tok.substr(9).hex_to_int() if tok.begins_with("demolish@") else -1
+		if off >= 0 and bool(standing.get(off, false)) and level.triggers.spent(off):
+			out.append("%05x" % off)
+		else:
+			keep.append(tok)
+	res["missing"] = keep
+	res["ok"] = keep.is_empty() and (res.get("extra", PackedStringArray()) as PackedStringArray).is_empty()
+	return out
+
+## Rounds of the check's rifle a record's pool takes (its hit points over
+## the weapon record's damage, rounded up; one for a pool of nothing -
+## ObjHit's `hp <= 0` edge comes on the first hit).
+func _shots_to_kill(level, id: int) -> int:
+	var hp: float = float(level.triggers.hp(id)) if level.triggers.has_hp(id) else 0.0
+	var dmg: float = _rifle_damage()
+	if dmg <= 0.0:
+		return SHOT_DEATH_MAX + 1
+	return maxi(ceili(hp / dmg), 1)
+
+func _rifle_damage() -> float:
+	var ws = main.player.get("_weapons")
+	if ws is Array and SHOT_WEAPON < (ws as Array).size():
+		return float((ws as Array)[SHOT_WEAPON].get("dmg", 0.0))
+	return 0.0
+
+## Where the rifle can shoot record `id` to death with nothing else in
+## the way: stood on, settled, faced, and the round the gun really fires
+## - from the camera along the view (fly_camera._shoot, the hitscan of a
+## gun whose DOS muzzle offset is 0,0,0) - cast to see what it meets
+## first. The spot search measures from a standing point, and the body
+## the controller has settled is not at it: from where it came to rest
+## the round met the crate IN FRONT of the one aimed at, emptied that
+## pool first, and the chain behind then had nothing left to demolish
+## (the 0x1B handler 0x1378bf deals HP + 1 through ObjHit, which does
+## nothing to a record already spent). Every spot the search finds is
+## tried; the body is left standing at the first one that is clear.
+## {ok: false, why} when none is, or when the pool is deeper than the
+## check will empty round by round.
+func _death_spot(level, id: int, aim: Vector3) -> Dictionary:
+	if not level.triggers.has_hp(id) or float(level.triggers.hp(id)) <= 0.0:
+		return {"ok": false, "why": ""}      # no pool: nothing for a round to empty
+	var need: int = _shots_to_kill(level, id)
+	if need > SHOT_DEATH_MAX:
+		return {"ok": false, "why": "its pool takes %d rounds" % need}
+	var target = level.behaviour.hit_node(id)
+	var tried: int = 0
+	for feet in _shooting_spots(level, id, aim, SHOT_DEATH_SPOTS):
+		tried += 1
+		_drv.place(feet)
+		_drv.face(aim)
+		_drv.press_key(KEY_1 + SHOT_WEAPON)
+		await _drv.frames(PRE_FRAMES)
+		_drv.face(aim)
+		await _drv.physics(1)
+		if _round_meets(target):
+			return {"ok": true, "why": ""}
+	return {"ok": false, "why": "no clear round from %d spot(s)" % tried}
+
+## Does the rifle's round, fired now, meet `target` before anything else?
+## The walk up the collider's parents is the one fly_camera._shoot makes
+## to find what takes the damage.
+func _round_meets(target: Node) -> bool:
+	var cam = main.player.get("_cam")
+	if cam == null or not main.player.has_method("aim_dir"):
+		return false
+	var from: Vector3 = (cam as Node3D).global_position
+	var q := PhysicsRayQueryParameters3D.create(from,
+		from + (main.player.call("aim_dir") as Vector3) * 60000.0)
+	q.collide_with_areas = true
+	q.exclude = [main.player.get_rid()]
+	var hit := _space.intersect_ray(q)
+	if not hit.has("collider"):
+		return false
+	var c = hit["collider"]
+	while c != null and c is Node:
+		if c == target:
+			return true
+		c = (c as Node).get_parent()
+	return false
 
 ## One trigger pull, waited out: the weapon's own cool-down decides how
 ## often the key does anything (fly_camera._fire_cd).
@@ -1675,6 +1868,14 @@ func _aim_point(level, id: int) -> Vector3:
 ## A place with a clear line at `aim` whose first collider is the node
 ## itself — where a player could actually shoot it from.
 func _shooting_spot(level, id: int, aim: Vector3) -> Dictionary:
+	var all: Array = _shooting_spots(level, id, aim, 1)
+	if all.is_empty():
+		return {"ok": false, "feet": Vector3.INF, "why": "no line of fire to it"}
+	return {"ok": true, "feet": all[0], "why": ""}
+
+## Up to `limit` such places, nearest ring first.
+func _shooting_spots(level, id: int, aim: Vector3, limit: int) -> Array:
+	var out: Array = []
 	var target = level.behaviour.hit_node(id)
 	for dist in SHOT_DISTANCES:
 		for d in RING:
@@ -1693,9 +1894,12 @@ func _shooting_spot(level, id: int, aim: Vector3) -> Dictionary:
 				var c = hit["collider"]
 				while c != null and c is Node:
 					if c == target:
-						return {"ok": true, "feet": feet, "why": ""}
+						out.append(feet)
+						if out.size() >= limit:
+							return out
+						break
 					c = (c as Node).get_parent()
-	return {"ok": false, "feet": Vector3.INF, "why": "no line of fire to it"}
+	return out
 
 ## The graph's `first` for an 0xEF gate the player is standing in whose
 ## chain ends in doorway `id` — what the key really does here. Empty when
@@ -1872,11 +2076,13 @@ static func xfail_key(num: int, id: int) -> String:
 ##                         the light handler runs on the first tick of the
 ##                         level and clears it (the DOS sweep does the
 ##                         same), so the first press a player makes is the
-##                         graph's SECOND walk of them. The runtime is
-##                         right; the graph would have to settle a map
-##                         once before it simulates, which would move
-##                         every lock line that carries a record authored
-##                         enabled
+##                         graph's SECOND walk of them. Settled
+##                         2026-09-22: the graph runs that first sweep
+##                         before it simulates (trigger_graph._first_sweep)
+##                         and the reset replays the cues the branch fires
+##                         on entering the tree (_replay_load); eight lock
+##                         lines moved, and the one row this tag pinned
+##                         passes. Kept for a record the sweep still misses
 ##   exit_forced           a doorway laid down with bit 0 already up, and a
 ##                         gate whose chain ends in it. The walk turns the
 ##                         bit OFF, so the graph's first activation takes

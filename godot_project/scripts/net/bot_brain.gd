@@ -92,6 +92,11 @@ func _physics_process(delta: float) -> void:
 		_think_t = THINK_INTERVAL
 		_think()
 	_move(delta)
+	# Where the bot now stands, for the walk-in triggers of the arena: the
+	# server's branch measures its eye as the 0xF1/0xF2 handler (0x138223)
+	# measures the player's.
+	if game != null and game.has_method("bot_proximity"):
+		game.bot_proximity(avatar.net_id, avatar.eye())
 	_aim_and_fire(delta)
 	_pose_t += delta
 	if _pose_t >= POSE_INTERVAL:

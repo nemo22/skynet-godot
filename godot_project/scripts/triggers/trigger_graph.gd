@@ -51,7 +51,9 @@ const FORMAT: String = "skynet.triggers"
 ## 3 (2026-09-22): a destructible is only staged where TRANSFRM.PRS has a
 ## template for its mesh — the graph reads that file now, so it has an
 ## input it did not have before.
-const GRAPH_VERSION: int = 3
+## 4 (2026-09-22): the simulation starts from the map as its first
+## entity sweep leaves it, not from the authored bytes (_first_sweep).
+const GRAPH_VERSION: int = 4
 ## No real chain is anywhere near this long; a crafted one stops here.
 const WALK_LIMIT: int = 256
 ## AI state 11 = a vehicle that drives a marker path (v1.01 0x127400).
@@ -817,12 +819,62 @@ static func _ends_instance(fx: Array) -> bool:
 			return true
 	return false
 
+## The state a player finds the map in: the bytes it was authored with,
+## after the level's FIRST entity sweep has run over them (_first_sweep).
 static func _fresh_state(ctx: Dictionary) -> Dictionary:
 	var st: Dictionary = {"bit": {}, "act": {}, "stage": {}, "dir": {}, "spent": {}}
 	for e in (ctx["map"].entities as Array):
 		st["bit"][e.file_off] = e.state_byte
 		st["act"][e.file_off] = e.link_act_type
+	_first_sweep(ctx, st)
 	return st
+
+## Kinds whose DOS handler runs on nothing but its own bit 0, so that one
+## authored with the bit up does its work on the first tick of the level
+## (_first_sweep). The ones left out wait for something else before they
+## do anything: the player's eye (0xEF 0x1386a0, 0xF1/0xF2 0x138223), his
+## feet in a doorway (0xF0 0x138081), the objective counter (0x2C
+## 0x138038), a machine's AI tick (the markers, 0x127400) — or they run
+## for as long as the bit is up and never take it down (0xEE 0x12a47a,
+## the pickups 0x11d670).
+const SWEPT_AT_LOAD: PackedStringArray = [
+	"light", "mover", "destructible", "demolish", "water", "spawn",
+	"hint", "objective", "fail", "sound_cue", "voice",
+]
+
+## One entity sweep over the map as authored, BEFORE anything is
+## simulated. ObjDoAction (FUN_00139698) dispatches the handler of every
+## record whose bit 0 is up, on every tick, from the first tick of the
+## level on — no chain is needed for that, the bit is the whole of it.
+## So a record LAID DOWN enabled has already run its handler once by the
+## time a player can press anything: MAP.231's eighteen ceiling lights
+## (act 0x01, handler 0x137700) are authored with bit 0 up, XOR their
+## enable word on the first tick and clear their own bit, and the first
+## press of the gate that walks them raises the bit again rather than
+## lowering it. The graph used to simulate from the authored byte, so its
+## `first` was DOS's second walk of them and its `second` the first
+## (xfail `loaded_state`). The runtime has always done it this way: the
+## branch fires every enabled cue on entering the tree and the first tick
+## runs the lamps, the movers, the wrecks, the demolitions, the water and
+## the spawn sprites (Behaviour._ready, Behaviour.tick).
+##
+## What the sweep itself does is discarded — it is the level loading,
+## not anything a trigger does — and only the state it leaves behind is
+## kept: bits taken down, cues retired to 0xFF, a mover at the far end of
+## its travel and facing back, a wreck one stage on, a demolished record
+## spent. A continuous rotator keeps its bit and spins on (_settle).
+static func _first_sweep(ctx: Dictionary, st: Dictionary) -> void:
+	var fx: Array = []
+	var rose: Array = []
+	for id in ctx["order"]:
+		var iid: int = int(id)
+		if ctx["markers"].has(iid) or (int(st["bit"].get(iid, 0)) & 1) == 0:
+			continue
+		if not SWEPT_AT_LOAD.has(String(ctx["rule"][iid]["kind"])):
+			continue
+		_edge(ctx, iid, st, fx)
+		rose.append(iid)
+	_settle(ctx, st, fx, rose)
 
 ## One activation: the chain walk, then the edge handlers in walk order
 ## for every node whose bit 0 went UP, then the movers settle.

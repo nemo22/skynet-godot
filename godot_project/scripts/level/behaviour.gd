@@ -478,6 +478,46 @@ func prox_tick(eye: Vector3) -> void:
 	for t in _prox_by_id.values():
 		t.edge_done = false
 
+## The proximity sweep for a body that is NOT this peer's player — a
+## deathmatch bot, which lives on the server and has nobody else to notice
+## where it walks (dm_game.bot_proximity). The DOS walk-in handler
+## (0xF1/0xF2, 0x138223) measures one eye; the port runs the same measure
+## once per body and keeps a latch per body (Trigger.latched_by), so one
+## body standing inside a radius no longer holds it shut for another.
+##
+## Server only. A client's own player is swept by `tick` like any other
+## local player and what it trips goes to the server as an intent; a
+## campaign level is ROLE_LOCAL and has one player, whose sweep and latch
+## are untouched by this. `eye` is a WORLD position, taken into the
+## records' space here.
+func prox_body(body: int, eye: Vector3) -> void:
+	if net_role != ROLE_SERVER:
+		return
+	_ensure_index()
+	var at: Vector3 = eye - zone_origin
+	for t in _prox:
+		if t.is_wall_button():
+			continue
+		if runtime != null and runtime.spent(int(t.id)):
+			continue
+		t.body_watch(body, at)
+
+## A body the server watches has just been put down (a bot's respawn):
+## its latches start from where it stands, as prox_arm does for the player.
+func prox_body_arm(body: int, eye: Vector3) -> void:
+	if net_role != ROLE_SERVER:
+		return
+	_ensure_index()
+	var at: Vector3 = eye - zone_origin
+	for t in _prox:
+		t.body_arm(body, at)
+
+## …and has gone (a bot removed from the match).
+func prox_body_forget(body: int) -> void:
+	_ensure_index()
+	for t in _prox:
+		t.latched_by.erase(body)
+
 ## Called right after the player is placed: latch every trigger the spawn
 ## point already lies inside, so a return exit that drops the player
 ## beside the gate it came through (MAP.210 marker 27 is 64 units from the
