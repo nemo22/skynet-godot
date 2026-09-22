@@ -28,9 +28,7 @@ mission 230
 	exit 232 03678 expect snd40 exit233/0
 	exit 233 04e8d expect snd44 exit234/0
 	wait 234 0ea0c expect path@0ea0c obj1 voice23039
-	xfail no_ride
 	counter 0
-	xfail no_ride
 mission 240
 	exit 240 11766 expect snd44 exit248/10
 	must_not use 248 0381d expect break@035a6:2

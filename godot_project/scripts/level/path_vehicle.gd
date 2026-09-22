@@ -75,6 +75,10 @@ var actor: Node3D = null
 var target: int = 0
 var speed: float = 0.0
 var target_speed: float = 0.0
+## Set once the machine has run its path out and fired the record the
+## last marker points at. The DOS handler says the same thing by cutting
+## the link (0x1274b2), and nothing puts it back: a path is run once.
+var finished: bool = false
 
 # ---------------------------------------------------------------------
 # The live bytes (the runtime's)
@@ -143,8 +147,21 @@ func path_watch(delta: float, player_pos: Vector3) -> void:
 			# once, cut the link and coast to a stop.
 			print("[action] path vehicle at @%05x fires the end of its path @%05x"
 				% [cur.file_off, nxt.file_off])
+			# …and this is the moment this vehicle's own node has DONE
+			# what the graph says it does. The graph walks the whole chain
+			# from the marker and writes the marker's own token at the head
+			# of it (trigger_graph._edge, `path@<the marker>`), because DOS
+			# reaches that place from two sides: a chain that switches the
+			# markers on (MAP.210's lever, announced in
+			# Behaviour.present_fire) and the machine arriving at the end of
+			# them. MAP.234's HK has no lever — its markers are authored on
+			# and it is already flying when the roof loads — so the end case
+			# here is the only moment its path can be said to have run.
+			# MAP.210's truck ends on a link of -2 and never reaches this.
+			branch.say(id, "marker", "path", {"head": head, "vehicle": vehicle})
 			branch.flip_chain(nxt.file_off)
 			_rt().cut_link(cur.file_off)
+			finished = true
 			target_speed = 0.0
 			return
 	var to: Vector3 = dos_pos(cur) - actor.position
@@ -165,6 +182,15 @@ func _in_window(player_pos: Vector3) -> bool:
 	var reach: int = Rules.PATH_TICK_CELLS
 	return absi(floori(actor.position.x / cell) - floori(player_pos.x / cell)) <= reach \
 		and absi(floori(actor.position.z / cell) - floori(player_pos.z / cell)) <= reach
+
+## The same window, asked of a WORLD position: would DOS tick this
+## machine with the player standing there? The level's sweep hands
+## path_watch a zone-local point, and the offset between the two
+## spaces is the actor's own.
+func watched_from(at: Vector3) -> bool:
+	if actor == null or not is_instance_valid(actor):
+		return false
+	return _in_window(at - (actor.global_position - actor.position))
 
 ## The stop case calls ObjFlipLink with "and 0xFE": the whole path goes
 ## off, so a lever has to switch it on again before the vehicle moves.
@@ -213,6 +239,7 @@ func path_forget() -> void:
 	target = 0
 	speed = 0.0
 	target_speed = 0.0
+	finished = false
 
 ## One line of the console's report: what it is, where it is driving and
 ## how fast.

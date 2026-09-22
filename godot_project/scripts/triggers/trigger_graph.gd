@@ -769,6 +769,19 @@ static func _simulate(ctx: Dictionary, id: int, modes: Array) -> Dictionary:
 	if not starts or (ctx["chain"][id]["steps"] as Array).is_empty():
 		return {"first": [], "second": []}
 	var st: Dictionary = _fresh_state(ctx)
+	# A record whose only way of being set off is to be SHOT TO DEATH is
+	# GONE by the time anything answers the chain it fires. ObjFlipLink
+	# (v1.01 0x139caa) walks the links and twiddles state bytes and
+	# nothing else — it dispatches no handler at all — so every act a
+	# chain switches on waits for the next entity sweep, and ObjHit has
+	# destroyed the record that carried the chain before that sweep comes
+	# round. MAP.231's crate is the case the shipped data has: it
+	# demolishes ITSELF in its own death chain, and the running game
+	# refuses that (Behaviour.demolish — a record whose pool has run out
+	# answers nothing). The simulation promised the demolition because it
+	# never learnt that the record had died.
+	if _dies_when_fired(modes):
+		st["spent"][id] = true
 	var first: Array = _fire(ctx, id, st)
 	# An exit ENDS the level instance, so there is no second activation to
 	# simulate. The 0xF0 handler itself holds no latch — decoded from the
@@ -782,6 +795,19 @@ static func _simulate(ctx: Dictionary, id: int, modes: Array) -> Dictionary:
 	# (Behaviour.exit_taken) was the one that matched DOS.
 	var second: Array = [] if _ends_instance(first) else _fire(ctx, id, st)
 	return {"first": first, "second": second}
+
+## Is being shot to death the only way this node can be set off? A node
+## a key or a walk can also fire is still standing when it fires; this
+## one is not.
+static func _dies_when_fired(modes: Array) -> bool:
+	var death: bool = false
+	for m in modes:
+		var mode: String = String((m as Dictionary)["mode"])
+		if mode == "shot_death":
+			death = true
+		elif mode != "chain":
+			return false
+	return death
 
 ## Does this activation take the level away — i.e. is a map change part
 ## of what it comes to?

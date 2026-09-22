@@ -987,19 +987,37 @@ func _check_shot(level, node: Dictionary, num: int, id: int, act: int,
 	var bus = level.bus
 	bus.record(true)
 	bus.clear()
-	var drained: bool = false
+	# Set when the death edge was taken through ObjHit rather than left to
+	# the barrel — which, since the reset below, is every death there are
+	# hit points left to take off.
+	var by_hit: bool = false
 	for _i in SHOT_MAX:
 		await _fire_once()
 		if not b.is_damageable(id) or bus.history().size() > 0:
 			break
 	# A thousand-point generator is fifty rifle shots; the death bit is
-	# what is being checked, not the barrel. The first shot above went the
-	# whole way through the input path; the rest of the hit points are
-	# taken off through the same ObjHit the bullet calls.
-	if how == "shot_death" and b.is_damageable(id) and bus.history().is_empty():
+	# what is being checked, not the barrel — and not what the barrel HIT
+	# on the way either. Three rifle shots into a rack of crates take the
+	# crate in FRONT with them, and the chain of the record behind it then
+	# has nothing left to demolish: the 0x1B handler deals HP + 1 through
+	# ObjHit, and ObjHit does nothing to a record whose pool has already
+	# run out (Behaviour.demolish). So the shots above prove the input
+	# path, and then the map goes back as its file has it — the reset
+	# every check starts from — and the death edge is taken on THAT,
+	# through the same ObjHit the bullet calls, which is the map the
+	# graph simulated its `first` on.
+	if how == "shot_death":
+		_reset(level, _snap)
+		# The reset puts the map's own bytes back, and the sweeps answer
+		# that the way they answer any change (a lamp whose bit moved says
+		# so): heard out first, as every other check hears its reset out,
+		# before the recording starts.
+		await _drv.frames(PRE_FRAMES)
+		bus.record(true)
+		bus.clear()
 		var left: float = float(level.triggers.hp(id))
 		if left > 0.0:
-			drained = true
+			by_hit = true
 			b.obj_hit(id, left)
 	await _drv.frames(ACT_FRAMES)
 	# …and heard out, as an activation is: a wreck's own blast reaches the
@@ -1015,9 +1033,9 @@ func _check_shot(level, node: Dictionary, num: int, id: int, act: int,
 	var why: String = _why(TriggerEquiv.compare(node.get("first", []), got))
 	why = _join(why, _mover_truth(level, node.get("first", [])))
 	if not why.is_empty():
-		_row(num, id, act, kind, how, FAIL, why + (" (drained)" if drained else ""))
+		_row(num, id, act, kind, how, FAIL, why + (" (by ObjHit)" if by_hit else ""))
 		return
-	_row(num, id, act, kind, how, PASS, "drained" if drained else "")
+	_row(num, id, act, kind, how, PASS, "by ObjHit" if by_hit else "")
 
 ## One trigger pull, waited out: the weapon's own cool-down decides how
 ## often the key does anything (fly_camera._fire_cd).
@@ -1847,10 +1865,6 @@ static func xfail_key(num: int, id: int) -> String:
 ##   mover_absent          the graph names a mover the level built no node
 ##                         for, so the travel it promises has nothing to
 ##                         make it
-##   demolish_spent        a record whose own death fires a chain that
-##                         demolishes it: Behaviour.demolish refuses a
-##                         record already spent, and the simulation counts
-##                         the demolition it does not
 ##   loaded_state          the simulation starts from the byte the MAP was
 ##                         AUTHORED with, and some records have spent it
 ##                         before a player can reach them: MAP.231's
@@ -1874,6 +1888,14 @@ static func xfail_key(num: int, id: int) -> String:
 ##                         door sound, and DOS performs one map change per
 ##                         level instance either way). Runtime and graph
 ##                         disagree by design until that rule is revisited
+## Gone with M4 (2026-09-22): demolish_spent, 4 rows — one the GRAPH and
+## three this file. ObjFlipLink (v1.01 0x139caa) only walks the links and
+## twiddles state bytes, so a demolition waits for the next entity sweep
+## and finds nothing where ObjHit has already destroyed the record: the
+## runtime was right to refuse it, and the simulation now carries the
+## death (trigger_graph._dies_when_fired). The other three were the
+## barrel — three rifle shots into a rack of crates take the crate in
+## FRONT with them — and the death edge is measured after a reset now.
 ## Gone with M4 (2026-09-22), all of them the HARNESS rather than the game
 ## — the standing point, the clock or the body the checks put down:
 ##   chain_silent, chain_short, chain_extra, second_activation,
@@ -1907,7 +1929,7 @@ static func xfail_key(num: int, id: int) -> String:
 const XFAIL_TAGS: PackedStringArray = [
 	"port_use_reach", "projectile_no_hit", "second_activation",
 	"chain_silent", "chain_short", "chain_extra", "path_window",
-	"mover_absent", "demolish_spent", "loaded_state", "exit_forced",
+	"mover_absent", "loaded_state", "exit_forced",
 ]
 
 static func hygiene(text: String) -> PackedStringArray:
@@ -1954,7 +1976,6 @@ const XFAIL_HEAD: PackedStringArray = [
 	"#                      projectile is stopped by no prop",
 	"#   path_window        a marker path is only driven inside the DOS actor window",
 	"#   mover_absent       the graph names a mover the level built no node for",
-	"#   demolish_spent     the record is already spent when its own chain kills it",
 	"#   loaded_state       the graph simulates from the authored state byte, which",
 	"#                      the map has already spent by the time a player is there",
 	"#   exit_forced        the port takes a doorway a chain reaches whatever the",

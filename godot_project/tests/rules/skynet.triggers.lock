@@ -1020,7 +1020,7 @@ map 231 src d6f361d067e71cdd nodes 112 chains 57 warn unreachable:2,even_fan_in:
 231 049c5 E2 chain chain[049c5 06906:E8 048ed:EE 04ade:01 0315b:01 0412f:01 0317e:01 031a1:01 031c4:01 054f7:01 054d4:01 05ea0:01 0551a:01 05c68:01 04012:01 0322d:01 0320a:01 03273:01 03296:01 04152:01 0553d:01 041d5:5B 0420f:5B 04249:5B 03f8e:EE 02e6c:EE 03f6a:EE 03c6d:F3 02c30:F3 02c78:F3 04dc0:F3 02c54:F3 03c49:F3] first[-] second[-] 9d9ffaef
 231 04a30 00 - chain[04a30] first[-] second[-] 7361f98d
 231 04a6a 00 - chain[04a6a] first[-] second[-] 6e5d2711
-231 04aa4 1B death:hp64/never chain[04aa4] first[demolish@04aa4] second[-] 56788aa3
+231 04aa4 1B death:hp64/never chain[04aa4] first[-] second[-] 763f6c70
 231 04ade 01 chain chain[04ade 0315b:01 0412f:01 0317e:01 031a1:01 031c4:01 054f7:01 054d4:01 05ea0:01 0551a:01 05c68:01 04012:01 0322d:01 0320a:01 03273:01 03296:01 04152:01 0553d:01 041d5:5B 0420f:5B 04249:5B 03f8e:EE 02e6c:EE 03f6a:EE 03c6d:F3 02c30:F3 02c78:F3 04dc0:F3 02c54:F3 03c49:F3] first[-] second[-] e8292454
 231 04b01 00 death:hp64/never chain[04b01] first[-] second[-] b015bacb
 231 04b75 00 - chain[04b75] first[-] second[-] b0891a10

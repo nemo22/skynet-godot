@@ -67,15 +67,11 @@ const VERBS: PackedStringArray = ["use", "use_below", "prox", "shoot",
 ##                 five-cell actor window (0x12980f), which nothing here
 ##                 models: the lever that starts it is far enough from
 ##                 the machine that the machine never ticks
-##   no_ride       the step is a ride — DOS carries the player ON the
-##                 machine and the port does not, so the machine flies
-##                 out of the window it needs and stops short of the end
-##                 of its path
 ##   port_use_reach / second_activation / chain_silent / chain_short /
 ##   chain_extra / projectile_no_hit — as tests/rules/skynet.xfail means
 ##   them (scripts/triggers/trigger_verifier.gd names each one).
 const SPEC_TAGS: PackedStringArray = [
-	"path_window", "no_ride", "port_use_reach", "second_activation",
+	"path_window", "port_use_reach", "second_activation",
 	"chain_silent", "chain_short", "chain_extra", "projectile_no_hit",
 ]
 
@@ -90,6 +86,13 @@ const SPEC_HEAD: PackedStringArray = [
 ## and then drives it, and three seconds is what layer (c) gives one
 ## (trigger_verifier._check_path).
 const WAIT_FRAMES: int = 180
+## …and how long a `wait` on a PATH VEHICLE has: a path is driven at
+## 0.3125 of its own segment length per second (Rules.PATH_SPEED_K), so
+## every segment takes about three seconds whatever its length, and
+## MAP.234's HK has four of them plus the speed ramp. The step stops the
+## moment the machine runs its path out (PathVehicle.finished), so this
+## is only the ceiling.
+const PATH_WAIT_FRAMES: int = 1800
 ## …and how long a taken exit has to land the next map (frames).
 const EXIT_FRAMES: int = 1800
 ## The vertical window the port used to measure a proximity record with,
@@ -560,20 +563,37 @@ func _do_exit(level, id: int, mode: Dictionary) -> Dictionary:
 func _do_wait(level, id: int) -> Dictionary:
 	var at: Vector3 = _epos(level, id)
 	var veh: Node = level.behaviour.vehicle_node(id)
+	var frames: int = WAIT_FRAMES
+	# A machine that is ALREADY ticked from where the player stands is
+	# watched from there. DOS ticks an actor only in the five map-grid
+	# cells round the player (0x12980f), and the two path missions put the
+	# player on opposite sides of that: MAP.210's lever is far enough from
+	# the truck that a player who threw it never sees it move, and MAP.234's
+	# HK is flying when the roof loads, ends its path four hundred units
+	# from the marker the exit puts the player down on, and is inside his
+	# window the whole way — so teleporting him to the machine's own spawn
+	# is what makes it fly out of his window and stop, and nothing in the
+	# DOS handler (0x127400, which never touches the player) puts it back.
+	var stay: bool = false
 	if veh != null and veh.actor != null and is_instance_valid(veh.actor):
 		at = (veh.actor as Node3D).global_position
+		frames = PATH_WAIT_FRAMES
+		stay = bool(veh.call("watched_from", main.player.global_position))
 	if at == Vector3.INF:
 		return {"ok": false, "tokens": PackedStringArray(), "why": "no record"}
-	var beside: Vector3 = at + Vector3(0.0, 0.0, 256.0)
-	var floor_at: Vector3 = _floor_under(beside, 600.0)
-	_drv.place(floor_at if floor_at != Vector3.INF else beside)
+	if not stay:
+		var beside: Vector3 = at + Vector3(0.0, 0.0, 256.0)
+		var floor_at: Vector3 = _floor_under(beside, 600.0)
+		_drv.place(floor_at if floor_at != Vector3.INF else beside)
 	_drv.face(at)
 	await _drv.frames(PRE_FRAMES)
 	var bus = level.bus
 	bus.record(true)
 	bus.clear()
-	for _i in WAIT_FRAMES:
+	for _i in frames:
 		await _drv.physics(1)
+		if veh != null and bool(veh.get("finished")):
+			break
 	await _drv.frames(1)
 	var tokens: PackedStringArray = TriggerEquiv.tokens(bus.take())
 	bus.record(false)

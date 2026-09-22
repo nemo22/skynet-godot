@@ -11,13 +11,10 @@
 #                      projectile is stopped by no prop
 #   path_window        a marker path is only driven inside the DOS actor window
 #   mover_absent       the graph names a mover the level built no node for
-#   demolish_spent     the record is already spent when its own chain kills it
 #   loaded_state       the graph simulates from the authored state byte, which
 #                      the map has already spent by the time a player is there
 #   exit_forced        the port takes a doorway a chain reaches whatever the
 #                      walk did to its bit; the walk alone would shut it
-213 02bfe EF prox_gate demolish_spent
-231 04aa4 1B demolish demolish_spent
 231 04c97 EF prox_gate loaded_state
 239 02a73 EF prox_gate mover_absent
 281 04ae4 EF prox_gate port_use_reach
@@ -25,6 +22,4 @@
 283 03790 EF prox_gate chain_extra
 284 03565 EF prox_gate chain_short
 286 04db7 EF prox_gate chain_extra
-461 03559 EF prox_gate demolish_spent
-470 02f89 EF prox_gate demolish_spent
 595 0260a EF prox_gate exit_forced
