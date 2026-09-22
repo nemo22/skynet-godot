@@ -334,13 +334,24 @@ func _physics_process(delta: float) -> void:
 		global_position = to
 		return
 
-	# Resolve the damageable actor behind the collider, if any.
+	# Resolve the damageable thing behind the collider, if any.
 	var collider: Object = hit.get("collider") as Object
 	var n: Node = collider as Node
 	while n != null and not n.has_method("take_damage"):
 		n = n.get_parent()
 	if n != null:
-		if n == _owner or not _is_target(n):
+		# Only an ACTOR can be an ally. A wired map mesh — a car, a crate,
+		# a door leaf, a wall button — answers take_damage too (every one
+		# is an ActionTarget), and until 2026-09-22 it fell into the
+		# "ally" branch below because it is in no actor group: a laser bolt
+		# went through a closed door, and from a jeep or a helicopter,
+		# whose only weapons are projectiles, nothing in the map could be
+		# shot at all (the verifier's projectile_no_hit rows). The DOS
+		# projectile tick (v1.01 FUN_0012311f) knows three outcomes of a
+		# flight — an object, the player, the ground — and for an object
+		# it calls ObjHit (FUN_00139819) with no test of who fired; ObjHit
+		# takes no shooter either. So a prop is hit by anyone's shot.
+		if n == _owner or (_is_actor(n) and not _is_target(n)):
 			# The shooter or an ally — fly straight through.
 			if collider is CollisionObject3D:
 				_ignore.append((collider as CollisionObject3D).get_rid())
@@ -353,6 +364,12 @@ func _physics_process(delta: float) -> void:
 		return
 	_finish(hit["position"], true)               # solid geometry
 
+## An actor — something that can be the shooter's own side. Everything
+## else that takes damage is scenery, and scenery is never an ally.
+static func _is_actor(n: Node) -> bool:
+	return n.is_in_group("enemy") or n.is_in_group("player") \
+		or n.is_in_group("dm_actor")
+
 ## The flight ray's exclude list: every hitbox flown through so far plus
 ## the shooter's own body. Built whole and assigned once — the property
 ## hands out a copy, so appending to `_q.exclude` changed nothing and the
@@ -363,9 +380,10 @@ func _rebuild_exclude() -> void:
 		ex.append((_owner as CollisionObject3D).get_rid())
 	_q.exclude = ex
 
-## Enemy shots hurt the player, player shots hurt enemies; in a
-## deathmatch every other actor is fair game. "none" = a replicated
-## visual of somebody else's shot — it stops on actors but hurts nobody.
+## Which ACTORS a shot is for: enemy shots hurt the player, player shots
+## hurt enemies; in a deathmatch every other actor is fair game. "none"
+## = a replicated visual of somebody else's shot — it stops on actors but
+## hurts nobody. Scenery is not asked about here (see _is_actor).
 func _is_target(n: Node) -> bool:
 	if _hits == "none":
 		return not n.is_in_group("dm_actor") and not n.is_in_group("player")
