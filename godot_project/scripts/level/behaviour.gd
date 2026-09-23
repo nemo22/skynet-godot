@@ -259,7 +259,22 @@ func _ready() -> void:
 	# again, or loaded from a save, main.gd has laid the saved state over
 	# the runtime BEFORE this branch enters the tree, so a cue that already
 	# fired has its bit down and does not replay.
+	#
+	# Never a DOORWAY. No 0xF0 in the SkyNET data is authored with its bit
+	# up (DOS 0x138081 would take it on the first frame), so a doorway
+	# whose bit is up here was armed by the PORT's touch (MapExit.exit_watch)
+	# and carried in the overlay of an earlier visit or a save: firing it
+	# took the player straight on through a door he had only walked past —
+	# back on MAP.252 from the tower, the torpedo room's doorway @03675 took
+	# him to MAP.253 as the map came up. The touch is forgotten with the
+	# visit, as `touching` is: the bit goes down, and walking in again arms
+	# it again.
 	for id in _by_id:
+		var n: Node = _by_id[id]
+		if n.has_method("exit_watch"):
+			if runtime != null and runtime.enabled(int(id)):
+				runtime.clear_enable(int(id))
+			continue
 		if runtime != null:
 			if runtime.enabled(int(id)):
 				runtime.fire(int(id))

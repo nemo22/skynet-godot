@@ -158,6 +158,12 @@ var _visited: Dictionary = {}       # "MAP.252#12" → true (entered by that mar
 ## "MAP.214:03002" → how often that door has been taken (_exits, RETAKE).
 var _door_uses: Dictionary = {}
 var _done: Dictionary = {}          # "MAP.252:p04057" → true (fired once)
+## The entries (map#set) and doors taken since the last time something
+## fired. A switch pressed anywhere can change what lies behind a door
+## already walked through — MAP.284's computer core is what mission 8's
+## upper control room on MAP.280 waits for, and that room is entered only
+## from 284 — so progress makes every door worth one more look.
+var _fresh: Dictionary = {}
 var _seeds: Dictionary = {}         # map name → Array[Vector3] reached earlier
 var _route: PackedStringArray = PackedStringArray()
 var _t0: int = 0
@@ -237,10 +243,31 @@ func _solve_map() -> void:
 		elif not acts.is_empty():
 			shot = false
 		if acts.is_empty():
+			# The toggles again: a few of them before leaving (MAP.280's
+			# control room is four), many only when there is nowhere new to
+			# go — a door not yet seen is the cheaper way on, and MAP.254's
+			# valve maze is eight toggles and 36 floods of half a minute (it
+			# is left by its exit, not solved twice).
+			var ex: Array = _exits(a, nm)
+			var last: bool = ex.is_empty() or int(ex[0]["score"]) <= 0
+			if await _press_again(a, nm, seeds, not last):
+				shot = false
+				continue
 			break
 		for act in acts:
 			await _perform(a, nm, act)
 			seeds.append(act["at"])
+			# A prop shot to pieces changes nothing behind a door; a wreck
+			# with a chain, or any switch, may.
+			if String(act["kind"]) != "shoot" or int(a.triggers.link(int(act["off"]))) > 0:
+				_progress()
+			# One switch at a time, as a player presses them: a chain that
+			# reaches a mover while it is still travelling STOPS it where it
+			# stands (Mover.mover_watch, the DOS bit taken away), so a burst
+			# of presses over shared movers left MAP.280's consoles half way
+			# and in no combination a player could make.
+			if String(act["kind"]) != "shoot" and _moves_something(a, int(act["off"])):
+				await _settle(a)
 			if main._mission_done:
 				await get_tree().create_timer(0.5).timeout
 				_pass(nm)
@@ -257,8 +284,11 @@ func _solve_map() -> void:
 	for x in _exits(a, nm):
 		_put(x["at"])
 		await _frames(3)
-		if a.behaviour.activate_teleport(p.global_position, main._eye_position()):
+		# Standing there may already have done it (a lever on the level's
+		# tick), else the use key.
+		if bool(a.behaviour.exit_taken()) 				or a.behaviour.activate_teleport(p.global_position, main._eye_position()):
 			_visited[x["vkey"]] = true
+			_fresh[x["vkey"]] = true
 			_door_uses[x["dkey"]] = int(x["used"]) + 1
 			_route.append("%s: EXIT → %s set %d from %s%s" % [nm, x["target"], x["set"],
 				x["at"].snapped(Vector3.ONE), "  (the way back)" if int(x["score"]) < 0 else ""])
@@ -284,6 +314,91 @@ func _solve_map() -> void:
 		print("[solve]   exit @%05x in reach from %s but did not fire: armed=%s, line to it %s%s" % [
 			x["off"], p.global_position.snapped(Vector3.ONE), armed, "clear" if line_ok else "BLOCKED", by])
 	_fail(nm, a)
+
+## Nothing new fires: press what was pressed before AGAIN, one at a time.
+## A switch in this game is a toggle (the chain flips every mover on it),
+## and a puzzle is a COMBINATION of them: MAP.280's upper control room
+## slides its four consoles 280CMP04-07 with ten buttons that share them,
+## and only some combinations open the gap to 280CMP08, mission 8's second
+## objective. Pressing each once leaves whatever combination that makes;
+## a player tries again. Each press that brings nothing new is pressed
+## back. Once per map until something fires somewhere (`_repressed`,
+## `_epoch`), so a map the run keeps coming back to does not pay for it
+## every time.
+var _repressed: Dictionary = {}
+## How long one map's toggle search may take.
+const PRESS_AGAIN_MSEC: int = 180000
+## Up to this many distinct toggles are tried again before a map is left
+## by a door it has seen; more only when there is no such door.
+const CHEAP_TOGGLES: int = 4
+
+func _press_again(a, nm: String, seeds: Array, cheap_only: bool = false) -> bool:
+	var key: String = "%s@%d" % [nm, _epoch]
+	if _repressed.has(key):
+		return false
+	# Only a switch whose chain moves something can open the way — a sound,
+	# a light or a message pressed twice is the same room — and of switches
+	# that move the SAME movers one will do: MAP.280's ten console buttons
+	# are four different toggles.
+	var by_set: Dictionary = {}
+	for c in _candidates(a, nm, false, true):
+		var ms: Array = _movers_of(a, int(c["off"]))
+		if ms.is_empty():
+			continue
+		ms.sort()
+		var sk: String = str(ms)
+		if not by_set.has(sk):
+			by_set[sk] = c
+	var cands: Array = by_set.values().slice(0, 8)
+	if cands.is_empty() or (cheap_only and cands.size() > CHEAP_TOGGLES):
+		return false
+	_repressed[key] = true
+	print("[solve]   nothing new: trying the %d toggles used here again, one and two at a time" % cands.size())
+	var base: int = _pos.size()
+	var tries: Array = []
+	for i in cands.size():
+		tries.append([cands[i]])
+	for i in cands.size():
+		for j in range(i + 1, cands.size()):
+			tries.append([cands[i], cands[j]])
+	var t_start: int = Time.get_ticks_msec()
+	for t in tries:
+		if Time.get_ticks_msec() - t_start > PRESS_AGAIN_MSEC:
+			print("[solve]   …gave the toggles %d s, nothing" % (PRESS_AGAIN_MSEC / 1000))
+			break
+		for act in t:
+			await _perform(a, nm, act)
+			await _settle(a)
+		_water = float(main.player.water_level)
+		_flood(seeds)
+		# Something to fire, or real new ground — a console that moved a
+		# few cells' worth either way is not a way on.
+		if main._mission_done or _pos.size() > base + maxi(32, base / 20) 				or not _candidates(a, nm, false).is_empty():
+			_progress()
+			print("[solve]   …%s again opened something (%d → %d cells)" % [
+				" + ".join(t.map(func(x): return "%s @%05x" % [x["what"], x["off"]])), base, _pos.size()])
+			return true
+		for act in t:
+			await _perform(a, nm, act)      # back as it was
+			await _settle(a)
+	return false
+
+## The movers the chain from `off` reaches (the live links).
+func _movers_of(a, off: int) -> Array:
+	var out: Array = []
+	var cur: int = int(a.triggers.link(off))
+	var seen: Dictionary = {}
+	while cur > 0 and not seen.has(cur):
+		seen[cur] = true
+		if a.behaviour.has_mover(cur):
+			out.append(cur)
+		cur = int(a.triggers.link(cur))
+	return out
+
+## Does the chain from `off` reach a mover (the live links, as chain_exit
+## walks them)?
+func _moves_something(a, off: int) -> bool:
+	return not _movers_of(a, off).is_empty()
 
 ## Everything the flood needs about this level.
 func _setup(lvl) -> void:
@@ -380,11 +495,11 @@ func _flood(seeds: Array) -> void:
 		var i: int = queue[head]
 		head += 1
 		var p: Vector3 = _pos[i]
-		var ix: int = roundi(p.x / _cell)
-		var iz: int = roundi(p.z / _cell)
+		var ix: int = _gx(p.x)
+		var iz: int = _gz(p.z)
 		for d in DIRS:
-			var tx: float = float(ix + d.x) * _cell
-			var tz: float = float(iz + d.y) * _cell
+			var tx: float = _wx(ix + d.x)
+			var tz: float = _wz(iz + d.y)
 			if tx < _lo.x or tx > _hi.x or tz < _lo.z or tz > _hi.z:
 				continue
 			if not _in_fence(tx, tz):
@@ -398,6 +513,75 @@ func _flood(seeds: Array) -> void:
 				elif _passable(p, landed) and _inside(landed, p):
 					queue.append(_add(landed))
 					moved = true
+			if not moved:
+				# SQUEEZE into a gap narrower than the grid: the grid point
+				# can stand where the capsule touches a side and the middle
+				# of the gap does not. MAP.254's CORA4029 pipe to the valve
+				# button [E] is 50-odd units wide inside for a 52 u body; the
+				# controller slides to its middle and walks it, the columns
+				# 6 and 10 units off-centre never fit. So try the point half
+				# a cell to either side, and — once a cell stands off the
+				# grid — straight on from where it stands; the cell keeps
+				# that position (its key is still its grid cell's).
+				for o in _squeeze_points(p, d, tx, tz):
+					for landed in _lands(o.x, o.y, p.y):
+						if _key.has(_k(landed)):
+							moved = true
+						elif _passable(p, landed) and _inside(landed, p):
+							queue.append(_add(landed))
+							moved = true
+					if moved:
+						break
+			if not moved and _drops_away(tx, tz, p.y):
+				# LEAP a gap: the ground in front falls away, and a player
+				# takes a run and jumps it (DOS: run 400 u/s, jump 177 against
+				# gravity 392 — under water 200, 100 and 150 — FUN_0012c15d,
+				# FUN_0012be58). MAP.240's way onto the submarine is a jump off
+				# the end of the swung crane arm onto the hull, 240 units of
+				# harbour between them; the flood only ever walked and dropped.
+				var dl: float = Vector2(d).length() * _cell
+				var wet: bool = _wet(p.y)
+				for k in range(2, 12):
+					var jx: float = _wx(ix + d.x * k)
+					var jz: float = _wz(iz + d.y * k)
+					if not _in_fence(jx, jz) or float(k) * dl > _leap_reach(-LEAP_DROP, wet):
+						break
+					var got: bool = false
+					for landed in _lands(jx, jz, p.y):
+						var rel: float = landed.y - p.y
+						if rel < -LEAP_DROP or float(k) * dl > _leap_reach(rel, wet):
+							continue
+						if _key.has(_k(landed)):
+							got = true
+						elif _leap_free(p, landed, wet) and _inside(landed, p):
+							queue.append(_add(landed))
+							got = true
+					if got:
+						break
+			if not moved and _outdoor and _steep_below(tx, tz, p.y):
+				# SLIDE down ground too steep to stand on. Past 40° the DOS
+				# foot treats a face as a wall (0x12b192), and the controller
+				# does too — downhill that wall is a slide: the body goes down
+				# it to where the ground flattens. The flood had no floor in
+				# that column at all and stopped at the top. MAP.250's sewer
+				# mouth (set 92, mission 5's way out) is a ledge over the
+				# harbour bowl, 53° down to the bottom and the one way on.
+				for k in range(2, 8):
+					var sx: float = _wx(ix + d.x * k)
+					var sz: float = _wz(iz + d.y * k)
+					if not _in_fence(sx, sz):
+						break
+					var got: bool = false
+					for landed in _lands(sx, sz, p.y):
+						if landed.y >= p.y - 8.0:
+							continue             # not down the slope
+						if _key.has(_k(landed)):
+							got = true
+						elif _passable(p, landed):
+							queue.append(_add(landed))
+							got = true
+					if got:
+						break
 			if not moved and not _outdoor:
 				# Step OVER something narrower than the body: no cell next
 				# to MAP.252's 12 u cable duct fits a 40 u body, but the
@@ -410,8 +594,8 @@ func _flood(seeds: Array) -> void:
 				# ends against a wall (a city is mostly walls) paid three
 				# more columns of sweeps for nothing.
 				for k in [2, 3, 4]:
-					var fx: float = float(ix + d.x * k) * _cell
-					var fz: float = float(iz + d.y * k) * _cell
+					var fx: float = _wx(ix + d.x * k)
+					var fz: float = _wz(iz + d.y * k)
 					if not _in_fence(fx, fz):
 						break
 					var got: bool = false
@@ -424,6 +608,73 @@ func _flood(seeds: Array) -> void:
 	if _leaks > 0:
 		print("[solve]   %d cells refused OUTSIDE the level (no roof overhead); the first escape is from %s to %s — a hole in the hull" % [
 			_leaks, _leak_from.snapped(Vector3.ONE), _leak_at.snapped(Vector3.ONE)])
+
+## The running jump (DOS numbers, fly_camera's): how far a take-off at run
+## speed carries the body before it comes down `rel` units above (or,
+## negative, below) where it left. 0 when that height is out of reach.
+const RUN_SPEED: float = 400.0
+const JUMP_V: float = 177.0
+const GRAVITY: float = 392.0
+## A landing further down than this is the ground the gap drops to — the
+## flood gets there by falling — not the far side of it.
+const LEAP_DROP: float = 400.0
+
+func _leap_reach(rel: float, wet: bool) -> float:
+	var v: float = 100.0 if wet else JUMP_V
+	var g: float = 150.0 if wet else GRAVITY
+	var run: float = RUN_SPEED * (0.5 if wet else 1.0)
+	var disc: float = v * v - 2.0 * g * rel
+	if disc < 0.0:
+		return 0.0
+	# The body's feet clear the far edge a little before the apex height
+	# is lost: rel is measured at the feet, the capsule needs LIFT more.
+	return run * (v + sqrt(disc)) / g
+
+## Does the ground fall away in column (tx, tz) — no floor within a step
+## under feet at `from_y`? The one place a jump is worth trying.
+func _drops_away(tx: float, tz: float, from_y: float) -> bool:
+	var hit := _ray(Vector3(tx, from_y + 2.0, tz), Vector3(tx, from_y - STEP - 2.0, tz))
+	return hit.is_empty()
+
+## The jump's arc, boxed: up by the jump's height at the take-off, across
+## at that height, down onto the landing (resting on an edge is landing).
+func _leap_free(a: Vector3, b: Vector3, wet: bool) -> bool:
+	var v: float = 100.0 if wet else JUMP_V
+	var g: float = 150.0 if wet else GRAVITY
+	var apex: float = v * v / (2.0 * g)
+	var top: float = a.y + apex
+	if b.y + LIFT > top:
+		return false
+	if not _free(a, Vector3(0.0, apex, 0.0)):
+		return false
+	if not _free(Vector3(a.x, top, a.z), Vector3(b.x - a.x, 0.0, b.z - a.z)):
+		return false
+	var drop := Vector3(0.0, b.y - top + 0.5, 0.0)
+	return _free(Vector3(b.x, top, b.z), drop) or _drop_rests(Vector3(b.x, top, b.z), drop)
+
+## Is the first thing under column (tx, tz) ground too steep to stand on,
+## and below feet at `from_y` — a slope going down, not a wall going up?
+func _steep_below(tx: float, tz: float, from_y: float) -> bool:
+	var hit := _ray(Vector3(tx, from_y + STEP + 2.0, tz), Vector3(tx, from_y - MAX_DROP, tz))
+	if hit.is_empty():
+		return false
+	return absf((hit["normal"] as Vector3).y) < FLOOR_MIN_NY \
+		and (hit["position"] as Vector3).y < from_y - 4.0
+
+## Where else to try the step from `p` in direction `d` when the grid
+## point (tx, tz) does not take the body: straight on from `p` itself when
+## `p` stands off the grid, and, for a step along an axis, half a cell to
+## either side of the grid point. Only the ones inside the fence.
+func _squeeze_points(p: Vector3, d: Vector2i, tx: float, tz: float) -> Array:
+	var out: Array = []
+	var straight := Vector2(p.x + float(d.x) * _cell, p.z + float(d.y) * _cell)
+	if absf(straight.x - tx) > 0.5 or absf(straight.y - tz) > 0.5:
+		out.append(straight)
+	if d.x == 0 or d.y == 0:
+		var side := Vector2(float(d.y), float(d.x)) * (_cell * 0.45)   # stays in its own key
+		out.append(Vector2(tx, tz) + side)
+		out.append(Vector2(tx, tz) - side)
+	return out.filter(func(v: Vector2) -> bool: return _in_fence(v.x, v.y))
 
 ## Indoors, a place with nothing over it is outside the level: a flood that
 ## slips through a seam walks round the hull in the void and "reaches"
@@ -461,7 +712,7 @@ func _add(f: Vector3) -> int:
 	var arr: Array = _bucket.get(b, [])
 	arr.append(i)
 	_bucket[b] = arr
-	var c := Vector2i(roundi(f.x / _cell), roundi(f.z / _cell))
+	var c := Vector2i(_gx(f.x), _gz(f.z))
 	var ys: PackedFloat32Array = _col.get(c, PackedFloat32Array())
 	ys.append(f.y)
 	_col[c] = ys
@@ -494,9 +745,28 @@ func _known_step(col: Vector2i, y: float) -> bool:
 			return true
 	return false
 
+## The flood's grid is the ZONE's, not the world's: a cell sits on the
+## same spot of the map whichever runtime stands it up. On the world grid
+## a mission scene put every zone's cells wherever its origin fell —
+## MAP.254 stands at x 44680, half a 16 u cell off — and the flood came to
+## a different answer than on the map itself: its columns missed the foot
+## of the catwalk ramp that leads out of the flooded pit by two units,
+## and the run stayed at the bottom (2026-09-23).
+func _gx(x: float) -> int:
+	return roundi((x - _zone.x) / _cell)
+
+func _gz(z: float) -> int:
+	return roundi((z - _zone.z) / _cell)
+
+func _wx(i: int) -> float:
+	return float(i) * _cell + _zone.x
+
+func _wz(i: int) -> float:
+	return float(i) * _cell + _zone.z
+
 ## Grid key of a cell — a floor, dry or under water: nothing else is one.
 func _k(f: Vector3) -> Vector3i:
-	return Vector3i(roundi(f.x / _cell), roundi(f.y / Y_QUANT), roundi(f.z / _cell))
+	return Vector3i(_gx(f.x), roundi(f.y / Y_QUANT), _gz(f.z))
 
 ## Where a body put at `s` really is: on the floor under it — in the water
 ## too, where he sinks to it (MAP.250 set 10, 624 u under the harbour
@@ -569,6 +839,15 @@ func _why_not(a: Vector3, b: Vector3) -> String:
 			var short: float = _radius * (1.0 / FLOOR_MIN_NY - 1.0)
 			if drop <= short + 0.5 or _free(Vector3(b.x, top, b.z), Vector3(0.0, -(drop - short), 0.0)):
 				return ""
+			# Outdoors the column can be 64 u from the last one and its axis
+			# already past the edge the body is let down onto: it comes to
+			# rest on the edge, and a capsule whose axis is off an edge slides
+			# off it — onto the ground the ray found. MAP.250 set 92 is the
+			# sewer's mouth (SEWRENTR, the way out of mission 5): the next
+			# column is 13 u lower and 7 u past the pipe's lip, the drop met
+			# the lip, and the flood never left the pipe.
+			if _outdoor and _drop_rests(Vector3(b.x, top, b.z), Vector3(0.0, -(drop - short), 0.0)):
+				return ""
 			why = "drop %.0f" % drop
 		else:
 			why = "across"
@@ -603,11 +882,11 @@ func _sweep_detail(feet: Vector3, motion: Vector3) -> String:
 ## Why the flood does not go on from cell `p`: per direction, the floors
 ## found in the next column and what stops the capsule reaching each.
 func _explain(p: Vector3) -> void:
-	var ix: int = roundi(p.x / _cell)
-	var iz: int = roundi(p.z / _cell)
+	var ix: int = _gx(p.x)
+	var iz: int = _gz(p.z)
 	for d in DIRS:
-		var tx: float = float(ix + d.x) * _cell
-		var tz: float = float(iz + d.y) * _cell
+		var tx: float = _wx(ix + d.x)
+		var tz: float = _wz(iz + d.y)
 		var parts := PackedStringArray()
 		var lands: Array = _lands(tx, tz, p.y)
 		if lands.is_empty():
@@ -653,6 +932,26 @@ func _free(feet: Vector3, motion: Vector3) -> bool:
 	var r: PackedFloat32Array = _space.cast_motion(_q)
 	_q.shape = _body_shape
 	return r.size() > 0 and r[0] >= 0.999
+
+## Does a drop that `_free` refused end with the body SUPPORTED — the
+## first contact under it, something it stands or slides on (a face or an
+## edge below the round bottom), not a wall or a roof beside it?
+func _drop_rests(feet: Vector3, motion: Vector3) -> bool:
+	var wet: bool = _wet(feet.y) or _wet(feet.y + motion.y)
+	_q.shape = _wet_shape if wet else _body_shape
+	var start: Vector3 = feet + Vector3(0.0, (WET_BODY * 0.5 if wet else _shape_y) + LIFT, 0.0)
+	_q.transform = Transform3D(Basis(), start)
+	_q.motion = motion
+	var r: PackedFloat32Array = _space.cast_motion(_q)
+	var ok: bool = false
+	if r.size() > 1 and r[0] < 0.999:
+		_q.transform = Transform3D(Basis(), start + motion * r[1])
+		_q.motion = Vector3.ZERO
+		var info: Dictionary = _space.get_rest_info(_q)
+		ok = info.has("normal") and (info["normal"] as Vector3).y >= 0.5
+	_q.shape = _body_shape
+	_q.motion = Vector3.ZERO
+	return ok
 
 func _ray(from: Vector3, to: Vector3) -> Dictionary:
 	var rq := PhysicsRayQueryParameters3D.create(from, to)
@@ -731,7 +1030,48 @@ func _reach_eye(ep: Vector3, reach: float) -> Vector3:
 				if d < bd:
 					bd = d
 					best = _pos[i]
-	return best
+	if best != Vector3.INF:
+		return best
+	# No cell's eye is in reach: walk up to it from the nearest ones, as
+	# _reach_point does for a doorway. Outdoors the grid is 64 u and a
+	# console bank is not: MAP.280's 280CMP08 (mission 8's second
+	# objective, reach 86) stands behind the consoles 117 u from the
+	# nearest cell's eye, and a player steps up to the bank to press it.
+	var near: Array = []
+	var span: float = reach + 3.0 * _cell
+	var r2: int = int(ceil(span / BUCKET))
+	for dx in range(-r2, r2 + 1):
+		for dz in range(-r2, r2 + 1):
+			var arr = _bucket.get(Vector2i(bx + dx, bz + dz))
+			if arr == null:
+				continue
+			for i in arr:
+				var e: Vector3 = _pos[i] + Vector3(0.0, EYE + LIFT, 0.0)
+				if absf(e.y - ep.y) <= reach and Vector2(e.x - ep.x, e.z - ep.z).length() <= span:
+					near.append([e.distance_to(ep), i])
+	near.sort_custom(func(x, y): return x[0] < y[0])
+	# Straight at it, and at points round it: the way in can be a gap
+	# beside the thing rather than the line to it (the consoles again —
+	# the gap they open is beside 280CMP03, not in front of CMP08).
+	var aims: Array = [Vector2(ep.x, ep.z)]
+	for rho in [reach * 0.45, reach * 0.75]:
+		for k in 12:
+			var ang: float = TAU * float(k) / 12.0
+			aims.append(Vector2(ep.x + cos(ang) * rho, ep.z + sin(ang) * rho))
+	for j in mini(near.size(), 8):
+		var from: Vector3 = _pos[near[j][1]]
+		for aim in aims:
+			var dir := Vector3(aim.x - from.x, 0.0, aim.y - from.z)
+			if dir.length() < 1.0:
+				continue
+			_q.transform = Transform3D(Basis(), from + Vector3(0.0, _shape_y + LIFT, 0.0))
+			_q.motion = dir
+			var res: PackedFloat32Array = _space.cast_motion(_q)
+			_q.motion = Vector3.ZERO
+			var stop: Vector3 = from + dir * (res[0] if res.size() > 0 else 0.0)
+			if (stop + Vector3(0.0, EYE + LIFT, 0.0)).distance_to(ep) <= reach:
+				return stop
+	return Vector3.INF
 
 ## A spot the player can walk to within `reach` of `ep`: a reachable cell
 ## if one is close enough, otherwise the cell nearest the target and then
@@ -776,7 +1116,7 @@ func _reach_point(ep: Vector3, reach: float) -> Vector3:
 			return stop
 	return Vector3.INF
 
-func _candidates(a, nm: String, shoot: bool) -> Array:
+func _candidates(a, nm: String, shoot: bool, again: bool = false) -> Array:
 	var out: Array = []
 	if shoot:
 		for off in a.behaviour.damageable_offs():
@@ -788,11 +1128,12 @@ func _candidates(a, nm: String, shoot: bool) -> Array:
 			if n >= 0:
 				out.append({"kind": "shoot", "off": off, "key": k, "at": _pos[n], "what": _ename(a, e)})
 		return out
-	out.append_array(_pad_candidates(a, nm))
+	if not again:
+		out.append_array(_pad_candidates(a, nm))
 	for t in _prox_nodes(a):
 		var e = a.behaviour.record_of(int(t.id))
 		var k: String = "p%05x" % e.file_off
-		if _done.has(nm + ":" + k) or a.triggers.spent(e.file_off):
+		if (_done.has(nm + ":" + k) != again) or a.triggers.spent(e.file_off):
 			continue
 		# The live bytes, which are the trigger runtime's (step 5a) — a
 		# lever spent earlier in this run is not the lever the MAP file has.
@@ -813,6 +1154,13 @@ func _candidates(a, nm: String, shoot: bool) -> Array:
 		# (Trigger.prox_watch). _exits offers it as a spot to take that
 		# doorway from; pressing it here did nothing at all.
 		if gate and a.behaviour.chain_exit(e.file_off) >= 0:
+			continue
+		# …and so is a LEVER whose chain ends in one: walking into it takes
+		# the doorway (a chain arriving at an armed 0xF0 fires it, DOS
+		# 0x138081) — mission 7's tunnel mouth @0df56 is one. Pressed here
+		# the map changed under the round, and the rest of it played the
+		# zone next door from the wrong place; _exits takes it as a door.
+		if chain and a.behaviour.chain_exit(e.file_off) >= 0:
 			continue
 		# Where to stand. A gate or a lever is measured by its own handler,
 		# 3D from the EYE (the trigger's own node since 2026-09-16), so the
@@ -1030,12 +1378,17 @@ func _exits(a, nm: String) -> Array:
 	for e in _exit_recs(a):
 		spots[e.file_off] = [[_epos(e), EXIT_REACH]]
 	for g in _prox_nodes(a):
-		if int(g.act) != 0xEF or a.triggers.spent(int(g.id)):
+		var ga: int = int(a.triggers.act(int(g.id)))
+		if not ga in [0xEF, 0xF1, 0xF2] or a.triggers.spent(int(g.id)):
 			continue
+		if ga != 0xEF and not a.triggers.enabled(int(g.id)):
+			continue                     # a spent lever
 		var t: int = a.behaviour.chain_exit(int(g.id))
 		if t >= 0 and spots.has(t):
+			# A lever is measured 3D from the eye (_reach_eye), a gate's
+			# key as a doorway's (_reach_point).
 			(spots[t] as Array).append([_epos(a.behaviour.record_of(int(g.id))),
-				float(g.measure())])
+				float(g.measure()), ga != 0xEF])
 	var out: Array = []
 	for e in _exit_recs(a):
 		var target: String = ("MAP.%03d" % e.exit_map) if e.exit_map > 0 else String(main._prev_map_name)
@@ -1045,7 +1398,7 @@ func _exits(a, nm: String) -> Array:
 		var score: int = 0
 		if not _seen_map(target):
 			score = 2
-		elif not _visited.has(vkey):
+		elif not _fresh.has(vkey):
 			score = 1
 		elif used < RETAKE:
 			score = -1                   # nothing new that way, but a way on
@@ -1056,7 +1409,7 @@ func _exits(a, nm: String) -> Array:
 		# not fire from there — it is the gate behind the boards that opens
 		# it — and one try per doorway left the truck shut for good.
 		for s in (spots[e.file_off] as Array):
-			var at: Vector3 = _reach_point(s[0] as Vector3, float(s[1]))
+			var at: Vector3 = _reach_eye(s[0] as Vector3, float(s[1])) if s.size() > 2 and bool(s[2]) 				else _reach_point(s[0] as Vector3, float(s[1]))
 			if at == Vector3.INF:
 				continue
 			out.append({"off": e.file_off, "at": at, "target": target, "set": e.exit_marker_id,
@@ -1064,6 +1417,15 @@ func _exits(a, nm: String) -> Array:
 	out.sort_custom(func(x, y): return x["used"] < y["used"] \
 		if x["score"] == y["score"] else x["score"] > y["score"])
 	return out
+
+## Something fired: the doors are worth another look (_fresh), and each
+## may be taken RETAKE times more.
+var _epoch: int = 0
+
+func _progress() -> void:
+	_epoch += 1
+	_fresh.clear()
+	_door_uses.clear()
 
 func _seen_map(target: String) -> bool:
 	for k in _visited:

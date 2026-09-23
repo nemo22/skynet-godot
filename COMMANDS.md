@@ -389,6 +389,16 @@ not, exactly where it stops.
 godot --headless --path godot_project -- --map=MAP.252 --no-briefing --solve
 ```
 
+What it counts as a way on, besides walking and dropping: squeezing
+through a gap narrower than its grid (a cell may stand off the grid), sliding
+down ground too steep to stand on, a running jump across a gap (DOS run,
+jump and gravity, halved in the water), and pressing switches again — one
+switch at a time, waiting for what it moved, and when nothing new fires the
+toggles it has used one and two at a time. A lever whose chain ends in a
+doorway is a door, taken like one. After anything fires, every door is
+worth another look. The grid is the zone's own, so a mission scene and the
+per-map runtime flood the same cells.
+
 ## The map tools
 
 All **(dev)**. These run in the map dump scene and read the original data

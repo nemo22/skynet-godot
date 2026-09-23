@@ -302,6 +302,24 @@ func _run() -> void:
 		_check(not is_instance_valid(en) or bool(en.call("is_dead")),
 			"enemy dies to a lethal hit")
 
+	# --- 3b. A doorway the player has only TOUCHED (the port's arm, bit 0
+	# up, no use key) goes into the overlay with the rest of the map — and
+	# must not take him through it when he comes back (step 5). Behaviour
+	# ._ready fired every enabled record, doorways too, and MAP.252's
+	# torpedo-room doorway sent the solver on to MAP.253 as the sub came
+	# back up from the tower. The one furthest from the return marker 27.
+	var touched_exit: int = -1
+	var m27_0: Vector3 = (lvl.markers[27] as Array)[0] if lvl.markers.has(27) else Vector3.ZERO
+	var far_d: float = 0.0
+	for x in lvl.behaviour.exit_nodes():
+		var dx: float = (x.position as Vector3).distance_to(m27_0)
+		if dx > far_d:
+			far_d = dx
+			touched_exit = int(x.id)
+	_check(touched_exit >= 0, "MAP.210 has a doorway to touch")
+	if touched_exit >= 0:
+		lvl.triggers.arm(touched_exit)
+
 	# --- 4. Exit MAP.210 → MAP.218 (bunker interior), marker set 0 ---
 	# The old level keeps simulating during the fade-out; god mode keeps
 	# a late enemy bolt from skewing the carry-over comparison.
@@ -348,6 +366,11 @@ func _run() -> void:
 		if e.has_meta("marker_off") and int(e.get_meta("marker_off")) == killed_off:
 			still_there = true
 	_check(killed_off >= 0 and not still_there, "killed enemy stays dead after the round trip")
+	for f in 30:
+		await get_tree().physics_frame
+	_check(_level_is("210") and not bool(lvl.behaviour.exit_taken()) \
+			and not bool(lvl.triggers.enabled(touched_exit)),
+		"the doorway touched before leaving (@%05x) is not taken on the way back, and is disarmed" % touched_exit)
 	_check(int(_main.get("_mission_hostiles")) > 0 and not bool(_main.get("_mission_done")),
 		"hostiles tracked again on the main map (%d)" % int(_main.get("_mission_hostiles")))
 	# --- 4b. Mover physics follows the mesh: open a swing door and check
