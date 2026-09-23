@@ -1,37 +1,44 @@
-## Future Shock trigger rules — SkyNET's table with the slots that game
-## leaves empty turned inert, and every row marked informational.
+## Future Shock trigger rules — SkyNET's table, unchanged.
 ##
-## Future Shock ships its own engine (shock.exe) and its own handler
-## table; nothing in it has been disassembled yet. The port runs SkyNET's
-## act tables on Future Shock's maps, which is right for the families the
-## two games share and wrong wherever the tables differ — so the graph of
-## a Future Shock map is built, read and reviewed, but it is NOT a source
-## of truth: `INFORMATIONAL` is true, every row's provenance is
-## "unverified", and an act the table cannot decode is a warning rather
-## than an error.
+## The reference for Future Shock is SkyNET v1.01 (GAME.EXE), not
+## shock.exe: the DOS SkyNET engine runs Future Shock's data as it is,
+## the whole campaign, when its data directory holds that game's files.
+## What the port reproduces is therefore SkyNET's engine on Future
+## Shock's maps, and SkyNET's rows ARE this game's rows.
 ##
-## The empty slots below come from the census of Future Shock's own maps
-## (docs plan §3): 0x13, 0x2f and 0x47-0x58 are never used there, and the
-## game has no destructible mesh-swap (0x18/0x19), no countdown relay
-## (0x2C), no water movers (0xd6-0xda) and no spawn points (0xf3) —
-## SkyNET features whose ids must not be read into a Future Shock map.
+## Checked in the v1.01 disassembly (2026-09-24):
+##   - the data path is the fixed string "gamedata\" (two copies, used by
+##     the file-name builders 0x1460d5 and 0x149fab); nothing probes which
+##     game the directory holds. INSTALL.DAT's "fspath" key is read at
+##     start-up into a global that no code reads again.
+##   - the handler table at VA 0x59b00 is static data; nothing swaps it.
+##   - the act handlers (0x137f00-0x138800, 0x11d970, 0x120833, 0x121160,
+##     0x129642, 0x12a97a) and the chain/move helpers 0x139600-0x139f00
+##     test only the network bits of [0x30a50] (0x40000 = a net game,
+##     0x1000000 = the host) and the countdown HUD bit [0x30a54] & 8 —
+##     no game or data-set flag. So no act behaves differently on Future
+##     Shock data, and EMPTY_SLOTS is empty: an id Future Shock's maps
+##     never use simply never fires.
+##
+## shock.exe, Future Shock's own standalone engine, is older and is NOT
+## the reference. A per-act diff of its handler table against GAME.EXE's
+## (kept outside the repo) found 42 slots identical, 85 different (mostly
+## sound/text/network helpers, the mover's move routine and 0x1a's
+## countdown display), 4 only in shock.exe (0x04-0x07, bare `ret`) and
+## 23 only in SkyNET (0x18/0x19, 0x2c, 0x45/0x46, 0x6d-0x72, 0xa5/0xa6,
+## 0xbd-0xc0, 0xd6-0xda, 0xf3). None of that applies to the port.
 
 extends RefCounted
 
 const Skynet := preload("res://scripts/triggers/rules_skynet.gd")
 
 const GAME: String = "shock"
-## True: nothing here is verified against shock.exe.
-const INFORMATIONAL: bool = true
+## False: the engine that runs this game's data is SkyNET's, whose rows
+## are what the running game follows.
+const INFORMATIONAL: bool = false
 
-## Slots this game leaves empty, or SkyNET ids it does not have.
-const EMPTY_SLOTS: PackedInt32Array = [
-	0x13, 0x2F,
-	0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50,
-	0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58,
-	Skynet.ACT_DESTRUCT_A, Skynet.ACT_DESTRUCT_B, Skynet.ACT_RELAY,
-	0xD6, 0xD7, 0xD8, 0xD9, 0xDA, Skynet.ACT_SPAWN,
-]
+## Ids GAME.EXE treats differently on Future Shock data: none (header).
+const EMPTY_SLOTS: PackedInt32Array = []
 
 const KINDS: PackedStringArray = Skynet.KINDS
 const UNDECODED: Dictionary = Skynet.UNDECODED
@@ -104,9 +111,7 @@ static func game_name() -> String:
 static func marker_kind(marker_type: int) -> String:
 	return Skynet.marker_kind(marker_type)
 
-## The mover families are the one thing the two games plainly share (the
-## same .3D doors on the same slot ids); the numbers come from SkyNET's
-## table until shock.exe's own is read.
+## SkyNET's engine moves Future Shock's doors with its own table.
 static func mover_params(act: int) -> Dictionary:
 	return Skynet.mover_params(act)
 
@@ -125,17 +130,12 @@ static func rules_hash() -> String:
 static func _build() -> Dictionary:
 	var out: Dictionary = {}
 	for a in Skynet.all_rules():
-		var row: Dictionary = (Skynet.all_rules()[a] as Dictionary).duplicate(true)
-		# Nothing in shock.exe has been read: no row here may claim more.
-		row["prov"] = "unverified"
-		row["note"] = ("SkyNET's row, run on this game's maps unchecked — "
-			+ String(row.get("note", ""))).strip_edges()
-		out[int(a)] = row
+		out[int(a)] = (Skynet.all_rules()[a] as Dictionary).duplicate(true)
 	for a in EMPTY_SLOTS:
 		out[int(a)] = {
 			"kind": "inert", "family": "", "p4": 0, "p6": 0,
-			"fire": "edge", "on_fire": "none", "dos": "", "prov": "unverified",
-			"note": "this game leaves the slot empty (map census)",
+			"fire": "edge", "on_fire": "none", "dos": "", "prov": "dos",
+			"note": "GAME.EXE treats this id differently on Future Shock data",
 			"modes": [{"mode": "chain"}],
 		}
 	return out
