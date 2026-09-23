@@ -589,7 +589,7 @@ func _open_map(level, intercept: bool) -> Dictionary:
 	# path. fly_camera reads KEY_1..KEY_9 straight off the event. Every
 	# shot check picks it again (_check_shot): the checks put the player
 	# down all over the map and a weapon he is set down on ARMS ITSELF.
-	_drv.press_key(KEY_1 + SHOT_WEAPON)
+	_hold_rifle()
 	_prox_world = []
 	for pn in (level.behaviour.prox_nodes() as Array):
 		_prox_world.append([int(pn.id),
@@ -1390,7 +1390,7 @@ func _check_shot(level, node: Dictionary, num: int, id: int, act: int,
 	# cars further down a map's list were being shot with something that
 	# cannot break them. Twelve of the pinned "no damage stage" failures
 	# were only that.
-	_drv.press_key(KEY_1 + SHOT_WEAPON)
+	_hold_rifle()
 	await _drv.frames(PRE_FRAMES)
 	var bus = level.bus
 	bus.record(true)
@@ -1532,6 +1532,18 @@ func _shots_to_kill(level, id: int) -> int:
 		return SHOT_DEATH_MAX + 1
 	return maxi(ceili(hp / dmg), 1)
 
+## The check's rifle in the player's hands, chosen on its number key.
+## The key does nothing for a slot he does not own (DOS WeaponSelect,
+## fly_camera._select_weapon), and Future Shock sends him out with the
+## pipe alone (its start list 0x43538): every FS "shot" was a pipe swing,
+## which broke only the crates he happened to be put down beside. SkyNET's
+## start list already holds the rifle, so there this is only the key. A
+## driver's arsenal is the vehicle's own and is left alone.
+func _hold_rifle() -> void:
+	if int(main.player.vehicle) == 0 and main.player.has_method("grant_weapon"):
+		main.player.call("grant_weapon", SHOT_WEAPON)
+	_drv.press_key(KEY_1 + SHOT_WEAPON)
+
 func _rifle_damage() -> float:
 	var ws = main.player.get("_weapons")
 	if ws is Array and SHOT_WEAPON < (ws as Array).size():
@@ -1563,7 +1575,7 @@ func _death_spot(level, id: int, aim: Vector3) -> Dictionary:
 		tried += 1
 		_drv.place(feet)
 		_drv.face(aim)
-		_drv.press_key(KEY_1 + SHOT_WEAPON)
+		_hold_rifle()
 		await _drv.frames(PRE_FRAMES)
 		_drv.face(aim)
 		await _drv.physics(1)

@@ -501,7 +501,14 @@ static func _modes(ctx: Dictionary, id: int) -> Array:
 	if (e.state_byte & 2) != 0:
 		out.append({"mode": "shot_each", "requires": "state&2", "edge": "hit",
 			"rearm": "always", "prov": "dos", "note": "ObjHit 0x139019"})
-	if (e.state_byte & 4) != 0:
+	# Bit 2 without bit 1 is tested against the pool only on a mesh that
+	# has one (v1.01 ObjHit 0x139819: `cmp ebx,1 / jne`, then the i16 hp at
+	# sub+0x0e, `jle` out when it is not above 0): a variant-1 record with
+	# no hit points ignores every round, and only a chain's 0x1B demolition
+	# (0x1380bf: hp = max(hp, 1), ObjHit(hp + 1)) can take that edge.
+	# Future Shock's BIGBOX2 boxes on MAP.017 are such; SkyNET has none.
+	var dead_pool: bool = (e.state_byte & 6) == 4 and (e.flags & 3) == 1 and e.hp <= 0
+	if (e.state_byte & 4) != 0 and not dead_pool:
 		out.append({"mode": "shot_death", "requires": "state&4", "edge": "hp0",
 			"rearm": "never", "hp": e.hp, "prov": "dos", "note": "ObjHit 0x139019"})
 	if ctx["paths"].has(id):
@@ -794,7 +801,8 @@ static func _simulate(ctx: Dictionary, id: int, modes: Array) -> Dictionary:
 	# never learnt that the record had died.
 	if _dies_when_fired(modes):
 		st["spent"][id] = true
-	var first: Array = _fire(ctx, id, st)
+	var own: bool = _own_bit_only(ctx, id, modes)
+	var first: Array = _fire(ctx, id, st, own)
 	# An exit ENDS the level instance, so there is no second activation to
 	# simulate. The 0xF0 handler itself holds no latch — decoded from the
 	# v1.01 bytes at 0x138081 (2026-09-16): it clears its own bit 0 inline
@@ -805,8 +813,25 @@ static func _simulate(ctx: Dictionary, id: int, modes: Array) -> Dictionary:
 	# graph said the exit fires twice, which read as "walk back through and
 	# it works again"; the runtime's one-map-change latch
 	# (Behaviour.exit_taken) was the one that matched DOS.
-	var second: Array = [] if _ends_instance(first) else _fire(ctx, id, st)
+	var second: Array = [] if _ends_instance(first) else _fire(ctx, id, st, own)
 	return {"first": first, "second": second}
+
+## A doorway the player reaches by himself — touched, then the use key —
+## raises its OWN bit 0 and nothing else. The 0xF0 handler (v1.01
+## 0x138081) never calls ObjFlipLink, so the link it carries is walked
+## only by the chain that flips it: Future Shock lays its doors out as
+## gate > exit > door sound (MAP.010 @0fc80, MAP.131 @06a89), and the
+## door sounds when the GATE is used, which that gate's own row says.
+## SkyNET's exits all link nowhere, so for them this is the same walk.
+## A shot is still ObjHit's, which walks the chain like any other.
+static func _own_bit_only(ctx: Dictionary, id: int, modes: Array) -> bool:
+	if String(ctx["rule"][id]["kind"]) != "exit":
+		return false
+	for m in modes:
+		var mode: String = String((m as Dictionary)["mode"])
+		if mode != "chain" and mode != "touch_arm":
+			return false
+	return true
 
 ## Is being shot to death the only way this node can be set off? A node
 ## a key or a walk can also fire is still standing when it fires; this
@@ -888,7 +913,7 @@ static func _first_sweep(ctx: Dictionary, st: Dictionary) -> void:
 
 ## One activation: the chain walk, then the edge handlers in walk order
 ## for every node whose bit 0 went UP, then the movers settle.
-static func _fire(ctx: Dictionary, id: int, st: Dictionary) -> Array:
+static func _fire(ctx: Dictionary, id: int, st: Dictionary, own: bool = false) -> Array:
 	var fx: Array = []
 	var kind: String = String(ctx["rule"][id]["kind"])
 	# 0xF1/0xF2 only run while their own bit is set; a chain has to re-arm
@@ -896,7 +921,10 @@ static func _fire(ctx: Dictionary, id: int, st: Dictionary) -> Array:
 	if kind == "prox_chain" and (int(st["bit"].get(id, 0)) & 1) == 0:
 		return fx
 	var rose: Array = []
-	for step in (ctx["chain"][id]["steps"] as Array):
+	var steps: Array = ctx["chain"][id]["steps"]
+	if own:
+		steps = steps.slice(0, 1)                    # the doorway itself (_own_bit_only)
+	for step in steps:
 		var sid: int = int(step[0])
 		var was: int = int(st["bit"].get(sid, 0))
 		var now: int = was ^ 1
