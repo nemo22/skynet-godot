@@ -16,6 +16,7 @@ const AUDIO_CFG: String = "user://audio.cfg"
 const PrsFile := preload("res://scripts/loaders/prs_file.gd")
 const HmiFile := preload("res://scripts/loaders/hmi_file.gd")
 const MidiSynth := preload("res://scripts/midi_synth.gd")
+const ZoneLayers := preload("res://scripts/mission/zone_layers.gd")
 
 var _bsa = null                       # BSAReader, kept open for the session
 var _cache: Dictionary = {}           # key -> AudioStreamWAV
@@ -315,6 +316,7 @@ func occlusion_db(world_pos: Vector3) -> float:
 		return 0.0
 	var from: Vector3 = cam.global_position
 	var q := PhysicsRayQueryParameters3D.create(from, world_pos)
+	q.collision_mask = ZoneLayers.world_mask()
 	q.collide_with_areas = false
 	var hit := space.intersect_ray(q)
 	if not hit.has("position"):
@@ -538,8 +540,15 @@ func _process(delta: float) -> void:
 ## Start `p` inside its max_distance of `listener`, stop it past it (plus
 ## LOOP_GATE_MARGIN), and only ever restart what the gate itself stopped.
 func _gate_loop(p: AudioStreamPlayer3D, listener: Vector3) -> void:
-	var d: float = listener.distance_to(p.global_position)
 	var id: int = p.get_instance_id()
+	# A loop of a zone the player is not in (a mission scene holds them
+	# all, only MissionScene.GAP apart) is off, however near it stands.
+	if ZoneLayers.asleep(p):
+		if p.playing and not p.stream_paused:
+			p.stop()
+			_gated[id] = true
+		return
+	var d: float = listener.distance_to(p.global_position)
 	if p.playing:
 		if d > p.max_distance + LOOP_GATE_MARGIN:
 			p.stop()

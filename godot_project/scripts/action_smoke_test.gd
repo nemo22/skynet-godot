@@ -1136,11 +1136,86 @@ func _run_mission_scene_checks() -> void:
 			"…and leads into zone %s" % (String(tz.get("map_name")) if tz != null else "nothing"))
 		var tp: Vector3 = door.get("target_pos")
 		_check(tp.is_finite(), "…landing at %s in the world" % str(tp))
+	# The layout: every zone its own layer index, and every footprint clear
+	# of every other by at least the GAP (they are kept apart by layers
+	# now, not by distance — scripts/mission/zone_layers.gd).
+	var fps: Array = []
+	var idxs: Dictionary = {}
+	for z in root.get_node("Zones").get_children():
+		var fp: Rect2 = z.get("footprint")
+		fps.append([String(z.get("map_name")), Rect2(fp.position
+			+ Vector2((z as Node3D).position.x, (z as Node3D).position.z), fp.size)])
+		idxs[int(z.get("zone_index"))] = true
+	_check(idxs.size() == fps.size(), "%d zones, %d layer indices" % [fps.size(), idxs.size()])
+	var clash: Array = []
+	for i in fps.size():
+		for j in range(i + 1, fps.size()):
+			var a: Rect2 = (fps[i][1] as Rect2).grow(MissionScene.GAP * 0.5 - 1.0)
+			var b: Rect2 = (fps[j][1] as Rect2).grow(MissionScene.GAP * 0.5 - 1.0)
+			if a.intersects(b):
+				clash.append("%s/%s" % [fps[i][0], fps[j][0]])
+	_check(clash.is_empty(), "no two zones stand within %.0f units of each other%s"
+		% [MissionScene.GAP, "" if clash.is_empty() else ": " + ", ".join(clash)])
 	var z218: Node3D = root.get_node_or_null("Zones/Zone_MAP_218")
-	_check(z218 != null and z218.position.x > 65536.0,
-		"zone MAP.218 stands clear of the outdoor world, at x=%.0f"
-		% (z218.position.x if z218 != null else 0.0))
+	var world: Rect2 = fps[0][1] if not fps.is_empty() else Rect2()
+	_check(z218 != null and z218.position.x > world.end.x
+		and z218.position.x < world.end.x + 2.0 * MissionScene.GAP + 4096.0,
+		"zone MAP.218 stands just east of the cropped world (x=%.0f, the world ends at %.0f)"
+		% [z218.position.x if z218 != null else 0.0, world.end.x])
+	var ex: Rect2 = root.get("extent")
+	_check(ex.size.x < 70000.0 and ex.size.y < 70000.0,
+		"mission 1 fits in %.0f × %.0f units (it was 203 328 × 65 280)" % [ex.size.x, ex.size.y])
 	root.free()
+	_run_terrain_crop_checks()
+
+## The outdoor ground is built over the border boxes and what can be seen
+## from them (LevelLoader.terrain_crop), and nothing else.
+func _run_terrain_crop_checks() -> void:
+	var bsa = LevelLoader.BSAReader.new()
+	if not bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant):
+		return
+	var m210 = LevelLoader.MapFile.parse(bsa.read("MAP.210"))
+	var m217 = LevelLoader.MapFile.parse(bsa.read("MAP.235"))
+	bsa.close()
+	var crop: Rect2i = LevelLoader.terrain_crop(m210)
+	var cw: Rect2 = LevelLoader.WldTerrain.cells_to_world(crop)
+	var boxes: Array = LevelLoader.border_rects(m210)
+	_check(crop.size.x > 0 and crop.size.x < 255 and boxes.size() == 1,
+		"MAP.210's ground is cropped to cells %s (%.0f × %.0f units)" % [str(crop), cw.size.x, cw.size.y])
+	if boxes.size() == 1:
+		var want: Rect2 = (boxes[0] as Rect2).grow(LevelLoader.TERRAIN_VIEW_MARGIN) \
+			.intersection(LevelLoader.WldTerrain.cells_to_world(Rect2i()))
+		_check(cw.encloses(want),
+			"…which covers its border box and %.0f units round it (the draw distance)"
+			% LevelLoader.TERRAIN_VIEW_MARGIN)
+	_check(LevelLoader.terrain_crop(m217) == Rect2i(),
+		"MAP.235 fences nothing off and keeps the whole field")
+	_run_touched_exit_check()
+
+## Mission 7's HK passes over MAP.271's tunnel doorway @06db0 (the port's
+## touch arms its bit 0) before its eye comes within 256 units of the gate
+## @06a6b whose chain leads to it. The chain's toggle used to take that
+## bit down again, so the gate tripped and the exit never fired (playtest
+## 2026-09-23). The walk reaching a doorway already up is the rise DOS
+## fires 0x138081 on (TriggerRuntime.flip).
+func _run_touched_exit_check() -> void:
+	var bsa = LevelLoader.BSAReader.new()
+	if not bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant):
+		return
+	var m271 = LevelLoader.MapFile.parse(bsa.read("MAP.271"))
+	bsa.close()
+	if m271 == null or not m271.entities_by_off.has(0x06db0):
+		return
+	var rt = load("res://scripts/triggers/trigger_runtime.gd").new()
+	rt.setup(m271)
+	rt.arm(0x06db0)                          # the HK passed over it
+	rt.flip(0x06a6b)                         # …and then came to the gate
+	_check(rt.armed(0x06db0) and rt.enabled(0x06db0),
+		"a chain reaching a doorway its touch had armed fires it (MAP.271 @06db0)")
+	var rt2 = load("res://scripts/triggers/trigger_runtime.gd").new()
+	rt2.setup(m271)
+	rt2.flip(0x06a6b)
+	_check(rt2.armed(0x06db0), "…and one nobody touched, as before")
 
 ## M3 step 2 — the LOCK (docs plan §5 layer (a)). tests/rules/
 ## skynet.triggers.lock holds the reviewed trigger graph of every shipped

@@ -28,6 +28,7 @@
 extends Node3D
 
 const Explosion    := preload("res://scripts/explosion.gd")
+const ZoneLayers := preload("res://scripts/mission/zone_layers.gd")
 
 ## .3D name → ArrayMesh, or false when the load failed (never retried).
 static var _mesh_cache: Dictionary = {}
@@ -116,6 +117,7 @@ func setup(from: Vector3, dir: Vector3, damage: float, cfg: Dictionary,
 	_owner = shooter
 	add_to_group("projectile")               # cleared on a map change
 	_q = PhysicsRayQueryParameters3D.new()
+	_q.collision_mask = ZoneLayers.world_mask()
 	_q.collide_with_areas = true               # actor hitboxes are Area3D
 	# An actor's own hitbox is an Area3D child, not the shooter itself:
 	# leave it out from the start instead of hitting it and flying on.
@@ -424,6 +426,7 @@ static func blast_clear(space: PhysicsDirectSpaceState3D, from: Vector3, to: Vec
 	if space == null:
 		return true
 	var q := PhysicsRayQueryParameters3D.create(from, to)
+	q.collision_mask = ZoneLayers.world_mask()
 	q.collide_with_areas = false
 	if ignore is CollisionObject3D:
 		q.exclude = [(ignore as CollisionObject3D).get_rid()]
@@ -465,7 +468,8 @@ func _finish(at: Vector3, impact: bool) -> void:
 					a.net_damage(_damage * (1.0 - da / _splash), _owner)
 		if _hits == "enemy":
 			for e in get_tree().get_nodes_in_group("enemy"):
-				if e is Node3D and e.has_method("take_damage") and e != _owner:
+				if e is Node3D and e.has_method("take_damage") and e != _owner \
+						and not ZoneLayers.asleep(e):
 					var d: float = e.blast_distance(at) if e.has_method("blast_distance") 						else (e as Node3D).global_position.distance_to(at)
 					# One DOS radial blast (dos_blast) over everything in reach.
 					var bd: float = dos_blast(_damage, d)
@@ -475,7 +479,7 @@ func _finish(at: Vector3, impact: bool) -> void:
 		# from anyone's explosion — DOS ObjHit runs for every object in
 		# the radius.
 		for h in get_tree().get_nodes_in_group("hittable"):
-			if h is Node3D and h.has_method("take_damage"):
+			if h is Node3D and h.has_method("take_damage") and not ZoneLayers.asleep(h):
 				var bh: float = dos_blast(_damage, (h as Node3D).global_position.distance_to(at))
 				if bh > 0.0:
 					h.take_damage(bh)

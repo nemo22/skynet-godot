@@ -55,6 +55,7 @@ const TriggerLock := preload("res://scripts/triggers/trigger_lock.gd")
 const Rules := preload("res://scripts/triggers/rules_skynet.gd")
 const PlayerDriver := preload("res://scripts/triggers/player_driver.gd")
 const BSAReader := preload("res://scripts/loaders/bsa_reader.gd")
+const ZoneLayers := preload("res://scripts/mission/zone_layers.gd")
 
 const XFAIL_PATH: String = "res://tests/rules/skynet.xfail"
 
@@ -1219,6 +1220,7 @@ func _round_meets(target: Node) -> bool:
 	var from: Vector3 = (cam as Node3D).global_position
 	var q := PhysicsRayQueryParameters3D.create(from,
 		from + (main.player.call("aim_dir") as Vector3) * 60000.0)
+	q.collision_mask = ZoneLayers.world_mask()
 	q.collide_with_areas = true
 	q.exclude = [main.player.get_rid()]
 	var hit := _space.intersect_ray(q)
@@ -1517,6 +1519,7 @@ func _button_spot(level, ep: Vector3, id: int, mode: Dictionary,
 func _ray_reaches(feet: Vector3, aim: Vector3, target: Node) -> bool:
 	var eye: Vector3 = feet + Vector3(0.0, _eye_h() + PlayerDriver.LIFT, 0.0)
 	var q := PhysicsRayQueryParameters3D.create(eye, aim)
+	q.collision_mask = ZoneLayers.world_mask()
 	q.collide_with_areas = true
 	q.exclude = [main.player.get_rid()]
 	var hit := _space.intersect_ray(q)
@@ -1887,6 +1890,7 @@ func _shooting_spots(level, id: int, aim: Vector3, limit: int) -> Array:
 				if not _fits(feet):
 					continue
 				var q := PhysicsRayQueryParameters3D.create(feet + Vector3(0.0, EYE, 0.0), aim)
+				q.collision_mask = ZoneLayers.world_mask()
 				q.collide_with_areas = true
 				q.exclude = [main.player.get_rid()]
 				var hit := _space.intersect_ray(q)

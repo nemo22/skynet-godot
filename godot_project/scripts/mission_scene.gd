@@ -7,7 +7,7 @@
 ##   +- Zones
 ##   |    Zone_MAP_210 (scripts/mission/zone.gd) at (0, 0, 0)
 ##   |      Level      an instance of converted/maps/MAP.210.level.scn
-##   |    Zone_MAP_218 … on +X, one slot each
+##   |    Zone_MAP_218 … east of the world, in columns (LAYOUT below)
 ##   +- Portals
 ##   |    Portal_MAP_210_0cabb (scripts/mission/portal.gd)
 ##   +- Phases
@@ -28,11 +28,27 @@
 ## falling over. Held in one scene, a doorway becomes a move across the
 ## same world (docs/m2_mission_scene_plan.md).
 ##
-## LAYOUT. Float precision is the budget: the mission's own outdoor world
-## stands at the origin, and every other zone is placed along +X — an
-## extra outdoor world takes a whole 65536-unit map, an interior takes its
-## own cell grid — with a gap between them, and the whole mission is kept
-## inside SPAN_LIMIT.
+## LAYOUT. The mission's own outdoor world stands at the origin, its
+## ground cropped to its border boxes and what can be seen from them
+## (LevelLoader.terrain_crop), and every other zone stands EAST of it, in
+## columns as deep as the world is, a small fixed GAP apart:
+##
+##   +--------------------+  +-----+  +-----+
+##   |                    |  | 218 |  | 214 |
+##   |  MAP.210 (cropped) |  +-----+  +-----+
+##   |                    |  | 211 |  | 215 |
+##   |                    |  +-----+  |     |
+##   +--------------------+  | 212 |  +-----+
+##                           +-----+
+##
+## Each zone takes the room its own records need (every entity with
+## ZONE_PAD round it; an outdoor world its terrain crop). The zones are
+## not kept apart by distance any more but by LAYERS — each draws on its
+## own render layer and collides on its own physics bit
+## (scripts/mission/zone_layers.gd) — so GAP only has to outreach what is
+## still measured by distance alone: a blast (Projectile.dos_blast reaches
+## 540 units at most). Float precision is still the budget: the whole
+## mission is kept inside SPAN_LIMIT.
 ##
 ## The zones are INSTANCES of the level scenes, not copies: rebake
 ## MAP.213 and the mission scene picks it up. The instance is always the
@@ -62,18 +78,22 @@ const ZoneScript := preload("res://scripts/mission/zone.gd")
 const PortalScript := preload("res://scripts/mission/portal.gd")
 const PhaseSwitchScript := preload("res://scripts/mission/phase_switch.gd")
 const PhaseWorldScript := preload("res://scripts/mission/phase_world.gd")
+const LevelLoaderScript := preload("res://scripts/level_loader.gd")
+const WldTerrain := preload("res://scripts/loaders/wld_terrain.gd")
 
 ## Bump when the bake changes shape (every saved mission scene is then
-## rebuilt). 1 = the first one (2026-09-15).
-const MISSION_BAKE_VERSION: int = 1
+## rebuilt). 1 = the first one (2026-09-15). 2 = the zones packed round
+## the cropped world, each with its layer index (2026-09-23).
+const MISSION_BAKE_VERSION: int = 2
 
-## The +X grid. An outdoor map is 64x64 cells of 1024 units, so a world
-## gets a whole one; an interior gets its own grid width. GAP keeps the
-## zones apart so nothing of one can ever reach into the next — a stray
-## explosion radius, a 12 000-unit draw distance, the sky dome.
-const OUTDOOR_SLOT: float = 65536.0
+## The space between two zones (see LAYOUT): four times the widest DOS
+## blast.
+const GAP: float = 2048.0
+## The room kept round every record of a zone: its mesh reaches this far
+## from where the record places it (a room piece is 784 units across).
+const ZONE_PAD: float = 1024.0
+## An interior cell of the MAP grid, for a zone with no records at all.
 const CELL: float = 1024.0
-const GAP: float = 16384.0
 ## Past this the single-precision transforms start to show (a 32-bit float
 ## has ~0.03 unit resolution at 500 000), so a mission that would need
 ## more is built anyway and says so.
@@ -100,8 +120,10 @@ const SELF_PATH := "res://scripts/mission_scene.gd"
 ## For the log and the editor inspector.
 @export var portal_count: int = 0
 @export var phase_count: int = 0
-## How far the mission reaches along +X (SPAN_LIMIT is the budget).
+## The furthest any zone reaches from the origin (SPAN_LIMIT is the budget).
 @export var span: float = 0.0
+## The whole mission's footprint in world x/z (position = north-west corner).
+@export var extent: Rect2 = Rect2()
 ## Whatever the census could not make sense of (a missing map, an exit to
 ## a marker set the target has not got, a mission with two worlds).
 @export var warnings: PackedStringArray = PackedStringArray()
@@ -201,10 +223,12 @@ static func stale_reason(start: int, bsa: BSAReader) -> String:
 ## Where every map of the mission stands. Returns
 ##   order:    the zone maps in placement order, the world first
 ##   origin:   map → Vector3 (a phase variant shares its world's origin)
+##   rect:     map → the zone's footprint in its own x/z (Rect2)
 ##   phase_of: variant map → the world map it re-authors
 ##   info:     map → the census zone record
-##   span:     how far the mission reaches along +X
-static func _layout(start: int, report: Dictionary) -> Dictionary:
+##   span:     the furthest any zone reaches from the origin, on either axis
+##   extent:   the whole mission's footprint in world x/z
+static func _layout(start: int, report: Dictionary, cache: Dictionary = {}) -> Dictionary:
 	var phase_of: Dictionary = {}
 	for w in report["phases"]:
 		var ps: Array = w["phases"]
@@ -217,8 +241,8 @@ static func _layout(start: int, report: Dictionary) -> Dictionary:
 		info[n] = z
 		if not phase_of.has(n):
 			zones.append(n)
-	var out: Dictionary = {"order": [], "origin": {}, "phase_of": phase_of,
-		"info": info, "primary": start, "span": 0.0}
+	var out: Dictionary = {"order": [], "origin": {}, "rect": {}, "phase_of": phase_of,
+		"info": info, "primary": start, "span": 0.0, "extent": Rect2()}
 	if zones.is_empty():
 		return out
 	# The mission's own world goes to the origin: the start map when it is
@@ -233,23 +257,75 @@ static func _layout(start: int, report: Dictionary) -> Dictionary:
 	for n in zones:
 		if int(n) != primary:
 			order.append(int(n))
-	var origin: Dictionary = {}
-	var cursor: float = 0.0
+	# Every zone's footprint in its own coordinates. A world that is
+	# re-authored in place covers what each of its variants needs.
+	var rect: Dictionary = {}
 	for n in order:
-		origin[n] = Vector3(cursor, 0.0, 0.0)
-		cursor += _slot(info[n]) + GAP
+		rect[n] = _footprint(int(n), info[n], cache)
+	for v in phase_of:
+		var w: int = int(phase_of[v])
+		if rect.has(w) and info.has(v):
+			rect[w] = (rect[w] as Rect2).merge(_footprint(int(v), info[v], cache))
+	# The columns east of the world: each zone's north edge where the last
+	# one's south edge left off, GAP apart; a new column once a zone would
+	# reach past the world's own south edge (a zone deeper than the world
+	# gets a column to itself).
+	var origin: Dictionary = {primary: Vector3.ZERO}
+	var world: Rect2 = rect[primary]
+	var top: float = world.position.y
+	var bottom: float = world.end.y
+	var col_x: float = world.end.x + GAP
+	var col_w: float = 0.0
+	var y: float = top
+	for i in range(1, order.size()):
+		var n: int = int(order[i])
+		var r: Rect2 = rect[n]
+		if col_w > 0.0 and y + r.size.y > bottom:
+			col_x += col_w + GAP
+			col_w = 0.0
+			y = top
+		origin[n] = Vector3(col_x - r.position.x, 0.0, y - r.position.y)
+		y += r.size.y + GAP
+		col_w = maxf(col_w, r.size.x)
 	for n in phase_of:
-		origin[int(n)] = origin[int(phase_of[n])]
+		origin[int(n)] = origin.get(int(phase_of[n]), Vector3.ZERO)
+	var extent := Rect2()
+	var span: float = 0.0
+	for n in order:
+		var o: Vector3 = origin[n]
+		var wr := Rect2((rect[n] as Rect2).position + Vector2(o.x, o.z), (rect[n] as Rect2).size)
+		extent = wr if extent.size == Vector2.ZERO else extent.merge(wr)
+		span = maxf(span, maxf(maxf(absf(wr.position.x), absf(wr.end.x)),
+			maxf(absf(wr.position.y), absf(wr.end.y))))
 	out["order"] = order
 	out["origin"] = origin
+	out["rect"] = rect
 	out["primary"] = primary
-	out["span"] = maxf(cursor - GAP, 0.0)
+	out["span"] = span
+	out["extent"] = extent
 	return out
 
-static func _slot(z: Dictionary) -> float:
+## What a zone takes up in its own x/z: an outdoor world its terrain crop
+## (the whole heightmap when the map fences nothing off), an interior every
+## record it places with ZONE_PAD round it.
+static func _footprint(num: int, z: Dictionary, cache: Dictionary) -> Rect2:
+	var parsed = (cache.get(num, {}) as Dictionary).get("map")
+	var r := Rect2()
 	if bool(z["outdoor"]):
-		return OUTDOOR_SLOT
-	return maxf(float(int((z["grid"] as Array)[0])) * CELL, CELL)
+		var crop: Rect2i = LevelLoaderScript.terrain_crop(parsed) if parsed != null else Rect2i()
+		r = WldTerrain.cells_to_world(crop)
+	if parsed != null:
+		for e in (parsed as MapFile.MapFile).entities:
+			if (e.flags & 3) == 0:
+				continue
+			var p := Rect2(float(e.x) - ZONE_PAD, -float(e.z) - ZONE_PAD,
+				ZONE_PAD * 2.0, ZONE_PAD * 2.0)
+			r = p if r.size == Vector2.ZERO else r.merge(p)
+	if r.size == Vector2.ZERO:
+		# Nothing to go by: the MAP's own cell grid.
+		var g: Array = z["grid"]
+		r = Rect2(0.0, -float(int(g[1])) * CELL, float(int(g[0])) * CELL, float(int(g[1])) * CELL)
+	return r
 
 # ---------------------------------------------------------------------
 # Baking
@@ -289,10 +365,16 @@ static func save(start: int, bsa: BSAReader, cache: Dictionary) -> String:
 					   ",".join(names)])
 				w.close()
 			out = p
-			print("[mission] %d: %d zones, %d portals, %d phase edges, %.0f k units wide → %s"
+			var ex: Rect2 = root.extent
+			print("[mission] %d: %d zones, %d portals, %d phase edges, %.1f × %.1f k units → %s"
 				% [start, (root.zone_maps as PackedInt32Array).size(),
 				   int(root.portal_count), int(root.phase_count),
-				   float(root.span) / 1000.0, p.get_file()])
+				   ex.size.x / 1000.0, ex.size.y / 1000.0, p.get_file()])
+			for zn in root.get_node("Zones").get_children():
+				var fp: Rect2 = zn.get("footprint")
+				print("[mission] %d:   %s zone %d at %s, footprint x %.0f..%.0f z %.0f..%.0f"
+					% [start, zn.get("map_name"), int(zn.get("zone_index")), str(zn.position),
+					   fp.position.x, fp.end.x, fp.position.y, fp.end.y])
 			for wmsg in (root.warnings as PackedStringArray):
 				print("[mission] %d: ! %s" % [start, wmsg])
 		else:
@@ -304,7 +386,7 @@ static func save(start: int, bsa: BSAReader, cache: Dictionary) -> String:
 
 static func _build(start: int, report: Dictionary, bsa: BSAReader,
 		cache: Dictionary) -> Node3D:
-	var lay := _layout(start, report)
+	var lay := _layout(start, report, cache)
 	var order: Array = lay["order"]
 	if order.is_empty():
 		push_warning("[mission] %d reaches no map that can be read" % start)
@@ -355,6 +437,7 @@ static func _build(start: int, report: Dictionary, bsa: BSAReader,
 
 	var zone_nodes: Dictionary = {}          # map → Node3D
 	var placed := PackedInt32Array()
+	var rects: Dictionary = lay["rect"]
 	for n in order:
 		var num: int = int(n)
 		var names := PackedStringArray()
@@ -364,6 +447,9 @@ static func _build(start: int, report: Dictionary, bsa: BSAReader,
 		if z == null:
 			notes.append("MAP.%03d has no baked level scene — the zone is missing" % num)
 			continue
+		# Its layers (zone_layers.gd) go by its place among the zones.
+		z.zone_index = placed.size()
+		z.footprint = rects.get(num, Rect2())
 		zones_node.add_child(z)
 		zone_nodes[num] = z
 		placed.append(num)
@@ -444,6 +530,7 @@ static func _build(start: int, report: Dictionary, bsa: BSAReader,
 	root.source_maps = all_maps
 	root.source_hash = source_hash_of(all_maps, bsa)
 	root.span = float(lay["span"])
+	root.extent = lay["extent"]
 	root.warnings = notes
 
 	for c in root.get_children():
@@ -454,7 +541,7 @@ static func _build(start: int, report: Dictionary, bsa: BSAReader,
 	# when it comes up (scripts/mission/zone.gd).
 	return root
 
-## One zone: the Node3D on the +X grid and the level scene under it.
+## One zone: the Node3D at its place in the layout and the level scene under it.
 static func _zone_node(num: int, z: Dictionary, at: Vector3,
 		phase_names: PackedStringArray, cache: Dictionary) -> Node3D:
 	var map_name := "MAP.%03d" % num

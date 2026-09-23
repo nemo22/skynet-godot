@@ -214,6 +214,9 @@ func _strip(tex: ImageTexture, y: float, h: float, fallback: Color) -> Control:
 func _build_camera() -> void:
 	_prev_cam = get_viewport().get_camera_3d()
 	_cam = Camera3D.new()
+	# Only the zone the player is in (scripts/mission/zone_layers.gd).
+	if _prev_cam != null:
+		_cam.cull_mask = _prev_cam.cull_mask
 	_cam.fov = 75.0
 	_cam.near = 20.0
 	_cam.far = 200000.0

@@ -277,6 +277,10 @@ class Level:
 	## PAIRS of markers of types 30-39 (DOS FUN_00122711, table 0x390e3).
 	## Empty on a map that carries none — then nothing is fenced off.
 	var border_boxes: Array = []
+	## The heightmap cells the ground is built over (terrain_crop): the
+	## border boxes and what can be seen from them. An empty Rect2i is the
+	## whole field — a map that fences nothing off.
+	var terrain_crop: Rect2i = Rect2i()
 	## MAP file offsets of the enemy markers / pickups that were spawned —
 	## the per-map state overlay records which of them are gone.
 	var enemy_marker_offs: Array = []
@@ -493,16 +497,26 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 	_phase("baked scene")
 	# Terrain mesh — built once and served from the asset cache
 	# (converted/terrain/WLD.NNN.res); the tiles come from TEXTURE.302.
+	if level.wld:
+		level.terrain_crop = terrain_crop(level.map)
 	if level.wld and level.terrain == null:
-		var terrain_mesh := Assets.terrain(level.wld_suffix, level.wld)
+		var terrain_mesh := Assets.terrain(level.wld_suffix, level.wld, level.terrain_crop)
 		if terrain_mesh:
 			level.terrain = MeshInstance3D.new()
 			level.terrain.name = "Terrain"
 			level.terrain.mesh = terrain_mesh
 			# The ground's collision shape is cached like everything else
 			# (converted/shape/WLD_NNN.res): 130 000 triangles is a slow
-			# thing to re-derive on every level start.
-			LevelScene.add_collision(level.terrain, "WLD_" + level.wld_suffix)
+			# thing to re-derive on every level start. It is built from
+			# the cropped mesh, so the ground you can stand on is the
+			# ground you can see.
+			LevelScene.add_collision(level.terrain, "WLD_" + level.wld_suffix
+				+ Assets.terrain_crop_tag(level.terrain_crop))
+			if level.terrain_crop.size.x > 0:
+				var cw: Rect2 = WldTerrain.cells_to_world(level.terrain_crop)
+				print("[level] terrain cropped to cells %s — x %.0f..%.0f, z %.0f..%.0f (%.0f × %.0f of 65 280)"
+					% [str(level.terrain_crop), cw.position.x, cw.end.x, cw.position.y,
+					   cw.end.y, cw.size.x, cw.size.y])
 
 	# Entities (variant 1 only) ------------------------------------
 	level.entities = Node3D.new()
@@ -950,6 +964,73 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 			parts.append("%s %.0f ms" % [t[0], float(t[1]) / 1000.0])
 		print("[load-trace] %s: %s" % [map_name, " | ".join(parts)])
 	return level
+
+## --- The terrain crop ---------------------------------------------------
+## A heightmap is 256 × 256 cells, 65 536 units a side, and the port used
+## to build every cell of it. The player never gets that far: DOS fences
+## him into the map's border boxes (FUN_00122711 / FUN_00122789, marker
+## pairs of types 30-39 — fly_camera._border_clamp), and MAP.210's is
+## 14 584 × 11 087. So the ground is built for the boxes and for what can
+## be SEEN from them, and no further.
+##
+## How far that is: the camera's far plane is 200 000 units — more than
+## the whole map, so it is not what bounds the view. What does is the
+## draw distance: at FOG_FAR the outdoor haze is solid (main.
+## _apply_fog_distances, the solid end at RENDER DETAIL HIGH; MED and LOW
+## pull it in), and limit_draw_distance stops drawing every mesh, sprite
+## and robot whose bounds lie wholly past FOG_FAR + 2 × DRAW_MARGIN. The
+## ground is held to the same line: every cell within that distance of
+## any point of a box is built — from anywhere the player can stand, and
+## at any height, since the distance is the 3-D one — and a cell further
+## out could only have been drawn as flat haze.
+const TERRAIN_VIEW_MARGIN: float = FOG_FAR + DRAW_MARGIN * 2.0
+## Whatever the MAP places outside the boxes still gets ground under it,
+## with this much around it (a robot's patrol, a path vehicle's route).
+const TERRAIN_ENTITY_PAD: float = 1024.0
+
+## The DOS border boxes of `map` in Godot x/z (x, −z): pairs of markers of
+## one type 30-39, in record order — the loader's own rule (border_boxes).
+static func border_rects(map: MapFile.MapFile) -> Array:
+	var by_type: Dictionary = {}
+	for e in map.entities:
+		if (e.flags & 3) == 3 and e.marker_type >= 30 and e.marker_type <= 39:
+			if not by_type.has(e.marker_type):
+				by_type[e.marker_type] = []
+			(by_type[e.marker_type] as Array).append(Vector2(float(e.x), -float(e.z)))
+	var out: Array = []
+	for mt in range(30, 40):
+		var pts: Array = by_type.get(mt, [])
+		for i in range(0, pts.size() - 1, 2):
+			var a: Vector2 = pts[i]
+			var b: Vector2 = pts[i + 1]
+			out.append(Rect2(Vector2(minf(a.x, b.x), minf(a.y, b.y)),
+				Vector2(absf(a.x - b.x), absf(a.y - b.y))))
+	return out
+
+## The heightmap cells an outdoor map builds its ground over: the border
+## boxes grown by TERRAIN_VIEW_MARGIN, and every placed entity with
+## TERRAIN_ENTITY_PAD round it. Rect2i() — the whole field — for a map
+## with no border box, or when the crop would cover the field anyway.
+static func terrain_crop(map: MapFile.MapFile) -> Rect2i:
+	if map == null:
+		return Rect2i()
+	var boxes: Array = border_rects(map)
+	if boxes.is_empty():
+		return Rect2i()
+	var u: Rect2 = boxes[0]
+	for b in boxes:
+		u = u.merge(b)
+	u = u.grow(TERRAIN_VIEW_MARGIN)
+	for e in map.entities:
+		var v: int = e.flags & 3
+		if v == 0:
+			continue
+		u = u.merge(Rect2(float(e.x) - TERRAIN_ENTITY_PAD, -float(e.z) - TERRAIN_ENTITY_PAD,
+			TERRAIN_ENTITY_PAD * 2.0, TERRAIN_ENTITY_PAD * 2.0))
+	var cells: Rect2i = WldTerrain.world_to_cells(u)
+	if cells == WldTerrain.ALL_CELLS or cells.size.x <= 0 or cells.size.y <= 0:
+		return Rect2i()
+	return cells
 
 ## Move the level's top branches to `level.origin`. Their children keep
 ## the zone-local positions the records gave them and follow the parent,

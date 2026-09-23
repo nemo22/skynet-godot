@@ -18,6 +18,7 @@ extends Node3D
 
 const Explosion  := preload("res://scripts/explosion.gd")
 const Projectile := preload("res://scripts/projectile.gd")
+const ZoneLayers := preload("res://scripts/mission/zone_layers.gd")
 
 ## Playtest 2026-09-03: the DOS grenade flew "more in a straight
 ## line than a ballistic curve" — 2400/2400 dropped 1200 u per 2400 u of
@@ -103,6 +104,7 @@ func setup(from: Vector3, dir: Vector3, damage: float, splash: float,
 		mi.material_override = _body_mat
 		add_child(mi)
 	_ray = PhysicsRayQueryParameters3D.new()
+	_ray.collision_mask = ZoneLayers.world_mask()
 	_ray.collide_with_areas = true             # enemy hitboxes are areas
 	if _owner is CollisionObject3D:
 		_ray.exclude = [(_owner as CollisionObject3D).get_rid()]
@@ -179,12 +181,12 @@ func _detonate(at: Vector3) -> void:
 				a.net_damage(_damage * (1.0 - da / _splash), _owner)
 	# One DOS radial blast (Projectile.dos_blast) over everything in reach.
 	for h in get_tree().get_nodes_in_group("hittable"):
-		if h is Node3D and h.has_method("take_damage"):
+		if h is Node3D and h.has_method("take_damage") and not ZoneLayers.asleep(h):
 			var bh: float = Projectile.dos_blast(_damage, (h as Node3D).global_position.distance_to(at))
 			if bh > 0.0:
 				h.take_damage(bh)
 	for e in get_tree().get_nodes_in_group("enemy"):
-		if e is Node3D and e.has_method("take_damage"):
+		if e is Node3D and e.has_method("take_damage") and not ZoneLayers.asleep(e):
 			# To the hitbox, not the origin (Enemy.blast_distance): a
 			# grenade bursting on an HK's nose is 300 u from its centre.
 			var d: float = e.blast_distance(at) if e.has_method("blast_distance") 				else (e as Node3D).global_position.distance_to(at)

@@ -454,6 +454,11 @@ func _do_prox(level, id: int, mode: Dictionary) -> Dictionary:
 		return {"ok": false, "tokens": PackedStringArray(), "why": "no way in"}
 	var ep: Vector3 = _epos(level, id)
 	var inside: Dictionary = _stand_in(level, ep, mode, 0.0, id)
+	if not bool(inside["ok"]) and int(main.player.get("vehicle")) == VEH_HK 			and String(mode.get("origin", "")) == "eye":
+		# The HK is not stood anywhere: it FLIES into a gate its body has
+		# no floor to fit on under (MAP.271's tunnel gate @06a6b, the
+		# gates that lead into it on MAP.270).
+		return await _fly_in(level, ep, mode)
 	if not bool(inside["ok"]):
 		return {"ok": false, "tokens": PackedStringArray(), "why": String(inside["why"])}
 	var outside: Dictionary = _stand_out(level, ep, mode, id)
@@ -480,6 +485,27 @@ func _do_prox(level, id: int, mode: Dictionary) -> Dictionary:
 		_drv.place(inside["feet"])
 	_drv.face(ep)
 	await _bring_the_eye_to(ep, float(mode.get("radius", Rules.PROX_GATE_RADIUS)))
+	await _drv.frames(ACT_FRAMES)
+	var tokens: PackedStringArray = TriggerEquiv.tokens(bus.take())
+	bus.record(false)
+	return {"ok": true, "why": "", "tokens": tokens}
+
+## fly_camera.VEH_HK — mission 7 is flown.
+const VEH_HK: int = 2
+
+## A gunship into an eye-measured trigger: put down in the air just
+## outside the reach at the record's own height, then brought in until the
+## cockpit is well inside it (_bring_the_eye_to), recording all the while.
+func _fly_in(level, ep: Vector3, mode: Dictionary) -> Dictionary:
+	var r: float = float(mode.get("radius", Rules.PROX_GATE_RADIUS)) + float(mode.get("pad", 0.0))
+	var bus = level.bus
+	bus.record(true)
+	bus.clear()
+	var lift: Vector3 = _drv.eye() - _drv.feet()
+	_drv.place(ep + Vector3(r + OUTSIDE_PAD * 4.0, 0.0, 0.0) - lift)
+	_drv.face(ep)
+	await _drv.frames(PRE_FRAMES)
+	await _bring_the_eye_to(ep, r)
 	await _drv.frames(ACT_FRAMES)
 	var tokens: PackedStringArray = TriggerEquiv.tokens(bus.take())
 	bus.record(false)

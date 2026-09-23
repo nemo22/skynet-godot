@@ -40,6 +40,7 @@ const MuzzleFlash := preload("res://scripts/muzzle_flash.gd")
 const EnemyAI := preload("res://scripts/enemy_ai.gd")
 const AIData := preload("res://scripts/enemy_ai_data.gd")
 const WldTerrain := preload("res://scripts/loaders/wld_terrain.gd")
+const ZoneLayers := preload("res://scripts/mission/zone_layers.gd")
 
 enum State { IDLE, CHASE, ATTACK, DEAD }
 
@@ -454,6 +455,11 @@ func spawn_in() -> void:
 			(c as CollisionObject3D).collision_layer = int(saved[0])
 			(c as CollisionObject3D).collision_mask = int(saved[1])
 	_hidden_layers.clear()
+	# Hidden before it ever stood in its zone, the bits it kept are the
+	# default ones: in a mission scene they go onto its zone's
+	# (scripts/mission/zone_layers.gd).
+	if ZoneLayers.on and ZoneLayers.zone_of(self) >= 0:
+		ZoneLayers.fit(self, ZoneLayers.zone_of(self))
 	if not _passive:
 		add_to_group("enemy")
 		Stats.add_enemies(1)
@@ -564,6 +570,7 @@ func _cast(from: Vector3, to: Vector3) -> Dictionary:
 		return {}
 	_ray.from = from
 	_ray.to = to
+	_ray.collision_mask = ZoneLayers.world_mask()
 	return space.intersect_ray(_ray)
 
 ## The engine loop plays while the camera is within its max_distance
@@ -1453,6 +1460,8 @@ static func _death_blast(tree: SceneTree, at: Vector3) -> void:
 	for e in tree.get_nodes_in_group("enemy"):
 		if not (e is Node3D) or not is_instance_valid(e) or not e.has_method("obj_hit"):
 			continue
+		if ZoneLayers.asleep(e):
+			continue                    # a robot of another zone of the mission
 		var ep: Vector3 = (e as Node3D).global_position
 		var ed: int = death_blast_damage(at.distance_to(ep))
 		if ed > 0 and _blast_clear(space, at, ep, null):
@@ -1462,6 +1471,7 @@ static func _death_blast(tree: SceneTree, at: Vector3) -> void:
 ## body at the far end).
 static func _blast_clear(space: PhysicsDirectSpaceState3D, from: Vector3, to: Vector3, ignore: Node) -> bool:
 	var q := PhysicsRayQueryParameters3D.create(from, to)
+	q.collision_mask = ZoneLayers.world_mask()
 	q.collide_with_areas = false
 	if ignore is CollisionObject3D:
 		q.exclude = [(ignore as CollisionObject3D).get_rid()]
@@ -1584,6 +1594,7 @@ func _snap_to_ground(init: bool = false) -> bool:
 func _floor_ray(space: PhysicsDirectSpaceState3D, at: Vector3, y_top: float, y_bottom: float, floor_only: bool = false) -> Dictionary:
 	_ray.from = Vector3(at.x, y_top, at.z)
 	_ray.to = Vector3(at.x, y_bottom, at.z)
+	_ray.collision_mask = ZoneLayers.world_mask()
 	var hit := space.intersect_ray(_ray)
 	if hit.is_empty():
 		return {}

@@ -49,6 +49,8 @@ mission 260
 	prox 260 14fb6 expect obj0 voice26038
 	counter 0
 mission 270
+	prox 270 0df56 expect exit271/0
+	prox 271 06a6b expect exit270/12
 	prox 270 0cd0a expect obj0 voice27038
 	counter 0
 mission 280

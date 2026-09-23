@@ -31,6 +31,7 @@ const HudPanel    := preload("res://scripts/hud_panel.gd")
 const HudModern   := preload("res://scripts/hud_modern.gd")
 const EffectWarmup := preload("res://scripts/effect_warmup.gd")
 const StatsLib := preload("res://scripts/stats.gd")
+const ZoneLayers := preload("res://scripts/mission/zone_layers.gd")
 
 ## Map to load on startup (falls back to first map if missing).
 @export var initial_map: String = "MAP.210"
@@ -246,8 +247,10 @@ func _ready() -> void:
 func _exit_tree() -> void:
 	_unwatch_settings()
 	# Leaving the game scene (main menu, a dev scene switch): nothing may
-	# stay paused or hold the mouse.
+	# stay paused or hold the mouse — and no mission scene's layers may
+	# outlive it into the next game (a deathmatch plays on bit 1).
 	PauseState.reset()
+	ZoneLayers.reset()
 
 ## Does this mesh already carry a collision body? Static geometry comes
 ## out of the baked level scene with one (and the loader gives the rest
@@ -338,6 +341,7 @@ func _wallmap(spec: String) -> void:
 	shape.radius = float(v[6]) if v.size() > 6 else 22.0
 	shape.height = 80.0
 	var q := PhysicsShapeQueryParameters3D.new()
+	q.collision_mask = ZoneLayers.world_mask()
 	q.shape = shape
 	if is_instance_valid(player) and player is CollisionObject3D:
 		q.exclude = [(player as CollisionObject3D).get_rid()]
@@ -380,6 +384,7 @@ func _floormap(spec: String) -> void:
 			if ceil_mode:
 				var cfrom := Vector3(x, y + 30.0, z)
 				var cq := PhysicsRayQueryParameters3D.create(cfrom, cfrom + Vector3(0.0, 600.0, 0.0))
+				cq.collision_mask = ZoneLayers.world_mask()
 				cq.hit_back_faces = true
 				var chit := space.intersect_ray(cq)
 				if not chit.is_empty():
@@ -390,6 +395,7 @@ func _floormap(spec: String) -> void:
 			else:
 				var from := Vector3(x, y + 90.0, z)
 				var q := PhysicsRayQueryParameters3D.create(from, from + Vector3(0.0, -700.0, 0.0))
+				q.collision_mask = ZoneLayers.world_mask()
 				q.hit_back_faces = true
 				var hit := space.intersect_ray(q)
 				if not hit.is_empty():
@@ -434,6 +440,7 @@ func _slice(spec: String) -> void:
 			var hit := false
 			for d in dirs:
 				var q := PhysicsRayQueryParameters3D.create(c, c + d * (step * 0.5))
+				q.collision_mask = ZoneLayers.world_mask()
 				q.hit_back_faces = true
 				if not space.intersect_ray(q).is_empty():
 					hit = true
@@ -1242,13 +1249,16 @@ func _lift_to_floor(pos: Vector3) -> Vector3:
 	if _cli.has("spawn-probe"):
 		# Agent aid: what is above and below the spawn point.
 		var qd := PhysicsRayQueryParameters3D.create(pos + Vector3(0.0, 400.0, 0.0), pos - Vector3(0.0, 600.0, 0.0))
+		qd.collision_mask = ZoneLayers.world_mask()
 		var hd := space.intersect_ray(qd)
 		var qu := PhysicsRayQueryParameters3D.create(pos + Vector3(0.0, 2.0, 0.0), pos + Vector3(0.0, 900.0, 0.0))
+		qu.collision_mask = ZoneLayers.world_mask()
 		var hu := space.intersect_ray(qu)
 		print("[spawn-probe] marker feet y=%.1f; from +400 down hits y=%s n=%s; up from +2 hits y=%s n=%s" % [pos.y,
 			str((hd["position"] as Vector3).y) if hd.has("position") else "-", str(hd.get("normal", "-")),
 			str((hu["position"] as Vector3).y) if hu.has("position") else "-", str(hu.get("normal", "-"))])
 		var qn := PhysicsRayQueryParameters3D.create(pos + Vector3(0.0, 40.0, 0.0), pos - Vector3(0.0, 60.0, 0.0))
+		qn.collision_mask = ZoneLayers.world_mask()
 		var hn := space.intersect_ray(qn)
 		print("[spawn-probe] near ray +40..-60 hits y=%s n=%s collider=%s" % [
 			str((hn["position"] as Vector3).y) if hn.has("position") else "-", str(hn.get("normal", "-")),
@@ -1260,6 +1270,7 @@ func _lift_to_floor(pos: Vector3) -> Vector3:
 	# (FUN_00138500) lands the player on the slab; so do we — its top is
 	# found from above.
 	var near_floor := PhysicsRayQueryParameters3D.create(pos + Vector3(0.0, 40.0, 0.0), pos - Vector3(0.0, 60.0, 0.0))
+	near_floor.collision_mask = ZoneLayers.world_mask()
 	near_floor.collide_with_areas = false
 	var near := space.intersect_ray(near_floor)
 	var standing: bool = near.has("position")
@@ -1274,6 +1285,7 @@ func _lift_to_floor(pos: Vector3) -> Vector3:
 		return pos
 	if not standing:
 		var up0 := PhysicsRayQueryParameters3D.create(pos + Vector3(0.0, 2.0, 0.0), pos + Vector3(0.0, SLAB_REACH, 0.0))
+		up0.collision_mask = ZoneLayers.world_mask()
 		up0.collide_with_areas = false
 		var under := space.intersect_ray(up0)
 		if under.has("position") and (under["normal"] as Vector3).y < -0.5:
@@ -1281,6 +1293,7 @@ func _lift_to_floor(pos: Vector3) -> Vector3:
 			# (Past the underside by a hair: a DOS floor is one double-sided
 			# polygon, its top IS its underside.)
 			var top_q := PhysicsRayQueryParameters3D.create(Vector3(pos.x, uy + SLAB_REACH, pos.z), Vector3(pos.x, uy - 1.0, pos.z))
+			top_q.collision_mask = ZoneLayers.world_mask()
 			top_q.collide_with_areas = false
 			var top := space.intersect_ray(top_q)
 			if top.has("position") and (top["normal"] as Vector3).y > 0.5:
@@ -1288,10 +1301,12 @@ func _lift_to_floor(pos: Vector3) -> Vector3:
 				print("[skynet] spawn %.0f u under its floor — lifted onto it" % (y - pos.y))
 				return Vector3(pos.x, y, pos.z)
 	var down := PhysicsRayQueryParameters3D.create(pos + Vector3(0.0, 40.0, 0.0), pos - Vector3(0.0, 600.0, 0.0))
+	down.collision_mask = ZoneLayers.world_mask()
 	down.collide_with_areas = false
 	if space.intersect_ray(down).has("position"):
 		return pos
 	var up := PhysicsRayQueryParameters3D.create(pos + Vector3(0.0, 2.0, 0.0), pos + Vector3(0.0, 900.0, 0.0))
+	up.collision_mask = ZoneLayers.world_mask()
 	up.collide_with_areas = false
 	var hit := space.intersect_ray(up)
 	# Seen from below the floor reports its flipped (downward) normal —
@@ -1312,6 +1327,7 @@ func _find_clear_spawn(pos: Vector3) -> Vector3:
 	shape.radius = 22.0
 	shape.height = 80.0
 	var q := PhysicsShapeQueryParameters3D.new()
+	q.collision_mask = ZoneLayers.world_mask()
 	q.shape = shape
 	for ring in [0.0, 50.0, 100.0, 200.0, 320.0, 460.0, 640.0]:
 		var steps: int = 1 if ring < 1.0 else 12
@@ -1327,6 +1343,7 @@ func _find_clear_spawn(pos: Vector3) -> Vector3:
 			# (2026-09-02 report).
 			if ring > 0.0:
 				var r := PhysicsRayQueryParameters3D.create(p + Vector3(0.0, 60.0, 0.0), p - Vector3(0.0, 400.0, 0.0))
+				r.collision_mask = ZoneLayers.world_mask()
 				r.collide_with_areas = false
 				if not space.intersect_ray(r).has("position"):
 					continue
@@ -1460,6 +1477,7 @@ func _settle_sprites(level: LevelLoader.Level) -> void:
 		var foot: float = n.global_position.y + float(n.get_meta("bottom_off"))
 		var from := Vector3(n.global_position.x, foot + SETTLE_REACH, n.global_position.z)
 		var q := PhysicsRayQueryParameters3D.create(from, from - Vector3(0.0, SETTLE_REACH * 2.0, 0.0))
+		q.collision_mask = ZoneLayers.world_mask()
 		q.collide_with_areas = false
 		var hit := space.intersect_ray(q)
 		if not hit.has("position"):
@@ -2255,13 +2273,22 @@ func _setup_water(level: LevelLoader.Level) -> void:
 	if level.map != null and level.map.grid_width > 0 and level.map.grid_height > 0:
 		span_x = float(level.map.grid_width) * WATER_CELL
 		span_z = float(level.map.grid_height) * WATER_CELL
+	var centre := Vector2(span_x * 0.5, -span_z * 0.5)
+	# Outdoors the ground is built only over its crop (LevelLoader.
+	# terrain_crop), and a surface reaching past its edge would lie out in
+	# the open, where no ground hides it.
+	if level.is_outdoor and level.terrain_crop.size.x > 0:
+		var cw: Rect2 = WldTerrain.cells_to_world(level.terrain_crop)
+		span_x = cw.size.x
+		span_z = cw.size.y
+		centre = cw.get_center()
 	var mi := MeshInstance3D.new()
 	mi.name = "Water"
 	var pm := PlaneMesh.new()
 	pm.size = Vector2(span_x, span_z)
 	mi.mesh = pm
 	# zone-local → world: the grid starts at the zone's own corner.
-	mi.position = Vector3(span_x * 0.5, y, -span_z * 0.5) \
+	mi.position = Vector3(centre.x, y, centre.y) \
 		+ Vector3(level.origin.x, 0.0, level.origin.z)
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var m := StandardMaterial3D.new()
@@ -2862,11 +2889,29 @@ func _begin_mission_level(map_name: String, gen: int) -> bool:
 		root.remove_child(prev)
 		prev.queue_free()
 	# Every zone comes out of the bake visible, and a mission holds up to
-	# seventeen of them: they go dark until the player is in one. Their
-	# static bodies stay in the physics world — they are a whole GAP away,
-	# where nothing can reach them.
+	# seventeen of them: they go dark until the player is in one. The dark
+	# is not what keeps them apart, though, and neither is the distance
+	# (MissionScene.GAP is 2048 units): each zone is put on its own render
+	# layer and its own physics bit here, the camera draws only the active
+	# zone's layer and every query casts on its bit only
+	# (scripts/mission/zone_layers.gd). A zone's baked statics stay in the
+	# physics world on that bit, where nothing of another zone meets them;
+	# its furniture, which has to share one bit, comes off it while the
+	# zone sleeps.
+	ZoneLayers.on = true
+	ZoneLayers.active = -1
+	ZoneLayers.player_root = player
 	for zname in zones:
-		((zones[zname] as Dictionary)["node"] as Node3D).visible = false
+		var zentry: Dictionary = zones[zname]
+		var zn: Node3D = zentry["node"]
+		var zi: int = int(zn.get("zone_index")) if zn.get("zone_index") != null else zn.get_index()
+		zentry["index"] = zi
+		zn.set_meta(ZoneLayers.META, zi)
+		ZoneLayers.fit(zn, zi)
+		ZoneLayers.park(zn)
+		zn.visible = false
+	if not get_tree().node_added.is_connected(_on_zone_node_added):
+		get_tree().node_added.connect(_on_zone_node_added)
 	_mission = root
 	_zones = zones
 	_phases = phases
@@ -2975,6 +3020,11 @@ func _take_scene_overlays(key: int) -> void:
 func _teardown_mission() -> void:
 	if _mission == null:
 		return
+	# Back to the per-map picture: one layer, one physics bit.
+	if get_tree().node_added.is_connected(_on_zone_node_added):
+		get_tree().node_added.disconnect(_on_zone_node_added)
+	ZoneLayers.reset()
+	_zone_view(-1)
 	var overlays: Dictionary = _scene_overlays()
 	for mn in overlays:
 		_map_state[mn] = overlays[mn]
@@ -3104,6 +3154,11 @@ func _build_zone(zname: String, z: Dictionary, carry: Dictionary = {}) -> LevelL
 		add_child(level.sky)                # follows the camera, not the zone
 		level.sky.position = player.global_position
 	z["level"] = level
+	# Everything the build hung under the zone took its layers as it went
+	# in (ZoneLayers.adopt); what was set up off the tree and then had its
+	# bits written again (a hidden robot, a prop made walk-through) gets
+	# them once more here.
+	ZoneLayers.fit(node, int(z.get("index", 0)))
 	print("[mission] zone %s built in %d ms (%s, %d meshes, %d enemies) at %s"
 		% [zname, Time.get_ticks_msec() - t0,
 		   "outdoor" if level.is_outdoor else "indoor",
@@ -3122,6 +3177,13 @@ func _activate_zone(zname: String, from: String, gen: int, carry: Dictionary = {
 	_keep_zone_water()
 	if not from.is_empty() and from != zname:
 		_deactivate_zone(from)
+	# The camera, the player's body and every query move onto this zone's
+	# layers BEFORE anything of it is built: what the build hangs under
+	# Main (the sky dome) takes the active zone's (ZoneLayers.adopt).
+	var znode: Node3D = z["node"]
+	ZoneLayers.unpark(znode)
+	_hush_zone(znode, false)
+	_zone_view(int(z.get("index", 0)))
 	# The water surface of the zone being left — or of this one, when a
 	# doorway leads back into the map it is in. It hangs under Main rather
 	# than under the zone (the zone going dark would not take it), and
@@ -3189,13 +3251,19 @@ func _activate_zone(zname: String, from: String, gen: int, carry: Dictionary = {
 ## Its exits are re-armed: the DOS one-map-change latch is released by the
 ## map load that follows an exit, and here there is no load.
 ##
-## (The 3-D loops of a sleeping zone need nothing: the zones stand at
-## least a GAP of 16384 units apart, well past the 5000-unit reach
-## Audio.setup_3d gives a loop, so its distance gate holds them silent.)
+## Its sounds are paused where they are (_hush_zone) — the zones stand only
+## MissionScene.GAP apart, well inside the 5000-9000 units a loop or an
+## engine carries — and its furniture comes off the shared FURNITURE bit
+## (ZoneLayers.park). Its render layer and its physics bit need nothing:
+## the camera and every query have moved to the next zone's.
 func _deactivate_zone(zname: String) -> void:
 	var z: Dictionary = _zones.get(zname, {})
 	if z.is_empty():
 		return
+	var znode: Node3D = z["node"]
+	if znode != null and is_instance_valid(znode):
+		ZoneLayers.park(znode)
+		_hush_zone(znode, true)
 	var level = z.get("level")
 	if level != null:
 		if level.behaviour != null:
@@ -3210,6 +3278,47 @@ func _deactivate_zone(zname: String) -> void:
 	# In-flight shots and grenades belong to the zone they were fired in.
 	for p in get_tree().get_nodes_in_group("projectile"):
 		p.queue_free()
+
+## Point the player's view and body at zone `idx` (zone_layers.gd): the
+## camera draws that zone's layer and the shared one, the player collides
+## on its bit. -1, or no mission scene: every layer and bit 1, the per-map
+## picture.
+func _zone_view(idx: int) -> void:
+	if ZoneLayers.on:
+		ZoneLayers.active = idx
+	var k: int = idx if ZoneLayers.on and idx >= 0 else 0
+	if is_instance_valid(player):
+		var bodies: Array = [player]
+		bodies.append_array(player.find_children("*", "CollisionObject3D", true, false))
+		for b in bodies:
+			if b is CollisionObject3D:
+				var co := b as CollisionObject3D
+				co.collision_layer = ZoneLayers.retarget(co.collision_layer, k)
+				co.collision_mask = ZoneLayers.retarget(co.collision_mask, k)
+	if camera != null:
+		camera.cull_mask = ZoneLayers.cull_mask()
+	# The scene's own key light belongs to no zone: it lights the one the
+	# player is in (and the shared layer), never a sleeping neighbour.
+	if sun != null:
+		sun.light_cull_mask = ZoneLayers.cull_mask()
+
+## Every node that enters the tree while a mission scene is up takes its
+## zone's layers — or the active zone's, a shot or an explosion under Main.
+func _on_zone_node_added(n: Node) -> void:
+	ZoneLayers.adopt(n)
+
+## A zone going to sleep pauses its sounds where they are, and they carry
+## on when it wakes.
+func _hush_zone(node: Node, hush: bool) -> void:
+	for p in node.find_children("*", "AudioStreamPlayer3D", true, false):
+		var a := p as AudioStreamPlayer3D
+		if hush:
+			if a.playing and not a.stream_paused:
+				a.stream_paused = true
+				a.set_meta(&"zone_hushed", true)
+		elif a.has_meta(&"zone_hushed"):
+			a.remove_meta(&"zone_hushed")
+			a.stream_paused = false
 
 ## A doorway inside the mission scene: fade, move, fade back. The shape of
 ## _change_level without a level change — one at a time (`_level_busy`),
@@ -4182,23 +4291,33 @@ func _show_end_screen(title: String, color: Color, failed: bool,
 		# DOS shows the banner alone, then the dialog. ESC in the dialog is
 		# NO — and only there, so ESC under the banner still does nothing.
 		cl.add_child(_br_keybtn([KEY_ESCAPE], _end_screen_cancel))
-		var failed_layer: CanvasLayer = cl
+		# The timers below know their screen by its instance id, never by
+		# the node: a lambda that captures a node the player has dismissed
+		# before the timer ran out is called with null and Godot reports
+		# "Lambda capture at index 0 was freed" (the mission suite took the
+		# end screen down and walked on, 6 s before this fired).
+		var failed_id: int = cl.get_instance_id()
 		get_tree().create_timer(FAILED_HOLD_SEC, true, false, true).timeout.connect(
 			func() -> void:
-				if _game_over == failed_layer and is_instance_valid(failed_layer):
+				if _end_screen_is(failed_id):
 					_show_restart_box(_game_over_box))
 		return
 	# A won mission is DOS's banner and nothing else — WELLDONE.IMG for a
 	# few seconds, then the next mission's briefing (a DOSBox run,
 	# 2026-09-11; the port had NEXT MISSION / MAIN MENU buttons under it).
 	# Enter / Space skip the wait; after the last mission, the main menu.
-	var my: CanvasLayer = cl
+	var my_id: int = cl.get_instance_id()
 	get_tree().create_timer(AUTO_ADVANCE_SEC, true, false, true).timeout.connect(func() -> void:
-		if _game_over == my and is_instance_valid(my):
+		if _end_screen_is(my_id):
 			if next_map != "":
 				_advance_to(next_map)
 			else:
 				_game_over_menu())
+
+## Is the end screen that is up the one with instance id `id`?
+func _end_screen_is(id: int) -> bool:
+	return _game_over != null and is_instance_valid(_game_over) \
+		and _game_over.get_instance_id() == id
 
 ## RESTART.IMG, the DOS "RESTART MISSION? YES / NO" box, under the banner
 ## that is already up (FUN_0011d09e). It is the same 96x37 panel as
@@ -4974,7 +5093,7 @@ const HELP_TEXT := """[b]commands[/b]
   use (action key) · objectives (what the mission still wants)
   music [0-100|off|t200|title] · save [slot] · load [slot] · menu · quit
   where (position, view and what the level costs) · bake [all]
-  zone · zones (the mission scene's zones, when one is up)"""
+  zone · zones [show|all|hide] (the mission scene's zones, when one is up)"""
 
 const CHEATS_TEXT := """[b]DOS cheat codes[/b] (CHEAT.PRS, typed after Alt+\\ in the original)
   superuzi · arnold (all weapons) · slugs (ammo) · surgery (health+armor)
@@ -5357,6 +5476,20 @@ func run_command(line: String) -> String:
 			# and the zone origin is what stands between them.
 			return _zone_report(false)
 		"zones":
+			# Agent aid: `zones show` stands every zone up at once — only
+			# their layers keep them apart then (zone_layers.gd) — `zones
+			# all` lets the camera draw every layer as well, which is what
+			# the editor shows, and `zones hide` puts it back.
+			if args.size() > 0 and _mission != null:
+				var want: String = String(args[0])
+				if want in ["show", "all", "hide"]:
+					for zn in _zones:
+						var zon: Node3D = (_zones[zn] as Dictionary)["node"]
+						zon.visible = want != "hide" or String(zn) == _active_zone
+					if camera != null:
+						camera.cull_mask = (1 << 20) - 1 if want == "all" else ZoneLayers.cull_mask()
+					return "zones %s: every zone %s, camera cull mask %x" % [want,
+						"drawn" if want != "hide" else "but the active one dark", camera.cull_mask]
 			return _zone_report(true)
 		"use":
 			# The action key, from a script: --console="tp …;use".
@@ -5399,6 +5532,7 @@ func run_command(line: String) -> String:
 						var o: Vector3 = camera.project_ray_origin(sp)
 						var d: Vector3 = camera.project_ray_normal(sp)
 						var gq := PhysicsRayQueryParameters3D.create(o, o + d * 6000.0)
+						gq.collision_mask = ZoneLayers.world_mask()
 						gq.collide_with_areas = true
 						if is_instance_valid(player) and player is CollisionObject3D:
 							gq.exclude = [(player as CollisionObject3D).get_rid()]
@@ -5424,6 +5558,7 @@ func run_command(line: String) -> String:
 				return "%d mesh/texture pairs in view:\n  %s" % [names.size(), "\n  ".join(names)]
 			var dir: Vector3 = -camera.global_transform.basis.z
 			var rq := PhysicsRayQueryParameters3D.create(from, from + dir * 6000.0)
+			rq.collision_mask = ZoneLayers.world_mask()
 			rq.collide_with_areas = true          # enemy hitboxes are Area3D
 			if is_instance_valid(player) and player is CollisionObject3D:
 				rq.exclude = [(player as CollisionObject3D).get_rid()]

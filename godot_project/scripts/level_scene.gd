@@ -78,7 +78,9 @@ const PathsLib := preload("res://scripts/skynet_paths.gd")
 ## SoundLoop nodes — the maps already in the cache have to be built again.
 ## 13 (2026-09-14): visibility ranges on the baked nodes, and the
 ## provenance sidecar next to every scene.
-const BAKE_VERSION: int = 13
+## 14 (2026-09-23): the outdoor ground is built only over the border boxes
+## and what can be seen from them (LevelLoader.terrain_crop).
+const BAKE_VERSION: int = 14
 
 # ---------------------------------------------------------------------
 # Paths
@@ -993,7 +995,7 @@ static func build_occluders(level) -> Node3D:
 	var verts := PackedVector3Array()
 	var idx := PackedInt32Array()
 	if level.wld != null:
-		_terrain_occluder(level.wld, verts, idx)
+		_terrain_occluder(level.wld, verts, idx, level.terrain_crop)
 	_mesh_occluders(level, verts, idx)
 	if idx.is_empty():
 		return null
@@ -1009,18 +1011,22 @@ static func build_occluders(level) -> Node3D:
 	print("[level] occluders: %d triangles" % (idx.size() / 3))
 	return root
 
-static func _terrain_occluder(w, verts: PackedVector3Array, idx: PackedInt32Array) -> void:
+## Over the cells the ground is built on (`crop`, LevelLoader.terrain_crop)
+## — an occluder past the edge of the drawn ground would hide the sky.
+static func _terrain_occluder(w, verts: PackedVector3Array, idx: PackedInt32Array,
+		crop: Rect2i = Rect2i()) -> void:
+	var cells: Rect2i = WldTerrain.crop_or_all(crop)
 	@warning_ignore("integer_division")
-	var cols: int = (WldTerrain.GRID_W - 1) / OCC_STEP
+	var cols: int = maxi(cells.size.x / OCC_STEP, 1)
 	@warning_ignore("integer_division")
-	var rows: int = (WldTerrain.GRID_H - 1) / OCC_STEP
+	var rows: int = maxi(cells.size.y / OCC_STEP, 1)
 	var stride: int = cols + 1
 	var base: int = verts.size()
 	verts.resize(base + stride * (rows + 1))
 	for r in range(rows + 1):
 		for c in range(stride):
-			var col: int = mini(c * OCC_STEP, WldTerrain.GRID_W - 1)
-			var row: int = mini(r * OCC_STEP, WldTerrain.GRID_H - 1)
+			var col: int = mini(cells.position.x + c * OCC_STEP, cells.end.x)
+			var row: int = mini(cells.position.y + r * OCC_STEP, cells.end.y)
 			# The lowest ground anywhere in this vertex's neighbourhood.
 			var h: float = 1e9
 			for dr in range(-OCC_STEP, OCC_STEP + 1):

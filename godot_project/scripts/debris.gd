@@ -5,6 +5,7 @@
 extends Node3D
 
 const Explosion := preload("res://scripts/explosion.gd")
+const ZoneLayers := preload("res://scripts/mission/zone_layers.gd")
 
 const GRAVITY: float = 2600.0
 const MAX_LIFE: float = 2.5
@@ -58,6 +59,7 @@ func setup(at: Vector3, vel: Vector3, part: Mesh = null) -> void:
 		_mi.material_override = chunk_material()
 	add_child(_mi)
 	_ray = PhysicsRayQueryParameters3D.new()
+	_ray.collision_mask = ZoneLayers.world_mask()
 
 func _physics_process(delta: float) -> void:
 	if _mi == null:

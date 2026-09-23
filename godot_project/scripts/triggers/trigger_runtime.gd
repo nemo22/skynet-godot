@@ -353,6 +353,10 @@ func flip(start_off: int) -> Array:
 	var out: Array = []
 	var visited: Dictionary = {}
 	var stack: Array = [start_off]
+	# Walked by a PROXIMITY chain trigger (0xF1/0xF2) — the one kind that
+	# sets a chain off without the player choosing the moment (see the
+	# doorway case below).
+	var by_prox: bool = act(start_off) in [Rules.ACT_PROX_CHAIN_A, Rules.ACT_PROX_CHAIN_B]
 	while not stack.is_empty():
 		var off: int = int(stack.pop_back())
 		if visited.has(off):
@@ -362,8 +366,26 @@ func flip(start_off: int) -> Array:
 			continue
 		var a: int = act(off)
 		var s: int = (state(off) ^ 1)
+		var touched_exit: bool = false
 		if a == Rules.ACT_PROX_GATE:
 			s |= 1                               # a gate stays live (skynet_gh.c:39837)
+		elif by_prox and a == Rules.ACT_TELEPORT and (state(off) & 1) != 0:
+			# A doorway whose bit is already up when a chain reaches it can
+			# only have been armed by the PORT's touch (Rules: touch_arm,
+			# prov port): DOS dispatches 0x138081 on every frame the bit is
+			# up and the map change it asks for ends the level, so in DOS an
+			# 0xF0 never waits with its bit up for a chain to come. The
+			# toggle would take it down and the chain-armed exit would never
+			# fire — mission 7's HK passes over MAP.271's tunnel doorway
+			# @06db0 (r90, 512 window) before its eye comes within the
+			# 256 units of the gate @06a6b that walks the chain to it. The
+			# chain reaching it is the rise DOS would have fired on — and
+			# when it cannot fire (this level has already asked for its map
+			# change) the toggle stands as it always did, below. Only for a
+			# walk a proximity trigger started: a use-key gate (0xEF) beside
+			# its doorway keeps the port's touch-then-key rule.
+			s |= 1
+			touched_exit = true
 		set_state(off, s)
 		if bus != null:
 			bus.announce_flip(off, a, s)
@@ -376,6 +398,10 @@ func flip(start_off: int) -> Array:
 		if (s & 1) != 0:
 			_armed[off] = true               # …for the rest of this tick
 			fire(off)
+			if touched_exit and presenter != null and enabled(off):
+				# Not taken: the doorway is left as the toggle leaves it.
+				_armed.erase(off)
+				set_state(off, state(off) & ~1)
 		else:
 			# A LEVEL kind runs for as long as its bit is up (the 0xEE
 			# ambient loops), so the flip that takes the bit away is what

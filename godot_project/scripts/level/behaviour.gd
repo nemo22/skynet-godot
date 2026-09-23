@@ -104,6 +104,7 @@ const PathVehicle := preload("res://scripts/level/path_vehicle.gd")
 const Explosion := preload("res://scripts/explosion.gd")
 const Projectile := preload("res://scripts/projectile.gd")
 const PickupData := preload("res://scripts/pickup_data.gd")
+const ZoneLayers := preload("res://scripts/mission/zone_layers.gd")
 
 ## The container the path vehicles are built into. Not a baked one — see
 ## the header — so the index below steps over it by name.
@@ -630,6 +631,13 @@ func use_exit_through(gate: Node) -> bool:
 	if t == null:
 		return false
 	gate.walk_once()
+	# The walk itself may have taken it: a doorway the walk sends UP fires
+	# as it goes (TriggerRuntime.flip → present_fire), and the key did
+	# take the exit then — t.fire() below would only find the latch shut
+	# and say it had not (the solver took that for a doorway that did not
+	# open, and stood still in MAP.211 with the level changing under it).
+	if _exit_taken:
+		return true
 	runtime.arm(int(t.id))
 	return bool(t.fire())
 
@@ -1094,14 +1102,15 @@ func radial_blast(source: Node3D, centre: Vector3, s: int) -> void:
 	var tree: SceneTree = source.get_tree()
 	Projectile.blast_player(centre, float(s), float(s), null, tree)
 	for e in tree.get_nodes_in_group("enemy"):
-		if e is Node3D and e.has_method("obj_hit"):
+		if e is Node3D and e.has_method("obj_hit") and not ZoneLayers.asleep(e):
 			var d: float = e.blast_distance(centre) if e.has_method("blast_distance") \
 				else (e as Node3D).global_position.distance_to(centre)
 			var bd: float = Projectile.dos_blast(float(s), d)
 			if bd > 0.0:
 				e.call("obj_hit", bd)
 	for h in tree.get_nodes_in_group("hittable"):
-		if h is Node3D and h != source and h.has_method("take_damage"):
+		if h is Node3D and h != source and h.has_method("take_damage") \
+				and not ZoneLayers.asleep(h):
 			var bh: float = Projectile.dos_blast(float(s),
 				(h as Node3D).global_position.distance_to(centre))
 			if bh > 0.0:
@@ -1574,6 +1583,7 @@ func reachable(from_local: Vector3, target_local: Vector3) -> bool:
 			var a: Vector3 = from + Vector3(0.0, fy, 0.0)
 			var b: Vector3 = target + Vector3(0.0, ty, 0.0)
 			var q := PhysicsRayQueryParameters3D.create(a, b)
+			q.collision_mask = ZoneLayers.world_mask()
 			q.collide_with_areas = false
 			if player_body != null:
 				q.exclude = [player_body.get_rid()]

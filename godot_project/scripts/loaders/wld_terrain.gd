@@ -314,6 +314,31 @@ static func cell_for_world(wx: float, wz: float) -> Vector2i:
 	var row: int = int((Z_FLIP_K - wz) / WORLD_PER_CELL) & 0xFF
 	return Vector2i(col, row)
 
+## Every cell the mesh can draw: a cell reads its south and east corners
+## too, so the last row and column of the heightmap start none.
+const ALL_CELLS := Rect2i(0, 0, GRID_W - 1, GRID_H - 1)
+
+## `crop` clipped to the cells that exist; the whole field for an empty one.
+static func crop_or_all(crop: Rect2i) -> Rect2i:
+	if crop.size.x <= 0 or crop.size.y <= 0:
+		return ALL_CELLS
+	return crop.intersection(ALL_CELLS)
+
+## The Godot x/z rectangle a block of cells covers (x east, z = row*256 − K).
+static func cells_to_world(cells: Rect2i) -> Rect2:
+	var c := crop_or_all(cells)
+	return Rect2(float(c.position.x) * WORLD_PER_CELL,
+		float(c.position.y) * WORLD_PER_CELL - Z_FLIP_K,
+		float(c.size.x) * WORLD_PER_CELL, float(c.size.y) * WORLD_PER_CELL)
+
+## The cells a Godot x/z rectangle touches, clipped to the field.
+static func world_to_cells(r: Rect2) -> Rect2i:
+	var c0: int = floori(r.position.x / WORLD_PER_CELL)
+	var r0: int = floori((r.position.y + Z_FLIP_K) / WORLD_PER_CELL)
+	var c1: int = ceili(r.end.x / WORLD_PER_CELL)
+	var r1: int = ceili((r.end.y + Z_FLIP_K) / WORLD_PER_CELL)
+	return Rect2i(c0, r0, c1 - c0, r1 - r0).intersection(ALL_CELLS)
+
 ## Terrain Y at world (wx, wz) — the height of the ground the mesh
 ## actually shows: the DOS planes, each cell split NW–SE. Used for
 ## everything that stands on the ground (sprites, props, spawns); it used
@@ -426,7 +451,10 @@ static func _corner_from_cells(cells: PackedColorArray, col: int, row: int) -> C
 		return Color(0.5, 0.5, 0.5)
 	return Color(total.r / count, total.g / count, total.b / count)
 
-## Build the terrain ArrayMesh covering the full 256×256 heightmap.
+## Build the terrain ArrayMesh: the full 256×256 heightmap, or only the
+## cells of `crop` (col, row, width, height — an empty Rect2i is the whole
+## field; LevelLoader.terrain_crop says which cells a map can be seen to
+## use).
 ##
 ## DOS textures terrain with a continuous world-planar projection: each
 ## cell binds one TEXTURE.302 tile chosen by (layer2 & 0x3F), and the UV
@@ -438,7 +466,7 @@ static func _corner_from_cells(cells: PackedColorArray, col: int, row: int) -> C
 ## `tile_textures` is an Array of Texture2D indexed by material id (built
 ## from TEXTURE.302). When empty, a vertex-colour fallback is used.
 static func build_terrain_mesh(w: WLD, tile_textures: Array = [],
-		avg_colors: Array = []) -> ArrayMesh:
+		avg_colors: Array = [], crop: Rect2i = Rect2i()) -> ArrayMesh:
 	if w == null:
 		return null
 	var has_tex: bool = not tile_textures.is_empty()
@@ -467,8 +495,9 @@ static func build_terrain_mesh(w: WLD, tile_textures: Array = [],
 	# plain Arrays (fast append; converted to Packed arrays at the end).
 	var buckets: Dictionary = {}
 
-	for row in range(GRID_H - 1):
-		for col in range(GRID_W - 1):
+	var cells: Rect2i = crop_or_all(crop)
+	for row in range(cells.position.y, cells.end.y):
+		for col in range(cells.position.x, cells.end.x):
 			var h_NW := corner_height(w, col,     row    )
 			var h_NE := corner_height(w, col + 1, row    )
 			var h_SW := corner_height(w, col,     row + 1)

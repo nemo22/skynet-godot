@@ -39,6 +39,7 @@ const MainScene := preload("res://scenes/main.tscn")
 const SaveGame := preload("res://scripts/save_game.gd")
 const MapFile := preload("res://scripts/loaders/map_file.gd")
 const Rules := preload("res://scripts/triggers/rules_skynet.gd")
+const ZoneLayers := preload("res://scripts/mission/zone_layers.gd")
 
 ## The suite's scratch slot, wiped when it ends.
 const SAVE_SLOT: int = 8
@@ -484,8 +485,10 @@ func _run() -> void:
 	lvl = _main.get("_current_level")
 	_check(_main.get("_mission") != null and String(_main.get("_active_zone")) == "MAP.218",
 		"still inside the mission scene, zone MAP.218 active")
-	_check(lvl.origin == Vector3(81920.0, 0.0, 0.0),
-		"zone MAP.218 stands at %s" % str(lvl.origin))
+	var n218: Node3D = ((_main.get("_zones") as Dictionary)["MAP.218"] as Dictionary)["node"]
+	_check(lvl.origin == n218.position and lvl.origin.x > 0.0,
+		"zone MAP.218 stands at %s, where the bake put it" % str(lvl.origin))
+	_check_zone_layers("MAP.218", "MAP.210")
 	var gap: float = _marker_gap(0)
 	_check(gap < 700.0, "the player lands on MAP.218's marker set 0 (d=%.0f)" % gap)
 	if hatch != null:
@@ -588,8 +591,10 @@ func _run() -> void:
 		_check(ok, "MAP.214 → zone MAP.215")
 		if ok:
 			_check(_marker_gap(0) < 700.0, "the player lands on MAP.215's marker set 0")
-			_check((_main.get("_current_level").origin as Vector3) == Vector3(192512.0, 0.0, 0.0),
-				"zone MAP.215 stands on its own slot")
+			var n215: Node3D = ((_main.get("_zones") as Dictionary)["MAP.215"] as Dictionary)["node"]
+			_check((_main.get("_current_level").origin as Vector3) == n215.position,
+				"zone MAP.215 stands where the bake put it (%s)" % str(n215.position))
+			_check_zone_layers("MAP.215", "MAP.214")
 			ok = await _go(214, 10, "214")
 			_check(ok, "MAP.215 → MAP.214 at marker set 10")
 			_check(_marker_gap(10) < 700.0, "the player lands on MAP.214's marker set 10")
@@ -1177,6 +1182,68 @@ func _phase_save_load(spoil_217: Dictionary, left_before: int) -> void:
 
 func _active() -> String:
 	return String(_main.get("_active_zone"))
+
+## The zones are kept apart by layers (scripts/mission/zone_layers.gd):
+## in `here`, the camera draws that zone's render layer and the shared one
+## only, the player collides on its physics bit only, everything the zone
+## holds is on its own layer and bit, the zone `other` is on neither, and a
+## ray cast across the whole mission from where the player stands meets
+## nothing of any zone but his.
+func _check_zone_layers(here: String, other: String) -> void:
+	var zones: Dictionary = _main.get("_zones")
+	var zh: Dictionary = zones.get(here, {})
+	var zo: Dictionary = zones.get(other, {})
+	if zh.is_empty() or zo.is_empty():
+		_check(false, "zones %s and %s are up" % [here, other])
+		return
+	var k: int = int(zh.get("index", -1))
+	var ko: int = int(zo.get("index", -1))
+	var cam: Camera3D = _main.get("camera")
+	var player: CharacterBody3D = _main.get("player")
+	_check(ZoneLayers.on and ZoneLayers.active == k and k != ko,
+		"%s is zone %d, the active one (%s is %d)" % [here, k, other, ko])
+	_check(cam.cull_mask == (ZoneLayers.SHARED_RENDER | ZoneLayers.render_bit(k)),
+		"the camera draws layer 1 and %s's layer only (cull mask %x)" % [here, cam.cull_mask])
+	_check(player.collision_layer & ZoneLayers.ALL_SOLID == ZoneLayers.solid_bit(k)
+		and player.collision_mask & ZoneLayers.ALL_SOLID == ZoneLayers.solid_bit(k),
+		"the player collides on %s's bit only (layer %x, mask %x)"
+			% [here, player.collision_layer, player.collision_mask])
+	var bad := PackedStringArray()
+	for pair in [[zh, k], [zo, ko]]:
+		var node: Node3D = (pair[0] as Dictionary)["node"]
+		var zk: int = int(pair[1])
+		for v in node.find_children("*", "VisualInstance3D", true, false):
+			if (v as VisualInstance3D).layers != ZoneLayers.render_bit(zk):
+				bad.append("%s layers %x" % [v.name, (v as VisualInstance3D).layers])
+				break
+		for c in node.find_children("*", "CollisionObject3D", true, false):
+			var bits: int = ((c as CollisionObject3D).collision_layer
+				| (c as CollisionObject3D).collision_mask) & ZoneLayers.ALL_SOLID
+			if bits != 0 and bits != ZoneLayers.solid_bit(zk):
+				bad.append("%s bits %x" % [c.name, bits])
+				break
+	_check(bad.is_empty(), "every mesh, light and body of %s and %s is on its own zone's layers%s"
+		% [here, other, "" if bad.is_empty() else ": " + ", ".join(bad)])
+	_check(cam.cull_mask & ZoneLayers.render_bit(ko) == 0,
+		"nothing of %s is on a layer the camera draws" % other)
+	# Rays across the whole mission, from the eye, in eight directions and
+	# down: nothing of another zone is ever hit.
+	var space := player.get_world_3d().direct_space_state
+	var eye: Vector3 = cam.global_position
+	var foreign := PackedStringArray()
+	for i in 9:
+		var dir := Vector3.DOWN if i == 8 else Vector3(cos(i * PI / 4.0), -0.05, sin(i * PI / 4.0))
+		var q := PhysicsRayQueryParameters3D.create(eye, eye + dir * 400000.0)
+		q.collision_mask = ZoneLayers.world_mask()
+		q.collide_with_areas = true
+		q.exclude = [player.get_rid()]
+		var hit := space.intersect_ray(q)
+		if hit.has("collider"):
+			var zc: int = ZoneLayers.zone_of(hit["collider"] as Node)
+			if zc >= 0 and zc != k:
+				foreign.append("%s (zone %d)" % [(hit["collider"] as Node).name, zc])
+	_check(foreign.is_empty(), "no ray cast in %s meets another zone%s"
+		% [here, "" if foreign.is_empty() else ": " + ", ".join(foreign)])
 
 ## The console's own `zone` line, for a report.
 func _zone_line() -> String:

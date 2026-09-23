@@ -53,6 +53,7 @@
 extends Node
 
 const PlayerDriver := preload("res://scripts/triggers/player_driver.gd")
+const ZoneLayers := preload("res://scripts/mission/zone_layers.gd")
 
 ## 16, not 32: a player walks round the corner of a machine; on a 32 u
 ## grid the flood met MAP.252's boiler corner on every line to the gate
@@ -256,6 +257,7 @@ func _solve_map() -> void:
 		if ex != null and not line_ok:
 			# The same ray Behaviour.reachable casts: player → sprite + 40.
 			var rq := PhysicsRayQueryParameters3D.create(p.global_position, _epos(ex) + Vector3(0.0, 40.0, 0.0))
+			rq.collision_mask = ZoneLayers.world_mask()
 			rq.exclude = [p.get_rid()]
 			var h := _space.intersect_ray(rq)
 			if h.has("collider"):

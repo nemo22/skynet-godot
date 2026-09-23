@@ -66,6 +66,7 @@ const MuzzleFlash := preload("res://scripts/muzzle_flash.gd")
 const SmokePuff := preload("res://scripts/smoke_puff.gd")
 const Explosion := preload("res://scripts/explosion.gd")
 const PauseState := preload("res://scripts/pause_state.gd")
+const ZoneLayers := preload("res://scripts/mission/zone_layers.gd")
 ## How far ahead of the muzzle the player's own tracer starts, and how
 ## far it is allowed to reach.
 const TRACER_START: float = 420.0
@@ -1216,6 +1217,7 @@ func _ram_targets(space: PhysicsDirectSpaceState3D, at: Vector3, yaw: float) -> 
 		_ram_query.collide_with_bodies = true
 		_ram_query.exclude = [get_rid()]
 	_ram_query.transform = Transform3D(Basis(Vector3.UP, yaw), at + Vector3(0.0, RAM_LIFT, 0.0))
+	_ram_query.collision_mask = ZoneLayers.world_mask()
 	var out: Dictionary = {}
 	for hit in space.intersect_shape(_ram_query, RAM_MAX_RESULTS):
 		var n: Node = hit.get("collider") as Node
@@ -1403,6 +1405,7 @@ func _hk_ray_query(from: Vector3, to: Vector3) -> PhysicsRayQueryParameters3D:
 		_hk_ray.exclude = [get_rid()]
 	_hk_ray.from = from
 	_hk_ray.to = to
+	_hk_ray.collision_mask = ZoneLayers.world_mask()
 	return _hk_ray
 
 ## RUN: the Shift key, or the on-screen / automation button.
@@ -1757,6 +1760,7 @@ func _shot_dir(muzzle: Vector3, fwd: Vector3, aimed: bool) -> Vector3:
 		return fwd
 	var from: Vector3 = _cam.global_position
 	var q := PhysicsRayQueryParameters3D.create(from, from + fwd * AIM_REACH)
+	q.collision_mask = ZoneLayers.world_mask()
 	q.collide_with_areas = true
 	q.exclude = [get_rid()]
 	var hit := space.intersect_ray(q)
@@ -1915,6 +1919,7 @@ func _shoot(idx: int = -1) -> void:
 	var to: Vector3 = from + fwd * 60000.0
 	var space := get_world_3d().direct_space_state
 	var q := PhysicsRayQueryParameters3D.create(from, to)
+	q.collision_mask = ZoneLayers.world_mask()
 	q.collide_with_areas = true                # enemy hitboxes are Area3D
 	q.exclude = [get_rid()]
 	var hit := space.intersect_ray(q)
@@ -1964,14 +1969,16 @@ func _hitscan_blast(at: Vector3, s: float, struck: Node) -> void:
 	if Net.active:
 		return
 	for e in get_tree().get_nodes_in_group("enemy"):
-		if e is Node3D and e != struck and e.has_method("take_damage"):
+		if e is Node3D and e != struck and e.has_method("take_damage") \
+				and not ZoneLayers.asleep(e):
 			var d: float = e.blast_distance(at) if e.has_method("blast_distance") \
 				else (e as Node3D).global_position.distance_to(at)
 			var bd: float = Projectile.dos_blast(s, d)
 			if bd > 0.0:
 				e.take_damage(bd)
 	for h in get_tree().get_nodes_in_group("hittable"):
-		if h is Node3D and h != struck and h.has_method("take_damage"):
+		if h is Node3D and h != struck and h.has_method("take_damage") \
+				and not ZoneLayers.asleep(h):
 			var bh: float = Projectile.dos_blast(s, (h as Node3D).global_position.distance_to(at))
 			if bh > 0.0:
 				h.take_damage(bh)
@@ -2096,6 +2103,7 @@ func _melee_hit(from: Vector3, fwd: Vector3, dmg: float, isnd: int) -> void:
 		return
 	var q := PhysicsRayQueryParameters3D.create(from,
 		from + fwd * MELEE_RANGE)
+	q.collision_mask = ZoneLayers.world_mask()
 	q.collide_with_areas = true
 	q.exclude = [get_rid()]
 	var hit := space.intersect_ray(q)
@@ -2131,6 +2139,7 @@ func _try_activate() -> void:
 	var to := from - _cam.global_transform.basis.z * 600.0
 	var space := get_world_3d().direct_space_state
 	var q := PhysicsRayQueryParameters3D.create(from, to)
+	q.collision_mask = ZoneLayers.world_mask()
 	q.collide_with_areas = true
 	q.exclude = [get_rid()]
 	var hit := space.intersect_ray(q)

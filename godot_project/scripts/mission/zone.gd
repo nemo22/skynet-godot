@@ -3,10 +3,14 @@
 ## A mission is a handful of MAP files — the outdoor world and every
 ## interior its doorways reach — and the port now holds them all at once
 ## (docs/m2_mission_scene_plan.md). They cannot all sit at the DOS origin,
-## so each one becomes a ZONE: a Node3D placed on a +X grid whose child
+## so each one becomes a ZONE: a Node3D placed beside the others whose child
 ## `Level` is the baked converted/maps/MAP.NNN.level.scn. Everything the
 ## MAP records say stays zone-local; the node's own transform is what puts
 ## the zone in the world (Level.origin, Behaviour.zone_origin).
+##
+## Zones are not kept apart by distance but by layers: each draws on its
+## own render layer and collides on its own physics bit, switched at the
+## doorway (scripts/mission/zone_layers.gd, `zone_index`).
 ##
 ## The exports are what the runtime needs to switch a zone on without
 ## re-reading the MAP: which heightmap it stands on, the music track its
@@ -25,7 +29,7 @@ extends Node3D
 ## MAP+9028 == 1: the zone has a heightmap and a sky.
 @export var outdoor: bool = false
 ## Cell grid of the MAP (64x64 outdoors, 4x4 … 36x36 indoors). The zone's
-## width on the +X grid comes from this.
+## footprint in the layout is taken from its records (`footprint`).
 @export var grid: Vector2i = Vector2i.ZERO
 ## Which WLD the ground comes from ("210"), "" for an indoor zone.
 @export var wld_suffix: String = ""
@@ -46,6 +50,12 @@ extends Node3D
 @export var depth: int = 0
 @export var entered_from_map: int = 0
 @export var entered_from_off: int = -1
+## Its place among the mission's zones, which is what picks its render
+## layer (index + 2) and its physics bit (scripts/mission/zone_layers.gd).
+@export var zone_index: int = 0
+## What it takes up in its own x/z (MissionScene._footprint): the terrain
+## crop of an outdoor world, every record with a margin of an interior.
+@export var footprint: Rect2 = Rect2()
 
 func _ready() -> void:
 	_quiet_preview()

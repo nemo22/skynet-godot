@@ -1066,8 +1066,8 @@ func mesh_frames(nm: String, bytes: PackedByteArray = PackedByteArray()) -> Arra
 # ---------------------------------------------------------------------
 ## Terrain mesh of WLD.<suffix>; `wld` is the parsed file (heights are
 ## still needed at runtime), tiles come from TEXTURE.302.
-func terrain(suffix: String, wld: WldTerrain.WLD) -> ArrayMesh:
-	var am := fetch("terrain", "WLD." + suffix, func() -> Resource:
+func terrain(suffix: String, wld: WldTerrain.WLD, crop: Rect2i = Rect2i()) -> ArrayMesh:
+	var am := fetch("terrain", "WLD." + suffix + terrain_crop_tag(crop), func() -> Resource:
 		if wld == null:
 			return null
 		var tiles: Array = []
@@ -1077,9 +1077,17 @@ func terrain(suffix: String, wld: WldTerrain.WLD) -> ArrayMesh:
 				var rec: TextureNNN.Record = t302.records[i]
 				var ok: bool = rec != null and not rec.pixels.is_empty()
 				tiles.append(texture(302, i, false) if ok else null)
-		return WldTerrain.build_terrain_mesh(wld, tiles)) as ArrayMesh
+		return WldTerrain.build_terrain_mesh(wld, tiles, [], crop)) as ArrayMesh
 	Render.restyle_mesh(am)
 	return am
+
+## What a cropped terrain adds to its cache key (and its collision shape's):
+## "" for the whole field, "_c<col>_<row>_<w>_<h>" for a block of cells —
+## the same heightmap cropped for two maps is two entries.
+static func terrain_crop_tag(crop: Rect2i) -> String:
+	if crop.size.x <= 0 or crop.size.y <= 0 or crop == WldTerrain.ALL_CELLS:
+		return ""
+	return "_c%d_%d_%d_%d" % [crop.position.x, crop.position.y, crop.size.x, crop.size.y]
 
 ## The collision shape of a mesh, shared by every copy of it in every
 ## map (converted/shape/<key>.res). The level used to call
