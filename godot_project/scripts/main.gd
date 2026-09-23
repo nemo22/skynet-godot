@@ -2801,9 +2801,18 @@ static func _maptype(level: LevelLoader.Level) -> int:
 static func _vehicle_for_map(map_name: String) -> int:
 	@warning_ignore("integer_division")
 	var key: int = _suffix(map_name) / 10
+	# DOS sets the mode once, at the mission start (0x11c99e: [0x30a58] =
+	# table +2), and every map the mission's exits reach inherits it. A
+	# SkyNET mission's sub-maps are its decade; Future Shock's vehicle
+	# missions (20/60/100/110/120/160/170) are one outdoor map with no exit
+	# anywhere, so the rest of those decades (MAP.103, MAP.129: interior
+	# rooms no mission reaches) are never entered in the jeep or the HK —
+	# the port put the soldier's spawn into a 55-u jeep in a 60-u corridor
+	# (103) and a hovering gunship into a room (129).
+	var exact: bool = SkynetPaths.game == "shock"
 	for row in _mission_table():
 		@warning_ignore("integer_division")
-		if int(row[1]) / 10 == key:
+		if (int(row[1]) == _suffix(map_name)) if exact else (int(row[1]) / 10 == key):
 			match int(row[2]):
 				4:
 					return PlayerScript.VEH_JEEP
