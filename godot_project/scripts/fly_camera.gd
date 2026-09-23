@@ -402,6 +402,12 @@ var _weapon_idx: int = 0
 ## start, skynet_gh.c:21838): PIPE, UZI, ASSAULT RIFLE, SHOTGUN, LASER
 ## RIFLE (plus the jeep/thrown-item records that have no slot here).
 const START_WEAPONS: Array = [0, 1, 2, 4, 7]
+## Future Shock mode's list at 0x43538 = {0, 14, 15, 16, 18..25}: the
+## pipe alone on foot (the rest are thrown-item and vehicle records).
+const START_WEAPONS_SHOCK: Array = [0]
+
+static func _start_weapons() -> Array:
+	return START_WEAPONS_SHOCK if SkynetPaths.game == "shock" else START_WEAPONS
 ## The "arnold" cheat list at 0x43604: every on-foot weapon except the
 ## super uzi (its own cheat).
 const ALL_WEAPONS: Array = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
@@ -534,12 +540,13 @@ func _reset_owned() -> void:
 		if not _owned.has(_weapon_idx):
 			_weapon_idx = int(VEHICLE_WEAPONS[vehicle][0])
 		return
-	for w in START_WEAPONS:
+	var start: Array = _start_weapons()
+	for w in start:
 		_owned[int(w)] = true
 	for w in extra_owned:                # the deathmatch class's own kit
 		_owned[int(w)] = true
 	if not _owned.has(_weapon_idx):
-		_weapon_idx = int(START_WEAPONS[1]) if START_WEAPONS.size() > 1 else 0
+		_weapon_idx = int(start[1]) if start.size() > 1 else int(start[0])
 		_vm_idx = 0
 		_vm_firing = false
 
@@ -2396,6 +2403,16 @@ func add_pool(pool: int, amount: int) -> void:
 		return
 	var mx: int = int(POOL_TABLE[pool][1]) if POOL_TABLE.has(pool) else 99
 	_pools[pool] = mini(int(_pools.get(pool, 0)) + amount, mx)
+	_sync_hud()
+
+## The pools as they stand / put back (main.gd carries them from a won
+## mission into the next one, as DOS does — see _apply_mission_grant).
+func pools_state() -> Dictionary:
+	return _pools.duplicate()
+
+func restore_pools(p: Dictionary) -> void:
+	for k in p:
+		_pools[int(k)] = int(p[k])
 	_sync_hud()
 
 ## Heal by a percentage of max health (medkits: 5 / 10 / 25 / 50 %).

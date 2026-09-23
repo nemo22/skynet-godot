@@ -37,26 +37,40 @@ const PlayerScript := preload("res://scripts/fly_camera.gd")
 ## Map to load on startup (falls back to first map if missing).
 @export var initial_map: String = "MAP.210"
 
-## Retail campaign mission maps in order — extracted from the scripted
-## level table in Skynet.exe (DAT_00034846, 0x5C-byte entries, MAP id at
-## +0x04). Sub-maps reached mid-mission (the indoor base sections) are
-## NOT in this table — they are linked from in-map transport entities,
-## which still need their trigger/destination data decoded (see task #7).
+## The mission tables GAME.EXE v1.01 reads the campaign from: 0x5C-byte
+## entries {+0x00 mission, +0x04 map, +0x08 player mode (4 jeep, 8 HK),
+## then loading-screen/video/briefing file names}. SkyNET uses 0x34846;
+## in Future Shock mode ([0x30a50] & 0x200000) it uses 0x341ce, whose 17
+## entries have no mission 4 or 8 (no MAP.040/MAP.080 start: both files
+## exist, but no 0xF0 exit of any Future Shock map leads into or out of
+## them, so they are loadable with --map only). Sub-maps reached
+## mid-mission are not in these tables; they are linked from in-map
+## 0xF0 doorways.
+const MISSION_TABLE: Array = [    # 0x34846: [mission, map, mode]
+	[1, 210, 0], [2, 220, 4], [3, 230, 0], [4, 240, 0],
+	[5, 252, 0], [6, 260, 4], [7, 270, 8], [8, 280, 0],
+]
+const MISSION_TABLE_SHOCK: Array = [    # 0x341ce: [mission, map, mode]
+	[1, 10, 0], [2, 20, 4], [3, 30, 0], [5, 50, 0], [6, 60, 8],
+	[7, 70, 0], [9, 90, 0], [10, 100, 4], [11, 110, 8], [12, 120, 8],
+	[13, 130, 0], [14, 140, 0], [15, 150, 0], [16, 160, 8], [17, 170, 4],
+	[18, 180, 0], [19, 190, 0],
+]
+## The maps SkyNET's missions start on (MISSION_TABLE +0x04).
 const CAMPAIGN_SEQUENCE: Array = [
 	"MAP.210", "MAP.220", "MAP.230", "MAP.240",
 	"MAP.252", "MAP.260", "MAP.270", "MAP.280",
 ]
-## Terminator: Future Shock — mission n starts on MAP.0n0 (briefings
-## 010.TXT…190.TXT in its MDMDBRIF.BSA); shock.exe keeps no map table
-## like Skynet.exe's 0x34846 (searched 2026-09-06).
-const CAMPAIGN_SEQUENCE_SHOCK: Array = [
-	"MAP.010", "MAP.020", "MAP.030", "MAP.040", "MAP.050", "MAP.060", "MAP.070",
-	"MAP.080", "MAP.090", "MAP.100", "MAP.110", "MAP.120", "MAP.130", "MAP.140",
-	"MAP.150", "MAP.160", "MAP.170", "MAP.180", "MAP.190",
-]
 
+static func _mission_table() -> Array:
+	return MISSION_TABLE_SHOCK if SkynetPaths.game == "shock" else MISSION_TABLE
+
+## The maps this game's missions start on, in table order.
 static func _campaign_sequence() -> Array:
-	return CAMPAIGN_SEQUENCE_SHOCK if SkynetPaths.game == "shock" else CAMPAIGN_SEQUENCE
+	var out: Array = []
+	for row in _mission_table():
+		out.append("MAP.%03d" % int(row[1]))
+	return out
 
 ## The first mission's map number in this game's numbering.
 static func _mission_base() -> int:
@@ -1101,6 +1115,7 @@ func _level_ready_tail(level: LevelLoader.Level, nm: String) -> void:
 		if not player.border_hint.is_connected(_on_border_hint):
 			player.border_hint.connect(_on_border_hint)
 	_apply_pending_player()
+	_apply_mission_grant(nm)
 	_take_mission_start_state(nm)
 	_collect_radiation(level)
 	_setup_water(level)
@@ -2780,37 +2795,22 @@ static func _maptype(level: LevelLoader.Level) -> int:
 			return int(e.exit_map)
 	return 0
 
-## Player mode per mission (table 0x34846 entries: {mission, map, mode}):
-## 220 → 4 (jeep), 260 → 4 (jeep), 270 → 8 (HK); everything else 0.
-## Sub-maps belong to their mission (map / 10).
+## Player mode per mission from the mission table (+0x08: 4 = jeep,
+## 8 = HK, else on foot). Sub-maps belong to their mission: a map shares
+## the mode of the table entry with the same map / 10 (MAP.25x = 252's).
 static func _vehicle_for_map(map_name: String) -> int:
-	var sfx: int = _suffix(map_name)
-	if SkynetPaths.game == "shock":
-		# Future Shock keeps no mission table; its briefings say which
-		# missions are driven or flown (020 "find HQ … pull the car in",
-		# 040/100 "drive the carload…", 170 "drive to the TDTS complex";
-		# 060 "take H/K through the drainage tunnel", 110 "fly through
-		# river canyon", 120 tank convoy, 160 the TDTS fence) — the
-		# walkthrough's jeep missions 2/8/15 and HK missions 5/9/10/14
-		# in its own numbering.
-		if sfx < 10 or sfx >= 200:
-			return 0
-		@warning_ignore("integer_division")
-		match (sfx / 10) * 10:
-			20, 40, 100, 170:
-				return 1
-			60, 110, 120, 160:
-				return 2
-		return 0
-	if sfx < 200 or sfx >= 300:
-		return 0
 	@warning_ignore("integer_division")
-	match (sfx - 200) / 10:
-		2, 6:
-			return 1
-		7:
-			return 2
-	return 0
+	var key: int = _suffix(map_name) / 10
+	for row in _mission_table():
+		@warning_ignore("integer_division")
+		if int(row[1]) / 10 == key:
+			match int(row[2]):
+				4:
+					return PlayerScript.VEH_JEEP
+				8:
+					return PlayerScript.VEH_HK
+			return PlayerScript.VEH_FOOT
+	return PlayerScript.VEH_FOOT
 
 ## Mission "main" maps end in 0 (mission = (map - 200) / 10).
 static func _is_campaign_main(map_name: String) -> bool:
@@ -4540,8 +4540,64 @@ func _advance_to(map_name: String) -> void:
 	_dismiss_end_screen()
 	var idx: int = _maps.find(map_name)
 	if idx >= 0:
+		# The won mission's pools go with the player into the next one,
+		# and the next mission's grant tops them up (_apply_mission_grant).
+		_grant_pending = {}
+		if _dm == null and not Net.active and is_instance_valid(player):
+			_grant_pending = {"map": map_name, "pools": player.pools_state()}
 		_map_idx = idx
 		_load_current()
+
+## Between missions DOS keeps the ammo pools and adds a per-mission grant.
+## FUN_0011c900, a WON mission (0x30a50 & 0x40): mission index [0x341ba]
+## += 1, then FUN_00126605(eax = the new index), then the next mission
+## loads. A death (RESTART MISSION, FUN_0011d3b0) and a new game
+## (FUN_001265c3, pools back to their initial values) never reach it, so
+## the first mission has no grant. FUN_00126605 reads a pointer table
+## indexed by the mission — 0x443c4 SkyNET, 0x4423c in Future Shock mode
+## (0x30a50 & 0x200000) — each entry a NULL or a list of {pool, amount}
+## dwords ending at pool −1; pool += amount, capped at its maximum (the
+## pool table 0x440ec, {cur, ?, max} × 12 bytes). The index is the DOS
+## mission table's own (0x34846 SkyNET, 0x341ce FS, 0x5C bytes, mission
+## number at +0), so the tables are keyed here by mission number:
+## SkyNET 1-8, Future Shock's 17 missions (no 4, no 8; its entry 16 is
+## NULL — the last mission gets nothing).
+const _GRANT_SKY_A: Array = [[0, 200], [4, 200], [6, 20], [5, 25], [8, 2], [9, 1]]
+const _GRANT_SKY_B: Array = [[11, 40]]
+const MISSION_GRANT_SKYNET: Dictionary = {   # 0x443c4
+	3: _GRANT_SKY_A, 4: _GRANT_SKY_A, 6: _GRANT_SKY_B, 7: _GRANT_SKY_B,
+	8: _GRANT_SKY_A,
+}
+const _GRANT_FS_A: Array = [[11, 50]]
+const _GRANT_FS_B: Array = [[0, 300], [4, 300], [1, 50], [3, 1], [5, 25], [2, 10], [8, 1]]
+const MISSION_GRANT_SHOCK: Dictionary = {    # 0x4423c
+	1: [[0, 300], [4, 350], [1, 100]],
+	2: _GRANT_FS_A,
+	3: [[0, 300], [1, 50], [5, 25], [8, 1], [9, 1]],
+	5: _GRANT_FS_B, 6: _GRANT_FS_A, 7: _GRANT_FS_B,
+	9: [[0, 300], [4, 300], [1, 50], [3, 1], [2, 10]],
+	10: _GRANT_FS_A, 11: _GRANT_FS_A, 12: _GRANT_FS_A,
+	13: [[0, 300], [4, 300], [1, 50], [3, 1], [5, 25], [2, 10], [8, 1], [9, 2]],
+	14: _GRANT_FS_B, 15: _GRANT_FS_B, 16: _GRANT_FS_A, 17: _GRANT_FS_A,
+	18: [[0, 300], [4, 300], [1, 50], [3, 1], [5, 25], [2, 10], [8, 1], [9, 1]],
+}
+## {map, pools}: set by _advance_to, spent by the next level that comes up.
+var _grant_pending: Dictionary = {}
+
+func _apply_mission_grant(nm: String) -> void:
+	if _grant_pending.is_empty():
+		return
+	var pend: Dictionary = _grant_pending
+	_grant_pending = {}
+	if String(pend.get("map", "")) != nm or not is_instance_valid(player):
+		return
+	player.restore_pools(pend.get("pools", {}))
+	@warning_ignore("integer_division")
+	var mission: int = _suffix(nm) / 10 - (20 if SkynetPaths.game != "shock" else 0)
+	var tbl: Dictionary = MISSION_GRANT_SHOCK if SkynetPaths.game == "shock" \
+		else MISSION_GRANT_SKYNET
+	for e in tbl.get(mission, []):
+		player.add_pool(int(e[0]), int(e[1]))
 
 ## The end screen goes, and its hold on the pause with it.
 func _dismiss_end_screen() -> void:
