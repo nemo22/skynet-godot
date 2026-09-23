@@ -79,6 +79,15 @@ const WIPE_EXTS: PackedStringArray = ["res", "scn", "txt", "tmp", "json"]
 const VERSION_FILE := "VERSION"
 const VERSION_MARKER := "skynet-godot-cache"
 const IMPORT_STAMP := "IMPORTED"
+## Every process that uses the cache says so with a file of its own,
+## LOCK.<pid>, rewritten every LOCK_REFRESH_MSEC (a bare LOCK is what builds
+## before 2026-09-23 wrote, one for everybody, and is still honoured). What
+## it guards is the one destructive act there is: a process that finds the
+## cache of another version or other game data WIPES it (_check_version),
+## and it never does while anyone else's lock is fresh. One file per
+## process, because several may read the cache at once - the sharded
+## verifier (tools/verify_gate.py) runs N of them - and with one shared file
+## the first reader to quit took the others' claim with it.
 const LOCK_FILE := "LOCK"
 const PROBE_FILE := ".write_probe"
 ## Written by every import: the folder says out loud what it is. It has
@@ -120,6 +129,19 @@ const IMPORT_MANIFEST_SAVE_MSEC: int = 30000
 ## Cache root ("" when disabled with --no-cache).
 var root: String = ""
 var enabled: bool = true
+## `--cache-read-only` (and any `--verify-shard=` run, which is one of N
+## processes on the same cache): this process READS the cache and never
+## writes to it - a miss is built for the session and not saved, no scene
+## is baked, the trust manifest is left alone, a cache of another version is
+## not wiped but left unused. That is what makes several processes at once
+## safe: every file a reader loads was complete and recorded in the
+## manifest before it started, and nothing it does can change one. The
+## writers (the imports, a game that fills the cache as it plays) stay one
+## at a time - an import refuses to start while another process holds the
+## cache (_refuse_import).
+var read_only: bool = false
+## Writes a read-only process left out (a stale or missing cache file).
+var skipped_writes: int = 0
 ## Statistics for the log / progress UI.
 var hits: int = 0
 var misses: int = 0
@@ -159,6 +181,11 @@ func _ready() -> void:
 		enabled = false
 		print("[assets] cache disabled (--no-cache)")
 		return
+	for a in args:
+		if a == "--cache-read-only" or a.begins_with("--verify-shard="):
+			read_only = true
+	if read_only:
+		print("[assets] cache read-only for this run")
 	# Outside the editor a PortableCompressedTexture2D drops its source
 	# buffer right after decoding it — and then saves as an EMPTY texture.
 	PortableCompressedTexture2D.set_keep_all_compressed_buffers(true)
@@ -180,6 +207,19 @@ func relocate() -> void:
 	_open_root(r)
 	if enabled:
 		print("[assets] cache moved to %s" % root)
+
+## May this process write into the cache? (No with --cache-read-only; a
+## caller that would bake or save something asks.) Says once per thing
+## what it did not write, because a reader on a stale cache is slow and
+## should be told why.
+func may_write(what: String = "") -> bool:
+	if not read_only:
+		return true
+	skipped_writes += 1
+	if not what.is_empty() and not _refused.has("ro:" + what):
+		_refused["ro:" + what] = true
+		push_warning("[assets] read-only: %s is not written (run an --import first)" % what)
+	return false
 
 func _process(_delta: float) -> void:
 	if enabled and not root.is_empty() \
@@ -284,7 +324,8 @@ func _foreign(r: String) -> bool:
 		if not (n in KINDS or n.begins_with(TRASH_PREFIX)):
 			return true
 	for n in d.get_files():
-		if not n in ROOT_FILES:
+		if not n in ROOT_FILES and not n.begins_with(LOCK_FILE + ".") \
+				and not n.begins_with(PROBE_FILE + "."):
 			return true
 	return false
 
@@ -295,7 +336,8 @@ func _writable(r: String) -> bool:
 	DirAccess.make_dir_recursive_absolute(r)
 	if not DirAccess.dir_exists_absolute(r):
 		return false
-	var probe := r + "/" + PROBE_FILE
+	# Per process: two starting at once must not delete each other's probe.
+	var probe := "%s/%s.%d" % [r, PROBE_FILE, OS.get_process_id()]
 	var f := FileAccess.open(probe, FileAccess.WRITE)
 	if f == null:
 		return false
@@ -331,6 +373,11 @@ func _check_version() -> void:
 		if have == want:
 			return
 		var old_v: String = have.get_slice("\n", 0).strip_edges()
+		if read_only:
+			push_warning("[assets] the cache at %s is version %s, or of other game data, and this run may not rebuild it - running without the cache"
+				% [root, old_v])
+			_disable()
+			return
 		if _lock_held_by_other():
 			# Another process (an older build, or the editor's job on other
 			# data) is using these files right now: never wipe under it.
@@ -340,6 +387,10 @@ func _check_version() -> void:
 			return
 		print("[assets] cache version %s != %d, or other game data — rebuilding" % [old_v, CACHE_VERSION])
 		_wipe(root)
+	if read_only:
+		push_warning("[assets] the cache at %s has never been built, and this run may not build it - running without the cache" % root)
+		_disable()
+		return
 	DirAccess.make_dir_recursive_absolute(root)
 	_write_text(vpath, want)
 
@@ -367,6 +418,8 @@ func _wipe(dir: String) -> void:
 ## Delete the trash folders under `dir` (this wipe's, or one an earlier
 ## run did not finish) on a worker thread.
 func _start_trash_cleanup(dir: String) -> void:
+	if read_only:
+		return
 	_finish_trash_task(false)
 	var d := DirAccess.open(dir)
 	if d == null:
@@ -421,32 +474,72 @@ func _delete_tree(dir: String) -> void:
 ## Is a live process other than this one using the cache? (Its LOCK is
 ## fresh and not ours.)
 func _lock_held_by_other() -> bool:
-	var f := FileAccess.open(root + "/" + LOCK_FILE, FileAccess.READ)
-	if f == null:
-		return false
-	var parts := f.get_line().strip_edges().split(" ", false)
-	f.close()
-	if parts.size() < 2 or not parts[0].is_valid_int() or not parts[1].is_valid_int():
-		return false
-	var age: int = int(Time.get_unix_time_from_system()) - int(parts[1])
-	return int(parts[0]) != OS.get_process_id() and age > -60 and age < LOCK_STALE_SEC
+	return not lock_holders().is_empty()
+
+## The other live processes using the cache: the pids of every fresh
+## LOCK.<pid> and of a fresh legacy LOCK that is not ours. A lock gone
+## stale belongs to a process that is gone and is removed on the way.
+func lock_holders() -> PackedInt32Array:
+	var out := PackedInt32Array()
+	if root.is_empty():
+		return out
+	var d := DirAccess.open(root)
+	if d == null:
+		return out
+	d.include_hidden = true
+	var me: int = OS.get_process_id()
+	for n in d.get_files():
+		if n != LOCK_FILE and not n.begins_with(LOCK_FILE + "."):
+			continue
+		var p: String = root + "/" + n
+		var f := FileAccess.open(p, FileAccess.READ)
+		if f == null:
+			continue
+		var parts := f.get_line().strip_edges().split(" ", false)
+		f.close()
+		if parts.size() < 2 or not parts[0].is_valid_int() or not parts[1].is_valid_int():
+			continue
+		var pid: int = int(parts[0])
+		var age: int = int(Time.get_unix_time_from_system()) - int(parts[1])
+		if pid == me:
+			continue
+		if age > -60 and age < LOCK_STALE_SEC:
+			out.append(pid)
+		elif n != LOCK_FILE:
+			DirAccess.remove_absolute(p)         # its process is gone
+	return out
+
+func _lock_path() -> String:
+	return "%s/%s.%d" % [root, LOCK_FILE, OS.get_process_id()]
 
 func _lock_touch() -> void:
 	_lock_msec = Time.get_ticks_msec()
-	_write_text(root + "/" + LOCK_FILE, "%d %d\n"
+	_write_text(_lock_path(), "%d %d\n"
 		% [OS.get_process_id(), int(Time.get_unix_time_from_system())])
 
 func _lock_release() -> void:
 	if root.is_empty():
 		return
-	var p := root + "/" + LOCK_FILE
-	var f := FileAccess.open(p, FileAccess.READ)
-	if f == null:
-		return
-	var mine: bool = f.get_line().get_slice(" ", 0).strip_edges() == str(OS.get_process_id())
-	f.close()
-	if mine:
-		DirAccess.remove_absolute(p)
+	if FileAccess.file_exists(_lock_path()):
+		DirAccess.remove_absolute(_lock_path())
+
+## An import writes the cache, and a writer is alone with it: refused (and
+## said why) while this run is read-only or another process holds the
+## cache - the rule the project has always kept by hand, one Godot process
+## on this project while the cache is being written, made a check.
+func _refuse_import(what: String) -> bool:
+	if read_only:
+		push_error("[assets] %s refused: this run is read-only (--cache-read-only)" % what)
+		return true
+	var others: PackedInt32Array = lock_holders()
+	if not others.is_empty():
+		var pids := PackedStringArray()
+		for pid in others:
+			pids.append(str(pid))
+		push_error("[assets] %s refused: the cache at %s is in use by process %s - wait for it to finish"
+			% [what, root, ", ".join(pids)])
+		return true
+	return false
 
 static func _write_text(path: String, text: String) -> bool:
 	var w := FileAccess.open(path, FileAccess.WRITE)
@@ -695,7 +788,7 @@ func _read_manifest() -> Dictionary:
 ## Write this session's records into the manifest on disk, merged with
 ## what is there. An entry goes in only while it still matches its file.
 func trust_save() -> void:
-	if _trust_session.is_empty() or _manifest_file.is_empty():
+	if _trust_session.is_empty() or _manifest_file.is_empty() or read_only:
 		return
 	var disk := _read_manifest()
 	for rel in _trust_session:
@@ -796,7 +889,7 @@ func fetch(kind: String, key: String, builder: Callable) -> Resource:
 			_note_untrusted(p)
 	misses += 1
 	var built: Resource = builder.call()
-	if built != null:
+	if built != null and may_write("%s/%s" % [kind, key]):
 		DirAccess.make_dir_recursive_absolute(p.get_base_dir())
 		var err := ResourceSaver.save(built, p, SAVE_FLAGS)
 		if err != OK:
@@ -1367,6 +1460,10 @@ func build_mission_scene(start: int, shared: Dictionary = {}) -> String:
 		hits += 1
 	else:
 		misses += 1
+		if not may_write("MISSION.%03d.scn" % start):
+			if mine:
+				bsa.close()
+			return ""
 		print("[mission] %d: baking MISSION.%03d.scn — %s" % [start, start, stale])
 		p = MissionScene.save(start, bsa, shared)
 		_mission_maps.erase(start)        # the sidecar's map list is new
@@ -1394,7 +1491,7 @@ func mission_scene(start: int) -> PackedScene:
 ## where it is — so this is the whole rebuild after one, and it takes
 ## about a second for the campaign. Returns how many are ready.
 func import_triggers(progress: Callable = Callable()) -> int:
-	if not enabled or _importing:
+	if not enabled or _importing or _refuse_import("--import-triggers"):
 		return 0
 	_importing = true
 	_open_readers()
@@ -1430,7 +1527,7 @@ func import_triggers(progress: Callable = Callable()) -> int:
 ## asks for those itself — so this is the short way round for a change to
 ## the mission bake alone. Returns how many are ready.
 func import_missions(progress: Callable = Callable()) -> int:
-	if not enabled or _importing:
+	if not enabled or _importing or _refuse_import("--import-missions"):
 		return 0
 	_importing = true
 	_open_readers()
@@ -1465,7 +1562,7 @@ func import_missions(progress: Callable = Callable()) -> int:
 ## (done: int, total: int, label: String); yields between items so a
 ## caller can draw a progress screen. Returns the number of items.
 func import_all(progress: Callable = Callable()) -> int:
-	if not enabled or _importing:
+	if not enabled or _importing or _refuse_import("the import"):
 		return 0
 	_importing = true
 	# One open reader per archive for the whole pass (read_3d, the CFA

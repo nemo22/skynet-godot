@@ -59,6 +59,7 @@ Everything else on this page is a developer tool. It is all marked
 | `--gamedata=DIR` | a directory | Use this data directory. Either the install root or its `GAMEDATA` folder works — it is recognised by `MDMDMAP2.BSA` (SkyNET) or `MDMDMAPS.BSA` (Future Shock). If it holds neither, the switch is ignored with a warning and the game falls back to what it remembers, then to a `gamedata` folder beside the project or the executable. |
 | `--setup` | — | Open the first-start screen and ask for both game folders again, even when they are already remembered. |
 | `--no-cache` | — | Turn the converted-asset cache off for this run: nothing is read from it and nothing is written to it. Everything is decoded from the original data each time, so loads are slow. **(dev)** |
+| `--cache-read-only` | — | Read the cache, never write to it: a missing or stale file is built for this run and not saved, no scene is baked, a cache of another version is left unused instead of wiped, and the career statistics are not saved either. This is what lets several processes run on one project at once (the sharded gate); `--verify-shard=` implies it. A read-only run on a stale cache still gets the right answers, only slowly, and warns once per file it did not write — run `--import` first. **(dev)** |
 | `--import` | — | Convert the game data into the cache behind the progress screen, then quit. Also the way to rebuild a cache: it runs even when the import is already complete. |
 | `--import-missions` | — | Bake only the mission scenes (a whole mission as one Godot scene) and quit. Exit code 0 when every mission the data holds came out. **(dev)** |
 | `--import-triggers` | — | Rebuild only the generated trigger graphs and quit. Seconds rather than minutes — the whole rebuild after a change to the trigger rules. **(dev)** |
@@ -67,6 +68,19 @@ Everything else on this page is a developer tool. It is all marked
 The import switches are all checked *after* `--host`, `--screen`, `--join`
 and `--map` have already left for the game, so do not combine them with
 those: the one that comes first wins and the import never runs.
+
+**Who may use the cache at the same time.** Every process that has the
+cache open keeps a file `LOCK.<pid>` in it, fresh for a minute at a time.
+The lock guards the one destructive thing there is: a process that finds a
+cache of another version or of other game data wipes it, and it never does
+while somebody else's lock is fresh. Readers can share the cache freely —
+they only load files that were complete and recorded in the trust manifest
+before they started. The **writers** are alone with it: `--import`,
+`--import-missions` and `--import-triggers` refuse to start (exit code 1,
+naming the process) while another process holds the cache or when the run
+is `--cache-read-only`. An ordinary game run that fills in a missing file as
+it plays is still a writer, so run the several-at-once tools only on a cache
+that is fully built.
 
 ```sh
 godot --headless --path godot_project -- --import
@@ -280,6 +294,9 @@ drives every trigger in the running game.
 | `--accept-lock` | — | Rewrite the lock from the current rules. A deliberate act, after reading what `--verify-graph` printed. Exits non-zero if it refuses to write. |
 | `--verify-triggers[=SPEC]` | see below | In the **running game**: for every trigger node of every map in the spec, put the player where the node says he must stand, activate it through the real input path, and lay what happened against what the graph predicted. Known failures are listed in the project's xfail file; the run exits non-zero only on a failure that is not in it. |
 | `--verify-out=PATH` | a file | Write one line per checked node — map, id, act byte, kind, mode, result, reason — for triage. |
+| `--verify-shard=I/N` | `0/4` … `3/4` | Check only this process's share of the maps: the spec's list split into N parts, whole mission decades at a time (a variant map is checked after its world, as in a full run), the heaviest decade first to the part with least work. N processes with the same spec check every map once. Beside the rows it writes `PATH.maps` — which maps, by their place in the full list, and how many rows each — so the parts merge back into the single-run file. Implies `--cache-read-only`. |
+| `--verify-base-lock=PATH` | a lock file | With `changed`: also every map whose lock lines differ from this older lock — the maps an accepted lock change moved. |
+| `--verify-base-xfail=PATH` | an xfail file | With `changed`: also every map with a known-failure line that is in one of the two lists and not the other. |
 | `--verify-limit=N` | a count | Check at most N nodes per map. |
 | `--verify-nodes=ID,ID` | hex ids | Check only those node ids (as `--verify-graph` and the dump print them). |
 | `--verify-missions[=SPEC]` | `all`, or mission start maps | Play the hand-written mission specs (`tests/rules/skynet.missions.txt`) — one block per campaign mission, the steps in the order a player performs them, across the maps of the mission and through the real input path. Says PASS/FAIL/XFAIL per step and per mission, and exits non-zero only on a failure the spec does not excuse with an `xfail` tag. `--verify-missions=240,280` plays only those. |
@@ -288,14 +305,22 @@ drives every trigger in the running game.
 `--verify-triggers=` takes `all` (or nothing), `mission:210` for the whole
 decade a mission's maps sit in, `maps:215,217` for exactly those, or
 `changed` for only the maps whose freshly built graph no longer matches
-the lock. The verifier drives its own level changes, so give it a map to
-start on and let it go.
+the lock — and, given `--verify-base-lock` / `--verify-base-xfail`, the maps
+whose pinned lines or known failures differ from those. The game never
+asks git; `tools/verify_gate.py` hands in the committed files and decides
+when a change to the code means every map. The verifier drives its own
+level changes, so give it a map to start on and let it go.
+
+Give every verifier run Godot's own `--fixed-fps 60` (an engine switch,
+before `--`). The verifiers wait in physics frames, never in seconds, and
+with it no frame waits for the wall clock: a full `--verify-triggers=all`
+takes about 5 minutes instead of 20, row for row the same file.
 
 ```sh
 godot --headless --path godot_project -- --verify-graph
-godot --headless --path godot_project -- --map=MAP.200 --no-briefing \
+godot --headless --fixed-fps 60 --path godot_project -- --map=MAP.200 --no-briefing \
       --no-mission-scene --verify-triggers=all --verify-out=rows.txt
-godot --headless --path godot_project -- --map=MAP.210 --no-briefing \
+godot --headless --fixed-fps 60 --path godot_project -- --map=MAP.210 --no-briefing \
       --no-mission-scene --verify-missions=all --verify-out=rows.txt
 godot --headless --path godot_project res://scenes/map_dump.tscn -- --triggers=215
 ```
@@ -311,6 +336,39 @@ spec pins), `counter N` is what the mission counter must read at the end,
 and `xfail <tag>` excuses a step, or a whole mission, that cannot be
 played through yet. The effect names are the graph's own, as `--triggers=`
 and the lock print them.
+
+### The gate
+
+What has to hold before a change is committed, run by
+`godot_project/tools/verify_gate.py` (Python 3, standard library only). It
+starts every Godot process with `--headless --fixed-fps 60` and
+`--cache-read-only`, runs them side by side, writes the logs and the rows
+into `--out=DIR` (a temporary folder by default) and exits 0 only when all
+of it held. The Godot executable is `--godot=EXE`, else `$GODOT`, else
+found on the PATH. Build the cache first (`--import`) — the gate only reads
+it.
+
+| Command | What it runs | Time (20 threads) |
+| --- | --- | --- |
+| `python godot_project/tools/verify_gate.py quick` | the four suites and `--verify-graph` at once; `--verify-missions=all` in both runtimes, the missions split over the same processes; `--verify-triggers=changed` against the last commit, sharded | about 2 minutes; when a file the runs load has changed, `changed` is every map and it takes as long as `full` |
+| `python godot_project/tools/verify_gate.py full` | the same with `--verify-triggers=all`, sharded over six processes | about 3 minutes (the trigger part about 1) |
+| `python godot_project/tools/verify_gate.py triggers [--spec=SPEC] [--shards=N]` | only the verifier, sharded | 1 to 2 minutes for `all` |
+| `python godot_project/tools/verify_gate.py missions` | only the mission specs, both runtimes | 25 seconds |
+
+The shards' rows are merged back into `DIR/triggers.rows` in the order a
+single process writes them — the same file, byte for byte, as
+`--verify-triggers=all --verify-out=` from one process — and the summary
+(PASS/FAIL/UNREACHABLE/SKIP, the new failures, the pinned failures that no
+longer fail) is worked out from that file. `--shards=N` overrides the six
+processes it picks from the CPU count; more than that buys nothing, because
+the longest mission decade (the 28x maps, one to two minutes) is one process's
+work whatever N is.
+
+`quick` compares with `--base=REV` (default `HEAD`): a changed lock or
+known-failure list checks the maps whose lines moved, a changed file that
+no verifier run loads (the tools, the tests folder, the solver, the viewers,
+the deathmatch code, text) checks nothing more, and any other changed file
+under `godot_project/` checks every map.
 
 ## The solver
 

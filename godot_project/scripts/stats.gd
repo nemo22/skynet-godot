@@ -44,6 +44,10 @@ func _ready() -> void:
 		total_enemies = int(cfg.get_value("career", "enemies", 0))
 
 func _save() -> void:
+	# A read-only run (the sharded verifier, N of them at once) keeps the
+	# career to itself: two processes saving one file lose an update.
+	if Assets.read_only:
+		return
 	var cfg := ConfigFile.new()
 	cfg.set_value("career", "shots", total_shots)
 	cfg.set_value("career", "hits", total_hits)

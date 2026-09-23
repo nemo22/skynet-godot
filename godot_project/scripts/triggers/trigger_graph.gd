@@ -147,7 +147,7 @@ static func save(map_name: String, map_bytes: PackedByteArray,
 	return p if _write(p, graph, map_name, "rebuild") else ""
 
 static func _write(path: String, graph: Dictionary, map_name: String, why: String) -> bool:
-	if path.is_empty():
+	if path.is_empty() or not Assets.may_write(path.get_file()):
 		return false
 	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
 	var f := FileAccess.open(path, FileAccess.WRITE)

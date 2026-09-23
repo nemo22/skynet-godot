@@ -671,7 +671,7 @@ static func _ident_char(c: int) -> bool:
 ## and handed straight back, so the level that triggered the bake is the
 ## one that gets played.
 static func save_from(level, map_name: String) -> String:
-	if not Assets.enabled:
+	if not Assets.enabled or not Assets.may_write(map_name + ".level.scn"):
 		return ""
 	var p := scene_path(map_name)
 	if p.is_empty():

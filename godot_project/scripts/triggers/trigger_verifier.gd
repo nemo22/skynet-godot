@@ -206,6 +206,9 @@ var _exit_world: Array = []
 ## foot, given back with the level (_open_map / _release).
 var _was_vehicle: int = 0
 var _limit: int = 0                      # --verify-limit: nodes per map
+## [map name, rows it wrote] per map of the run, in the run's order — the
+## `.maps` file a shard writes beside its rows (_write_out).
+var _blocks: Array = []
 var _only_ids: Dictionary = {}           # --verify-nodes=0bb44,075cb
 
 # ---------------------------------------------------------------------
@@ -266,6 +269,12 @@ func _prepare() -> void:
 ## whatever the machine is doing. The step itself is unchanged, so the
 ## game runs exactly as it does in play — only slower under load, which
 ## a headless run does not care about.
+##
+## What the run then waits for is physics frames, never seconds — so with
+## Godot's own `--fixed-fps 60` (an engine switch, before `--`) nothing
+## waits for the wall clock at all: every main-loop iteration is exactly
+## one physics step, run as fast as the machine allows, and the rows are
+## the same (tools/verify_gate.py always passes it).
 func _steady() -> void:
 	Engine.max_physics_steps_per_frame = 1
 	Engine.physics_jitter_fix = 0.0
@@ -290,8 +299,13 @@ func _take_capsule() -> void:
 func _run() -> void:
 	_t0 = Time.get_ticks_msec()
 	var maps: PackedStringArray = _map_list()
-	print("[verify] %d map(s) to check (%s)" % [maps.size(), _spec])
+	var shard: Array = shard_spec(String(main._cli.get("verify-shard", "")))
+	if not shard.is_empty():
+		maps = shard_maps(maps, int(shard[0]), int(shard[1]))
+	print("[verify] %d map(s) to check (%s%s)" % [maps.size(), _spec,
+		(", shard %d/%d" % [int(shard[0]), int(shard[1])]) if not shard.is_empty() else ""])
 	for nm in maps:
+		var first_row: int = _rows.size()
 		if main._level_name() != nm:
 			# A level BUILD draws on the same global generator (the pickup
 			# a crate is given, level_loader 1391), so the seed goes back
@@ -299,10 +313,86 @@ func _run() -> void:
 			seed(CHECK_SEED)
 			if not await main._change_level(nm, false, false):
 				_row(-1, 0, 0, "-", "-", FAIL, "the level would not load")
+				_blocks.append([nm, _rows.size() - first_row])
 				continue
 			await _drv.frames(8)
 		await _verify_map(nm)
+		_blocks.append([nm, _rows.size() - first_row])
 	_report()
+
+## --verify-shard=I/N → [I, N], or [] when there is none (or it is not
+## one: 0 <= I < N).
+static func shard_spec(s: String) -> Array:
+	var p: PackedStringArray = s.strip_edges().split("/")
+	if p.size() != 2 or not p[0].is_valid_int() or not p[1].is_valid_int():
+		return []
+	var i: int = int(p[0])
+	var n: int = int(p[1])
+	if n < 1 or i < 0 or i >= n:
+		return []
+	return [i, n]
+
+## The maps shard `i` of `n` checks, out of `maps` (the run's own list, in
+## its own order). A function of the list alone, so N processes given the
+## same spec split it the same way and between them check every map once.
+##
+## A map is not checked on its own: it is checked in the run that reached
+## it, and what the maps before it left behind can reach it — a variant
+## (MAP.216 and 217 are MAP.210 later in the mission) takes over the
+## records its world had destroyed or had taken (main._carry_records).
+## So the maps of one mission decade stay together, in their order, and it
+## is whole decades that are shared out: the heaviest first, each to the
+## shard with the least work so far (the lock's node count for the maps,
+## plus a level load each). Inside a shard the decades run in the run's
+## order again. The player comes back with the start kit on every map
+## (main.place_at_marker → set_spawn with reset_state), and the seed is put
+## back before every build and every check (CHECK_SEED), so nothing else
+## carries from one decade to the next.
+static func shard_maps(maps: PackedStringArray, i: int, n: int) -> PackedStringArray:
+	if n <= 1:
+		return maps
+	var lock: Dictionary = TriggerLock.parse(TriggerLock.lock_text()).get("maps", {})
+	var groups: Array = []                   # [first index, weight, [names]]
+	var last_decade: int = -9999
+	for k in maps.size():
+		var nm: String = maps[k]
+		var num: int = int(nm.get_extension())
+		@warning_ignore("integer_division")
+		var decade: int = num / 10
+		if groups.is_empty() or decade != last_decade:
+			groups.append([k, 0, []])
+			last_decade = decade
+		var g: Array = groups[groups.size() - 1]
+		g[1] = int(g[1]) + SHARD_MAP_WEIGHT \
+			+ ((lock.get(num, {}) as Dictionary).get("lines", {}) as Dictionary).size()
+		(g[2] as Array).append(nm)
+	var order: Array = groups.duplicate()
+	order.sort_custom(func(a, b) -> bool:
+		if int(a[1]) != int(b[1]):
+			return int(a[1]) > int(b[1])
+		return int(a[0]) < int(b[0]))
+	var work: Array = []
+	work.resize(n)
+	work.fill(0)
+	var mine: Dictionary = {}                # first index → true, for shard i
+	for g in order:
+		var best: int = 0
+		for s in n:
+			if int(work[s]) < int(work[best]):
+				best = s
+		work[best] = int(work[best]) + int(g[1])
+		if best == i:
+			mine[int(g[0])] = true
+	var out := PackedStringArray()
+	for g in groups:
+		if mine.has(int(g[0])):
+			for nm in (g[2] as Array):
+				out.append(String(nm))
+	return out
+
+## What a level load is worth against one checked node, for the split
+## above (a load is two or three seconds, a node a fraction of one).
+const SHARD_MAP_WEIGHT: int = 12
 
 ## Which maps this run covers.
 ##   all / (empty)   every map the archive holds
@@ -335,17 +425,37 @@ func _map_list() -> PackedStringArray:
 		return _changed_maps(all)
 	return all
 
-## The maps whose freshly built graph differs from the lock — what to
-## re-check after a rules change, instead of the whole game.
+## What to re-check after a change, instead of the whole game — the maps
+##   · whose freshly built graph differs from the lock (a rule changed and
+##     the lock has not been accepted yet);
+##   · whose lock lines differ from `--verify-base-lock=PATH`, the lock as
+##     it was before the change (the one accepted since — tools/verify_gate.py
+##     hands in the committed one, `git show HEAD:…`);
+##   · with a line in the known-failure list that differs from
+##     `--verify-base-xfail=PATH` (a failure unpinned has to be seen passing).
+## The game never asks git itself; a change to the CODE means every map, and
+## deciding that is the driver's business (verify_gate.py NOT_IN_A_RUN).
 func _changed_maps(all: PackedStringArray) -> PackedStringArray:
 	var lock: Dictionary = TriggerLock.parse(TriggerLock.lock_text())
 	var maps: Dictionary = lock.get("maps", {})
+	var base_maps: Dictionary = {}
+	var base_path: String = String(main._cli.get("verify-base-lock", ""))
+	if not base_path.is_empty():
+		if not FileAccess.file_exists(base_path):
+			push_warning("[verify] no base lock at %s - checking every map" % base_path)
+			return all
+		base_maps = TriggerLock.parse(FileAccess.get_file_as_string(base_path)).get("maps", {})
+	var xfail_moved: Dictionary = _xfail_moved(String(main._cli.get("verify-base-xfail", "")))
 	var out := PackedStringArray()
 	var bsa := BSAReader.new()
 	if not bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant):
 		return all
 	for nm in all:
 		var num: int = int(nm.get_extension())
+		if xfail_moved.has(num) or (not base_path.is_empty()
+				and not _same_pin(maps.get(num, {}), base_maps.get(num, {}))):
+			out.append(nm)
+			continue
 		var bytes: PackedByteArray = bsa.read(nm)
 		if bytes.is_empty():
 			out.append(nm)                       # cannot tell: check it
@@ -367,6 +477,42 @@ func _changed_maps(all: PackedStringArray) -> PackedStringArray:
 		if not same:
 			out.append(nm)
 	bsa.close()
+	return out
+
+## Two parsed lock entries of one map pin the same thing: the head line
+## and every node line alike.
+static func _same_pin(a: Dictionary, b: Dictionary) -> bool:
+	if a.is_empty() != b.is_empty():
+		return false
+	if String(a.get("head", "")) != String(b.get("head", "")):
+		return false
+	var la: Dictionary = a.get("lines", {})
+	var lb: Dictionary = b.get("lines", {})
+	if la.size() != lb.size():
+		return false
+	for id in la:
+		if String(la[id]) != String(lb.get(id, "")):
+			return false
+	return true
+
+## The maps with a known-failure line that is in one of the two lists and
+## not in the other ({} with no base list).
+func _xfail_moved(base_path: String) -> Dictionary:
+	var out: Dictionary = {}
+	if base_path.is_empty() or not FileAccess.file_exists(base_path):
+		return out
+	var now: Dictionary = {}
+	var was: Dictionary = {}
+	for pair in [[XFAIL_PATH, now], [base_path, was]]:
+		if not FileAccess.file_exists(String(pair[0])):
+			continue
+		for raw in FileAccess.get_file_as_string(String(pair[0])).split("\n"):
+			var line: String = raw.strip_edges()
+			if not line.is_empty() and not line.begins_with("#"):
+				(pair[1] as Dictionary)[line] = true
+	for line in now.keys() + was.keys():
+		if now.has(line) != was.has(line):
+			out[int(String(line).split(" ")[0])] = true
 	return out
 
 # ---------------------------------------------------------------------
@@ -2415,7 +2561,15 @@ func _report() -> void:
 	var by_res: Dictionary = {}
 	var fails: Array = []
 	var new_fails: Array = []
-	var fixed: Dictionary = _xfail.duplicate()
+	# Only the pinned failures of the maps this run checked can have been
+	# fixed by it: a subset or a shard says nothing about the others.
+	var fixed: Dictionary = {}
+	var ran: Dictionary = {}
+	for r in _rows:
+		ran[int((r as Dictionary)["map"])] = true
+	for key in _xfail:
+		if ran.has(int(String(key).split(" ")[0])):
+			fixed[key] = _xfail[key]
 	for r in _rows:
 		var row: Dictionary = r
 		var res: String = String(row["res"])
@@ -2496,3 +2650,15 @@ func _write_out() -> void:
 			String(row["res"]), String(row["why"])])
 	f.close()
 	print("[verify] rows written: %s" % path)
+	# A shard also says which maps its rows are, by their place in the run's
+	# own map list, so tools/verify_gate.py can put N shards' rows back in
+	# the order one process writes them.
+	if shard_spec(String(main._cli.get("verify-shard", ""))).is_empty():
+		return
+	var m := FileAccess.open(path + ".maps", FileAccess.WRITE)
+	if m == null:
+		push_warning("[verify] cannot write %s.maps" % path)
+		return
+	for b in _blocks:
+		m.store_line("%d %s %d" % [(main._maps as Array).find(String(b[0])), String(b[0]), int(b[1])])
+	m.close()
