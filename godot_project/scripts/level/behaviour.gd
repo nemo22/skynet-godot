@@ -673,6 +673,29 @@ func flip_chain(id: int) -> void:
 	if runtime != null:
 		runtime.flip(id)
 
+## The player stands on the mesh of record `id` — a WALK-ON PAD when its
+## state byte carries 0x10. DOS: the foot mover (FUN_0012b18c) remembers
+## the floor polygon under the feet, and at its end (0x12bd54..0x12bd70)
+## passes the polygon's owner record to FUN_00139d5e, which tests 0x10 in
+## the state byte of whichever variant it is (sub+0x12 for a mesh), clears
+## it and walks the chain from the record with xor 1 (ObjFlipLink). No
+## key, no distance, no latch but the bit itself: once. What is left is an
+## ordinary record — the twenty pads of the shipped maps are 0xEF gates on
+## variant-1 meshes, which go on answering the use key as gates do.
+##
+## A client sends nothing: the pad's bit is the server's, and an arena has
+## none. Rules.PAD_BIT names the bit.
+func walk_on(id: int) -> void:
+	if runtime == null or net_role == ROLE_CLIENT:
+		return
+	var st: int = int(runtime.state(id))
+	if (st & Rules.PAD_BIT) == 0 or runtime.spent(id):
+		return
+	runtime.set_state(id, st & ~Rules.PAD_BIT)
+	print("[action] walk-on pad @%05x stood on" % id)
+	say(id, "pad", "pad", {})
+	flip_chain(id)
+
 ## The MAP record of `id` — the read-only data the map was authored with,
 ## which is where the static half of a rule lives (a wall button's name
 ## and variant). Null when the branch has no runtime to ask.
@@ -790,6 +813,7 @@ func register_path_vehicle(e, actor: Node3D) -> void:
 	n.id = e.file_off
 	n.head = e.link_next
 	n.vehicle = e.enemy_type
+	n.convoy = bool(e.convoy)
 	n.position = Vector3(float(e.x), -float(e.y), -float(e.z))
 	n.branch = self
 	n.actor = actor

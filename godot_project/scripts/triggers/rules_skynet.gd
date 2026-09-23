@@ -184,6 +184,15 @@ const ACT_PICKUP: int = 0xFD            # collectable (0x11d670)
 const ACT_UNKNOWN_1A: int = 0x1A
 ## Ids DOS writes into a spent act byte — never dispatched.
 const ACT_SPENT_FIRST: int = 0xFE
+## WALK-ON PAD: state bit 0x10 on the record that owns the floor polygon
+## under the player's feet. The foot mover (FUN_0012b18c) keeps that
+## polygon [0x4d124] and at its end (0x12bd54..0x12bd70) passes its owner
+## record (file offset >= 0x253c) to FUN_00139d5e, which clears the bit and
+## walks the chain from the record (ObjFlipLink, xor 1) — no key, no
+## distance, once. A mode of the RECORD, not of its act (trigger_graph
+## _modes): the twenty pads of the shipped maps are 0xEF gates on variant-1
+## meshes, which stay use-key gates after the walk.
+const PAD_BIT: int = 0x10
 
 # ---------------------------------------------------------------------
 # Movement tuning. The DOS handlers step 0x46/0x8c angle units per tick
@@ -329,8 +338,11 @@ const MARKER_BORDER_LAST: int = 39
 ## after the lasers — the same ground, the same buildings, another crop of
 ## robots and other chains. DOS keeps an Mst overlay per map NUMBER, so
 ## it carries nothing between them and the player meets his own dead
-## again; the port carries what he did across (main._carry_records), and
-## this table is the committed list of where that may happen at all
+## again; the port carries the dead robots and the taken pickups across
+## (main._carry_records) — never a mechanism: every trigger, mover, wreck
+## and pool comes up as the variant's file has it, as in DOS (the owner's
+## ruling of 2026-09-23) — and this table is the committed list of where
+## that may happen at all
 ## (docs/trigger_graph_plan.md §4). It replaces a search that took any
 ## visited map of the same mission sharing 60 % of its meshes — which
 ## could only ever guess.
@@ -453,6 +465,8 @@ static func rules_hash() -> String:
 		# The per-RECORD rules (rule_for_record) are rules too: a change to
 		# one has to rebuild every stored graph, like a change to a row.
 		parts.append("notalight=%s" % JSON.stringify(NOT_A_LIGHT))
+		# The walk-on pad is a per-record rule as well (trigger_graph._modes).
+		parts.append("pad=%d/%d" % [PAD_BIT, ACT_SPENT_FIRST])
 		parts.append("r=%.1f/%.1f/%.1f/%.1f/%.1f/%.1f/%.1f"
 			% [PROX_GATE_RADIUS, PROX_CHAIN_A_RADIUS, PROX_CHAIN_B_RADIUS,
 			   PLAYER_RADIUS, TELEPORT_TOUCH_RADIUS, PROX_VERTICAL_WINDOW,

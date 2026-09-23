@@ -574,6 +574,30 @@ func _run_behaviour_checks() -> void:
 		_check(l260.behaviour.vehicle_nodes().size() == 9,
 			"the convoy is built as nine path vehicles (%d)"
 			% l260.behaviour.vehicle_nodes().size())
+		# The always-active list (0x129d8f → 0x1299c5): out of the window a
+		# convoy truck is not ticked until it has been in it once; after
+		# that it ticks everywhere, and twice a frame while the player is
+		# near, because the collector (0x12984d) copies the list in before
+		# the grid pass and does not dedupe.
+		var truck: Node = null
+		for v in l260.behaviour.vehicle_nodes():
+			if bool(v.get("convoy")) and v.actor != null:
+				truck = v
+				break
+		_check(truck != null, "the convoy's path vehicles know they are convoy actors")
+		if truck != null:
+			var near: Vector3 = (truck.actor as Node3D).position
+			var far: Vector3 = near + Vector3(40000.0, 0.0, 40000.0)
+			var t0: int = int(truck.ticks_this_frame(far))
+			var t1: int = int(truck.ticks_this_frame(near))
+			truck.path_watch(0.016, near)
+			var t2: int = int(truck.ticks_this_frame(near))
+			var t3: int = int(truck.ticks_this_frame(far))
+			_check(t0 == 0 and t1 == 1 and bool(truck.started) and t2 == 2 and t3 == 1,
+				"a convoy truck: %d tick far off, %d near, then %d near and %d far once started (0,1,2,1)"
+				% [t0, t1, t2, t3])
+			truck.path_forget()
+			_check(not bool(truck.started), "path_forget takes it off the always-active list")
 		var door = null
 		for e in l260.map.entities:
 			if (e.flags & 3) == 1 and e.hp > 0 \

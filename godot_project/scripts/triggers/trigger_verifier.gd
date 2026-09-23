@@ -166,6 +166,12 @@ const RING_FRACTIONS: Array = [0.0, 0.35, 0.6, 0.85]
 ## Shooting spots are looked for further out as well.
 const SHOT_DISTANCES: Array = [90.0, 180.0, 320.0, 560.0, 900.0]
 const FLOOR_MIN_NY: float = 0.766        # cos 40°, fly_camera.FOOT_MAX_SLOPE_DEG
+## Where across a walk-on pad's box the columns that look for its own
+## floor are cast (_pad_spots).
+const PAD_FRACTIONS: Array = [0.5, 0.35, 0.65, 0.2, 0.8, 0.08, 0.92]
+## How far above or below the pad's floor the walk onto it may start
+## before a higher or lower one is tried (_off_pad).
+const PAD_LEVEL_STEP: float = 16.0
 const EYE: float = PlayerDriver.EYE
 
 ## scripts/main.gd.
@@ -632,6 +638,13 @@ static func primary_mode(node: Dictionary) -> Dictionary:
 				return m
 	return {}
 
+## The node's mode of that name, or {}.
+static func mode_of(node: Dictionary, want: String) -> Dictionary:
+	for m in (node.get("modes", []) as Array):
+		if String((m as Dictionary).get("mode", "")) == want:
+			return m
+	return {}
+
 func _check_node(level, graph: Dictionary, node: Dictionary) -> void:
 	var id: int = int(node["id"])
 	var act: int = int(node["act"])
@@ -649,6 +662,18 @@ func _check_node(level, graph: Dictionary, node: Dictionary) -> void:
 			await _check_dead_gate(level, node, num, id, act, kind)
 			return
 		_row(num, id, act, kind, "chain", SKIP, "only a chain can set it off")
+		return
+	# A WALK-ON PAD is proved by its own mode first: standing on the mesh
+	# fires it once, and the use key it still answers afterwards is the
+	# graph's SECOND activation (_check_walk). A pad with no room on it for
+	# a body is checked on the key alone, as the gate it also is: MAP.286's
+	# three CATWLK12 plates lie 36 units under a fan housing that covers
+	# them whole, and nobody stands there (_pad_spots finds the floor, the
+	# capsule does not fit on it).
+	var pad: Dictionary = mode_of(node, "walk_on")
+	if not pad.is_empty() and not _pad_spots(level, id, 1).is_empty():
+		_checks += 1
+		await _check_walk(level, graph, node, num, id, act, kind)
 		return
 	var how: String = String(mode["mode"])
 	_checks += 1
@@ -833,6 +858,185 @@ func _check_dead_gate(level, _node: Dictionary, num: int, id: int, act: int,
 		_row(num, id, act, kind, "dead", FAIL,
 			"a state-04 prop answered the key with %s" % " ".join(got))
 
+# --- walk-on pads (state bit 0x10, FUN_00139d5e) ----------------------
+## Walk onto the pad's own mesh from beside it: the chain goes as the
+## graph's `first`, the bit comes down, and walking onto it again does
+## nothing (once). Then the use key, where the record is a gate that still
+## answers it, is the graph's `second`.
+func _check_walk(level, graph: Dictionary, node: Dictionary, num: int, id: int,
+		act: int, kind: String) -> void:
+	var spots: Array = _pad_spots(level, id, 1)
+	if spots.is_empty():
+		_row(num, id, act, kind, "walk", UNREACHABLE, "nowhere on its own mesh to stand")
+		return
+	var on: Vector3 = spots[0]
+	var from: Vector3 = _off_pad(level, id, on)
+	var spot: Dictionary = {"feet": on, "shared": not _alone_at(on, id)}
+	var shared: String = "shared with another trigger" if bool(spot["shared"]) else ""
+	var mesh = level.behaviour.hit_node(id)
+	var first: PackedStringArray = await _walk_in(level, from, on, on,
+		node.get("first", []), mesh)
+	var why: String = _why(_share(level, graph, id, false, spot,
+		TriggerEquiv.compare(node.get("first", []), first)))
+	if (int(level.triggers.state(id)) & Rules.PAD_BIT) != 0:
+		why = _join(why, "standing on it left bit 0x10 up")
+	if not bool(spot["shared"]):
+		why = _join(why, _mover_truth(level, node.get("first", [])))
+	if not why.is_empty():
+		_leave_pad(from)
+		_row(num, id, act, kind, "walk", FAIL, _join(why, shared))
+		return
+	await _settle(level, node.get("first", []))
+	# Off and on again: the bit is gone, so nothing.
+	var again: PackedStringArray = await _walk_in(level, from, on, on, [], mesh)
+	why = _why(_share(level, graph, id, false, spot, TriggerEquiv.compare([], again)))
+	if not why.is_empty():
+		_leave_pad(from)
+		_row(num, id, act, kind, "walk", FAIL, _join("walked on again: " + why, shared))
+		return
+	# …and what is left is the record's ordinary self: a gate answers the
+	# key, and this press is the chain's second walk.
+	var use: Dictionary = mode_of(node, "use_key")
+	if not use.is_empty():
+		var us: Dictionary = _use_spot(level, id, kind, use)
+		if bool(us["ok"]):
+			us["shared"] = not _alone_at(us["feet"], id) \
+				or not _doorways_at(us["feet"]).is_empty()
+			var second: PackedStringArray = await _stand_and_record(level, us["feet"],
+				us["aim"], bool(us["gate"]), 1, node.get("second", []))
+			why = _why(_share(level, graph, id, true, us,
+				TriggerEquiv.compare(node.get("second", []), second)))
+			if not why.is_empty():
+				_leave_pad(from)
+				_row(num, id, act, kind, "walk", FAIL, _join("the key after the walk: " + why,
+					"shared with another trigger" if bool(us["shared"]) else ""))
+				return
+	_leave_pad(from)
+	_row(num, id, act, kind, "walk", PASS, "")
+
+## Off the pad before the map is put back: a reset raises its bit again,
+## and a player still standing there would set it off in the next check.
+func _leave_pad(from: Vector3) -> void:
+	_drv.place(from if from != Vector3.INF else (_snap.get("spawn", main.player.global_position) as Vector3))
+
+## Places on the record's OWN mesh where the capsule stands: columns cast
+## down through its box, a floor kept only where the collider under the
+## feet is this record's mesh — which is what the foot mover hands DOS's
+## FUN_00139d5e. A pad is walked ON, not climbed onto: a corridor piece
+## has a roof over its floor that is the same mesh, so the floors at or
+## under the record's own origin come first, the nearest of them first.
+func _pad_spots(level, id: int, limit: int) -> Array:
+	var target = level.behaviour.hit_node(id) if level.behaviour != null else null
+	if target == null or not is_instance_valid(target) or not (target is MeshInstance3D) \
+			or (target as MeshInstance3D).mesh == null:
+		return []
+	var mi: MeshInstance3D = target
+	var box: AABB = mi.global_transform * mi.mesh.get_aabb()
+	var origin: Vector3 = mi.global_position
+	var found: Array = []
+	for fx in PAD_FRACTIONS:
+		for fz in PAD_FRACTIONS:
+			var c := Vector3(lerpf(box.position.x, box.end.x, fx), box.end.y + 20.0,
+				lerpf(box.position.z, box.end.z, fz))
+			for hit in _column(c, box.position.y - 20.0):
+				if not _is_under(hit["collider"], target):
+					continue
+				var feet: Vector3 = hit["position"]
+				if _fits(feet):
+					found.append(feet)
+	found.sort_custom(func(a, b) -> bool:
+		var ua: bool = (a as Vector3).y <= origin.y + 1.0
+		var ub: bool = (b as Vector3).y <= origin.y + 1.0
+		if ua != ub:
+			return ua
+		return (a as Vector3).distance_to(origin) < (b as Vector3).distance_to(origin))
+	return found.slice(0, limit)
+
+## A floor beside the pad, about level with the spot on it, that is NOT
+## the pad — where the walk onto it starts. INF when there is none (the
+## player is then put down on the pad, which is stepping onto it too).
+## A floor within a stair riser of the pad's is taken before one further
+## up or down: walked off a ledge 34 units over MAP.212's pad the body hung
+## on the ledge's steep lip over it and never came down on the pad.
+func _off_pad(level, id: int, on: Vector3) -> Vector3:
+	var target = level.behaviour.hit_node(id)
+	for tol in [PAD_LEVEL_STEP, 40.0]:
+		for dist in [70.0, 110.0, 160.0, 220.0]:
+			for d in RING:
+				if d == Vector2.ZERO:
+					continue
+				var at := Vector3(on.x + d.x * dist, on.y + 60.0, on.z + d.y * dist)
+				for hit in _column(at, on.y - 60.0):
+					var p: Vector3 = hit["position"]
+					if absf(p.y - on.y) > tol or _is_under(hit["collider"], target):
+						continue
+					if _fits(p) and not _touches_pad(p, target):
+						return p
+	return Vector3.INF
+
+## True when the body standing at `feet` would already be on the pad: any
+## face of its mesh under the capsule's footprint, the coplanar ones
+## included. MAP.252's sloping corridor is laid in pieces that overlap at
+## the seams, one face on another, and a column that found the other
+## piece first put the walk's start on the pad it was to walk onto.
+func _touches_pad(feet: Vector3, target) -> bool:
+	for d in RING:
+		var r: float = Rules.PLAYER_RADIUS + 6.0
+		var at: Vector3 = feet + Vector3((d as Vector2).x * r, 0.0, (d as Vector2).y * r)
+		var ex: Array = [main.player.get_rid()]
+		for _i in 4:
+			var q := PhysicsRayQueryParameters3D.create(at + Vector3(0.0, 24.0, 0.0),
+				at - Vector3(0.0, 24.0, 0.0))
+			q.exclude = ex
+			q.collision_mask = main.player.collision_mask
+			q.hit_back_faces = true
+			q.collide_with_areas = false
+			var hit := _space.intersect_ray(q)
+			if not hit.has("collider"):
+				break
+			if _is_under(hit["collider"], target):
+				return true
+			ex.append(hit["rid"])
+	return false
+
+## True when the floor under the feet — the point the game asks about
+## (fly_camera._walk_on_floor) — is the pad's mesh.
+func _feet_on(target) -> bool:
+	var f: Vector3 = main.player.global_position
+	for hit in _column(f + Vector3(0.0, 8.0, 0.0), f.y - 24.0):
+		return _is_under(hit["collider"], target)
+	return false
+
+## Every walkable face under one point, top first, with what it belongs to.
+func _column(top: Vector3, bottom_y: float) -> Array:
+	var out: Array = []
+	var y: float = top.y
+	for _i in 6:
+		var q := PhysicsRayQueryParameters3D.create(Vector3(top.x, y, top.z),
+			Vector3(top.x, bottom_y, top.z))
+		q.exclude = [main.player.get_rid()]
+		q.collision_mask = main.player.collision_mask
+		q.hit_back_faces = true
+		q.collide_with_areas = false
+		var hit := _space.intersect_ray(q)
+		if not hit.has("position"):
+			break
+		var p: Vector3 = hit["position"]
+		if (hit["normal"] as Vector3).y >= FLOOR_MIN_NY:
+			out.append({"position": p, "collider": hit.get("collider")})
+		y = p.y - 2.0
+		if y <= bottom_y:
+			break
+	return out
+
+static func _is_under(n, target) -> bool:
+	var c = n
+	while c != null and c is Node:
+		if c == target:
+			return true
+		c = (c as Node).get_parent()
+	return false
+
 # --- walking in (0xF1 / 0xF2) -----------------------------------------
 func _check_prox(level, graph: Dictionary, node: Dictionary, num: int, id: int,
 		act: int, kind: String, mode: Dictionary) -> void:
@@ -872,18 +1076,29 @@ func _check_prox(level, graph: Dictionary, node: Dictionary, num: int, id: int,
 ## Stand outside, then walk in on the movement keys (or, when there is no
 ## floor to walk from or the way is blocked, be put there), and report
 ## what the bus heard on the way in.
+##
+## `pad` is a walk-on pad's mesh when the walk is onto one. Walked in, the
+## body can end up hung on a lip beside it (a ledge's steep edge, a
+## generator's rim) rather than on it; it is then put down on the spot,
+## which is stepping onto it too. With nowhere to walk from, the level
+## still gets its settling frames before the recording, with the body
+## held still where it is so no floor it stands on is walked on.
 func _walk_in(level, from: Vector3, to: Vector3, ep: Vector3,
-		want: Array = []) -> PackedStringArray:
+		want: Array = [], pad = null) -> PackedStringArray:
 	if from != Vector3.INF:
 		_drv.place(from)
 		_drv.face(ep)
 		await _drv.frames(PRE_FRAMES)
+	elif pad != null:
+		main.player.set_physics_process(false)
+		await _drv.frames(PRE_FRAMES)
+		main.player.set_physics_process(true)
 	var bus = level.bus
 	bus.record(true)
 	bus.clear()
 	if from != Vector3.INF:
 		var got: float = await _drv.walk_toward(to, 45, 24.0)
-		if got > 48.0:
+		if got > 48.0 or (pad != null and not _feet_on(pad)):
 			_drv.place(to)                       # the way was not walkable
 	else:
 		_drv.place(to)

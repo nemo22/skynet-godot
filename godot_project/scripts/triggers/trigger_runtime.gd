@@ -492,9 +492,10 @@ func _adopt(off: int) -> bool:
 ## way it goes next, the stage each wreck is showing, and the 0xF3
 ## sprites whose robot is already out.
 ##
-## Every key in it is a MAP FILE OFFSET, which is what makes an overlay
-## carryable to a variant map (main._carry_records) and an older save
-## readable as it stands.
+## Every key in it is a MAP FILE OFFSET, which is what makes an older save
+## readable as it stands. (It does NOT cross to a variant map: DOS keeps
+## an overlay per map number, and main._carry_records brings only the dead
+## and the taken.)
 ##
 ## It also records WHICH MAP it is an overlay of, in the only terms that
 ## survive a file changing under it: `graph_sha`, the fingerprint of every
@@ -567,8 +568,8 @@ func graph_sha() -> String:
 	return _graph_sha
 
 ## Lay a snapshot back over the state. Sparse: an offset the snapshot
-## does not mention keeps what it has — a variant map's carry brings only
-## the entities that behave the same on both maps (main._carry_records).
+## does not mention keeps what it has — an overlay from another file of the
+## same map lays back only the entities it can still vouch for (below).
 ##
 ## An EMPTY snapshot is nothing to lay: a level with no overlay of its own
 ## keeps the bytes its records were read with, and the pool below is not

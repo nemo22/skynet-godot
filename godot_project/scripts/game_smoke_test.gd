@@ -510,14 +510,16 @@ func _run() -> void:
 			var m12: Vector3 = (lvl.markers[12] as Array)[0] if lvl.markers.has(12) else Vector3.INF
 			_check(player.global_position.distance_to(m12) < 700.0,
 				"player spawned at MAP.216 marker 12 (d=%.0f)" % player.global_position.distance_to(m12))
-			# Variant carry-over: the gate opened in MAP.210 (step 4c) is
-			# open here too — MAP.216 is the same base re-authored.
+			# NO variant carry of a mechanism: the gate opened in MAP.210
+			# (step 4c) comes up on MAP.216 as MAP.216's file has it — DOS
+			# keeps an overlay per map number (the owner's ruling,
+			# 2026-09-23). Only the dead and the taken cross.
 			var open_leaves: int = 0
 			for e in lvl.map.entities:
 				if (e.flags & 3) == 1 and lvl.behaviour.has_mover(e.file_off) and LevelLoader.MapFile.entity_name(lvl.map, e) == "BIGDOOR":
 					if float(lvl.behaviour.mover_node(e.file_off).progress) > 100.0:
 						open_leaves += 1
-			_check(open_leaves == 2, "MAP.216 inherits the open base gate from MAP.210 (%d leaves open)" % open_leaves)
+			_check(open_leaves == 0, "MAP.216's base gate is shut as its file has it, though MAP.210's was opened (%d leaves open)" % open_leaves)
 
 	# --- 6a. Mover colliders in MAP.214: the rotating corridor segment
 	# CORB122I keeps its trimesh (a box sealed the tunnel), the DORB door
@@ -993,6 +995,22 @@ func _check_trigger_verifier() -> void:
 ## (210 → 216 → 217, first visits), so it never counted. Also: a counted
 ## objective stays counted across a save and load, and a v0.3.0 save that
 ## carries the foreign retirement gets the objective back live.
+## Mission 1's base gate (one BIGDOOR leaf) and the 0xEF wall button up
+## the tower that runs it — the same records on MAP.210, 216 and 217.
+const BASE_GATE: int = 0x078f7
+const TOWER_SWITCH: int = 0x09551
+
+## Press the tower switch on `lvl` (the chain the crosshair's key walks)
+## and let the leaf slide open. True when it did.
+func _open_base_gate(lvl) -> bool:
+	if lvl == null or lvl.behaviour == null or lvl.behaviour.mover_node(BASE_GATE) == null:
+		return false
+	var leaf: Node = lvl.behaviour.mover_node(BASE_GATE)
+	lvl.behaviour.flip_chain(TOWER_SWITCH)
+	return await _wait(func() -> bool:
+		return is_instance_valid(leaf) and absf(float(leaf.progress)) > 100.0 \
+			and not bool(leaf.running), 20.0)
+
 func _check_variant_objective() -> void:
 	var jeep_off: int = 0x75cb
 	# Both variants visited for the first time from here, whatever came before.
@@ -1028,6 +1046,9 @@ func _check_variant_objective() -> void:
 	var j216 = lvl.map.entities_by_off.get(jeep_off)
 	_check(j216 != null and lvl.triggers.act(jeep_off) == 0x1C,
 		"MAP.216's jeep hint is its own: no act byte crosses from MAP.210")
+	# The tower switch opens the base gate on MAP.216 — which must not be
+	# open when MAP.217 comes up.
+	_check(await _open_base_gate(lvl), "MAP.216's tower switch @%05x opens the base gate" % TOWER_SWITCH)
 
 	_main.call("_on_teleport_requested", 217, 14)
 	ok = await _wait(func() -> bool: return _level_is("217") and _settled(), 180.0)
@@ -1035,6 +1056,12 @@ func _check_variant_objective() -> void:
 	if not ok:
 		return
 	lvl = _main.get("_current_level")
+	var leaf: Node = lvl.behaviour.mover_node(BASE_GATE) if lvl.behaviour != null else null
+	_check(leaf != null and absf(float(leaf.progress)) < 1.0
+		and int(lvl.triggers.state(BASE_GATE)) == int(lvl.map.entities_by_off[BASE_GATE].state_byte),
+		"MAP.217's base gate @%05x arrives closed though MAP.210 and MAP.216 opened theirs (at %.0f)"
+		% [BASE_GATE, float(leaf.progress) if leaf != null else -1.0])
+	_check(await _open_base_gate(lvl), "MAP.217's tower switch @%05x opens it" % TOWER_SWITCH)
 	var j217 = lvl.map.entities_by_off.get(jeep_off)
 	var cue: Node = lvl.behaviour.node(jeep_off) if lvl.behaviour != null else null
 	_check(j217 != null and lvl.triggers.act(jeep_off) == 0x28

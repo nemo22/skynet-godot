@@ -56,3 +56,10 @@ func activate() -> bool:
 	# measures a distance to him — the eye on foot.
 	var eye: Vector3 = pl.call("dos_point") if pl != null and pl.has_method("dos_point") else at
 	return bool(_branch.on_player_activate(_file_off, at, eye))
+
+## The player's feet are on this mesh (fly_camera._walk_on_floor): a
+## WALK-ON PAD answers it, every other record ignores it
+## (Behaviour.walk_on, DOS FUN_00139d5e).
+func stood_on() -> void:
+	if _branch != null:
+		_branch.walk_on(_file_off)

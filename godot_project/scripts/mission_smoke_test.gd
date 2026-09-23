@@ -216,9 +216,10 @@ func _spoil_here() -> Dictionary:
 ## about afterwards. On the level that is up:
 ##   robot  one killed
 ##   item   one taken, by standing on it as the game takes one
-##   dent   one damageable object with the same SIGNATURE on both maps
-##          (main._same_signature, the rule the carry itself applies since
-##          step 5i), hit once through its node — its hit points must carry
+##   dent   one damageable object both maps place in the same spot, hit
+##          once through its node — its hit points must NOT carry: DOS
+##          keeps an overlay per map number, and the variant's pool is the
+##          one its own file gives it (main._carry_records, 2026-09-23)
 ## Returns {robot, item, dent: identity key or "", hp: what the dent left}.
 func _spoil_shared(next_name: String) -> Dictionary:
 	var out: Dictionary = {"robot": "", "item": "", "dent": "", "hp": 0.0}
@@ -274,7 +275,7 @@ func _spoil_shared(next_name: String) -> Dictionary:
 					or (st.get("destr", {}) as Dictionary).has(off) or float(hp[off]) <= 40.0:
 				continue
 			var k: String = String(_main.call("_entity_key", lvl.map, e))
-			if not keys.has(k) or not bool(_main.call("_same_signature", lvl.map, e, other, keys[k])):
+			if not keys.has(k) or float((keys[k]).hp) <= 40.0:
 				continue
 			lvl.behaviour.obj_hit(int(off), 10.0)
 			out["dent"] = k
@@ -286,8 +287,8 @@ func _spoil_shared(next_name: String) -> Dictionary:
 	return out
 
 ## Did what _spoil_shared did come through into the variant that is up
-## now? `what` names the edge for the report. Every kind the edge shares
-## must have come through; a kind the edge shares none of is reported.
+## now — the dead and the taken, and NOT the dent? `what` names the edge
+## for the report; a kind the edge shares none of is reported.
 func _check_carried(spoil: Dictionary, what: String) -> void:
 	var lvl = _main.get("_current_level")
 	var keys: Dictionary = {}
@@ -308,14 +309,39 @@ func _check_carried(spoil: Dictionary, what: String) -> void:
 	else:
 		var hp: Dictionary = lvl.triggers.snapshot().get("hp", {})
 		var off: int = int(keys.get(spoil["dent"], -1))
-		# The variant's own record would give it full hit points: a value
-		# equal to that would prove nothing.
+		# The variant's own record gives it its own pool, whatever was done
+		# to the same object on the map before (DOS: an overlay per map
+		# number) — and the dent must have been a real one, or this says
+		# nothing.
 		var rec = lvl.map.entities_by_off.get(off)
 		var own: float = float(rec.hp) if rec != null else -1.0
-		_check(hp.has(off) and is_equal_approx(float(hp[off]), float(spoil["hp"]))
+		_check(hp.has(off) and is_equal_approx(float(hp[off]), own)
 			and not is_equal_approx(own, float(spoil["hp"])),
-			"%s: the object hit before keeps its hit points (%s, carried %.0f, the map's own %.0f)"
+			"%s: the object hit before is whole again, as the variant's file has it (%s, was left at %.0f, the map's own %.0f)"
 			% [what, str(hp.get(off, "?")), float(spoil["hp"]), own])
+
+## Mission 1's base gate (the leaf @078f7 of the BIGDOOR pair) and the
+## 0xEF wall button up the tower that runs it (@09551) — the same records
+## on MAP.210, MAP.216 and MAP.217.
+const BASE_GATE: int = 0x078f7
+const TOWER_SWITCH: int = 0x09551
+
+## Press the tower switch on the map that is up (through its node, the
+## way the crosshair's key reaches a wall button) and wait for the leaf to
+## slide open. True when it did.
+func _open_base_gate(what: String) -> bool:
+	var lvl = _main.get("_current_level")
+	if lvl == null or lvl.behaviour == null or lvl.behaviour.mover_node(BASE_GATE) == null:
+		print("[mission-e2e] note: %s has no base gate to open" % what)
+		return false
+	lvl.behaviour.flip_chain(TOWER_SWITCH)
+	var leaf: Node = lvl.behaviour.mover_node(BASE_GATE)
+	var ok: bool = await _wait(func() -> bool:
+		return is_instance_valid(leaf) and absf(float(leaf.progress)) > 100.0 \
+			and not bool(leaf.running), 20.0)
+	print("[mission-e2e] %s: the base gate stands at %.0f" % [what,
+		float(leaf.progress) if is_instance_valid(leaf) else -1.0])
+	return ok
 
 ## Step 0 of the trigger-graph plan, one half: MAP.210's jeep is the hint
 ## [G1] where MAP.217's is the objective [M3], on the same entity in the
@@ -677,6 +703,9 @@ func _run() -> void:
 	# robot has to stay dead.
 	var spoil_217: Dictionary = {}
 	if _level_is("216"):
+		# The base gate opened here, from the tower switch — it must NOT be
+		# open on MAP.217 (DOS: an overlay per map number, 2026-09-23).
+		_check(await _open_base_gate("MAP.216"), "the tower switch opens MAP.216's base gate")
 		spoil_217 = await _spoil_shared("MAP.217")
 		_check(not String(spoil_217["robot"]).is_empty(),
 			"MAP.216 has a robot MAP.217 shares, and it was killed (%s)" % spoil_217["robot"])
@@ -706,6 +735,17 @@ func _run() -> void:
 			"MAP.217's jeep arrives live: MAP.210's retired hint did not cross the phases")
 		if not spoil_217.is_empty():
 			_check_carried(spoil_217, "MAP.216 → MAP.217")
+		# The gate opened on MAP.216 arrives shut, as the file has it — and
+		# the tower switch opens it here as well.
+		var world217 = _main.get("_current_level")
+		var leaf217: Node = world217.behaviour.mover_node(BASE_GATE) \
+			if world217 != null and world217.behaviour != null else null
+		_check(leaf217 != null and absf(float(leaf217.progress)) < 1.0
+			and int(world217.triggers.state(BASE_GATE)) \
+				== int(world217.map.entities_by_off[BASE_GATE].state_byte),
+			"MAP.217's base gate @%05x arrives closed, as its file has it (at %.0f)"
+			% [BASE_GATE, float(leaf217.progress) if leaf217 != null else -1.0])
+		_check(await _open_base_gate("MAP.217"), "and MAP.217's tower switch @%05x opens it" % TOWER_SWITCH)
 		if jeep217 != null:
 			# The eight 0xEF gates stand round the jeep: walking up to it is
 			# what fires the objective in DOS. The use key is pressed there

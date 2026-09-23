@@ -5,7 +5,7 @@ mission 210
 	prox 210 0c084 expect path@078d3
 	exit 210 07fcb expect snd40 exit214/0
 	exit 214 02f4e expect snd40 exit215/0
-	use 215 032cb expect snd77 obj0 voice21038 move@03125:slideZ+256 move@030eb:slideX-256 move@030b1:slideZ-256 move@03077:slideX+256
+	walk 215 032cb expect snd77 obj0 voice21038 move@03125:slideZ+256 move@030eb:slideX-256 move@030b1:slideZ-256 move@03077:slideX+256
 	use 215 02f8f expect snd77 obj1 voice21039 move@047f0:slideY-1024 move@04719:slideY-1024 move@03515:slideY-128
 	exit 215 04130 expect snd41 exit217/15
 	use 217 0ba48 expect obj2 voice21040

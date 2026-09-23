@@ -54,6 +54,18 @@ var id: int = 0
 var head: int = 0
 ## The marker's enemy type (the byte a sprite keeps its act in).
 var vehicle: int = -1
+## A CONVOY actor: its marker's type byte (sub+0xa) carries bit 7, which
+## EnemiesStartMarked (0x12a439) subtracts and turns into inst+0xc |=
+## 0x4000 (MapFile.Entity.convoy). Only MAP.260's nine convoy trucks.
+var convoy: bool = false
+## …and once the engine has ticked it inside the grid window, it is on
+## the ALWAYS-ACTIVE list: the in-window tick at 0x129d8f moves an actor
+## with 0x4000 onto the list at 0x1299c5 and clears the bit, and only its
+## death takes it off again. From then on it ticks wherever the player
+## is — and TWICE a frame while he is near it, because the collector
+## (0x12984d) copies that list in before its 5x5-cell grid pass and does
+## not look for duplicates.
+var started: bool = false
 
 ## The Behaviour branch this hangs under (scripts/level/behaviour.gd):
 ## where the trigger runtime, the MAP records and the event bus are
@@ -97,16 +109,38 @@ func _link(off: int) -> int:
 # ---------------------------------------------------------------------
 # One tick
 # ---------------------------------------------------------------------
-## Handler 0x127400, one frame. `player_pos` is ZONE-LOCAL, like the
-## actor's own position and the markers it drives to — the level's sweep
-## translated it once for the whole tick.
+## One frame of the engine's actor sweep for this machine. `player_pos`
+## is ZONE-LOCAL, like the actor's own position and the markers it drives
+## to — the level's sweep translated it once for the whole tick.
+##
+## How many times handler 0x127400 runs this frame is the collector's
+## (0x12984d): once from the always-active list for a convoy actor that
+## has been started, and once from the 5x5-cell grid pass for any actor
+## in the window — so a started convoy truck near the player runs twice.
 func path_watch(delta: float, player_pos: Vector3) -> void:
 	if actor == null or not is_instance_valid(actor):
 		return
 	if actor.has_method("is_dead") and actor.is_dead():
 		return
-	if not _in_window(player_pos):
-		return
+	var runs: int = ticks_this_frame(player_pos)
+	if convoy and _in_window(player_pos):
+		started = true                  # 0x129d8f → the always-active list
+	for _i in runs:
+		_drive(delta)
+		if finished:
+			return
+
+## How many times the engine ticks this machine with the player at
+## `player_pos` (zone-local): the grid window, plus the always-active list
+## for a started convoy actor (see `started`).
+func ticks_this_frame(player_pos: Vector3) -> int:
+	var n: int = 1 if _in_window(player_pos) else 0
+	if convoy and started:
+		n += 1
+	return n
+
+## Handler 0x127400, one run of it.
+func _drive(delta: float) -> void:
 	var cur = branch.record_of(target)
 	if cur == null:
 		# Pick the path up at its head. DOS takes the segment speed here
@@ -183,14 +217,54 @@ func _in_window(player_pos: Vector3) -> bool:
 	return absi(floori(actor.position.x / cell) - floori(player_pos.x / cell)) <= reach \
 		and absi(floori(actor.position.z / cell) - floori(player_pos.z / cell)) <= reach
 
-## The same window, asked of a WORLD position: would DOS tick this
-## machine with the player standing there? The level's sweep hands
-## path_watch a zone-local point, and the offset between the two
-## spaces is the actor's own.
+## The same question, asked of a WORLD position: would DOS tick this
+## machine with the player standing there — inside the grid window, or
+## anywhere at all once a convoy actor is on the always-active list? The
+## level's sweep hands path_watch a zone-local point, and the offset
+## between the two spaces is the actor's own.
 func watched_from(at: Vector3) -> bool:
+	return ticks_from(at) > 0
+
+## …and how many times a frame (0, 1, or 2 for a started convoy actor in
+## the window).
+func ticks_from(at: Vector3) -> int:
 	if actor == null or not is_instance_valid(actor):
-		return false
-	return _in_window(at - (actor.global_position - actor.position))
+		return 0
+	return ticks_this_frame(at - (actor.global_position - actor.position))
+
+## How long this machine takes to drive its path from where it stands, in
+## seconds of its OWN ticks, as handler 0x127400 drives it: each segment
+## at Rules.PATH_SPEED_K times its length, reached and left at
+## Rules.PATH_ACCEL, arrival within Rules.PATH_REACH. Read from the
+## records as authored (every marker taken as on) and stepped at `dt`;
+## `cap` stops a path that loops (marker 105) or never arrives.
+func drive_seconds(dt: float = 1.0 / 60.0, cap: float = 600.0) -> float:
+	if actor == null or not is_instance_valid(actor) or branch == null:
+		return 0.0
+	var pos: Vector3 = actor.position
+	var cur = branch.record_of(head)
+	if cur == null:
+		return 0.0
+	var v: float = 0.0
+	var want: float = Rules.PATH_SPEED_K * pos.distance_to(dos_pos(cur))
+	var t: float = 0.0
+	var hops: int = 0
+	while t < cap:
+		if pos.distance_to(dos_pos(cur)) <= Rules.PATH_REACH:
+			var nxt = branch.record_of(int(cur.link_next)) if int(cur.link_next) > 0 else null
+			if nxt == null or (nxt.flags & 3) != 3 or nxt.marker_type < 0 \
+					or nxt.marker_type == Rules.MARKER_PATH_LOOP or hops >= Rules.PATH_MAX_HOPS:
+				return t                    # the end of the path (or its loop)
+			want = Rules.PATH_SPEED_K * dos_pos(cur).distance_to(dos_pos(nxt))
+			cur = nxt
+			hops += 1
+		var to: Vector3 = dos_pos(cur) - pos
+		if to.length() > 0.001:
+			pos += to.normalized() * minf(v * dt, to.length())
+		var dv: float = want - v
+		v += clampf(signf(dv) * Rules.PATH_ACCEL * dt, -absf(dv), absf(dv))
+		t += dt
+	return cap
 
 ## The stop case calls ObjFlipLink with "and 0xFE": the whole path goes
 ## off, so a lever has to switch it on again before the vehicle moves.
@@ -240,6 +314,7 @@ func path_forget() -> void:
 	speed = 0.0
 	target_speed = 0.0
 	finished = false
+	started = false
 
 ## One line of the console's report: what it is, where it is driving and
 ## how fast.

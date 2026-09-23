@@ -489,6 +489,9 @@ func set_spawn(pos: Vector3, yaw: float, reset_state: bool = true) -> void:
 	rotation = Vector3(0.0, yaw, 0.0)
 	if _cam != null:
 		_cam.rotation = Vector3.ZERO
+	# FUN_0012ea00: a spawn clears what the water check remembers, so the
+	# first frame on the new spot splashes nothing and damps nothing.
+	_water_primed = false
 	if reset_state:
 		health = max_health
 		armor = 0.0
@@ -876,6 +879,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		# pitch, whatever the player is sitting in.
 		var dpitch: float = event.relative.y * Settings.mouse_rate_y() \
 			* Settings.mouse_pitch_sign()
+		if submerged:
+			# FUN_0012c15d halves both mouse steps [0x4d134/38] with the
+			# head under water; the keyboard turn keeps its rate.
+			dyaw *= SUBMERGED_MOUSE_SCALE
+			dpitch *= SUBMERGED_MOUSE_SCALE
 		if vehicle == VEH_JEEP:
 			# In the jeep the mouse moves the gun crosshair; the keys drive.
 			_aim_yaw = clampf(_aim_yaw - dyaw, -JEEP_AIM_YAW, JEEP_AIM_YAW)
@@ -912,6 +920,10 @@ func _physics_process(delta: float) -> void:
 			* (Settings.mouse_rate_x() / base)
 		var dpitch: float = ui_look.y * touch_look_speed * delta \
 			* (Settings.mouse_rate_y() / base) * Settings.mouse_pitch_sign()
+		if submerged:
+			# The stick is the mouse's stand-in: halved under water with it.
+			dyaw *= SUBMERGED_MOUSE_SCALE
+			dpitch *= SUBMERGED_MOUSE_SCALE
 		if vehicle == VEH_JEEP:
 			# The touch look-stick lays on the turret, as the mouse does:
 			# in the jeep the view is the gun (see LOOK UP / LOOK DOWN).
@@ -963,8 +975,9 @@ func _physics_process(delta: float) -> void:
 		_water_check()
 		if health > 0.0:
 			_breathe(delta)
-	elif in_water:
+	elif in_water or submerged or head_under:
 		in_water = false
+		submerged = false
 		head_under = false
 
 	# --- weapon -------------------------------------------------------
@@ -1414,12 +1427,12 @@ func _sprinting() -> bool:
 
 ## CROUCH (DOS): the eye drops from 75 to CROUCH_EYE and comes back at
 ## CROUCH_RATE, and that is the whole of it — the body is the same
-## cylinder and the walk is the same speed. Only on foot and out of the
-## water, where the same key dives instead.
+## cylinder and the walk is the same speed. Only on foot — in the water
+## as on land (DOS has no dive).
 func _crouch(delta: float) -> void:
 	if _cam == null:
 		return
-	var down: bool = vehicle == VEH_FOOT and not noclip and not in_water \
+	var down: bool = vehicle == VEH_FOOT and not noclip \
 		and (Controls.is_pressed("down") or ui_vert < 0.0)
 	var target: float = CROUCH_EYE if down else float(VEH_EYE[vehicle])
 	if is_equal_approx(_eye, target):
@@ -1428,27 +1441,47 @@ func _crouch(delta: float) -> void:
 	if vehicle == VEH_FOOT:
 		_cam.position.y = _eye
 
-## Grounded movement: walk on surfaces, gravity, jump, wall collision.
 ## --- Water (DOS 0x120c83 water level, 0x12e56b breath) ---------------
 ## `water_level` is the surface Y the level controller found on the map's
-## marker 103/104; INF when the map is dry. Below it the player SWIMS:
-## the fall turns into a slow sink, the up/down keys and the view drive
-## him through the water, and while his head is under, his breath runs
-## down. DOS gives about 24 s of air (0x347 ticks) and then takes 85 HP a
-## second (accumulator step 0x5500 >> 8) until he surfaces or drowns.
+## marker 103/104; INF when the map is dry.
+##
+## DOS HAS NO SWIMMING. There is no buoyancy, no stroke up or down and no
+## float at the surface: the soldier walks on the floor under the water
+## the way he walks on dry land, only slower and — once his head is under
+## — lighter. All of it is one routine, FUN_0012c15d, which REWRITES the
+## movement constants every frame from two bits the water checks set
+## (FUN_0012ea6b, FUN_00121083):
+##   in water  (bit 0x10000: the surface at least 5 u above the feet)
+##             top speeds [0x38d48/4c/50/54] 250/400/210/310 → 125/200/
+##             105/155 and the four accelerations [0x38d18..24] 1500 → 375
+##   submerged (bit 0x8000: the surface at or above the eye) on top of it
+##             gravity [0x4d12c] 392 → 150, jump speed [0x4d130] 177 → 100
+##             and the mouse-look steps [0x4d134/38] halved - the keyboard
+##             turn is not touched
+## The crouch is the same as on land, the fall damage too (FUN_00122d76
+## never asks about the water), and nothing caps the speed of a fall. On
+## the frame the eye goes under, the vertical speed is divided by 16
+## (0x12eb04/0x12eb0b: `(v + 8) >> 4`) and the splash plays — except on
+## the first frame after a spawn, when FUN_0012ea00 has just cleared the
+## remembered state and there is no "before" to compare with.
+##
+## While his head is under, his breath runs down. DOS gives about 24 s
+## of air (0x347 ticks) and then takes 85 HP a second (accumulator step
+## 0x5500 >> 8) until he surfaces or drowns.
 var water_level: float = INF
-## DOS swims at exactly half the land speeds — 125 forward, 200 running,
-## 105 across and 155 running across — and the stroke takes hold at
-## 375 u/s² instead of the walk's 1500.
-const SWIM_SPEED_SCALE: float = 0.5
-const SWIM_ACCEL: float = 375.0
-const SWIM_VERTICAL: float = 260.0     # up/down paddle speed
-const SWIM_RISE: float = 170.0         # buoyancy back toward the surface
-const FLOAT_EYE: float = 10.0          # eyes ride this far above the water
-const SWIM_FLOAT_BACK: float = 380.0   # push back under the surface
-const SWIM_DRAG: float = 7.0
-const SWIM_ENTRY_DAMP: float = 0.3     # a fall is broken by the water
-const HEAD_ROOM: float = 5.0           # DOS "-5" head-under margin
+## In water: the land caps halved (125 / 200 / 105 / 155) and the pull on
+## the speed a quarter of the walk's.
+const WATER_SPEED_SCALE: float = 0.5
+const WATER_ACCEL: float = 375.0
+## "In water" = the surface this far above the feet (FUN_0012ea6b's -5).
+const WATER_FEET_DEPTH: float = 5.0
+## Submerged: the DOS gravity and jump speed under water, and the mouse.
+const SUBMERGED_GRAVITY: float = 150.0
+const SUBMERGED_JUMP: float = 100.0
+const SUBMERGED_MOUSE_SCALE: float = 0.5
+## Going under divides the vertical speed by this (0x12eb04).
+const SUBMERGE_DAMP: float = 16.0
+const HEAD_ROOM: float = 5.0           # the breath's head-under margin
 const AIR_SECONDS: float = 12.0        # DOS 840 ticks at 70 Hz (0x12477e)
 const DROWN_DPS: float = 85.0          # DOS 0x5500 >> 8 per second
 const SND_SPLASH: int = 115
@@ -1456,21 +1489,29 @@ const SND_DROWN: int = 116
 const SND_BUBBLES: int = 118
 const SND_GETAIR: int = 122
 var air: float = AIR_SECONDS
+## Bit 0x10000: the feet are in the water (the surface ≥ 5 u above them).
 var in_water: bool = false
+## Bit 0x8000: the eye is at or under the surface.
+var submerged: bool = false
+## The breath's own test (and the palette's): the eye 5 u under.
 var head_under: bool = false
 var _bubble_t: float = 0.0
+## False on the first frame after a spawn: FUN_0012ea00 clears the state
+## the water check compares with, so that frame only takes it down.
+var _water_primed: bool = false
 
 ## The camera's world position — the eye, which is what decides whether
 ## the player's head is under water.
 func eye_position() -> Vector3:
 	return _cam.global_position if _cam != null else global_position
 
-## Swimming, the body is short: a swimmer lies in the water. MAP.253's
-## flooded passage runs under a sloping deck only 83-75 u over its floor;
-## the standing body (76 + the 4 u margin) cannot pass it, while the DOS
-## player, whose body ignores ceilings, swims straight through (found by
-## --solve, 2026-09-11). Out of the water the body stands up again as
-## soon as a standing body fits over its head — never inside a ceiling.
+## In the water the body is short. This is the port's collider, not a
+## swimming stroke: MAP.253's flooded passage runs under a sloping deck
+## only 83-75 u over its floor; the standing body (76 + the 4 u margin)
+## cannot pass it, while the DOS player, whose body ignores ceilings,
+## walks straight through (found by --solve, 2026-09-11). Out of the water
+## the body stands up again as soon as a standing body fits over its head
+## — never inside a ceiling.
 const SWIM_BODY_HEIGHT: float = 44.0
 var _swim_body: bool = false
 
@@ -1497,18 +1538,26 @@ func _set_swim_body(on: bool) -> void:
 	cs.position = Vector3(0.0, h * 0.5, 0.0)
 	_swim_body = on
 
-## Feet below the surface — the swimming test.
+## The two DOS water bits, and what changes on the frame they change.
 func _water_check() -> void:
-	var was_in: bool = in_water
-	var was_under: bool = head_under
-	in_water = global_position.y < water_level
-	head_under = eye_position().y < water_level - HEAD_ROOM
+	var was_under: bool = submerged
+	var was_head: bool = head_under
+	var eye_y: float = eye_position().y
+	in_water = water_level - global_position.y >= WATER_FEET_DEPTH
+	submerged = in_water and water_level >= eye_y
+	head_under = eye_y < water_level - HEAD_ROOM
 	_set_swim_body(in_water)
-	if in_water != was_in:
+	if not _water_primed:
+		# The first frame after a spawn: nothing to compare with.
+		_water_primed = true
+		if not head_under:
+			air = AIR_SECONDS
+		return
+	if submerged and not was_under:
+		# 0x12eb04: the fall is broken as the head goes under, (v+8)>>4.
+		velocity.y /= SUBMERGE_DAMP
 		Audio.play_id(SND_SPLASH, -4.0)
-		if in_water:
-			velocity *= SWIM_ENTRY_DAMP     # the water breaks the fall
-	if was_under and not head_under:
+	if was_head and not head_under:
 		Audio.play_id(SND_GETAIR, -5.0)
 		air = AIR_SECONDS
 	if not head_under:
@@ -1529,44 +1578,10 @@ func _breathe(delta: float) -> void:
 	if _bubble_t < 1.0:
 		Audio.play_id(SND_DROWN, -3.0)
 
-## Swimming: no ground contact, no jump — buoyancy plus paddling. The
-## view aims the stroke, so looking down and holding forward dives.
-func _swim(delta: float, fwd_in: float, str_in: float) -> void:
-	var want: Vector3 = _want_velocity(fwd_in, str_in, SWIM_SPEED_SCALE)
-	var speed: float = want.length()
-	want.y = 0.0
-	# Swimming forward while looking up or down carries you that way.
-	if fwd_in > 0.0 and _cam != null:
-		want.y += -_cam.global_transform.basis.z.y * speed * absf(fwd_in)
-	var vert: float = 0.0
-	if Controls.is_pressed("up") or ui_vert > 0.0:
-		vert += 1.0
-	if Controls.is_pressed("down") or ui_vert < 0.0:
-		vert -= 1.0
-	var eye_y: float = eye_position().y
-	if vert != 0.0:
-		# JUMP swims up, CROUCH dives — holding CROUCH is how you get
-		# down to a hatch and stay there while your air lasts.
-		want.y += vert * SWIM_VERTICAL
-	else:
-		# Buoyancy: let go and you rise until your eyes clear the
-		# surface, then bob there. DOS plays getair2 the moment the head
-		# comes out, so the swimmer is meant to float, not to sink.
-		want.y += clampf((water_level + FLOAT_EYE - eye_y) * 3.0,
-			-SWIM_FLOAT_BACK, SWIM_RISE)
-	# The stroke ramps like the walk does, at a quarter of the rate; the
-	# float and the paddle keep the springy vertical they were given.
-	var h := Vector3(velocity.x, 0.0, velocity.z).move_toward(
-		Vector3(want.x, 0.0, want.z), SWIM_ACCEL * delta)
-	velocity.x = h.x
-	velocity.z = h.z
-	velocity.y = lerpf(velocity.y, want.y, clampf(SWIM_DRAG * delta, 0.0, 1.0))
-	move_and_slide()
-
 ## The horizontal velocity the keys are asking for. DOS builds it one axis
 ## at a time (0x11af95) and does NOT normalise the diagonal, so forward
 ## and right together is 250 ahead PLUS 210 across — about 326 u/s — and
-## that is how the original moves. `factor` is the swimmer's half.
+## that is how the original moves. `factor` is the water's half.
 func _want_velocity(fwd_in: float, str_in: float, factor: float = 1.0) -> Vector3:
 	var run: bool = _sprinting()
 	# The run modifier lifts the forward cap only; backwards stays at the
@@ -1576,38 +1591,100 @@ func _want_velocity(fwd_in: float, str_in: float, factor: float = 1.0) -> Vector
 	var b := Basis(Vector3.UP, _yaw)
 	return (-b.z * f + b.x * s) * (speed_boost * class_speed * factor)
 
+## Grounded movement: walk on surfaces, gravity, jump, wall collision —
+## in the water too, on the constants FUN_0012c15d swaps in (see above).
 func _walk(delta: float, fwd_in: float, str_in: float) -> void:
-	if in_water:
-		_swim(delta, fwd_in, str_in)
-		return
-	var want: Vector3 = _want_velocity(fwd_in, str_in)
+	var want: Vector3 = _want_velocity(fwd_in, str_in,
+		WATER_SPEED_SCALE if in_water else 1.0)
 	# The keys pull the speed, they do not set it: GROUND_ACCEL toward what
 	# they ask for, and the same figure as friction back to a stand when
 	# they ask for nothing. The port used to slam the velocity to the cap
 	# on the press and to zero on the release.
-	var h := Vector3(velocity.x, 0.0, velocity.z).move_toward(want, GROUND_ACCEL * delta)
+	var accel: float = WATER_ACCEL if in_water else GROUND_ACCEL
+	var h := Vector3(velocity.x, 0.0, velocity.z).move_toward(want, accel * delta)
 	velocity.x = h.x
 	velocity.z = h.z
 	if is_on_floor():
-		# DOS jumps at a flat 177 u/s, running or not (40 u of air, 0.9 s).
-		velocity.y = jump_speed if (Controls.is_pressed("up") or ui_vert > 0.0) else 0.0
+		# DOS jumps at a flat 177 u/s (100 with the head under), running or
+		# not - and only STANDING: FUN_0012be58 wants the eye at its full
+		# 75 (0x38de5 == 0x4b), so a crouch does not jump.
+		var jump: bool = (Controls.is_pressed("up") or ui_vert > 0.0) \
+			and is_equal_approx(_eye, float(VEH_EYE[VEH_FOOT]))
+		velocity.y = (SUBMERGED_JUMP if submerged else jump_speed) if jump else 0.0
 	else:
-		velocity.y -= gravity * delta
+		velocity.y -= (SUBMERGED_GRAVITY if submerged else gravity) * delta
 	var before := global_position
 	var on_floor_before: bool = is_on_floor()
 	var fall_v: float = -velocity.y                # how fast he comes down
 	move_and_slide()
 	if not on_floor_before and is_on_floor():
 		_land(fall_v)
+	if is_on_floor():
+		_walk_on_floor()
 	var moving: float = h.length()
 	if on_floor_before and moving > 1.0 and is_on_wall():
 		_step_up(h, moving * delta)
 	_track_stuck(delta, want.length() > 1.0, global_position.distance_to(before))
 
+## WALK-ON PADS. The foot mover (FUN_0012b18c) keeps the floor polygon it
+## found under the feet [0x4d124], and at its very end (0x12bd54..0x12bd70)
+## hands that polygon's OWNER — a map record, a file offset of 0x253c or
+## more; the terrain has none — to FUN_00139d5e: a record whose state byte
+## carries 0x10 has the bit cleared and its chain walked (ObjFlipLink,
+## xor 1). No key, no distance, once. Here the owner is the mesh the body
+## stands on, walked up to its ActionTarget, which asks its branch
+## (Behaviour.walk_on). Every frame on the floor, as DOS does it: a record
+## without the bit answers nothing.
+##
+## The floor is asked for by a ray down from the feet, the point DOS asks
+## about. The body's slide collisions are not enough on their own: on a
+## level floor the walk has no downward motion (velocity.y is 0 on the
+## floor) and the floor snap keeps the body down without reporting a
+## collision, so a pad was only noticed by a body landing on it or
+## pushing up a slope — never by one walking onto it (2026-09-23). The
+## slide contacts stay as the fallback for a body resting on an edge with
+## nothing under its centre.
+const PAD_PROBE_UP: float = 8.0
+const PAD_PROBE_DOWN: float = 24.0
+var _pad_ray: PhysicsRayQueryParameters3D = null
+
+func _walk_on_floor() -> void:
+	var min_y: float = cos(floor_max_angle) - 0.01
+	var space := get_world_3d().direct_space_state
+	if space != null:
+		if _pad_ray == null:
+			_pad_ray = PhysicsRayQueryParameters3D.new()
+			_pad_ray.collide_with_areas = false
+			_pad_ray.exclude = [get_rid()]
+		_pad_ray.from = global_position + Vector3(0.0, PAD_PROBE_UP, 0.0)
+		_pad_ray.to = global_position - Vector3(0.0, PAD_PROBE_DOWN, 0.0)
+		_pad_ray.collision_mask = collision_mask   # what the body stands on
+		var hit := space.intersect_ray(_pad_ray)
+		if hit.has("collider") and (hit["normal"] as Vector3).y >= min_y:
+			if _stood_on(hit["collider"] as Node):
+				return
+	for i in get_slide_collision_count():
+		var c: KinematicCollision3D = get_slide_collision(i)
+		if c.get_normal().y < min_y:
+			continue
+		if _stood_on(c.get_collider() as Node):
+			return
+
+## Hand the floor under the feet to the record it belongs to (the
+## ActionTarget above the collider); false when it belongs to none.
+func _stood_on(n: Node) -> bool:
+	while n != null and not n.has_method("stood_on"):
+		n = n.get_parent()
+	if n == null:
+		return false
+	n.call("stood_on")
+	return true
+
 ## A fall (DOS 0x122876): landing at `v` u/s costs (v - 396) x 1113 / 256
-## points past 396 u/s — a jump off a roof hurts, a stair does not. Not in
-## the water (the entry damps the fall, _water_check) and never in a
-## vehicle. The port had no fall damage at all until 2026-09-15.
+## points past 396 u/s — a jump off a roof hurts, a stair does not. The
+## water changes nothing here (FUN_00122d76 never asks about it; what
+## breaks a dive is the ÷16 as the head goes under, _water_check), and
+## never in a vehicle. The port had no fall damage at all until 2026-09-15.
 ## The threshold is a DROP of v²/2g: at the DOS gravity that is 200 units,
 ## the height it was written for. While the port fell at 4500 the same
 ## 396 u/s came up after 17 units — one stair riser (2026-09-16).
@@ -1615,7 +1692,7 @@ const FALL_SAFE_SPEED: float = 396.0
 const FALL_POINTS_PER_UNIT: float = 1113.0 / 256.0
 
 func _land(v: float) -> void:
-	if v <= FALL_SAFE_SPEED or in_water or vehicle != VEH_FOOT or noclip:
+	if v <= FALL_SAFE_SPEED or vehicle != VEH_FOOT or noclip:
 		return
 	take_dos_damage((v - FALL_SAFE_SPEED) * FALL_POINTS_PER_UNIT, false)
 

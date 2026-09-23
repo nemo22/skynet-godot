@@ -16,7 +16,8 @@
 ##
 ##   mission 210                       the map the mission starts on
 ##     exit 210 07f83 expect exit214/0 take that doorway
-##     use 215 032cb expect obj0       press the key at that record
+##     walk 215 032cb expect obj0      walk onto that record's mesh
+##     use 215 02f8f expect obj1       press the key at that record
 ##     prox 220 06f12 expect obj0      walk into that trigger
 ##     shoot 248 035a6 expect break@035a6:1
 ##     wait 234 0ea0c expect path@0ea0c   stand by it and let it run
@@ -56,11 +57,14 @@ const XPASS: String = "XPASS"
 const XFAIL: String = "XFAIL"
 
 ## What a step may do. `use_below` is the one measure-breaking verb: the
-## key pressed from a floor (or a water surface) UNDER the record, inside
+## key pressed from a floor (or the water's surface, on the way down) UNDER the record, inside
 ## its horizontal radius and outside its true 3D reach — where the port's
 ## old 2D-with-a-vertical-window measure fired and DOS does not.
+##
+## `walk` walks onto a WALK-ON PAD's own mesh — no key (state bit 0x10,
+## FUN_00139d5e; trigger_verifier._check_walk).
 const VERBS: PackedStringArray = ["use", "use_below", "prox", "shoot",
-	"exit", "wait"]
+	"exit", "wait", "walk"]
 
 ## What a step or a mission may be excused with, in one word:
 ##   path_window   a marker-path vehicle only drives inside the DOS
@@ -86,20 +90,28 @@ const SPEC_HEAD: PackedStringArray = [
 ## and then drives it, and three seconds is what layer (c) gives one
 ## (trigger_verifier._check_path).
 const WAIT_FRAMES: int = 180
-## …and how long a `wait` on a PATH VEHICLE has: a path is driven at
-## 0.3125 of its own segment length per second (Rules.PATH_SPEED_K), so
-## every segment takes about three seconds whatever its length, and
-## MAP.234's HK has four of them plus the speed ramp. The step stops the
-## moment the machine runs its path out (PathVehicle.finished), so this
-## is only the ceiling.
-const PATH_WAIT_FRAMES: int = 1800
+## …and how long a `wait` on a PATH VEHICLE has. It is the machine's OWN
+## drive (PathVehicle.drive_seconds): a segment is driven at 0.3125 of its
+## length per second (Rules.PATH_SPEED_K), but the speed changes at
+## Rules.PATH_ACCEL, so a long segment is still ramping up when it ends and
+## a short one after it is driven at the long one's speed while it brakes
+## — "about three seconds a segment" held only for a path of equal steps.
+## Divided by how many times a frame the engine ticks it where the player
+## stands (PathVehicle.ticks_from: twice for a started convoy truck in the
+## window, 0x12984d), with PATH_WAIT_SLACK on top and PATH_WAIT_FRAMES as
+## the ceiling. The step stops the moment the machine runs its path out
+## (PathVehicle.finished).
+const PATH_WAIT_FRAMES: int = 3600
+const PATH_WAIT_SLACK: float = 1.5
 ## …and how long a taken exit has to land the next map (frames).
 const EXIT_FRAMES: int = 1800
 ## The vertical window the port used to measure a proximity record with,
 ## and the reach `use_below` looks for a place inside.
 const BELOW_WINDOW: float = Rules.PROX_VERTICAL_WINDOW
-## Where a swimmer's feet ride under the surface (mission_solver
-## .FLOAT_FEET): the eyes sit ten units over the water.
+## Where the feet are put under the surface for a key pressed from the
+## water: the eyes ten units over it. DOS has no swimming, so the player
+## is sinking there (fly_camera._water_check); the key goes down on the
+## frame he is put there, before he has sunk.
 const FLOAT_FEET: float = 65.0
 
 ## The parsed spec, and one row per step performed.
@@ -378,6 +390,8 @@ func _perform(level, verb: String, id: int) -> Dictionary:
 			return await _do_use(level, id, kind, mode, verb == "use_below")
 		"prox":
 			return await _do_prox(level, id, mode)
+		"walk":
+			return await _do_walk(level, id, node.get("first", []))
 		"shoot":
 			return await _do_shoot(level, id)
 		"exit":
@@ -582,6 +596,18 @@ func _do_exit(level, id: int, mode: Dictionary) -> Dictionary:
 		_drv.activate())
 	return {"ok": true, "tokens": tokens, "why": ""}
 
+## Walk onto the record's own mesh from beside it, on the movement keys,
+## and nothing else: a walk-on pad needs no key (FUN_00139d5e).
+func _do_walk(level, id: int, want: Array) -> Dictionary:
+	var spots: Array = _pad_spots(level, id, 1)
+	if spots.is_empty():
+		return {"ok": false, "tokens": PackedStringArray(),
+			"why": "nowhere on its own mesh to stand"}
+	var on: Vector3 = spots[0]
+	var from: Vector3 = _off_pad(level, id, on)
+	return {"ok": true, "why": "", "tokens": await _walk_in(level, from, on, on, want,
+		level.behaviour.hit_node(id))}
+
 ## Stand by the record and let the game run: a path vehicle drives (DOS
 ## ticks an actor only in the five grid cells round the player, so the
 ## watching is the test's method and not its subject), a mover arrives, a
@@ -601,9 +627,10 @@ func _do_wait(level, id: int) -> Dictionary:
 	# is what makes it fly out of his window and stop, and nothing in the
 	# DOS handler (0x127400, which never touches the player) puts it back.
 	var stay: bool = false
+	var drive: float = 0.0
 	if veh != null and veh.actor != null and is_instance_valid(veh.actor):
 		at = (veh.actor as Node3D).global_position
-		frames = PATH_WAIT_FRAMES
+		drive = float(veh.call("drive_seconds"))
 		stay = bool(veh.call("watched_from", main.player.global_position))
 	if at == Vector3.INF:
 		return {"ok": false, "tokens": PackedStringArray(), "why": "no record"}
@@ -613,6 +640,11 @@ func _do_wait(level, id: int) -> Dictionary:
 		_drv.place(floor_at if floor_at != Vector3.INF else beside)
 	_drv.face(at)
 	await _drv.frames(PRE_FRAMES)
+	if veh != null and drive > 0.0:
+		var per: int = maxi(int(veh.call("ticks_from", main.player.global_position)), 1)
+		frames = clampi(int(ceil(drive * PATH_WAIT_SLACK
+			* float(Engine.physics_ticks_per_second) / float(per))) + WAIT_FRAMES,
+			WAIT_FRAMES, PATH_WAIT_FRAMES)
 	var bus = level.bus
 	bus.record(true)
 	bus.clear()

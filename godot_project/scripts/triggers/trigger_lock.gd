@@ -68,9 +68,9 @@ const CLASSES: PackedStringArray = ["undecoded_act", "cycle", "dangling_link",
 const MODE_SHORT: Dictionary = {
 	"use_key": "use", "prox_enter": "prox", "touch_arm": "touch",
 	"shot_each": "shot", "shot_death": "death", "path_end": "path",
-	"counter": "counter", "chain": "chain",
+	"counter": "counter", "chain": "chain", "walk_on": "walk",
 }
-const METRIC_SHORT: Dictionary = {"3d": "3d", "2d+window": "2dw"}
+const METRIC_SHORT: Dictionary = {"3d": "3d", "2d+window": "2dw", "floor": "floor"}
 const REARM_SHORT: Dictionary = {"always": "always", "chain": "onchain", "never": "never"}
 
 # ---------------------------------------------------------------------
@@ -560,9 +560,9 @@ static func hygiene(text: String) -> PackedStringArray:
 	var node := RegEx.new()
 	node.compile("^(\\d{1,4}) ([0-9a-f]{5}) ([0-9A-F]{2}) (\\S+) chain\\[([^\\]\\[]*)\\] first\\[([^\\]\\[]*)\\] second\\[([^\\]\\[]*)\\] ([0-9a-f]{8})$")
 	var mode := RegEx.new()
-	mode.compile("^(use|prox|touch|shot|death|path|counter|chain)(:[a-z0-9/+]+)?$")
+	mode.compile("^(use|prox|touch|shot|death|path|counter|chain|walk)(:[a-z0-9/+]+)?$")
 	var part := RegEx.new()
-	part.compile("^(eye|feet|3d|2dw|always|onchain|never|latch|nolatch|r\\d+(\\+\\d+)?|w\\d+|hp\\d+|at\\d+)$")
+	part.compile("^(eye|feet|3d|2dw|floor|always|onchain|never|latch|nolatch|r\\d+(\\+\\d+)?|w\\d+|hp\\d+|at\\d+)$")
 	var step := RegEx.new()
 	step.compile("^([0-9a-f]{5}(:[0-9A-F]{2})?\\*?|end:(link_end|limit|(actor|cycle|dangling)@[0-9a-f]{5}))$")
 	var eff := RegEx.new()

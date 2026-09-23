@@ -140,8 +140,8 @@ static func wants_action(e: MapFile.Entity, name: String, transfrm: Dictionary) 
 ## Can `e` flip the chain it links to by itself — a proximity or use-key
 ## trigger, a countdown relay, a prop whose hit or death fires its link
 ## (state bits 1-2), a marker path whose end fires what it points at?
-## main.gd's variant import carries such an entity's state only when
-## everything down its chain is the same on both maps.
+## (main.gd's variant import used to ask this before it carried an
+## entity's state; since 2026-09-23 it carries no mechanism state at all.)
 static func starts_chain(e: MapFile.Entity) -> bool:
 	var act: int = e.link_act_type
 	if e.marker_type >= 0:

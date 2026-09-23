@@ -483,6 +483,19 @@ static func _modes(ctx: Dictionary, id: int) -> Array:
 			out.append_array(_templates(rule))
 		_:
 			pass
+	# A WALK-ON PAD (RulesSkynet.PAD_BIT): standing on the record's mesh
+	# clears the bit and walks the chain, once (FUN_0012b18c at 0x12bd54 →
+	# FUN_00139d5e). Only a mesh has a floor to stand on — the floor
+	# polygon's owner is a placed object, and DOS reaches the variant-1
+	# state byte at sub+0x12 for it. A record whose act DOS has spent
+	# (0xfe/0xff, never dispatched) has nothing to walk but its own bit:
+	# MAP.229's state-0xfe props carry 0x10 by the way and answer nothing.
+	if (e.flags & 3) == 1 and (e.state_byte & RulesSkynet.PAD_BIT) != 0 \
+			and e.link_act_type < RulesSkynet.ACT_SPENT_FIRST:
+		out.append({"mode": "walk_on", "origin": "feet", "metric": "floor",
+			"requires": "state&16", "edge": "stand", "rearm": "never",
+			"prov": "dos",
+			"note": "the foot mover hands the floor polygon's owner to 0x139d5e: bit 0x10 cleared, ObjFlipLink xor 1"})
 	# ObjHit FUN_00139019: bit 1 = fire the action on every hit, bit 2 =
 	# fire it on the hit that takes the hit points to zero.
 	if (e.state_byte & 2) != 0:
@@ -640,14 +653,11 @@ static func _sig_self(map, e) -> String:
 ## the same object with the same three bytes, the same hit points and the
 ## same coordinates give it the same one.
 ##
-## This is the key the variant carry pairs records by (main._carry_records).
 ## It stops where the node signature above goes on, because what hangs
-## BELOW an entity is the chain's business, not the entity's: MAP.210's
-## gate chain runs BIGDOOR → BIGDOOR → BIGDOORC → the truck and MAP.216's
-## ends at the door, yet the two leaves are the same doors in the same
-## place and the gate the player opened has to stay open. For an entity
-## whose chain IS its meaning — a trigger that fires one by itself — the
-## carry asks for `node_sig` as well.
+## BELOW an entity is the chain's business, not the entity's. (Until
+## 2026-09-23 the variant carry paired records by it; no mechanism state
+## crosses a variant any more — main._carry_records — and what reads it
+## now are the tests that pick an object two maps share.)
 static func record_sig(map, e) -> String:
 	return _sig_self(map, e).sha256_text().substr(0, 12)
 
@@ -1010,7 +1020,7 @@ static func _settle(ctx: Dictionary, st: Dictionary, fx: Array, rose: Array) -> 
 # ---------------------------------------------------------------------
 static func _ticks(ctx: Dictionary) -> Dictionary:
 	var out: Dictionary = {"use": [], "prox": [], "exits": [], "relays": [],
-		"spawns": [], "paths": [], "water": [], "lights": []}
+		"spawns": [], "paths": [], "water": [], "lights": [], "pads": []}
 	for id in ctx["order"]:
 		var iid: int = int(id)
 		var e = ctx["ents"][iid]
@@ -1046,6 +1056,9 @@ static func _ticks(ctx: Dictionary) -> Dictionary:
 			"light":
 				out["lights"].append({"id": iid, "pos": at,
 					"op": _light_op(e.link_act_type)})
+		for m in (ctx["modes"][iid] as Array):
+			if String((m as Dictionary)["mode"]) == "walk_on":
+				out["pads"].append({"id": iid, "pos": at})
 		if ctx["paths"].has(iid):
 			out["paths"].append({"id": iid, "pos": at,
 				"head": int(ctx["paths"][iid]), "vehicle": e.enemy_type})
@@ -1148,7 +1161,7 @@ static func _player_reached(kind: String, modes: Array) -> bool:
 	if kind in ["objective", "exit"]:
 		return true
 	for m in modes:
-		if String((m as Dictionary)["mode"]) in ["use_key", "prox_enter", "touch_arm"]:
+		if String((m as Dictionary)["mode"]) in ["use_key", "prox_enter", "touch_arm", "walk_on"]:
 			return true
 	return false
 

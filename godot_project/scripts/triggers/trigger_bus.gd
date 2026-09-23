@@ -49,6 +49,10 @@
 ##                                 fade_down)
 ##   path       {head, vehicle}    a marker-path vehicle picked up its path
 ##   relay      {at, left}         act 0x2C fired off the objective counter
+##   pad        {}                 the player stood on a walk-on pad (state
+##                                 bit 0x10, FUN_00139d5e): the bit came
+##                                 down and its chain was walked. No graph
+##                                 token — the chain's own effects follow
 ##
 ## Who may subscribe: main.gd (the mission-facing effects), the
 ## presenters under scripts/level/ (each for its own id), the tests and
