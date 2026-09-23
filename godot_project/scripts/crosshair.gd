@@ -38,6 +38,8 @@ func _process(_delta: float) -> void:
 	if _player == null or not is_instance_valid(_player):
 		_player = get_tree().get_first_node_in_group("player")
 	var v: int = int(_player.get("vehicle")) if _player != null else 0
+	# A scripted view (the torpedo ride) draws no reticle.
+	visible = _player == null or _player.get("ride_view") != true
 	if v != _veh:
 		_veh = v
 		queue_redraw()

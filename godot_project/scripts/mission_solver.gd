@@ -191,6 +191,15 @@ func _solve_map() -> void:
 	var nm: String = main._level_name()
 	for _i in 12:                       # colliders registered, spawn settled
 		await get_tree().physics_frame
+	# A FORCED EDGE: arriving on MAP.250 from MAP.253 is the torpedo ride
+	# (main._torpedo_step, FUN_00132e00) — the view swims out of the tube
+	# and the game itself moves on to MAP.254 set 0. Nothing on this map
+	# is the player's to play; the next level_ready() is MAP.254's.
+	if bool(main.torpedo_riding()):
+		_route.append("%s: TORPEDO → MAP.254 set 0 (forced, FUN_00132e00)" % nm)
+		print("[solve] %s: the torpedo ride — forced edge to MAP.254 set 0" % nm)
+		_running = false
+		return
 	var lvl = main._current_level
 	# The level the run is playing: its Behaviour branch is the DOS object
 	# layer (the sweeps, the use key, the doorways), its trigger runtime

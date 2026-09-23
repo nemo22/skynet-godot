@@ -22,6 +22,7 @@ extends Node3D
 
 const TextureNNN := preload("res://scripts/loaders/texture_nnn.gd")
 const FramePack := preload("res://scripts/loaders/frame_pack.gd")
+const ZoneLayers := preload("res://scripts/mission/zone_layers.gd")
 
 ## DOS advances the per-explosion frame timer by ~(DAT_00043100 * 0x180)
 ## >> 16 per game tick (skynet_gh.c:26670). Normalised to wall-clock that
@@ -177,6 +178,17 @@ func setup(at: Vector3, radius: float,
 		_light.visible = true
 	elif _light != null:
 		_light.visible = false
+	# A mission scene draws each zone on its own render layer, and a node
+	# takes its layer when it ENTERS the tree (ZoneLayers.adopt). A pooled
+	# explosion under Main is never re-added — spawn() only reparents when
+	# the parent changes — so its sprite kept the layer of the zone it first
+	# went off in, and after a doorway every blast out of the pool was on a
+	# layer the camera no longer draws: the robot hits and deaths the owner
+	# saw "only sometimes" were the fresh ones. Every setup puts the
+	# visuals on the layer of where the blast goes off NOW.
+	ZoneLayers.adopt(_sprite)
+	if _light != null:
+		ZoneLayers.adopt(_light)
 	visible = true
 	set_process(true)
 

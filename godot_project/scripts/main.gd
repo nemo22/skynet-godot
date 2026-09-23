@@ -32,6 +32,7 @@ const HudModern   := preload("res://scripts/hud_modern.gd")
 const EffectWarmup := preload("res://scripts/effect_warmup.gd")
 const StatsLib := preload("res://scripts/stats.gd")
 const ZoneLayers := preload("res://scripts/mission/zone_layers.gd")
+const PlayerScript := preload("res://scripts/fly_camera.gd")
 
 ## Map to load on startup (falls back to first map if missing).
 @export var initial_map: String = "MAP.210"
@@ -1085,7 +1086,15 @@ func _level_ready_tail(level: LevelLoader.Level, nm: String) -> void:
 	# mode): mission 2 and 6 are driven in the jeep, mission 7 flown in
 	# the HK, for the whole mission including its sub-maps.
 	if _dm == null and is_instance_valid(player):
-		player.set_vehicle(_vehicle_for_map(nm))
+		var was_vehicle: int = player.vehicle
+		# No lift of its own: place_at_marker has already put the gunship
+		# where its entry routine puts it.
+		player.set_vehicle(_vehicle_for_map(nm), false)
+		# A new seat is a new eye (75 on foot, 110 in the HK): the gates are
+		# latched again from where the view has ended up, after every
+		# correction, or the first sweep would fire one the arrival stands in.
+		if player.vehicle != was_vehicle and level.behaviour != null:
+			level.behaviour.arm_proximity(player.global_position, _eye_position())
 	# The map's border boxes and the hint at their edge (MAP.260).
 	if is_instance_valid(player):
 		player.border_boxes = _world_border_boxes(level)
@@ -1206,6 +1215,33 @@ func place_at_marker(level: LevelLoader.Level, set_id: int) -> void:
 	# Guard against a degenerate look target on top of the spawn.
 	if look_target.distance_to(spawn) < 1.0:
 		look_target = spawn + Vector3(0, 0, -512)
+	# The gunship arrives the way DOS puts it down, and not the way the
+	# soldier is. FUN_00122300 (every level start that is not a loaded
+	# save) copies the marker's xyz into the view position (FUN_00122472)
+	# and then calls the ENTRY routine of the player's mode, the table at
+	# 0x38f6b indexed by the mode (0 foot / 4 jeep / 8 HK, [0x30a58]):
+	#   foot 0x12c02f  the floor snap: eye = the floor under the marker − 75
+	#   HK   0x131fea  velocity 0, and eye.y −= 400 (DOS Y grows down: 400
+	#                  units UP) unless the session is a network one
+	#                  (0x30a50 & 0x40000) or a save being loaded (& 0x200)
+	# — no floor search, no terrain clamp, no stepping clear of anything.
+	# The port ran the soldier's corrections on the HK too: on MAP.270's
+	# set 12 the capsule was "set down" 37 u onto a ledge and then nudged
+	# 200 u clear of it, straight into the 0xF1 gate @0dffc (r256 →
+	# MAP.271 set 10), which sent the gunship back to MAP.271, where the
+	# "no floor below" lift put it into the rock (playtest 2026-09-23).
+	if _hk_arrival(level):
+		var eye: Vector3 = spawn + Vector3(0.0, HK_ENTRY_RISE, 0.0) + level.origin
+		var body: Vector3 = eye - Vector3(0.0, float(PlayerScript.VEH_EYE[PlayerScript.VEH_HK]), 0.0)
+		var to_hk := look_target + level.origin - eye
+		var yaw_hk := 0.0
+		if Vector2(to_hk.x, to_hk.z).length() > 0.1:
+			yaw_hk = atan2(-to_hk.x, -to_hk.z)
+		player.set_spawn(body, yaw_hk, not keep_state)
+		sun.position = body + Vector3(0, 8000, -2000)
+		print("[skynet] HK spawn %s (marker + %d, entry 0x131fea), yaw %.1f deg"
+			% [body, int(HK_ENTRY_RISE), rad_to_deg(yaw_hk)])
+		return
 	# Outdoors the DOS player is clamped to the heightfield — MAP.217's
 	# start marker sits 200 u UNDER its hillside and the capsule fell
 	# through the world (audit 2026-09-03). Never spawn below the terrain.
@@ -1236,6 +1272,18 @@ func place_at_marker(level: LevelLoader.Level, set_id: int) -> void:
 	# Sun above and slightly behind the camera.
 	sun.position = spawn + Vector3(0, 8000, -2000)
 	print("[skynet] spawn %s, yaw %.1f deg" % [spawn, rad_to_deg(yaw)])
+
+## The HK's mode entry (0x131fea) lifts the view 400 units over the
+## marker: `sub [0x1049b8], 400` on a Y that grows downwards.
+const HK_ENTRY_RISE: float = 400.0
+
+## This arrival is the gunship's: the map is flown (mission table 0x34846,
+## mode 8) in a single-player session. A deathmatch HK is one a player
+## climbed into, and a network session skips the lift in DOS too.
+func _hk_arrival(level: LevelLoader.Level) -> bool:
+	if _dm != null or Net.active or not is_instance_valid(player) or level == null:
+		return false
+	return _vehicle_for_map("MAP." + level.map_suffix) == PlayerScript.VEH_HK
 
 ## DOS puts the player on the floor its cell scan finds (FUN_00138500);
 ## a marker under a walkway (MAP.271: 174 u below the pipe floor) or
@@ -1943,6 +1991,7 @@ func _eye_position() -> Vector3:
 	return player.global_position + Vector3(0.0, EYE_HEIGHT, 0.0)
 
 func _process(delta: float) -> void:
+	_torpedo_step(delta)
 	_walk_step(delta)
 	_campath_step(delta)
 	if _current_level != null and _current_level.sky != null \
@@ -2023,6 +2072,125 @@ func _process(delta: float) -> void:
 	# No DOS mission ends by body count: they end when the objective
 	# counter runs out (_on_objective_complete). `_mission_hostiles` is
 	# only a counter for the HUD / tests.
+
+## --- The torpedo ride (FUN_00132e00) ----------------------------------
+## Mission 5 leaves the submarine through a torpedo tube: MAP.253's two
+## tube hatches open and its 0xF0 drops the player on MAP.250 at set 10,
+## inside the tube, 624 u under the harbour. What follows is no trigger of
+## the map. The main loop calls FUN_00132e00 every frame, and when the map
+## register is 250 ([0x38c10] == 0xfa) and the previous-map register 253
+## ([0x38c18] == 0xfd) — whatever marker set brought him — it
+##   - sets 0x30a50 bit 0x2000000, the lock on the view keys, at once;
+##   - from the second frame ([0x30410] > 0) detaches the view the first
+##     time round (0x30a50 bit 0x400000 clear): the camera stays at the
+##     eye (0x3621c = 0x1049b4..bc), its heading is the body's, and
+##     FUN_0012ef06 starts sound 125 (TORPEDO.WAV); weapon, cockpit and
+##     reticle are not drawn, the trigger does nothing, the underwater
+##     palette stays and the water-surface pass is skipped;
+##   - each frame moves the camera along that heading, 8.8 fixed point,
+##     by FUN_001388fe's direction times the frame delta [0x43200]: 700
+##     units a second, a straight line, and rolls it by 0x200 per second of
+##     2048 — 90°/s — about the flight line (FUN_00133379);
+##   - once the camera is 0x834 = 2100 units from the body (FUN_0014d775,
+##     about three seconds) writes map 254 ([0x38c14] = 0xfe), marker set 0
+##     ([0x38c1c] = 0) and the map-change bit 0x20.
+## The body never moves: it waits at set 10 while the view swims out.
+## The roll here is right-handed about the flight line: the camera's top
+## goes over to the RIGHT, so the picture turns anticlockwise.
+const TORPEDO_MAP: String = "MAP.250"
+const TORPEDO_FROM: String = "MAP.253"
+const TORPEDO_TO_MAP: int = 254
+const TORPEDO_TO_SET: int = 0
+const TORPEDO_SPEED: float = 700.0
+const TORPEDO_ROLL_RATE: float = TAU * float(0x200) / 2048.0
+const TORPEDO_REACH: float = float(0x834)
+const TORPEDO_SOUND: int = 125
+enum { RIDE_OFF, RIDE_ARMED, RIDE_SWIM, RIDE_OUT }
+var _ride: int = RIDE_OFF
+var _ride_pos: Vector3 = Vector3.ZERO
+var _ride_dir: Vector3 = Vector3.FORWARD
+var _ride_roll: float = 0.0
+var _ride_cam_local: Transform3D = Transform3D.IDENTITY
+var _ride_water: MeshInstance3D = null
+
+## The torpedo ride is under way (the view is not the player's): the
+## solver and the mission runner wait for it rather than play the map.
+func torpedo_riding() -> bool:
+	return _ride != RIDE_OFF
+
+## DOS's own test, every frame: on MAP.250 with MAP.253 as the map before.
+func _torpedo_due() -> bool:
+	return _dm == null and not Net.active and is_instance_valid(player) 		and _level_name() == TORPEDO_MAP and _prev_map_name == TORPEDO_FROM
+
+func _torpedo_step(delta: float) -> void:
+	match _ride:
+		RIDE_OFF:
+			if _level_busy or not _torpedo_due():
+				return
+			_ride = RIDE_ARMED                    # frame 1: the keys only
+			player.set("input_locked", true)
+		RIDE_ARMED:
+			if _level_busy or not _torpedo_due():
+				_torpedo_reattach()
+				return
+			_ride_pos = camera.global_position    # the eye
+			var f: Vector3 = -player.global_transform.basis.z
+			f.y = 0.0
+			_ride_dir = f.normalized() if f.length() > 0.001 else Vector3.FORWARD
+			_ride_roll = 0.0
+			_ride_cam_local = camera.transform
+			camera.top_level = true
+			player.set("ride_view", true)
+			player.set("input_locked", true)
+			if _water != null and is_instance_valid(_water):
+				_water.visible = false
+				_ride_water = _water
+			Audio.play_id(TORPEDO_SOUND)
+			_ride = RIDE_SWIM
+			print("[skynet] torpedo: the view leaves the tube at %s heading %s"
+				% [_ride_pos.snapped(Vector3.ONE), _ride_dir.snapped(Vector3(0.01, 0.01, 0.01))])
+			_torpedo_view()
+		RIDE_SWIM:
+			if _level_busy or not _torpedo_due():
+				_torpedo_reattach()             # a load or a restart took over
+				return
+			_ride_pos += _ride_dir * TORPEDO_SPEED * delta
+			_ride_roll = fmod(_ride_roll + TORPEDO_ROLL_RATE * delta, TAU)
+			_torpedo_view()
+			if _ride_pos.distance_to(player.global_position) >= TORPEDO_REACH:
+				_ride = RIDE_OUT
+				print("[skynet] torpedo: %.0f u out — exit to MAP.%03d set %d"
+					% [_ride_pos.distance_to(player.global_position), TORPEDO_TO_MAP, TORPEDO_TO_SET])
+				# What the runner and the tests see of it: an exit, as the
+				# map's own doorways announce theirs.
+				if _current_level != null and _current_level.bus != null:
+					_current_level.bus.announce_effect(0, "exit",
+						{"map": TORPEDO_TO_MAP, "set": TORPEDO_TO_SET, "back": false})
+				_on_teleport_requested(TORPEDO_TO_MAP, TORPEDO_TO_SET)
+		RIDE_OUT:
+			# The view stays where the ride left it through the fade; it
+			# goes back on the body once the next map is up.
+			if not _level_busy:
+				_torpedo_reattach()
+
+## The detached view: at the ride's point, looking along the flight line,
+## rolled about it.
+func _torpedo_view() -> void:
+	var b := Basis.looking_at(_ride_dir, Vector3.UP).rotated(_ride_dir, _ride_roll)
+	camera.global_transform = Transform3D(b, _ride_pos)
+
+func _torpedo_reattach() -> void:
+	_ride = RIDE_OFF
+	if camera != null and is_instance_valid(camera) and camera.top_level:
+		camera.top_level = false
+		camera.transform = _ride_cam_local
+	if is_instance_valid(player):
+		player.set("ride_view", false)
+		if not _level_busy and not Net.active:
+			player.set("input_locked", _campath != null)
+	if _ride_water != null and is_instance_valid(_ride_water):
+		_ride_water.visible = true            # MAP.250's own surface
+	_ride_water = null
 
 ## Taking a hit: a red wash over the view that fades in a fraction of a
 ## second. It replaces the feedback that was lost when the impact effect
@@ -2291,15 +2459,61 @@ func _setup_water(level: LevelLoader.Level) -> void:
 	mi.position = Vector3(centre.x, y, centre.y) \
 		+ Vector3(level.origin.x, 0.0, level.origin.z)
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var m := StandardMaterial3D.new()
-	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	m.cull_mode = BaseMaterial3D.CULL_DISABLED
-	m.albedo_color = Color(0.06, 0.22, 0.28, 0.82)
-	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	var m := ShaderMaterial.new()
+	m.shader = _water_shader()
 	mi.material_override = m
 	add_child(mi)
 	_water = mi
 	print("[level] water surface at y=%d" % int(y))
+
+## The look of the surface. DOS draws NO water polygon: once the frame is
+## drawn it post-processes the pixels that lie BEHIND the water plane
+## (seen from above: the harbour floor, the hulls, the stilts), each one
+## taken as 0.9 of itself plus (10, 12, 19) and read from ±1 pixel to the
+## side, the offset per row drifting — a random walk held within ±4 steps
+## of the row's shimmer table. The port keeps the plane as the mask of
+## those pixels (two-sided, depth-tested so the world in front hides it,
+## never writing depth) and does the same arithmetic on the screen behind
+## it. The arithmetic is on the palette colours, i.e. in sRGB; the offset
+## and the rows are DOS pixels (the 200-line picture), not the window's.
+## The teal alpha sheet it replaces had nothing to do with the original.
+static var _water_shader_res: Shader = null
+static func _water_shader() -> Shader:
+	if _water_shader_res != null:
+		return _water_shader_res
+	var sh := Shader.new()
+	sh.code = """shader_type spatial;
+render_mode unshaded, cull_disabled, depth_draw_never, shadows_disabled, fog_disabled;
+uniform sampler2D screen_tex : hint_screen_texture, filter_nearest, repeat_disable;
+// Water shimmer: out = 0.9 c + (10, 12, 19) / 255, read from j = -1, 0 or +1
+// DOS pixels to the side; the row's phase wanders within +-4 steps.
+float h11(float n) { return fract(sin(n * 127.1) * 43758.5453); }
+float vnoise(float x) {
+	float i = floor(x);
+	float f = fract(x);
+	f = f * f * (3.0 - 2.0 * f);
+	return mix(h11(i), h11(i + 1.0), f);
+}
+vec3 to_srgb(vec3 c) {
+	return mix(c * 12.92, 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+}
+vec3 to_linear(vec3 c) {
+	return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+}
+void fragment() {
+	float px = max(1.0, floor(VIEWPORT_SIZE.y / 200.0));
+	float row = floor(FRAGCOORD.y / px);
+	float col = floor(FRAGCOORD.x / px);
+	// The row's phase: -4..+4, drifting a step at a time.
+	float phase = clamp(floor(vnoise(row * 0.61 + TIME * 3.0) * 9.0) - 4.0, -4.0, 4.0);
+	float j = floor(h11(col + phase * 17.0 + row * 0.013) * 3.0) - 1.0;
+	vec2 uv = SCREEN_UV + vec2(j * px / VIEWPORT_SIZE.x, 0.0);
+	vec3 c = to_srgb(texture(screen_tex, uv).rgb);
+	ALBEDO = to_linear(clamp(c * 0.9 + vec3(10.0, 12.0, 19.0) / 255.0, 0.0, 1.0));
+}
+"""
+	_water_shader_res = sh
+	return sh
 
 ## Acts 0xd6-0xda: a chain moved the water. The surface then glides to
 ## its new height at the map's own rate, and everything that reads the
@@ -2323,11 +2537,16 @@ func _step_water(delta: float) -> void:
 		player.water_level = y
 	EnemyRef.water_y = y
 
-## The SKYNTWTR.COL palette swap, as a tint over the 3D view.
+## The SKYNTWTR.COL palette swap, as a tint over the 3D view. That palette
+## is every colour of the game palette taken as exactly 0.5·c + (35, 35,
+## 126): a half-strength sheet of (70, 70, 252)/255 laid over the picture
+## does the same arithmetic (a 2D layer blends in sRGB, as the palette did).
+const WATER_TINT: Color = Color(0.275, 0.275, 0.99, 0.5)
 func _update_water_tint() -> void:
 	if not is_instance_valid(player):
 		return
-	var under: bool = bool(player.head_under)
+	# The torpedo ride keeps the underwater palette the whole way out.
+	var under: bool = bool(player.head_under) or _ride == RIDE_SWIM
 	if _water_tint == null or not is_instance_valid(_water_tint):
 		if not under:
 			return
@@ -2335,7 +2554,7 @@ func _update_water_tint() -> void:
 		cl.layer = 3                      # under the HUD panel and menus
 		add_child(cl)
 		_water_tint = ColorRect.new()
-		_water_tint.color = Color(0.10, 0.38, 0.48, 0.42)
+		_water_tint.color = WATER_TINT
 		_water_tint.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		_water_tint.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		cl.add_child(_water_tint)

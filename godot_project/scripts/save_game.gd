@@ -46,9 +46,25 @@ const MAGIC := "SKYNET-SAVE"
 ## for a line in the menu.
 static var last_error: String = ""
 
+## Where the slots live instead of user://saves when set: the test suites
+## point it at a scratch folder of their own (TEST_DIR), and `--save-dir=`
+## after `--` points a run at a copy of someone's saves. The suites used to
+## write and delete slots 9 and 10 of the player's own folder — a gate run
+## wiped whatever the player had saved there.
+static var dir_override: String = ""
+## Where the test suites keep their slots.
+const TEST_DIR := "user://test_saves"
+static var _cli_read: bool = false
+
 ## The running game's save folder.
 static func folder() -> String:
-	return DIR + "/shock" if _game() == "shock" else DIR
+	if not _cli_read:
+		_cli_read = true
+		for a in OS.get_cmdline_user_args():
+			if a.begins_with("--save-dir=") and dir_override.is_empty():
+				dir_override = a.trim_prefix("--save-dir=")
+	var base: String = dir_override if not dir_override.is_empty() else DIR
+	return base + "/shock" if _game() == "shock" else base
 
 ## SkynetPaths.game, looked up in the tree so this script also compiles
 ## where the autoloads do not exist.

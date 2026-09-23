@@ -42,6 +42,8 @@ mission 252
 	must_not use 252 0342c expect obj0
 	exit 252 0362d expect snd113 exit253/0
 	exit 253 02f5e expect snd113 hint0 voice25028 exit250/10 move@02f0d:swingY+512
+	stay 250 09a41 expect exit254/0
+	exit 254 0553c expect snd47 exit250/92
 	must_not use_below 250 09f73 expect obj0
 	use 250 09f73 expect obj0 voice25038
 	counter 0
@@ -51,6 +53,7 @@ mission 260
 mission 270
 	prox 270 0df56 expect exit271/0
 	prox 271 06a6b expect exit270/12
+	must_not stay 270 0dffc expect exit271/10
 	prox 270 0cd0a expect obj0 voice27038
 	counter 0
 mission 280

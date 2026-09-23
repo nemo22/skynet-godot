@@ -63,8 +63,14 @@ const XFAIL: String = "XFAIL"
 ##
 ## `walk` walks onto a WALK-ON PAD's own mesh — no key (state bit 0x10,
 ## FUN_00139d5e; trigger_verifier._check_walk).
+##
+## `stay` does nothing at all: the player stays where the step before put
+## him — a doorway's arrival above all — and the game runs. The record is
+## the one the line is about (`must_not stay 270 0dffc expect exit271/10`:
+## the gunship put down on MAP.270's set 12 must not be inside the gate
+## that sends it back).
 const VERBS: PackedStringArray = ["use", "use_below", "prox", "shoot",
-	"exit", "wait", "walk"]
+	"exit", "wait", "walk", "stay"]
 
 ## What a step or a mission may be excused with, in one word:
 ##   path_window   a marker-path vehicle only drives inside the DOS
@@ -406,6 +412,8 @@ func _perform(level, verb: String, id: int) -> Dictionary:
 			return await _do_exit(level, id, mode)
 		"wait":
 			return await _do_wait(level, id)
+		"stay":
+			return await _do_stay(level)
 	return {"ok": false, "tokens": PackedStringArray(), "why": "no driver for %s" % verb}
 
 # --- the verbs --------------------------------------------------------
@@ -652,6 +660,23 @@ func _do_wait(level, id: int) -> Dictionary:
 		await _drv.physics(1)
 		if veh != null and bool(veh.get("finished")):
 			break
+	await _drv.frames(1)
+	var tokens: PackedStringArray = TriggerEquiv.tokens(bus.take())
+	bus.record(false)
+	return {"ok": true, "tokens": tokens, "why": ""}
+
+## Stand where the run already is — no placing, no facing — and let the
+## game run for WAIT_FRAMES physics ticks, and for as long after that as a
+## scripted view has the camera (MAP.250's torpedo ride, three seconds and
+## a little: main._torpedo_step), up to PATH_WAIT_FRAMES.
+func _do_stay(level) -> Dictionary:
+	var bus = level.bus
+	bus.record(true)
+	bus.clear()
+	var n: int = 0
+	while n < WAIT_FRAMES or (bool(main.torpedo_riding()) and n < PATH_WAIT_FRAMES):
+		await _drv.physics(1)
+		n += 1
 	await _drv.frames(1)
 	var tokens: PackedStringArray = TriggerEquiv.tokens(bus.take())
 	bus.record(false)

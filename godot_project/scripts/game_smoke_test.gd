@@ -55,6 +55,9 @@ func _settled() -> bool:
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	# The save slots this suite writes and deletes are its own, never the
+	# player's (save_game.gd dir_override).
+	SaveGame.dir_override = SaveGame.TEST_DIR
 	# THE PER-MAP RUNTIME is what this suite is written against: every exit
 	# below is a level change, and the state it checks is the per-map overlay.
 	# Mission scenes are the default since step 8 of the M2 plan, so the flag

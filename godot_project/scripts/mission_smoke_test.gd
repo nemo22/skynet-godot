@@ -40,6 +40,7 @@ const SaveGame := preload("res://scripts/save_game.gd")
 const MapFile := preload("res://scripts/loaders/map_file.gd")
 const Rules := preload("res://scripts/triggers/rules_skynet.gd")
 const ZoneLayers := preload("res://scripts/mission/zone_layers.gd")
+const Explosion := preload("res://scripts/explosion.gd")
 
 ## The suite's scratch slot, wiped when it ends.
 const SAVE_SLOT: int = 8
@@ -418,6 +419,9 @@ func _check_variant_table() -> void:
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	# The save slots this suite writes and deletes are its own, never the
+	# player's (save_game.gd dir_override).
+	SaveGame.dir_override = SaveGame.TEST_DIR
 	# THE DEFAULT is what this suite plays (step 8): Settings.mission_scenes
 	# ships on, and nothing on the command line turns it on here. The live
 	# value is only put back where the shipped default has it in case a
@@ -1284,6 +1288,29 @@ func _check_zone_layers(here: String, other: String) -> void:
 				foreign.append("%s (zone %d)" % [(hit["collider"] as Node).name, zc])
 	_check(foreign.is_empty(), "no ray cast in %s meets another zone%s"
 		% [here, "" if foreign.is_empty() else ": " + ", ".join(foreign)])
+	_check_explosion_drawn(here, cam)
+
+## An explosion that goes off in the zone the player is in is drawn: its
+## sprite (and its light) are on a layer the camera's cull mask holds. The
+## blast is put straight back into the pool, so the next zone's check gets
+## the SAME node out of it — the pooled node kept the layer of the zone it
+## first went off in and was invisible after a doorway (explosion.gd setup).
+func _check_explosion_drawn(here: String, cam: Camera3D) -> void:
+	var at: Vector3 = cam.global_position - cam.global_transform.basis.z * 400.0
+	var ex: Node3D = Explosion.spawn(get_tree().current_scene, at, 120.0)
+	var bad := PackedStringArray()
+	if ex == null:
+		bad.append("no explosion")
+	else:
+		for v in ex.find_children("*", "VisualInstance3D", true, false):
+			var vi := v as VisualInstance3D
+			if vi.visible and vi.layers & cam.cull_mask == 0:
+				bad.append("%s layers %x" % [vi.name, vi.layers])
+		if ex.find_children("*", "Sprite3D", true, false).is_empty():
+			bad.append("no sprite")
+		ex.call("_finish")                     # back into the pool
+	_check(bad.is_empty(), "an explosion in %s is on a layer the camera draws (cull mask %x)%s"
+		% [here, cam.cull_mask, "" if bad.is_empty() else ": " + ", ".join(bad)])
 
 ## The console's own `zone` line, for a report.
 func _zone_line() -> String:

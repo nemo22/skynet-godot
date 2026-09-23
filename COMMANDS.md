@@ -60,6 +60,7 @@ Everything else on this page is a developer tool. It is all marked
 | `--setup` | — | Open the first-start screen and ask for both game folders again, even when they are already remembered. |
 | `--no-cache` | — | Turn the converted-asset cache off for this run: nothing is read from it and nothing is written to it. Everything is decoded from the original data each time, so loads are slow. **(dev)** |
 | `--cache-read-only` | — | Read the cache, never write to it: a missing or stale file is built for this run and not saved, no scene is baked, a cache of another version is left unused instead of wiped, and the career statistics are not saved either. This is what lets several processes run on one project at once (the sharded gate); `--verify-shard=` implies it. A read-only run on a stale cache still gets the right answers, only slowly, and warns once per file it did not write — run `--import` first. **(dev)** |
+| `--save-dir=DIR` | a directory | Keep the save slots there instead of the user folder's `saves` — how a copy of someone's saves is loaded (`--console=load 5`) without touching theirs. The test suites use a folder of their own (`user://test_saves`) whatever is given. Read only from the list after `--`. **(dev)** |
 | `--import` | — | Convert the game data into the cache behind the progress screen, then quit. Also the way to rebuild a cache: it runs even when the import is already complete. |
 | `--import-missions` | — | Bake only the mission scenes (a whole mission as one Godot scene) and quit. Exit code 0 when every mission the data holds came out. **(dev)** |
 | `--import-triggers` | — | Rebuild only the generated trigger graphs and quit. Seconds rather than minutes — the whole rebuild after a change to the trigger rules. **(dev)** |
@@ -329,8 +330,10 @@ godot --headless --path godot_project res://scenes/map_dump.tscn -- --triggers=2
 proves one trigger at a time on a map put back as its file has it, and
 this plays a whole MISSION — the doorways taken, the map changing under
 the run, nothing reset between steps and the mission counter the one the
-game keeps. A step is `use|prox|shoot|exit|wait <map> <id> expect
-<effects>`, read as "these effects happened" and not "exactly these";
+game keeps. A step is `use|use_below|prox|shoot|exit|wait|walk|stay <map>
+<id> expect <effects>`, read as "these effects happened" and not "exactly these";
+`stay` does nothing at all — the player stays where the step before left
+him (a doorway's arrival, MAP.250's torpedo ride) and the game runs;
 `must_not` says what an action must NOT come to (the four regressions the
 spec pins), `counter N` is what the mission counter must read at the end,
 and `xfail <tag>` excuses a step, or a whole mission, that cannot be

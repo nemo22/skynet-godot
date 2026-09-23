@@ -83,6 +83,13 @@ var noclip: bool = false
 ## Deathmatch: no movement / fire while dead, typing in chat or waiting
 ## for the server's spawn (dm_game.gd drives this).
 var input_locked: bool = false
+## A scripted view has the camera (the torpedo ride, main._torpedo_step):
+## no weapon in hand, no cockpit, no reticle (crosshair.gd reads it).
+var ride_view: bool = false:
+	set(v):
+		ride_view = v
+		if _cockpit_pivot != null and is_instance_valid(_cockpit_pivot):
+			_cockpit_pivot.visible = not v
 ## Deathmatch class: HUMAN 1.3, TERMINATOR 0.85 (Net.CLASS_SPEED).
 var class_speed: float = 1.0
 ## Debug: when true, the player takes no damage. Static so the menu's
@@ -544,7 +551,10 @@ func _reset_aim() -> void:
 	_aim_yaw = 0.0
 	_aim_pitch = 0.0
 
-func set_vehicle(v: int) -> void:
+## `lift`: a gunship climbed into lifts off the ground it stood on (a
+## deathmatch HK); one a level start puts the player in is already where
+## its entry routine puts it (main.place_at_marker) and is left there.
+func set_vehicle(v: int, lift: bool = true) -> void:
 	_reset_aim()
 	v = clampi(v, VEH_FOOT, VEH_HK)
 	if v == vehicle:
@@ -590,7 +600,7 @@ func set_vehicle(v: int) -> void:
 		cs.shape = cap
 		cs.position = Vector3(0.0, cap.height * 0.5, 0.0)
 		_swim_body = false              # a fresh capsule, standing height
-	if v == VEH_HK:
+	if v == VEH_HK and lift:
 		# Lift off the ground so the hover starts clear of the terrain.
 		global_position.y += 60.0
 	if v != VEH_FOOT:
@@ -2555,7 +2565,7 @@ func _process(delta: float) -> void:
 		return
 	var frames: Array = _vm_cache.get(_weapon_idx, NO_FRAMES) if vehicle == VEH_FOOT else NO_FRAMES
 	# A corpse holds no gun.
-	_viewmodel.visible = not frames.is_empty() and _death_t < 0.0
+	_viewmodel.visible = not frames.is_empty() and _death_t < 0.0 and not ride_view
 	if frames.is_empty():
 		_vm_firing = false
 		return
