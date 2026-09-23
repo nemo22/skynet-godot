@@ -13,9 +13,15 @@
 ##      grid (32 u indoors, 64 outdoors) with the player's own capsule. A
 ##      cell counts when the capsule fits there on a floor no steeper than
 ##      the controller's 62°, reached by sweeping the capsule up (one step,
-##      80 u at most), across and down. Below the water surface it swims:
-##      free in three dimensions indoors, floating with the eyes 10 u over
-##      the surface, climbing out onto a ledge up to WATER_EXIT above it.
+##      80 u at most), across and down. Under water it WALKS, on the
+##      floor, as the DOS soldier does (FUN_0012c15d, fly_camera
+##      _water_check): there is no swimming, no float and no stroke up; the
+##      body is the short one the controller wears in the water, and the
+##      one climb there is — a jump from the floor, 40 u in the water and
+##      33 u with the head under (177/392 and 100/150) — is inside the
+##      80 u step the sweeps already allow.
+##   1b. WALK ONTO the walk-on pads that space reaches (state bit 0x10,
+##      FUN_00139d5e): no key, the player only has to stand on the mesh.
 ##   2. FIRE what a player standing in that space can fire: walk-in gates
 ##      and levers (the player is put on the nearest reachable cell and the
 ##      the level tick does the rest), use-key buttons, and, when nothing
@@ -54,6 +60,7 @@ extends Node
 
 const PlayerDriver := preload("res://scripts/triggers/player_driver.gd")
 const ZoneLayers := preload("res://scripts/mission/zone_layers.gd")
+const Rules := preload("res://scripts/triggers/rules_skynet.gd")
 
 ## 16, not 32: a player walks round the corner of a machine; on a 32 u
 ## grid the flood met MAP.252's boiler corner on every line to the gate
@@ -62,13 +69,13 @@ const CELL_INDOOR: float = 16.0
 const CELL_OUTDOOR: float = 64.0
 const Y_QUANT: float = 16.0
 const MAX_NODES: int = 400000
-const SWIM_QUANT: float = 48.0      # depth step of a swimming cell
 const STEP: float = 80.0            # fly_camera.STEP_HEIGHT
 const MAX_DROP: float = 1200.0
 const FLOOR_MIN_NY: float = 0.766   # cos 40° — fly_camera.FOOT_MAX_SLOPE_DEG (DOS)
 const LIFT: float = PlayerDriver.LIFT   # clearance under the capsule (safe_margin)
-const FLOAT_FEET: float = 65.0      # eyes 75 over the feet ride 10 over the water
-const WATER_EXIT: float = 40.0      # a swimmer steps out onto a ledge this high
+## "In the water" is the surface this far over the feet (fly_camera
+## WATER_FEET_DEPTH, FUN_0012ea6b's -5) — where the body goes short.
+const WATER_FEET: float = 5.0
 const EYE: float = 75.0
 const SHOOT_RANGE: float = 2500.0
 const ROUNDS: int = 40
@@ -107,14 +114,14 @@ var _space: PhysicsDirectSpaceState3D = null
 var _q: PhysicsShapeQueryParameters3D = null
 var _shape_y: float = 44.0
 var _radius: float = 26.0
-## The standing body, and the short one a swimmer has (fly_camera
-## SWIM_BODY_HEIGHT = 44: under water the body lies in it).
-const SWIM_BODY: float = 44.0
+## The standing body, and the short one the controller wears in the water
+## (fly_camera SWIM_BODY_HEIGHT = 44 — a collider, not a stroke: DOS has
+## no swimming, and its body ignores ceilings).
+const WET_BODY: float = 44.0
 var _body_shape: CapsuleShape3D = null
-var _swim_shape: CapsuleShape3D = null
+var _wet_shape: CapsuleShape3D = null
 var _exclude: Array[RID] = []
 var _cell: float = CELL_INDOOR
-var _dive: bool = true
 ## Is the level being solved an outdoor one? Outdoors the ground is a
 ## 256x256 heightmap with buildings standing ON it — one surface per column
 ## — and the map is 65536 units across; indoors it is stacked decks,
@@ -204,6 +211,9 @@ func _solve_map() -> void:
 	while rounds < ROUNDS:
 		rounds += 1
 		await _kill_enemies()
+		# The water a chain moves (acts 0xd6-0xda: MAP.254's sewer valves)
+		# stands where the last round left it, and what is under it with it.
+		_water = float(main.player.water_level)
 		var t: int = Time.get_ticks_msec()
 		_flood(seeds)
 		print("[solve] round %d: %d cells reachable%s (%d ms)" % [rounds, _pos.size(),
@@ -284,15 +294,14 @@ func _setup(lvl) -> void:
 	_q = PhysicsShapeQueryParameters3D.new()
 	_q.shape = shape
 	_body_shape = shape
-	_swim_shape = CapsuleShape3D.new()
-	_swim_shape.radius = shape.radius
-	_swim_shape.height = SWIM_BODY + margin
+	_wet_shape = CapsuleShape3D.new()
+	_wet_shape.radius = shape.radius
+	_wet_shape.height = WET_BODY + margin
 	_q.collide_with_areas = false
 	_q.collision_mask = main.player.collision_mask
 	_exclude_actors()
 	_water = float(main.player.water_level)   # INF on a dry map — see _wet
 	_cell = CELL_OUTDOOR if lvl.is_outdoor else CELL_INDOOR
-	_dive = not lvl.is_outdoor          # a whole harbour in 3D is too many cells
 	_outdoor = lvl.is_outdoor
 	# The fence holds from the moment the player is inside a box — coming
 	# in from outside one, DOS lets him be (_border_clamp), and so do we.
@@ -362,7 +371,6 @@ func _flood(seeds: Array) -> void:
 		var i: int = queue[head]
 		head += 1
 		var p: Vector3 = _pos[i]
-		var swim: bool = _wet(p.y)
 		var ix: int = roundi(p.x / _cell)
 		var iz: int = roundi(p.z / _cell)
 		for d in DIRS:
@@ -372,23 +380,20 @@ func _flood(seeds: Array) -> void:
 				continue
 			if not _in_fence(tx, tz):
 				continue                     # the move would be undone there
-			if _outdoor and not swim and _known_step(Vector2i(ix + d.x, iz + d.y), p.y):
+			if _outdoor and _known_step(Vector2i(ix + d.x, iz + d.y), p.y):
 				continue                     # standing there already: the way on exists
 			var moved: bool = false
-			for landed in _lands(tx, tz, p.y, swim):
+			for landed in _lands(tx, tz, p.y):
 				if _key.has(_k(landed)):
 					moved = true             # reached already: the way on exists
 				elif _passable(p, landed) and _inside(landed, p):
 					queue.append(_add(landed))
 					moved = true
 			if not moved and not _outdoor:
-				# Step OVER — or swim past — something narrower than the
-				# body: no cell next to MAP.252's 12 u cable duct fits a
-				# 40 u body, but the controller crosses it in one stride
-				# (rise, cross, drop). A SWIMMER crosses the same gaps;
-				# the rule used to skip them while swimming, so once the
-				# water sat at its real height (32 u higher) mission 5's
-				# cabin counted as swimming and the flood never left it.
+				# Step OVER something narrower than the body: no cell next
+				# to MAP.252's 12 u cable duct fits a 40 u body, but the
+				# controller crosses it in one stride (rise, cross, drop) —
+				# under water as well, where it walks the same floor.
 				#
 				# Indoors only. Outdoors the grid is 64 u, so the same try
 				# would leap 128 to 256 units — further than a player
@@ -401,35 +406,22 @@ func _flood(seeds: Array) -> void:
 					if not _in_fence(fx, fz):
 						break
 					var got: bool = false
-					for landed in _lands(fx, fz, p.y, swim):
+					for landed in _lands(fx, fz, p.y):
 						if not _key.has(_k(landed)) and _passable(p, landed) and _inside(landed, p):
 							queue.append(_add(landed))
 							got = true
 					if got:
 						break
-			if swim and _dive:
-				var across := Vector3(tx, p.y, tz)   # swim on at this depth
-				if not _key.has(_k(across)) and _free(p, across - p) and _inside(across, p):
-					queue.append(_add(across))
-		if swim and _dive:
-			for dy in [SWIM_QUANT, -SWIM_QUANT]:
-				var ty: float = minf(p.y + dy, _water - FLOAT_FEET)
-				if absf(ty - p.y) < 1.0:
-					continue
-				var t := Vector3(p.x, ty, p.z)
-				if not _key.has(_k(t)) and _free(p, t - p) and _inside(t, p):
-					queue.append(_add(t))
 	if _leaks > 0:
 		print("[solve]   %d cells refused OUTSIDE the level (no roof overhead); the first escape is from %s to %s — a hole in the hull" % [
 			_leaks, _leak_from.snapped(Vector3.ONE), _leak_at.snapped(Vector3.ONE)])
 
-## Indoors, a place with nothing over it is outside the level: the whole
-## map grid lies under one water plane, and a flood that slips through a
-## seam below the waterline swims round the hull in the void and "reaches"
+## Indoors, a place with nothing over it is outside the level: a flood that
+## slips through a seam walks round the hull in the void and "reaches"
 ## everything from outside (the first runs on MAP.252 did exactly that —
 ## 400 000 cells in a submarine of a few thousand).
 func _inside(t: Vector3, from: Vector3) -> bool:
-	if not _dive:
+	if _outdoor:
 		return true                      # outdoors the sky is open
 	# Overhead AND underneath: under the hull the hull's own bottom is a
 	# roof, so a roof alone let the void below the submarine in.
@@ -493,20 +485,15 @@ func _known_step(col: Vector2i, y: float) -> bool:
 			return true
 	return false
 
-## Grid key of a cell. Swimming cells are 48 u deep instead of 16 (the
-## flooded submarine filled the node cap in 3D); the parity of the Y part
-## keeps a swimming height from ever sharing a key with a standing one.
+## Grid key of a cell — a floor, dry or under water: nothing else is one.
 func _k(f: Vector3) -> Vector3i:
-	if _wet(f.y):
-		return Vector3i(roundi(f.x / _cell), roundi(f.y / SWIM_QUANT) * 2 + 1, roundi(f.z / _cell))
-	return Vector3i(roundi(f.x / _cell), roundi(f.y / Y_QUANT) * 2, roundi(f.z / _cell))
+	return Vector3i(roundi(f.x / _cell), roundi(f.y / Y_QUANT), roundi(f.z / _cell))
 
-## Where a body standing (or swimming) at `s` really is: on the floor
-## under it, or where it floats in the water.
+## Where a body put at `s` really is: on the floor under it — in the water
+## too, where he sinks to it (MAP.250 set 10, 624 u under the harbour
+## surface after the torpedo tube, is a fall to the bottom).
 func _seed_point(s: Vector3) -> Vector3:
-	if _wet(s.y):
-		return s
-	var hit := _ray(s + Vector3(0.0, 40.0, 0.0), s - Vector3(0.0, 400.0, 0.0))
+	var hit := _ray(s + Vector3(0.0, 40.0, 0.0), s - Vector3(0.0, MAX_DROP, 0.0))
 	if hit.is_empty():
 		return s
 	return Vector3(s.x, (hit["position"] as Vector3).y, s.z)
@@ -514,74 +501,43 @@ func _seed_point(s: Vector3) -> Vector3:
 ## The feet positions a body at height `from_y` can end up at in column
 ## (tx, tz): up to three floors from one step above down to MAX_DROP
 ## below (a ray that starts inside a thick slab meets its underside
-## first), or where it floats in the water. A floor is any surface flat
-## enough to stand on met from above, whichever way its face is turned.
-func _lands(tx: float, tz: float, from_y: float, swim: bool) -> Array:
+## first). A floor is any surface flat enough to stand on met from above,
+## whichever way its face is turned — under the water as well as over it:
+## the DOS soldier walks the bottom (fly_camera._water_check), and the
+## flood used to float on the surface and swim at any depth instead.
+func _lands(tx: float, tz: float, from_y: float) -> Array:
 	var out: Array = []
 	var top: float = from_y + STEP + 2.0
-	if swim and from_y >= _water - FLOAT_FEET - 1.0:
-		top = _water + WATER_EXIT + 2.0  # a floating swimmer climbs out
 	var bottom: float = from_y - MAX_DROP
 	var y: float = top
 	# Three floors indoors — a ray that starts inside a thick slab meets its
 	# underside first, and a deck has another under it. Outdoors ONE: the
 	# terrain is a single heightmap and what stands on it is walked round,
 	# not under, so the second and third rays only ever found the inside of
-	# a building the flood reaches through its door anyway. (Open water
-	# still yields both the bottom to wade on and the surface to float on —
-	# that is the first ray's own doing, below.)
-	for _i in (1 if _outdoor else 3):
+	# a building the flood reaches through its door anyway. A first hit too
+	# steep to stand on is not the end of the column there either: the body
+	# slides off it to whatever is under it.
+	for _i in 3:
+		if _outdoor and not out.is_empty():
+			break
 		var hit := _ray(Vector3(tx, y, tz), Vector3(tx, bottom, tz))
 		if hit.is_empty():
-			if out.is_empty() and _water != INF and _water < top and _water > bottom:
-				out.append(Vector3(tx, minf(from_y, _water - FLOAT_FEET), tz))   # open water
 			break
 		var hp: Vector3 = hit["position"]
 		if absf((hit["normal"] as Vector3).y) >= FLOOR_MIN_NY:
-			var fy: float = hp.y
-			if _wet(fy):
-				# Under water a body can do BOTH: WADE along the bottom —
-				# the controller walks the flooded submarine at y -185
-				# under a -120 surface, straight past the wardrobe that
-				# blocks every swimming height — or float at its own
-				# depth. Offer the floor as well; the flood used to swim
-				# only at the depth it entered at and got stuck in
-				# mission 5's cabin.
-				out.append(Vector3(tx, fy, tz))
-				fy = maxf(fy, minf(from_y, _water - FLOAT_FEET))
-			out.append(Vector3(tx, fy, tz))
+			out.append(Vector3(tx, hp.y, tz))
 		y = hp.y - 2.0
 		if y <= bottom:
 			break
 	return out
 
 ## Can the capsule get from cell `a` to cell `b`: up (one step), across,
-## down — or, both in the water, straight there.
+## down — in the water the same, in the short body (_free).
 func _passable(a: Vector3, b: Vector3) -> bool:
 	return _why_not(a, b).is_empty()
 
 ## "" when the capsule gets from `a` to `b`, otherwise which sweep stopped it.
 func _why_not(a: Vector3, b: Vector3) -> String:
-	if _wet(a.y) and _wet(b.y):
-		if _free(a, b - a):
-			return ""
-		# Swim up first, then across and down onto it: a straight diagonal
-		# clips the edge of a raised deck (MAP.253's 24SHAL2 step, 82 u
-		# above the flooded floor). Holding JUMP lifts a swimmer to the
-		# surface and a little out of it.
-		var sw_across := Vector3(b.x - a.x, 0.0, b.z - a.z)
-		var sw_rise: float = maxf(0.0, b.y - a.y)
-		var sw_max: float = (_water + WATER_EXIT) - a.y
-		while sw_rise <= sw_max:
-			if sw_rise > 0.5 and not _free(a, Vector3(0.0, sw_rise, 0.0)):
-				break
-			var sw_top: float = a.y + sw_rise
-			if _free(Vector3(a.x, sw_top, a.z), sw_across):
-				var sw_drop: float = sw_top - b.y
-				if sw_drop <= 0.5 or _free(Vector3(b.x, sw_top, b.z), Vector3(0.0, -sw_drop, 0.0)):
-					return ""
-			sw_rise += 16.0
-		return "swim"
 	var lift: float = maxf(0.0, b.y - a.y)
 	var across := Vector3(b.x - a.x, 0.0, b.z - a.z)
 	# Rise, cross, drop — and when something lies BETWEEN the two floors,
@@ -596,7 +552,13 @@ func _why_not(a: Vector3, b: Vector3) -> String:
 			return why if not why.is_empty() else "rise %.0f" % rise
 		if _free(Vector3(a.x, top, a.z), across):
 			var drop: float = top - b.y
-			if drop <= 0.5 or _free(Vector3(b.x, top, b.z), Vector3(0.0, -drop, 0.0)):
+			# On a slope the round bottom of the capsule meets the floor
+			# above the point under its axis, by r·(1/cos θ − 1): 8 u on the
+			# steepest floor there is. The ray found the axis point, so the
+			# sweep down stops that much short of it — MAP.214's corridor
+			# ramp (27°) stopped every drop 3 u over the 4 u LIFT.
+			var short: float = _radius * (1.0 / FLOOR_MIN_NY - 1.0)
+			if drop <= short + 0.5 or _free(Vector3(b.x, top, b.z), Vector3(0.0, -(drop - short), 0.0)):
 				return ""
 			why = "drop %.0f" % drop
 		else:
@@ -632,14 +594,13 @@ func _sweep_detail(feet: Vector3, motion: Vector3) -> String:
 ## Why the flood does not go on from cell `p`: per direction, the floors
 ## found in the next column and what stops the capsule reaching each.
 func _explain(p: Vector3) -> void:
-	var swim: bool = _wet(p.y)
 	var ix: int = roundi(p.x / _cell)
 	var iz: int = roundi(p.z / _cell)
 	for d in DIRS:
 		var tx: float = float(ix + d.x) * _cell
 		var tz: float = float(iz + d.y) * _cell
 		var parts := PackedStringArray()
-		var lands: Array = _lands(tx, tz, p.y, swim)
+		var lands: Array = _lands(tx, tz, p.y)
 		if lands.is_empty():
 			parts.append("no floor")
 		for t in lands:
@@ -660,7 +621,9 @@ func _explain(p: Vector3) -> void:
 			parts.append("floor y %.0f: %s" % [t.y, why])
 		print("[solve]     from %s toward (%+d,%+d) → (%.0f, %.0f): %s" % [p.snapped(Vector3.ONE), d.x, d.y, tx, tz, "; ".join(parts)])
 
-## Is `y` under the water? A map with no water marker has no surface at
+## Is `y` in the water — the surface at least WATER_FEET over the feet,
+## where the controller puts the body in its short collider? A map with no
+## water marker has no surface at
 ## all, and `_water` is then INF — under which "y < _water" is true of
 ## every height there is. Every water test goes through here, because the
 ## ones that did it by hand had the flood SWIMMING over every dry map in
@@ -669,13 +632,13 @@ func _explain(p: Vector3) -> void:
 ## solver walked through the walls of MAP.210's compound and flew around
 ## the inside of MAP.213. What it called reachable was not.
 func _wet(y: float) -> bool:
-	return _water != INF and y < _water - 1.0
+	return _water != INF and _water - y >= WATER_FEET
 
 func _free(feet: Vector3, motion: Vector3) -> bool:
 	# In the water (either end under the surface) the body is the short one.
 	var wet: bool = _wet(feet.y) or _wet(feet.y + motion.y)
-	_q.shape = _swim_shape if wet else _body_shape
-	var cy: float = (SWIM_BODY * 0.5 if wet else _shape_y) + LIFT
+	_q.shape = _wet_shape if wet else _body_shape
+	var cy: float = (WET_BODY * 0.5 if wet else _shape_y) + LIFT
 	_q.transform = Transform3D(Basis(), feet + Vector3(0.0, cy, 0.0))
 	_q.motion = motion
 	var r: PackedFloat32Array = _space.cast_motion(_q)
@@ -816,6 +779,7 @@ func _candidates(a, nm: String, shoot: bool) -> Array:
 			if n >= 0:
 				out.append({"kind": "shoot", "off": off, "key": k, "at": _pos[n], "what": _ename(a, e)})
 		return out
+	out.append_array(_pad_candidates(a, nm))
 	for t in _prox_nodes(a):
 		var e = a.behaviour.record_of(int(t.id))
 		var k: String = "p%05x" % e.file_off
@@ -834,6 +798,13 @@ func _candidates(a, nm: String, shoot: bool) -> Array:
 		# ring MAP.217's jeep is what the solver did for [M3], and mission 1
 		# could not be finished; a player presses the key there.
 		var gate: bool = act == 0xEF and not use_only
+		# A gate whose chain ends in a doorway is the key's way THROUGH it
+		# (Behaviour.activate_teleport → use_exit_through): its press is a
+		# map change, and the sweep's use edge passes it by on purpose
+		# (Trigger.prox_watch). _exits offers it as a spot to take that
+		# doorway from; pressing it here did nothing at all.
+		if gate and a.behaviour.chain_exit(e.file_off) >= 0:
+			continue
 		# Where to stand. A gate or a lever is measured by its own handler,
 		# 3D from the EYE (the trigger's own node since 2026-09-16), so the
 		# spot has to satisfy that and not merely be near in plan: MAP.210's
@@ -865,6 +836,66 @@ func _candidates(a, nm: String, shoot: bool) -> Array:
 	# so the solver has none either.)
 	return out
 
+## The WALK-ON PADS this space reaches: a mesh whose live state byte
+## carries Rules.PAD_BIT is set off by standing on it — the foot mover
+## hands the floor polygon's owner to FUN_00139d5e, which clears the bit
+## and walks the chain once (Behaviour.walk_on, fly_camera._walk_on_floor).
+## No key and no distance, so a use-key or walk-in candidate never covers
+## one: MAP.215's silo cover opens as the player walks into the corridor.
+## The spot is a reachable cell whose floor IS the pad's mesh.
+func _pad_candidates(a, nm: String) -> Array:
+	var out: Array = []
+	if a.behaviour == null:
+		return out
+	for e in a.map.entities:
+		if (e.flags & 3) != 1:
+			continue
+		var off: int = e.file_off
+		var k: String = "w%05x" % off
+		if _done.has(nm + ":" + k) or a.triggers.spent(off):
+			continue
+		if (int(a.triggers.state(off)) & Rules.PAD_BIT) == 0 \
+				or int(a.triggers.act(off)) >= Rules.ACT_SPENT_FIRST:
+			continue
+		var at: Vector3 = _pad_cell(a, off)
+		if at != Vector3.INF:
+			out.append({"kind": "walk-on", "off": off, "key": k, "at": at, "what": _ename(a, e)})
+	return out
+
+## A reachable cell standing on the mesh of record `off` (the collider a
+## short ray down from the feet meets is under the record's node), the
+## nearest to the mesh's middle first; INF when the flood has none there.
+func _pad_cell(a, off: int) -> Vector3:
+	var target = a.behaviour.hit_node(off)
+	if target == null or not is_instance_valid(target) or not (target is MeshInstance3D) \
+			or (target as MeshInstance3D).mesh == null:
+		return Vector3.INF
+	var mi: MeshInstance3D = target
+	var box: AABB = mi.global_transform * mi.mesh.get_aabb()
+	var mid: Vector3 = box.get_center()
+	var near: Array = []
+	for bx in range(floori(box.position.x / BUCKET), floori(box.end.x / BUCKET) + 1):
+		for bz in range(floori(box.position.z / BUCKET), floori(box.end.z / BUCKET) + 1):
+			var arr = _bucket.get(Vector2i(bx, bz))
+			if arr == null:
+				continue
+			for i in arr:
+				var p: Vector3 = _pos[i]
+				if p.x < box.position.x or p.x > box.end.x or p.z < box.position.z \
+						or p.z > box.end.z or p.y < box.position.y - 2.0 or p.y > box.end.y + 2.0:
+					continue
+				near.append([p.distance_to(mid), i])
+	near.sort_custom(func(x, y): return x[0] < y[0])
+	for j in mini(near.size(), 48):
+		var p: Vector3 = _pos[near[j][1]]
+		var hit := _ray(p + Vector3(0.0, 20.0, 0.0), p - Vector3(0.0, 20.0, 0.0))
+		var c = hit.get("collider")
+		while c != null and c is Node:
+			if c == target:
+				return p
+			c = (c as Node).get_parent()
+	return Vector3.INF
+
 func _perform(a, nm: String, act: Dictionary) -> void:
 	_done[nm + ":" + String(act["key"])] = true
 	var line: String = "%s: %s %s @%05x from %s" % [nm, act["kind"], act["what"], act["off"],
@@ -883,6 +914,12 @@ func _perform(a, nm: String, act: Dictionary) -> void:
 			# takes its exits itself, one at a time and on purpose.
 			a.behaviour.press_use()
 			await _frames(2)
+		"walk-on":
+			# Nothing but standing there: the controller's own floor ray
+			# finds the pad under the feet (fly_camera._walk_on_floor).
+			await _frames(3)
+			if (int(a.triggers.state(int(act["off"]))) & Rules.PAD_BIT) != 0:
+				print("[solve]     (standing on @%05x left its bit 0x10 up)" % int(act["off"]))
 		"shoot":
 			for _try in 15:
 				if not a.behaviour.is_damageable(int(act["off"])):
@@ -1135,7 +1172,7 @@ func _collider_name(o) -> String:
 # --- Output ----------------------------------------------------------------
 
 ## Top view of the reachable space (rows = z, columns = x): '.' standing,
-## '~' swimming, 'E' exit, 'G' walk-in trigger, 'U' use button,
+## '~' standing in the water, 'E' exit, 'G' walk-in trigger, 'U' use button,
 ## 'O' objective, 'S' where the map was entered.
 func _write_view(nm: String, a) -> void:
 	var dir: String = String(main._cli.get("solve-out", ""))
@@ -1186,7 +1223,7 @@ func _write_view(nm: String, a) -> void:
 		return
 	f.store_line("%s  cell %d u  x %d..%d  z %d..%d  (rows = z, columns = x)" % [nm, int(_cell),
 		lo.x * int(_cell), hi.x * int(_cell), lo.y * int(_cell), hi.y * int(_cell)])
-	f.store_line("'.' stand  '~' swim  E exit  G walk-in trigger  U use button  O objective  S entry")
+	f.store_line("'.' stand  '~' in the water  E exit  G walk-in trigger  U use button  O objective  S entry")
 	for z in h:
 		f.store_line("%7d %s" % [(lo.y + z) * int(_cell), (rows[z] as PackedByteArray).get_string_from_ascii()])
 	f.close()
