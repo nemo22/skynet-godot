@@ -71,14 +71,14 @@ func _process(delta: float) -> void:
 func _show(i: int) -> void:
 	if _names.is_empty(): return
 	_idx = (i + _names.size()) % _names.size()
-	var name: String = _names[_idx]
-	var bytes := _bsa.read(name)
+	var nm: String = _names[_idx]
+	var bytes := _bsa.read(nm)
 	if _instance:
 		_instance.queue_free()
 		_instance = null
-	_parsed = Mesh3D.parse(bytes, name)
+	_parsed = Mesh3D.parse(bytes, nm)
 	if _parsed == null:
-		status.text = "[%d/%d] %s — parse FAILED" % [_idx + 1, _names.size(), name]
+		status.text = "[%d/%d] %s — parse FAILED" % [_idx + 1, _names.size(), nm]
 		print("[enemyview] %s" % status.text)
 		return
 	_frame_idx = 0

@@ -24,22 +24,22 @@ func _initialize() -> void:
 		var t: String = st.get_node_type(i)
 		kinds[t] = int(kinds.get(t, 0)) + 1
 	print("%s: %d nodes %s" % [p.get_file(), st.get_node_count(), kinds])
-	var root := ps.instantiate()
+	var scene_root := ps.instantiate()
 	# Auto-named nodes ("@Class@id") are a sign of sibling name clashes at pack time.
 	var auto: Array = []
-	var stack0: Array = [root]
+	var stack0: Array = [scene_root]
 	while not stack0.is_empty():
 		var q: Node = stack0.pop_back()
 		if String(q.name).begins_with("@"):
-			auto.append("%s/%s" % [q.get_parent().name if q.get_parent() else "", q.name])
+			auto.append("%s/%s" % [String(q.get_parent().name) if q.get_parent() else "", q.name])
 		for ch in q.get_children():
 			stack0.append(ch)
 	print("auto-named nodes: %d %s" % [auto.size(), auto.slice(0, 6)])
 	# Does every Static child enter the tree with its parent? (2026-09-06:
 	# 40 of a Future Shock map's, 19 of MAP.210's did not, at runtime.)
-	var st_node: Node = root.get_node_or_null("Static")
+	var st_node: Node = scene_root.get_node_or_null("Static")
 	if st_node != null:
-		get_root().add_child(root)
+		get_root().add_child(scene_root)
 		var out_of_tree: int = 0
 		var dup_names: Dictionary = {}
 		for ch in st_node.get_children():
@@ -64,11 +64,11 @@ func _initialize() -> void:
 			if not ch.is_inside_tree():
 				out2 += 1
 		print("after moving %d to a new parent: %d not inside tree" % [moved, out2])
-		get_root().remove_child(root)
+		get_root().remove_child(scene_root)
 	var bodies := 0
 	var shapes := 0
 	var empty := 0
-	var stack: Array = [root]
+	var stack: Array = [scene_root]
 	while not stack.is_empty():
 		var n: Node = stack.pop_back()
 		if n is CollisionObject3D:
@@ -80,7 +80,7 @@ func _initialize() -> void:
 				print("  EMPTY shape at %s" % n.get_path())
 		for c in n.get_children():
 			stack.append(c)
-	print("groups %s" % str(root.get_children()))
+	print("groups %s" % str(scene_root.get_children()))
 	print("bodies %d, shapes %d (%d empty)" % [bodies, shapes, empty])
-	root.free()
+	scene_root.free()
 	quit()

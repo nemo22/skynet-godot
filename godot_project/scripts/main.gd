@@ -30,6 +30,7 @@ const PauseState  := preload("res://scripts/pause_state.gd")
 const HudPanel    := preload("res://scripts/hud_panel.gd")
 const HudModern   := preload("res://scripts/hud_modern.gd")
 const EffectWarmup := preload("res://scripts/effect_warmup.gd")
+const StatsLib := preload("res://scripts/stats.gd")
 
 ## Map to load on startup (falls back to first map if missing).
 @export var initial_map: String = "MAP.210"
@@ -731,6 +732,7 @@ func _perf_probe(secs: float) -> void:
 	for v in arr:
 		if v > 33.3:
 			over_33 += 1
+	@warning_ignore("integer_division")
 	print("[perf] %s: %d frames | mean %.1f ms (%.0f fps) | median %.1f | 95th %.1f | 99th %.1f | worst %.1f | %d frames over 33 ms (%.1f%%)"
 		% [_level_name(), arr.size(),
 		   sum / float(arr.size()), 1000.0 / (sum / float(arr.size())),
@@ -767,8 +769,8 @@ func _scan_maps() -> void:
 		   _maps[0] if _maps.size() > 0 else "(none)",
 		   _maps[_maps.size() - 1] if _maps.size() > 0 else "(none)"])
 
-static func _suffix(name: String) -> int:
-	var parts := name.split(".")
+static func _suffix(nm: String) -> int:
+	var parts := nm.split(".")
 	if parts.size() < 2: return -1
 	return int(parts[1])
 
@@ -778,7 +780,7 @@ func _load_current() -> void:
 		_mission_done = false               # (raised for a change that is not coming)
 		_set_status("No map at index %d" % _map_idx)
 		return
-	var name := _maps[_map_idx]
+	var nm := _maps[_map_idx]
 	# Mission "main" maps open with the briefing screen; the level itself
 	# loads only when the player presses BEGIN. Other maps load directly.
 	# Automation runs (screenshots) skip the briefing.
@@ -788,7 +790,7 @@ func _load_current() -> void:
 	# like --screenshot does.
 	var no_briefing: bool = (_cli.has("screenshot") and not _cli.has("tab")) \
 		or _cli.has("no-briefing") or _cli.has("campath") or _cli.has("walk") or Net.active
-	if not await _change_level(name, false, not no_briefing):
+	if not await _change_level(nm, false, not no_briefing):
 		return
 	if _briefing_overlay != null and _cli.has("screenshot"):
 		# --tab=TACTICAL --screenshot=…: capture the mission screen itself.
@@ -855,12 +857,12 @@ static func _shape_key(mi: MeshInstance3D) -> String:
 	return Assets.safe_key(key) if not key.is_empty() else ""
 
 ## Only _change_level calls this (one level change at a time).
-func _begin_level(name: String) -> void:
+func _begin_level(nm: String) -> void:
 	var gen: int = _level_gen
 	# The session cache lets go of what neither this map nor the last used.
 	Assets.level_started()
-	print("[skynet] loading %s" % name)
-	_ensure_mission_script(name)
+	print("[skynet] loading %s" % nm)
+	_ensure_mission_script(nm)
 	await get_tree().process_frame
 	if gen != _level_gen:
 		return
@@ -869,8 +871,8 @@ func _begin_level(name: String) -> void:
 	# back to the per-map path below when the mission has no baked scene or
 	# this map is not one of its zones (a phase variant, a hand-over), and
 	# `--no-mission-scene` sends the whole run down it.
-	if _want_mission_scene(name):
-		var in_scene: bool = await _begin_mission_level(name, gen)
+	if _want_mission_scene(nm):
+		var in_scene: bool = await _begin_mission_level(nm, gen)
 		if in_scene:
 			return
 	# The phases a loaded save named are a mission scene's business; the
@@ -878,11 +880,11 @@ func _begin_level(name: String) -> void:
 	_pending_zone_phases = {}
 
 	var loader := LevelLoader.new()
-	var level := loader.load_level(name)
+	var level := loader.load_level(nm)
 	if level == null:
-		push_error("[skynet] failed to load %s" % name)
+		push_error("[skynet] failed to load %s" % nm)
 		push_error("[skynet] [%d/%d] %s -- LOAD FAILED"
-			% [_map_idx + 1, _maps.size(), name])
+			% [_map_idx + 1, _maps.size(), nm])
 		return
 	_current_level = level
 	if level.terrain:
@@ -905,7 +907,7 @@ func _begin_level(name: String) -> void:
 	# data fires in its _ready, and one that fired on an earlier visit (or
 	# before the save) must find its bit down and its act retired, or the
 	# radio line plays and the objective counts again.
-	_apply_map_state(level, name)
+	_apply_map_state(level, nm)
 	# The Behaviour branch (scripts/level/behaviour.gd): the chains and
 	# the cues. Signals first — a cue armed in the MAP data fires in its
 	# _ready, the moment it enters the tree.
@@ -930,7 +932,7 @@ func _begin_level(name: String) -> void:
 	if level.sky:
 		add_child(level.sky)
 		level.sky.position = player.global_position
-	_set_sky_fill(level, name)
+	_set_sky_fill(level, nm)
 	_light_level(level)
 
 	# Let the freshly-added trimesh collision register in the physics
@@ -958,10 +960,10 @@ func _begin_level(name: String) -> void:
 	Audio.play_music_for_maptype(_maptype(level))
 	_set_status("")
 	print("[skynet] %s ready (%d/%d, %s, %d meshes, %d enemies)"
-		% [name, _map_idx + 1, _maps.size(),
+		% [nm, _map_idx + 1, _maps.size(),
 		   "outdoor" if level.is_outdoor else "indoor",
 		   level.entity_count, level.enemy_count])
-	_level_ready_tail(level, name)
+	_level_ready_tail(level, nm)
 
 ## Every entity mesh gets its collision before the subtree enters the
 ## physics space, so the flags (backface_collision) are registered from
@@ -1056,34 +1058,34 @@ func _connect_level(level: LevelLoader.Level) -> void:
 ## brought it up: the hostile count, the mission it belongs to, the
 ## player's vehicle and border boxes, the radiation sources, the water and
 ## the scenery. A mission scene runs this for every zone walked into.
-func _level_ready_tail(level: LevelLoader.Level, name: String) -> void:
+func _level_ready_tail(level: LevelLoader.Level, nm: String) -> void:
 	# Hostile count for the HUD/tests — only the mission's main map
 	# tracks it; the interiors reached through exits are side areas of
 	# the same mission. Missions end at the evacuation zone, never here.
 	_mission_done = false
 	_mission_hostiles = 0
-	if _campaign_maps.has(name):
-		_mission_start_map = name
-	elif _mission_of(_mission_start_map) != _mission_key_for(name):
+	if _campaign_maps.has(nm):
+		_mission_start_map = nm
+	elif _mission_of(_mission_start_map) != _mission_key_for(nm):
 		# Entered a mission somewhere other than its start map (--map, the
 		# console, an old save): the start map is the mission's own.
-		_mission_start_map = _mission_start_for(name)
-	if _is_campaign_main(name):
+		_mission_start_map = _mission_start_for(nm)
+	if _is_campaign_main(nm):
 		_mission_hostiles = _level_enemies(level).size()
 	if _dm == null and not Net.active:
-		_count_mission_enemies(level, name)
+		_count_mission_enemies(level, nm)
 	# Vehicle missions (Skynet.exe mission table 0x34846, +8 = player
 	# mode): mission 2 and 6 are driven in the jeep, mission 7 flown in
 	# the HK, for the whole mission including its sub-maps.
 	if _dm == null and is_instance_valid(player):
-		player.set_vehicle(_vehicle_for_map(name))
+		player.set_vehicle(_vehicle_for_map(nm))
 	# The map's border boxes and the hint at their edge (MAP.260).
 	if is_instance_valid(player):
 		player.border_boxes = _world_border_boxes(level)
 		if not player.border_hint.is_connected(_on_border_hint):
 			player.border_hint.connect(_on_border_hint)
 	_apply_pending_player()
-	_take_mission_start_state(name)
+	_take_mission_start_state(nm)
 	_collect_radiation(level)
 	_setup_water(level)
 	_setup_scenery(level)
@@ -1097,10 +1099,10 @@ func _level_ready_tail(level: LevelLoader.Level, name: String) -> void:
 ## and only once per mission, so coming back to the first map later does
 ## not overwrite it. A deathmatch and a loose map have no mission to
 ## restart and take none.
-func _take_mission_start_state(name: String) -> void:
+func _take_mission_start_state(nm: String) -> void:
 	if _dm != null or Net.active or not is_instance_valid(player):
 		return
-	if not _campaign_maps.has(name) or _mission_start_snap_key == _mission_key:
+	if not _campaign_maps.has(nm) or _mission_start_snap_key == _mission_key:
 		return
 	_mission_start_snap_key = _mission_key
 	_mission_start_state = _player_snapshot()
@@ -1139,20 +1141,20 @@ static func _world_border_boxes(level: LevelLoader.Level) -> Array:
 ## that identity is shared with the map's variants (MAP.216 is MAP.210's
 ## base with the same robots), indoors it is the map's own. Robots an 0xF3
 ## spawn point lets out are counted by enemy.gd when they appear.
-func _count_mission_enemies(level: LevelLoader.Level, name: String) -> void:
+func _count_mission_enemies(level: LevelLoader.Level, nm: String) -> void:
 	var n: int = 0
 	for e in _level_enemies(level):
-		var id: String = "%s|%s" % [name, e.name]
+		var id: String = "%s|%s" % [nm, e.name]
 		if e.has_meta("marker_off") and level.map != null:
 			var rec = level.map.entities_by_off.get(int(e.get_meta("marker_off")))
 			if rec != null:
 				if rec.marker_type < 0:
 					continue                    # an 0xF3 spawn sprite's robot
-				id = ("" if level.is_outdoor else name + "|") + _entity_key(level.map, rec)
+				id = ("" if level.is_outdoor else nm + "|") + _entity_key(level.map, rec)
 		if Stats.count_enemy(id):
 			n += 1
 	if n > 0:
-		print("[stats] %s: %d enemies counted for the mission (%d in all)" % [name, n, Stats.enemies])
+		print("[stats] %s: %d enemies counted for the mission (%d in all)" % [nm, n, Stats.enemies])
 
 ## Place the camera at the DOS player-start marker (marker_type 0), facing
 ## the direction marker (marker_type 1) — read by LevelLoader. Falls back
@@ -1649,6 +1651,7 @@ var _moon_fall: float = 0.0            # radians dropped so far
 
 static func _is_dusk_map(map_name: String) -> bool:
 	var n: int = _suffix(map_name)
+	@warning_ignore("integer_division")
 	return ((n / 10) * 10) in DUSK_MISSIONS
 
 static func _is_night_map(map_name: String) -> bool:
@@ -1873,12 +1876,12 @@ func _walk_step(delta: float) -> void:
 					if col is Node:
 						var cn: Node = col
 						var par: Node = cn.get_parent()
-						cname = String(par.get_meta("mesh_name", par.name)) if par != null else cn.name
+						cname = String(par.get_meta("mesh_name", par.name)) if par != null else String(cn.name)
 						if par is MeshInstance3D:
 							var pmi: MeshInstance3D = par
 							cname += " pos=%s aabb=%s under %s" % [pmi.global_position.snapped(Vector3.ONE),
-								pmi.mesh.get_aabb().size.snapped(Vector3.ONE) if pmi.mesh != null else "-",
-								pmi.get_parent().name if pmi.get_parent() != null else "-"]
+								str(pmi.mesh.get_aabb().size.snapped(Vector3.ONE)) if pmi.mesh != null else "-",
+								String(pmi.get_parent().name) if pmi.get_parent() != null else "-"]
 					desc += " n=%s@%s %s" % [kc.get_normal().snapped(Vector3(0.01, 0.01, 0.01)),
 						kc.get_position().snapped(Vector3.ONE), cname]
 				print("[walk] STUCK at %s floor=%s wall=%s ceiling=%s%s" % [p, player.is_on_floor(),
@@ -2034,8 +2037,8 @@ func _fade_hurt(delta: float) -> void:
 ## The thrown item changed (the `0` key / middle mouse button). The DOS
 ## panel has no slot for the secondary, so it is announced on the status
 ## line the way the engine announced pickups.
-func _on_secondary_changed(name: String, count: int) -> void:
-	_set_status("%s  x%d" % [name, count], 2.5)
+func _on_secondary_changed(nm: String, count: int) -> void:
+	_set_status("%s  x%d" % [nm, count], 2.5)
 
 ## Every press of the use key, whatever the crosshair is on: the 0xEF
 ## gates within reach answer it (Behaviour.press_use).
@@ -2342,6 +2345,7 @@ var _mission_ended_key: int = -1
 ## 250.TXT.
 static func _mission_of(map_name: String) -> int:
 	var sfx: int = _suffix(map_name)
+	@warning_ignore("integer_division")
 	return (sfx / 10) * 10 if sfx >= _mission_base() else -1
 
 ## The mission `map_name` is played in. DOS resets the mission register
@@ -2545,6 +2549,7 @@ static func _vehicle_for_map(map_name: String) -> int:
 		# in its own numbering.
 		if sfx < 10 or sfx >= 200:
 			return 0
+		@warning_ignore("integer_division")
 		match (sfx / 10) * 10:
 			20, 40, 100, 170:
 				return 1
@@ -2553,6 +2558,7 @@ static func _vehicle_for_map(map_name: String) -> int:
 		return 0
 	if sfx < 200 or sfx >= 300:
 		return 0
+	@warning_ignore("integer_division")
 	match (sfx - 200) / 10:
 		2, 6:
 			return 1
@@ -2765,12 +2771,12 @@ func _mission_scenes_on() -> bool:
 	return (Settings.mission_scenes or _cli.has("mission-scene")) \
 		and not Net.active and _dm == null and SkynetPaths.game != "shock"
 
-## Should `name` come up inside its mission's scene? Only a map of a
+## Should `nm` come up inside its mission's scene? Only a map of a
 ## campaign mission this game bakes a scene for (Assets.mission_start_of).
-func _want_mission_scene(name: String) -> bool:
+func _want_mission_scene(nm: String) -> bool:
 	if not _mission_scenes_on():
 		return false
-	var key: int = _mission_key_for(name)
+	var key: int = _mission_key_for(nm)
 	if key < 0 or key == _mission_scene_off:
 		return false
 	return Assets.mission_start_of(key) >= 0 \
@@ -2779,8 +2785,8 @@ func _want_mission_scene(name: String) -> bool:
 ## Bring the mission scene up with `name` as the active zone. False when
 ## it cannot be had — no baked scene, or `name` is not one of its zones —
 ## and _begin_level then loads the map on its own as before.
-func _begin_mission_level(name: String, gen: int) -> bool:
-	var key: int = _mission_key_for(name)
+func _begin_mission_level(map_name: String, gen: int) -> bool:
+	var key: int = _mission_key_for(map_name)
 	var t0: int = Time.get_ticks_msec()
 	# The scene is filed under the map the mission BEGINS on, which is not
 	# always the mission's own number: mission 5 is the 25x maps and starts
@@ -2840,11 +2846,11 @@ func _begin_mission_level(name: String, gen: int) -> bool:
 			entry["maps"] = names
 			for nm in names:
 				phases[nm] = entry
-	if not zones.has(name) and not phases.has(name):
+	if not zones.has(map_name) and not phases.has(map_name):
 		# A map the census never reached, or a hand-over into another
 		# mission: the mission carries on the old way.
 		print("[mission] %d: %s is no zone of the scene — the per-map runtime takes the mission"
-			% [key, name])
+			% [key, map_name])
 		root.free()
 		_mission_scene_off = key
 		return false
@@ -2880,16 +2886,16 @@ func _begin_mission_level(name: String, gen: int) -> bool:
 		if not pz.is_empty() and String(pz.get("map", "")) == String(home):
 			_set_zone_phase(pz, want)
 	_pending_zone_phases = {}
-	if not _zones.has(name):
-		_set_zone_phase(_phases[name], name)
-	var ok: bool = await _activate_zone(name, "", gen)
+	if not _zones.has(map_name):
+		_set_zone_phase(_phases[map_name], map_name)
+	var ok: bool = await _activate_zone(map_name, "", gen)
 	if not ok:
-		push_warning("[mission] %d: zone %s would not build — falling back" % [key, name])
+		push_warning("[mission] %d: zone %s would not build — falling back" % [key, map_name])
 		_teardown_mission()
 		_mission_scene_off = key
 		return false
 	print("[mission] %d up in %d ms (%d ms instancing the scene, %d zones, active %s)"
-		% [key, Time.get_ticks_msec() - t0, t_inst - t0, zones.size(), name])
+		% [key, Time.get_ticks_msec() - t0, t_inst - t0, zones.size(), map_name])
 	return true
 
 ## The one thing a level change has to SAY rather than do behind the black.
@@ -2922,6 +2928,7 @@ func _show_baking(key: int) -> void:
 			_baking_note.add_theme_font_override("font", f)
 			_baking_note.add_theme_font_size_override("font_size", f.fixed_size)
 		_fade.get_parent().add_child(_baking_note)
+	@warning_ignore("integer_division")
 	_baking_note.text = "PREPARING MISSION %d\n\nThis happens once." \
 		% maxi((key - 200) / 10, 1)
 	_baking_note.visible = true
@@ -3870,7 +3877,7 @@ static func _same_world(a: String, b: String) -> bool:
 ## MAP.210 retired MAP.217's [M3] objective on the same entity, and mission
 ## 1 could not end ("let's roll" and nothing, playtest 2026-09-15). On a
 ## variant the cue is fresh, as DOS has every map number's own overlay.
-func _import_variant_state(level: LevelLoader.Level, name: String) -> Dictionary:
+func _import_variant_state(level: LevelLoader.Level, nm: String) -> Dictionary:
 	if level.map == null:
 		return {}
 	# The overlay to carry from: a visited map of this world. Two of them
@@ -3882,23 +3889,23 @@ func _import_variant_state(level: LevelLoader.Level, name: String) -> Dictionary
 	var best_map: LevelLoader.MapFile.MapFile = null
 	var best_remap: Dictionary = {}
 	for other in _map_state:
-		if not _same_world(String(other), name):
+		if not _same_world(String(other), nm):
 			continue
 		var m: LevelLoader.MapFile.MapFile = _parse_map(String(other))
 		if m == null:
 			push_warning("[skynet] %s: cannot read %s — its switches and damage stay behind"
-				% [name, String(other)])
+				% [nm, String(other)])
 			continue
-		var remap: Dictionary = _variant_remap(m, level.map)
-		if not remap.is_empty() and remap.size() >= best_remap.size():
+		var remap_tbl: Dictionary = _variant_remap(m, level.map)
+		if not remap_tbl.is_empty() and remap_tbl.size() >= best_remap.size():
 			best = String(other)
 			best_map = m
-			best_remap = remap
+			best_remap = remap_tbl
 	if best.is_empty():
 		return {}
 	var out: Dictionary = _carry_records(level, best_map, _map_state[best], best_remap)
 	print("[skynet] %s: first visit — importing state from %s, the same world re-authored (%d of its entities are here too, %d dead, %d taken, %d entities carried, %d re-authored kept fresh)"
-		% [name, best, best_remap.size(), out["dead"].size(), out["taken"].size(),
+		% [nm, best, best_remap.size(), out["dead"].size(), out["taken"].size(),
 		   int(out.get("carried", 0)), int(out.get("kept", 0))])
 	out.erase("carried")
 	out.erase("kept")
@@ -3911,7 +3918,7 @@ func _import_variant_state(level: LevelLoader.Level, name: String) -> Dictionary
 ## one that has just come down — and the rule is the one above, to the
 ## letter: identity by kind + name + DOS position, the signature for what
 ## may carry, no act, no link.
-func _carry_variant_state(level: LevelLoader.Level, name: String,
+func _carry_variant_state(level: LevelLoader.Level, nm: String,
 		carry: Dictionary) -> Dictionary:
 	var src_map: LevelLoader.MapFile.MapFile = carry.get("map")
 	var from: String = String(carry.get("name", ""))
@@ -3920,13 +3927,13 @@ func _carry_variant_state(level: LevelLoader.Level, name: String,
 	# A phase edge comes out of the mission scene's own census, the list
 	# out of the rules module: where the two disagree, nothing carries
 	# rather than something wrong.
-	if not _same_world(from, name):
-		push_warning("[mission] %s and %s are not one world — the phase carries nothing" % [from, name])
+	if not _same_world(from, nm):
+		push_warning("[mission] %s and %s are not one world — the phase carries nothing" % [from, nm])
 		return {}
-	var remap: Dictionary = _variant_remap(src_map, level.map)
-	var out: Dictionary = _carry_records(level, src_map, carry.get("snap", {}), remap)
+	var remap_tbl: Dictionary = _variant_remap(src_map, level.map)
+	var out: Dictionary = _carry_records(level, src_map, carry.get("snap", {}), remap_tbl)
 	print("[mission] %s ← %s: %d of its entities are here too (%d dead, %d taken, %d carried, %d re-authored kept fresh)"
-		% [name, from, remap.size(), out["dead"].size(),
+		% [nm, from, remap_tbl.size(), out["dead"].size(),
 		   out["taken"].size(), int(out.get("carried", 0)), int(out.get("kept", 0))])
 	out.erase("carried")
 	out.erase("kept")
@@ -3954,15 +3961,15 @@ func _carry_variant_state(level: LevelLoader.Level, name: String,
 ## back whole, and an import that left the objects only this map has out
 ## of it made them undamageable.
 func _carry_records(level: LevelLoader.Level, src_map: LevelLoader.MapFile.MapFile,
-		src: Dictionary, remap: Dictionary) -> Dictionary:
+		src: Dictionary, remap_tbl: Dictionary) -> Dictionary:
 	var out: Dictionary = {"dead": {}, "taken": {}, "triggers": {},
 		"carried": 0, "kept": 0}
 	for off in src.get("dead", {}):
-		if remap.has(off):
-			out["dead"][remap[off]] = true
+		if remap_tbl.has(off):
+			out["dead"][remap_tbl[off]] = true
 	for off in src.get("taken", {}):
-		if remap.has(off):
-			out["taken"][remap[off]] = true
+		if remap_tbl.has(off):
+			out["taken"][remap_tbl[off]] = true
 	var act_src: Dictionary = _trigger_state(src)
 	var act: Dictionary = {}
 	if level.triggers != null:
@@ -3971,9 +3978,9 @@ func _carry_records(level: LevelLoader.Level, src_map: LevelLoader.MapFile.MapFi
 			mine_hp[off] = level.triggers.hp(int(off))
 		act = {"states": {}, "movers": {}, "destr": {}, "spent": {}, "hp": mine_hp}
 	if src_map != null and not act.is_empty():
-		for off in remap:
+		for off in remap_tbl:
 			var s = src_map.entities_by_off.get(off)
-			var dst: int = int(remap[off])
+			var dst: int = int(remap_tbl[off])
 			var d = level.map.entities_by_off.get(dst)
 			if s == null or d == null:
 				continue
@@ -4002,10 +4009,10 @@ func _carry_records(level: LevelLoader.Level, src_map: LevelLoader.MapFile.MapFi
 ## never counted. A section with no entries never moves its cursor, so it
 ## is left alone; so is a mission already won. Dropped retirements leave
 ## the snapshot, so the next save is clean.
-func _unretire_uncounted_objectives(level: LevelLoader.Level, name: String, snap: Dictionary) -> void:
+func _unretire_uncounted_objectives(level: LevelLoader.Level, nm: String, snap: Dictionary) -> void:
 	var acts: Dictionary = _trigger_state(snap).get("acts", {})
 	if acts.is_empty() or level.map == null or _mission_key < 0 \
-			or _mission_key != _mission_key_for(name) or _mission_ended_key == _mission_key:
+			or _mission_key != _mission_key_for(nm) or _mission_ended_key == _mission_key:
 		return
 	var foreign: Array = []
 	for off in acts:
@@ -4025,21 +4032,21 @@ func _unretire_uncounted_objectives(level: LevelLoader.Level, name: String, snap
 	for off in foreign:
 		acts.erase(off)
 		print("[skynet] %s: objective @%05x [M%d] was retired but never counted — live again (v0.3.0 save repair)"
-			% [name, int(off), level.map.entities_by_off[int(off)].link_act_type - 0x25])
+			% [nm, int(off), level.map.entities_by_off[int(off)].link_act_type - 0x25])
 
 ## Re-apply a saved snapshot to a freshly loaded map (DOS MstLoad). The
 ## per-map runtime's: a mission scene applies its zones' overlays itself
 ## (_build_zone), from _zone_state and never through the variant search.
-func _apply_map_state(level: LevelLoader.Level, name: String) -> void:
-	var snap: Dictionary = _map_state.get(name, {})
+func _apply_map_state(level: LevelLoader.Level, nm: String) -> void:
+	var snap: Dictionary = _map_state.get(nm, {})
 	if snap.is_empty():
-		snap = _import_variant_state(level, name)
+		snap = _import_variant_state(level, nm)
 		if snap.is_empty():
 			return
-		_map_state[name] = snap
+		_map_state[nm] = snap
 	else:
-		_unretire_uncounted_objectives(level, name, snap)
-	_apply_snapshot(level, name, snap)
+		_unretire_uncounted_objectives(level, nm, snap)
+	_apply_snapshot(level, nm, snap)
 
 ## The TRIGGER STATE of one map's overlay — every byte play has changed,
 ## the movers, the wrecks and the robots let out.
@@ -4061,7 +4068,7 @@ static func _trigger_state(snap: Dictionary) -> Dictionary:
 ## An overlay onto a level whose records have just been read: the dead
 ## robots and the taken pickups leave, and the trigger runtime takes the
 ## switch, mover, damage and act state.
-func _apply_snapshot(level: LevelLoader.Level, name: String, snap: Dictionary) -> void:
+func _apply_snapshot(level: LevelLoader.Level, nm: String, snap: Dictionary) -> void:
 	var dead: Dictionary = snap.get("dead", {})
 	if level.enemies:
 		for c in level.enemies.get_children():
@@ -4077,7 +4084,7 @@ func _apply_snapshot(level: LevelLoader.Level, name: String, snap: Dictionary) -
 	if level.triggers != null:
 		level.triggers.restore(_trigger_state(snap))
 	print("[skynet] %s: restored state (%d dead, %d pickups taken)"
-		% [name, dead.size(), taken.size()])
+		% [nm, dead.size(), taken.size()])
 
 ## Death, and act 0x2B. DOS (FUN_00122b52) sets the dead + mission-failed
 ## bits, plays SFX 108 and runs no animation and no fade; FUN_00121fe3
@@ -4147,15 +4154,15 @@ func _show_end_screen(title: String, color: Color, failed: bool,
 	# it. Falls back to a plain caption when the archive is missing.
 	var banner: ImageTexture = _load_panel_texture(banner_img, true, true)
 	if banner != null:
-		var tr := TextureRect.new()
-		tr.texture = banner
-		tr.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-		tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		var rect := TextureRect.new()
+		rect.texture = banner
+		rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+		rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		var vw: float = get_viewport().get_visible_rect().size.x
 		var bw: float = clampf(vw * 0.62, 320.0, 1400.0)
-		tr.custom_minimum_size = Vector2(bw,
+		rect.custom_minimum_size = Vector2(bw,
 			bw * float(banner.get_height()) / float(banner.get_width()))
-		vb.add_child(tr)
+		vb.add_child(rect)
 	else:
 		var ttl := Label.new()
 		ttl.text = title
@@ -4391,6 +4398,7 @@ func _show_briefing(map_num: int, objectives: String, lines: Array) -> void:
 	# Pages: mission objectives first, then one per dialogue turn.
 	_briefing_pages = []
 	if not objectives.is_empty():
+		@warning_ignore("integer_division")
 		_briefing_pages.append({"img": scene_default, "text": objectives,
 			"title": "MISSION %d  OBJECTIVES" % ((map_num - 200) / 10)})
 	for ln in lines:
@@ -4506,20 +4514,20 @@ func _show_briefing(map_num: int, objectives: String, lines: Array) -> void:
 ## A TextureRect that stretches `tex` to its anchored rect; if `tex` is
 ## missing it falls back to a flat dark-teal fill so the band still reads.
 func _br_texrect(tex: Variant) -> TextureRect:
-	var tr := TextureRect.new()
-	tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	tr.stretch_mode = TextureRect.STRETCH_SCALE
-	tr.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var rect := TextureRect.new()
+	rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	rect.stretch_mode = TextureRect.STRETCH_SCALE
+	rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	if tex != null:
-		tr.texture = tex
+		rect.texture = tex
 	else:
 		var fill := ColorRect.new()
 		fill.color = Color(0.10, 0.16, 0.16)
 		fill.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		tr.add_child(fill)
-	return tr
+		rect.add_child(fill)
+	return rect
 
 ## Anchor a Control to an image-pixel rect on the 320x200 briefing screen.
 func _br_anchor(node: Control, r: Rect2) -> void:
@@ -4712,10 +4720,10 @@ func _build_stats_rows() -> void:
 	for c in _stats_box.get_children():
 		c.queue_free()
 	var rows: Array = [
-		["SHOTS HIT-RATIO:", Stats.pct(Stats.hits, Stats.shots)],
-		["ENEMIES DESTROYED:", Stats.pct(Stats.kills, Stats.enemies)],
-		["HIT-RATIO TOTAL:", Stats.pct(Stats.total_hits, Stats.total_shots)],
-		["ENEMIES TOTAL:", Stats.pct(Stats.total_kills, Stats.total_enemies)],
+		["SHOTS HIT-RATIO:", StatsLib.pct(Stats.hits, Stats.shots)],
+		["ENEMIES DESTROYED:", StatsLib.pct(Stats.kills, Stats.enemies)],
+		["HIT-RATIO TOTAL:", StatsLib.pct(Stats.total_hits, Stats.total_shots)],
+		["ENEMIES TOTAL:", StatsLib.pct(Stats.total_kills, Stats.total_enemies)],
 	]
 	for r in rows:
 		var line := HBoxContainer.new()
@@ -5103,6 +5111,7 @@ func run_command(line: String) -> String:
 							if cen.x < x0 or cen.x > x1 or cen.z < z0 or cen.z > z1:
 								continue
 							var nrm: Vector3 = (vb - va).cross(vc - va).normalized()
+							@warning_ignore("integer_division")
 							print("[collfaces] %s @%s tri %d: %s %s %s  n=%s" % [want, (mi as Node3D).global_position.snapped(Vector3.ONE),
 								ti / 3, va.snapped(Vector3.ONE), vb.snapped(Vector3.ONE), vc.snapped(Vector3.ONE), nrm.snapped(Vector3(0.01, 0.01, 0.01))])
 							shown += 1
@@ -5746,6 +5755,7 @@ static func _compass_offset(level: LevelLoader.Level) -> int:
 		return 0
 	for e in level.map.entities:
 		if (e.flags & 3) == 3 and e.marker_type == 7:
+			@warning_ignore("integer_division")
 			return (clampi(int(e.exit_map), 0, 359) << 11) / 360
 	return 0
 
@@ -5812,27 +5822,27 @@ func _hud_box_label() -> Label:
 	return l
 
 ## Load a GAMEDATA FONT00NN.FNT and build a tintable FontFile, or null.
-func _load_fnt(filename: String, scale: int) -> FontFile:
+func _load_fnt(filename: String, factor: int) -> FontFile:
 	var bytes := SkynetPaths.read_bytes(SkynetPaths.gamedata_path(filename))
 	if bytes.is_empty():
 		push_warning("HUD font missing: %s" % filename)
 		return null
-	return FntFont.build(bytes, scale)
+	return FntFont.build(bytes, factor)
 
 ## Load PANEL0.IMG (the on-foot HUD bar) as an ImageTexture, or null.
-## `name` picks another panel: PANEL1.IMG (jeep cockpit) / PANEL2.IMG
+## `nm` picks another panel: PANEL1.IMG (jeep cockpit) / PANEL2.IMG
 ## (HK cockpit) are full 320×200 frames with the windscreen as index 0.
 ## `hires`: the 640x480 set of MDMDHRES.BSA — twice the 320x200 art's
 ## resolution (CROSHAIR 120x120, WELLDONE 378x42, PANEL0 640x96 …) —
 ## when that archive has the image; the 320x200 one otherwise.
-func _load_panel_texture(name: String = "PANEL0.IMG", transparent0: bool = false,
+func _load_panel_texture(nm: String = "PANEL0.IMG", transparent0: bool = false,
 		hires: bool = false) -> ImageTexture:
 	var panel_bytes := PackedByteArray()
 	for arc in (["MDMDHRES.BSA", "MDMDIMGS.BSA"] if hires else ["MDMDIMGS.BSA"]):
 		var bsa := BSAReader.new()
 		if not bsa.open(SkynetPaths.gamedata_path(arc), SkynetPaths.variant):
 			continue
-		panel_bytes = bsa.read(name)
+		panel_bytes = bsa.read(nm)
 		bsa.close()
 		if not panel_bytes.is_empty():
 			break

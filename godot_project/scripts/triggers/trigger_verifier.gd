@@ -284,17 +284,17 @@ func _run() -> void:
 	_t0 = Time.get_ticks_msec()
 	var maps: PackedStringArray = _map_list()
 	print("[verify] %d map(s) to check (%s)" % [maps.size(), _spec])
-	for name in maps:
-		if main._level_name() != name:
+	for nm in maps:
+		if main._level_name() != nm:
 			# A level BUILD draws on the same global generator (the pickup
 			# a crate is given, level_loader 1391), so the seed goes back
 			# before the build as well as before each check.
 			seed(CHECK_SEED)
-			if not await main._change_level(name, false, false):
+			if not await main._change_level(nm, false, false):
 				_row(-1, 0, 0, "-", "-", FAIL, "the level would not load")
 				continue
 			await _drv.frames(8)
-		await _verify_map(name)
+		await _verify_map(nm)
 	_report()
 
 ## Which maps this run covers.
@@ -320,6 +320,7 @@ func _map_list() -> PackedStringArray:
 		var out2 := PackedStringArray()
 		for nm in all:
 			var num: int = int(nm.get_extension())
+			@warning_ignore("integer_division")
 			if (num / 10) * 10 == (key / 10) * 10:
 				out2.append(nm)
 		return out2
@@ -364,7 +365,7 @@ func _changed_maps(all: PackedStringArray) -> PackedStringArray:
 # ---------------------------------------------------------------------
 # One map
 # ---------------------------------------------------------------------
-func _verify_map(name: String) -> void:
+func _verify_map(nm: String) -> void:
 	_map_t0 = Time.get_ticks_msec()
 	var level = main._current_level
 	var graph: Dictionary = _open_map(level, true)
@@ -386,7 +387,7 @@ func _verify_map(name: String) -> void:
 		await _check_node(level, graph, node)
 	_reset(level, snap)
 	_release(level)
-	print("[verify] %s: %d node(s) in %.1f s" % [name, done,
+	print("[verify] %s: %d node(s) in %.1f s" % [nm, done,
 		float(Time.get_ticks_msec() - _map_t0) / 1000.0])
 
 ## The level that has just come up, made ready to be driven: its graph,
@@ -524,7 +525,7 @@ func _snapshot(level) -> Dictionary:
 ## for a map nobody had touched. On a freshly loaded map the two are the
 ## same thing; for a suite running the subset at the end of a session they
 ## are not.
-func _pristine(level, graph: Dictionary, snap: Dictionary) -> Dictionary:
+func _pristine(_level, graph: Dictionary, snap: Dictionary) -> Dictionary:
 	var act: Dictionary = snap["triggers"]
 	var states: Dictionary = act["states"]
 	var hp: Dictionary = act["hp"]
@@ -813,7 +814,7 @@ func _check_use(level, graph: Dictionary, node: Dictionary, num: int, id: int,
 	_row(num, id, act, kind, "use", PASS, "")
 
 ## A state-04 prop carrying an 0xEF act: the key at it must do nothing.
-func _check_dead_gate(level, node: Dictionary, num: int, id: int, act: int,
+func _check_dead_gate(level, _node: Dictionary, num: int, id: int, act: int,
 		kind: String) -> void:
 	var ep: Vector3 = _epos(level, id)
 	var spot: Dictionary = _stand_in(level, ep,
@@ -1136,7 +1137,7 @@ func _check_shot_death(level, node: Dictionary, num: int, id: int, act: int,
 ## the record went some other way first: the record that died throws its
 ## own blast (FUN_00124293, the i16 at its link record +1 — Behaviour.
 ## radial_blast), and a prop standing next to it can die in that blast
-## before the chain's 0x1B handler (0x1378bf) is dispatched on the next
+## before the chain's 0x1B handler (0x1380bf) is dispatched on the next
 ## sweep. That handler then finds a spent pool and does nothing — which is
 ## the runtime's rule and DOS's (Behaviour.demolish). What it was there to
 ## do has been done: the record is gone. The graph walks the links and
@@ -1183,7 +1184,7 @@ func _rifle_damage() -> float:
 ## the controller has settled is not at it: from where it came to rest
 ## the round met the crate IN FRONT of the one aimed at, emptied that
 ## pool first, and the chain behind then had nothing left to demolish
-## (the 0x1B handler 0x1378bf deals HP + 1 through ObjHit, which does
+## (the 0x1B handler 0x1380bf deals HP + 1 through ObjHit, which does
 ## nothing to a record already spent). Every spot the search finds is
 ## tried; the body is left standing at the first one that is clear.
 ## {ok: false, why} when none is, or when the pool is deeper than the
@@ -1541,7 +1542,7 @@ func _ray_reaches(feet: Vector3, aim: Vector3, target: Node) -> bool:
 ## stepped toward the record by the overshoot and measured again. The
 ## best of the tries is what the check then uses, and a node with nowhere
 ## better keeps the point the search gave it.
-func _nudge(level, feet: Vector3, ep: Vector3, mode: Dictionary) -> Vector3:
+func _nudge(_level, feet: Vector3, ep: Vector3, mode: Dictionary) -> Vector3:
 	var r: float = float(mode.get("radius", Rules.PROX_GATE_RADIUS))
 	r += float(mode.get("pad", 0.0))
 	var best: Vector3 = feet
@@ -1700,7 +1701,7 @@ func _clear_of_doorways(feet: Vector3) -> bool:
 
 ## …and one just outside it, for the checks that say nothing must happen
 ## there.
-func _stand_out(level, ep: Vector3, mode: Dictionary, alone: int = -1) -> Dictionary:
+func _stand_out(_level, ep: Vector3, mode: Dictionary, alone: int = -1) -> Dictionary:
 	var r: float = float(mode.get("radius", Rules.PROX_GATE_RADIUS)) \
 		+ float(mode.get("pad", 0.0))
 	for extra in [OUTSIDE_PAD, OUTSIDE_PAD + 60.0, OUTSIDE_PAD + 180.0]:

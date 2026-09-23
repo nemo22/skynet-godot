@@ -598,8 +598,8 @@ static func _preview_branch() -> Node3D:
 ## Give the mission root every node the bake built. A node that already
 ## has an owner is the inside of an instanced level scene and keeps it —
 ## the instance is what gets saved, not its contents.
-static func _own(n: Node, owner: Node) -> void:
+static func _own(n: Node, owner_node: Node) -> void:
 	if n.owner == null:
-		n.owner = owner
+		n.owner = owner_node
 	for c in n.get_children():
-		_own(c, owner)
+		_own(c, owner_node)

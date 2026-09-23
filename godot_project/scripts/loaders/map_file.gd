@@ -250,6 +250,7 @@ static func parse(bytes: PackedByteArray) -> MapFile:
 	# Future Shock reaches a block twice (all 267 checked, longest cell
 	# chain 147), so real maps parse exactly as before.
 	var visited: Dictionary = {}
+	@warning_ignore("integer_division")
 	var max_blocks: int = bytes.size() / BLOCK_MIN
 	for cz in gh:
 		for cx in gw:

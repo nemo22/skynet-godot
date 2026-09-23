@@ -35,14 +35,14 @@ func _ready() -> void:
 		var bsa := BSAReader.new()
 		bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant)
 		for s in String(cli["maps"]).split(","):
-			var name := "MAP.%03d" % int(s)
-			var bytes := bsa.read(name)
+			var nm := "MAP.%03d" % int(s)
+			var bytes := bsa.read(nm)
 			if bytes.is_empty():
-				print("%s: missing" % name)
+				print("%s: missing" % nm)
 				continue
 			var m := MapFile.parse(bytes)
 			if m == null:
-				print("%s: unreadable" % name)
+				print("%s: unreadable" % nm)
 				continue
 			var outdoor: bool = bytes.size() > 9028 and bytes[9028] != 0
 			if bytes.size() > 9032:
@@ -87,7 +87,7 @@ func _ready() -> void:
 						var b: int = e.sprite_index >> 7
 						banks[b] = banks.get(b, 0) + 1
 			print("%s: grid %dx%d outdoor=%s meshes=%d lights=%d(%d on) markers=%s enemies=%s sprite_banks=%s"
-				% [name, m.grid_width, m.grid_height, outdoor, meshes, lights, lights_on, markers, enemies, banks])
+				% [nm, m.grid_width, m.grid_height, outdoor, meshes, lights, lights_on, markers, enemies, banks])
 		bsa.close()
 	if cli.has("cfa"):
 		# --cfa=WEAPON01.CFA --out=DIR: every frame of a CFA as PNG.
@@ -268,8 +268,8 @@ static func dump_inventory(dir: String, maps_arg: String) -> void:
 	var sprites: Dictionary = {}     # index -> {count, maps}
 	var meshes: Dictionary = {}      # name -> {count, maps}
 	var enemies: Dictionary = {}
-	for name in names:
-		var bytes := bsa.read(name)
+	for map_name in names:
+		var bytes := bsa.read(map_name)
 		if bytes.is_empty():
 			continue
 		var m := MapFile.parse(bytes)
@@ -283,7 +283,7 @@ static func dump_inventory(dir: String, maps_arg: String) -> void:
 					continue
 				var d: Dictionary = meshes.get(nm, {"count": 0, "maps": {}})
 				d["count"] += 1
-				d["maps"][name] = true
+				d["maps"][map_name] = true
 				meshes[nm] = d
 			elif v == 3:
 				if e.marker_type == 2:
@@ -291,7 +291,7 @@ static func dump_inventory(dir: String, maps_arg: String) -> void:
 				elif e.marker_type == -1 and e.sprite_index >= 0:
 					var d: Dictionary = sprites.get(e.sprite_index, {"count": 0, "maps": {}})
 					d["count"] += 1
-					d["maps"][name] = true
+					d["maps"][map_name] = true
 					sprites[e.sprite_index] = d
 	bsa.close()
 	var lines: PackedStringArray = []
@@ -446,7 +446,6 @@ static func dump_faces(names: String) -> void:
 
 ## --find=OVRPASS --maps=230: entity positions (Godot coords) by name.
 static func find_entities(m, name_part: String) -> void:
-	var MapFile = load("res://scripts/loaders/map_file.gd")
 	for e in m.entities:
 		if (e.flags & 3) == 2 and name_part.to_lower() == "lights":
 			print("   light at godot (%d, %d, %d) intensity=%d range=%d"
@@ -466,20 +465,19 @@ static func find_entities(m, name_part: String) -> void:
 ## byte, act type, HP, link target) — movers, gates, switches,
 ## teleports — with the chain walked from each head. Godot coords.
 static func dump_links(spec: String) -> void:
-	var MapFile = load("res://scripts/loaders/map_file.gd")
 	var bsa := BSAReader.new()
 	bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant)
 	for s in spec.split(","):
-		var name := "MAP.%03d" % int(s)
-		var bytes := bsa.read(name)
+		var nm := "MAP.%03d" % int(s)
+		var bytes := bsa.read(nm)
 		if bytes.is_empty():
-			print("%s: missing" % name)
+			print("%s: missing" % nm)
 			continue
 		var m = MapFile.parse(bytes)
 		if m == null:
-			print("%s: unreadable" % name)
+			print("%s: unreadable" % nm)
 			continue
-		print("%s links:" % name)
+		print("%s links:" % nm)
 		var targets: Dictionary = {}
 		for e in m.entities:
 			if e.link_next > 0:
@@ -507,12 +505,11 @@ static func dump_links(spec: String) -> void:
 ## its 50 HP/s ceiling), and how far the player start sits from the
 ## nearest one — a spawn inside a source would be unplayable.
 static func dump_radiation(spec: String) -> void:
-	var MapFile = load("res://scripts/loaders/map_file.gd")
 	var bsa := BSAReader.new()
 	bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant)
 	for sfx in spec.split(","):
-		var name := "MAP.%03d" % int(sfx)
-		var bytes := bsa.read(name)
+		var nm := "MAP.%03d" % int(sfx)
+		var bytes := bsa.read(nm)
 		if bytes.is_empty():
 			continue
 		var m = MapFile.parse(bytes)
@@ -535,7 +532,7 @@ static func dump_radiation(spec: String) -> void:
 			lines.append("      %s strength %d, lethal core %d u, %d u from the start"
 				% [r[0], int(r[1]), int(maxf(float(r[1]) - 256.0, 0.0)), int(d)])
 		print("%s: %d radiation sources; nearest edge %s from the player start"
-			% [name, srcs.size(), ("%d u" % int(nearest)) if nearest < 1e8 else "n/a"])
+			% [nm, srcs.size(), ("%d u" % int(nearest)) if nearest < 1e8 else "n/a"])
 		for l in lines:
 			print(l)
 	bsa.close()
@@ -544,19 +541,18 @@ static func dump_radiation(spec: String) -> void:
 ## next to what the parser accepted, and every variant-1 entity whose
 ## name index the parser could not resolve.
 static func dump_names(spec: String) -> void:
-	var MapFile = load("res://scripts/loaders/map_file.gd")
 	var bsa := BSAReader.new()
 	bsa.open(SkynetPaths.gamedata_path(SkynetPaths.map_archive), SkynetPaths.variant)
 	for s in spec.split(","):
-		var name := "MAP.%03d" % int(s)
-		var bytes := bsa.read(name)
+		var nm := "MAP.%03d" % int(s)
+		var bytes := bsa.read(nm)
 		if bytes.is_empty():
 			continue
 		var m = MapFile.parse(bytes)
 		if m == null:
-			print("%s: unreadable" % name)
+			print("%s: unreadable" % nm)
 			continue
-		print("%s: parser accepted %d names; header u32 @0..0x10: %d %d %d %d %d" % [name, m.names.size(),
+		print("%s: parser accepted %d names; header u32 @0..0x10: %d %d %d %d %d" % [nm, m.names.size(),
 			bytes.decode_u32(0), bytes.decode_u32(4), bytes.decode_u32(8), bytes.decode_u32(12), bytes.decode_u32(16)])
 		var off: int = 20
 		var idx: int = 0
@@ -660,6 +656,7 @@ static func scan_colours(spec: String) -> void:
 				continue
 			var hits := 0
 			var n := 0
+			@warning_ignore("integer_division")
 			var step: int = maxi(1, mini(img.get_width(), img.get_height()) / 32)
 			for y in range(0, img.get_height(), step):
 				for x in range(0, img.get_width(), step):
@@ -671,5 +668,6 @@ static func scan_colours(spec: String) -> void:
 						hits += 1
 			if n > 0 and float(hits) / float(n) > 0.15:
 				found += 1
+				@warning_ignore("integer_division")
 				print("  T%03d_%03d %dx%d — %d%% of pixels" % [bank, rec, img.get_width(), img.get_height(), 100 * hits / n])
 	print("[scan] %d records" % found)

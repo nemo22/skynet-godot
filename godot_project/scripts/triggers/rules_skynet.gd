@@ -151,7 +151,7 @@ const ACT_LIGHT_FADE_DOWN_LAST: int = 0x12
 ## Destructible mesh-swap per TRANSFRM.PRS damage stages (0x120433).
 const ACT_DESTRUCT_A: int = 0x18
 const ACT_DESTRUCT_B: int = 0x19
-## Demolition (handler 0x1378bf, decoded 2026-09-05): when a chain
+## Demolition (handler 0x1380bf, decoded 2026-09-05): when a chain
 ## enables the entity, the handler sets its HP to 1 if it has none and
 ## calls ObjHit with HP + 1 — the object dies through the normal
 ## destruction path (blast, drop, sound).
@@ -475,9 +475,9 @@ static func mover_params(act: int) -> Dictionary:
 		limit -= 0x10000                        # signed i16
 	# Slide/swing handlers step +p6 for odd act ids and -p6 for even
 	# ones; the other families flip on a negative limit instead.
-	var sign: float = 1.0 if (act & 1) != 0 else -1.0
+	var sgn: float = 1.0 if (act & 1) != 0 else -1.0
 	if fam != "rot" and fam != "slide" and limit < 0:
-		sign = -sign
+		sgn = -sgn
 	var span: float = absf(float(limit))
 	match fam:
 		"slide5f":
@@ -516,7 +516,7 @@ static func mover_params(act: int) -> Dictionary:
 			# continuous one.
 			speed = ROT_SPEED if limit == 0 else 0.0
 	return {"family": fam, "axis": clampi(p4, 0, 2), "p4": p4, "span": span,
-		"sign": sign, "speed": speed}
+		"sign": sgn, "speed": speed}
 
 ## One row with the defaults filled in.
 static func _row(kind: String, extra: Dictionary) -> Dictionary:
@@ -591,7 +591,7 @@ static func _build() -> Dictionary:
 				% [DESTRUCT_DAMAGE_PER_STAGE,
 				   " (0x18 carries p4 = 4 and ramps four stages a second while enabled instead, and clears no bit of its own — not modelled, and unreachable in the shipped data)"
 					if a == ACT_DESTRUCT_A else ""]})
-	r[ACT_DEMOLISH] = _row("demolish", {"dos": "0x1378bf", "prov": "dos",
+	r[ACT_DEMOLISH] = _row("demolish", {"dos": "0x1380bf", "prov": "dos",
 		"note": "variant 1 only: hp = max(hp, 1) then ObjHit(hp + 1)"})
 	# --- Messages, objectives, the counter -----------------------------
 	for a in range(ACT_HINT_FIRST, ACT_HINT_LAST + 1):

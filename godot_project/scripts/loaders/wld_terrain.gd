@@ -431,8 +431,9 @@ static func _corner_from_cells(cells: PackedColorArray, col: int, row: int) -> C
 ## DOS textures terrain with a continuous world-planar projection: each
 ## cell binds one TEXTURE.302 tile chosen by (layer2 & 0x3F), and the UV
 ## flows with world position so a road runs unbroken across cells. This
-## is reproduced with one ArrayMesh surface per material id, world-planar
-## UVs (one tile per cell) and the tile texture left at REPEAT wrap.
+## is reproduced with one ArrayMesh surface per material id and one whole
+## tile per cell, in the cell's own 0..1 UVs with the texture clamped
+## (the same picture as world UVs at REPEAT, but no filter seam).
 ##
 ## `tile_textures` is an Array of Texture2D indexed by material id (built
 ## from TEXTURE.302). When empty, a vertex-colour fallback is used.
@@ -484,8 +485,12 @@ static func build_terrain_mesh(w: WLD, tile_textures: Array = [],
 			var p_SE := Vector3(x1, h_SE, z_s)
 			var p_SW := Vector3(x0, h_SW, z_s)
 
-			# World-planar UV: one tile per 256-unit cell, continuous
-			# across cells — with REPEAT wrap a road tiles seamlessly.
+			# One whole tile per 256-unit cell, in the cell's own 0..1 UVs.
+			# Not world-continuous UVs with REPEAT wrap: a linear filter
+			# (SMOOTH TEXTURES) and the mipmaps would then blend each tile
+			# edge with its opposite edge and draw a line on every cell
+			# border. Render.style clamps the terrain instead; the nearest
+			# look is the same either way.
 			# Layer-2 bits 6/7 orient the tile (XnGine, as in Daggerfall):
 			# bit 6 rotates 90°, bit 7 flips (180°). Road edge and corner
 			# tiles only join up when honoured.
@@ -493,10 +498,10 @@ static func build_terrain_mesh(w: WLD, tile_textures: Array = [],
 			var orient: int = ((b2 & 0x40) >> 6) | ((b2 & 0x80) >> 6)
 			if TILE_ROT_CCW:
 				orient = (4 - orient) & 3
-			var uv_NW := Vector2(float(col),     float(row))
-			var uv_NE := Vector2(float(col + 1), float(row))
-			var uv_SE := Vector2(float(col + 1), float(row + 1))
-			var uv_SW := Vector2(float(col),     float(row + 1))
+			var uv_NW := Vector2(0.0, 0.0)
+			var uv_NE := Vector2(1.0, 0.0)
+			var uv_SE := Vector2(1.0, 1.0)
+			var uv_SW := Vector2(0.0, 1.0)
 
 			var mat_id: int = b2 & 0x3F
 
@@ -523,15 +528,14 @@ static func build_terrain_mesh(w: WLD, tile_textures: Array = [],
 			bn.append(n1); bn.append(n1); bn.append(n1)
 			bn.append(n2); bn.append(n2); bn.append(n2)
 			if orient != 0:
-				var base_c := Vector2(float(col), float(row))
-				var q := [uv_NW - base_c, uv_NE - base_c, uv_SE - base_c, uv_SW - base_c]
+				var q := [uv_NW, uv_NE, uv_SE, uv_SW]
 				for r_i in orient:
 					for i in 4:
 						q[i] = Vector2(1.0 - q[i].y, q[i].x)   # rotate 90° about the tile centre
-				uv_NW = q[0] + base_c
-				uv_NE = q[1] + base_c
-				uv_SE = q[2] + base_c
-				uv_SW = q[3] + base_c
+				uv_NW = q[0]
+				uv_NE = q[1]
+				uv_SE = q[2]
+				uv_SW = q[3]
 			bu.append(uv_NW); bu.append(uv_NE); bu.append(uv_SE)
 			bu.append(uv_NW); bu.append(uv_SE); bu.append(uv_SW)
 			# Per-corner colours — each triangle vertex gets the blended

@@ -140,8 +140,8 @@ func close_map() -> void:
 	closed.emit()
 
 # --- build -------------------------------------------------------------
-func _img(name: String, imgs: BSAReader, pal: PackedColorArray) -> ImageTexture:
-	var b := imgs.read(name)
+func _img(nm: String, imgs: BSAReader, pal: PackedColorArray) -> ImageTexture:
+	var b := imgs.read(nm)
 	return ImgFile.parse(b, pal) if not b.is_empty() else null
 
 func _build_bars() -> void:
@@ -194,14 +194,14 @@ func _strip(tex: ImageTexture, y: float, h: float, fallback: Color) -> Control:
 	c.anchor_bottom = (y + h) / 200.0
 	c.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	if tex != null:
-		var tr := TextureRect.new()
-		tr.texture = tex
-		tr.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-		tr.stretch_mode = TextureRect.STRETCH_SCALE
-		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-		tr.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		c.add_child(tr)
+		var rect := TextureRect.new()
+		rect.texture = tex
+		rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+		rect.stretch_mode = TextureRect.STRETCH_SCALE
+		rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		c.add_child(rect)
 	else:
 		var cr := ColorRect.new()
 		cr.color = fallback
@@ -296,7 +296,7 @@ func _restore_environment() -> void:
 	var we: WorldEnvironment = _main.get_node_or_null("WorldEnvironment")
 	if we != null and we.environment != null:
 		var env: Environment = we.environment
-		env.background_mode = int(_env_saved["bg"])
+		env.background_mode = int(_env_saved["bg"]) as Environment.BGMode
 		env.background_color = _env_saved["color"]
 		env.background_energy_multiplier = float(_env_saved["energy"])
 		env.fog_enabled = bool(_env_saved["fog"])

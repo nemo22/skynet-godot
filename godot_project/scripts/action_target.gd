@@ -16,9 +16,9 @@ extends MeshInstance3D
 var _branch: Node = null
 var _file_off: int = -1
 
-func setup_action(branch: Node, file_off: int) -> void:
+func setup_action(branch: Node, off: int) -> void:
 	_branch = branch
-	_file_off = file_off
+	_file_off = off
 	add_to_group("hittable")          # blast damage from projectiles/grenades
 
 func file_off() -> int:

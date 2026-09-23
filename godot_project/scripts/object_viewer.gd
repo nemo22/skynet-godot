@@ -62,18 +62,18 @@ func _exit_tree() -> void:
 func _show(i: int) -> void:
 	if _names.is_empty(): return
 	_idx = (i + _names.size()) % _names.size()
-	var name: String = _names[_idx]
-	var bytes := _objs.read(name)
-	var parsed: Mesh3D.Mesh3D = Mesh3D.parse(bytes, name)
+	var nm: String = _names[_idx]
+	var bytes := _objs.read(nm)
+	var parsed: Mesh3D.Mesh3D = Mesh3D.parse(bytes, nm)
 	if _instance:
 		_instance.queue_free()
 		_instance = null
 	if parsed == null:
-		status.text = "[%d/%d] %s — parse FAILED" % [_idx + 1, _names.size(), name]
+		status.text = "[%d/%d] %s — parse FAILED" % [_idx + 1, _names.size(), nm]
 		return
 	var am := Mesh3D.build_textured_array_mesh(parsed, Callable(_cache, "provide"))
 	if am == null:
-		status.text = "[%d/%d] %s — build FAILED" % [_idx + 1, _names.size(), name]
+		status.text = "[%d/%d] %s — build FAILED" % [_idx + 1, _names.size(), nm]
 		return
 	_instance = MeshInstance3D.new()
 	_instance.mesh = am
@@ -87,7 +87,7 @@ func _show(i: int) -> void:
 	_dist = radius * 2.5
 	_apply_camera()
 	status.text = "[%d/%d] %s   verts=%d faces=%d surfaces=%d   size=%.1fx%.1fx%.1f" % [
-		_idx + 1, _names.size(), name,
+		_idx + 1, _names.size(), nm,
 		parsed.vertices.size(), parsed.faces.size(), am.get_surface_count(),
 		parsed.aabb.size.x, parsed.aabb.size.y, parsed.aabb.size.z]
 	print("[objview] %s" % status.text)

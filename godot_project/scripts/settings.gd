@@ -350,6 +350,7 @@ func apply_window() -> void:
 				w.size = want
 				var screen: Vector2i = DisplayServer.screen_get_size(
 					DisplayServer.window_get_current_screen())
+				@warning_ignore("integer_division")
 				w.position = (screen - want) / 2
 	print("[settings] window %s %s" % [WINDOW_MODE_NAMES[window_mode],
 		size_name(window_size) if window_mode == WIN_WINDOWED else ""])

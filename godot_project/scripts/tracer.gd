@@ -52,19 +52,19 @@ static func spawn(parent: Node, from: Vector3, to: Vector3, col: Color,
 		width: float = WIDTH) -> MeshInstance3D:
 	if parent == null:
 		return null
-	var tr = null                              # this script's instance
-	while tr == null and not _pool.is_empty():
+	var rect = null                              # this script's instance
+	while rect == null and not _pool.is_empty():
 		var c = _pool.pop_back()
 		if is_instance_valid(c) and not (c as Node).is_queued_for_deletion():
-			tr = c
-	if tr == null:
-		tr = load("res://scripts/tracer.gd").new()
-	if tr.get_parent() != parent:
-		if tr.get_parent() != null:
-			tr.get_parent().remove_child(tr)
-		parent.add_child(tr)
-	tr.setup(from, to, col, width)
-	return tr
+			rect = c
+	if rect == null:
+		rect = load("res://scripts/tracer.gd").new()
+	if rect.get_parent() != parent:
+		if rect.get_parent() != null:
+			rect.get_parent().remove_child(rect)
+		parent.add_child(rect)
+	rect.setup(from, to, col, width)
+	return rect
 
 ## Orient the beam from `from` to `to`. Call after adding to the tree.
 ## `width` is the beam's thickness in world units — the player's own

@@ -775,6 +775,7 @@ func _refresh_scores() -> void:
 		("/%d" % limit) if limit > 0 else "", rank, rows.size()]
 	if int(Net.settings.get("time_limit", 0)) > 0:
 		var s: int = int(ceil(Net.time_left))
+		@warning_ignore("integer_division")
 		_clock.text = "%d:%02d" % [s / 60, s % 60]
 	else:
 		_clock.text = ""

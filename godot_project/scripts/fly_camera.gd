@@ -1563,15 +1563,15 @@ func _swim(delta: float, fwd_in: float, str_in: float) -> void:
 ## The horizontal velocity the keys are asking for. DOS builds it one axis
 ## at a time (0x11af95) and does NOT normalise the diagonal, so forward
 ## and right together is 250 ahead PLUS 210 across — about 326 u/s — and
-## that is how the original moves. `scale` is the swimmer's half.
-func _want_velocity(fwd_in: float, str_in: float, scale: float = 1.0) -> Vector3:
+## that is how the original moves. `factor` is the swimmer's half.
+func _want_velocity(fwd_in: float, str_in: float, factor: float = 1.0) -> Vector3:
 	var run: bool = _sprinting()
 	# The run modifier lifts the forward cap only; backwards stays at the
 	# walk. The sidestep has its own pair.
 	var f: float = fwd_in * ((run_speed if run else walk_speed) if fwd_in > 0.0 else walk_speed)
 	var s: float = str_in * (STRAFE_RUN_SPEED if run else STRAFE_SPEED)
 	var b := Basis(Vector3.UP, _yaw)
-	return (-b.z * f + b.x * s) * (speed_boost * class_speed * scale)
+	return (-b.z * f + b.x * s) * (speed_boost * class_speed * factor)
 
 func _walk(delta: float, fwd_in: float, str_in: float) -> void:
 	if in_water:
@@ -2286,6 +2286,7 @@ func net_damage(amount: float, attacker: Node) -> void:
 ## --- DOS pickup effects (handler 0x11d670, item table 0x35800) --------
 
 ## Emitted with the STRINGS.PRS "PICKED UP ..." line for the HUD.
+@warning_ignore("unused_signal")   # emitted by pickup.gd
 signal pickup_message(text: String)
 
 ## Armor 0..1 (DOS 16.16 at 0x38cc8, capped at 1.0): soaks half of each

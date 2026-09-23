@@ -44,6 +44,8 @@
 
 extends RefCounted
 
+const ControlsLib := preload("res://scripts/controls.gd")
+
 ## Clearance under the capsule when it is placed on a floor
 ## (mission_solver.LIFT — the controller's own safe_margin).
 const LIFT: float = 4.0
@@ -68,12 +70,12 @@ func tree() -> SceneTree:
 # ---------------------------------------------------------------------
 # Where the player is and what he looks at
 # ---------------------------------------------------------------------
-## Put the player's FEET at `feet` (world), keeping his health, ammo and
+## Put the player's FEET at `at` (world), keeping his health, ammo and
 ## weapons — set_spawn(reset_state = false), the call --solve has always
 ## used. `yaw` NAN leaves the facing alone.
-func place(feet: Vector3, yaw: float = NAN) -> void:
+func place(at: Vector3, yaw: float = NAN) -> void:
 	var y: float = player.rotation.y if is_nan(yaw) else yaw
-	player.set_spawn(feet + Vector3(0.0, LIFT, 0.0), y, false)
+	player.set_spawn(at + Vector3(0.0, LIFT, 0.0), y, false)
 
 ## Point the view (radians). fly_camera.set_view — the console's `aim`.
 func look(yaw: float, pitch: float = 0.0) -> void:
@@ -156,7 +158,7 @@ func activate() -> void:
 ## cursor — so the first press captures it, exactly as it does for a
 ## player who has just clicked into the window.
 func fire() -> void:
-	if Controls.is_mouse(int(Controls.binds.get("fire", 0))):
+	if ControlsLib.is_mouse(int(Controls.binds.get("fire", 0))):
 		ensure_capture()
 	press("fire")
 
@@ -228,17 +230,17 @@ func _flat(target: Vector3) -> float:
 ## then stepped one physics frame would otherwise see the press land in
 ## the frame after the one it measured.
 func _send(code: int, down: bool) -> void:
-	if Controls.is_mouse(code):
+	if ControlsLib.is_mouse(code):
 		var mb := InputEventMouseButton.new()
-		mb.button_index = -code
+		mb.button_index = (-code) as MouseButton
 		mb.pressed = down
 		mb.position = _centre()
 		mb.global_position = mb.position
 		Input.parse_input_event(mb)
 	else:
 		var k := InputEventKey.new()
-		k.keycode = code
-		k.physical_keycode = code
+		k.keycode = code as Key
+		k.physical_keycode = code as Key
 		k.pressed = down
 		k.echo = false
 		Input.parse_input_event(k)

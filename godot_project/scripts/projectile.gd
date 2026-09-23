@@ -77,12 +77,15 @@ var _q: PhysicsRayQueryParameters3D = null
 ## models live in MDMDENMS.BSA only; the asset cache builds them once
 ## (converted/mesh/) with the same texture provider the old direct load
 ## went through.
-static func model_mesh(name: String) -> ArrayMesh:
-	var key := name.to_upper()
+static func model_mesh(nm: String) -> ArrayMesh:
+	var key := nm.to_upper()
 	if _mesh_cache.has(key):
 		return _mesh_cache[key] if _mesh_cache[key] is ArrayMesh else null
 	var am: ArrayMesh = Assets.mesh(key)
-	_mesh_cache[key] = am if am != null else false
+	if am != null:
+		_mesh_cache[key] = am
+	else:
+		_mesh_cache[key] = false        # remembered as missing
 	return am
 
 ## The bolt colours are MEASURED, not chosen: each LASERn.3D is a flat
@@ -293,8 +296,8 @@ func _bolt_basis(fatten: float = 1.0) -> Basis:
 	var y: Vector3 = (wide - z * wide.dot(z)).normalized()
 	return Basis(y.cross(z) * fatten, y * fatten, z)
 
-static func _model_is_bolt(name: String) -> bool:
-	return name.to_upper().begins_with("LASER")
+static func _model_is_bolt(nm: String) -> bool:
+	return nm.to_upper().begins_with("LASER")
 
 func _physics_process(delta: float) -> void:
 	if _done:
@@ -428,14 +431,14 @@ static func blast_clear(space: PhysicsDirectSpaceState3D, from: Vector3, to: Vec
 
 ## The blast on the player, DOS style: from his DOS point, through the
 ## line-of-sight test, in DOS points. Deathmatch keeps its own reporting.
-static func blast_player(at: Vector3, s: float, splash: float, owner: Node, tree: SceneTree) -> void:
+static func blast_player(at: Vector3, s: float, splash: float, owner_node: Node, tree: SceneTree) -> void:
 	var pl := tree.get_first_node_in_group("player")
 	if not (pl is Node3D) or not pl.has_method("take_damage"):
 		return
 	if Net.active and pl.has_method("net_damage"):
 		var dn := (pl as Node3D).global_position.distance_to(at)
 		if dn < splash:
-			pl.net_damage(s * 0.55 * (1.0 - dn / splash), owner)
+			pl.net_damage(s * 0.55 * (1.0 - dn / splash), owner_node)
 		return
 	var pp: Vector3 = pl.call("dos_point") if pl.has_method("dos_point") else (pl as Node3D).global_position
 	var pts: float = dos_blast(s, pp.distance_to(at))

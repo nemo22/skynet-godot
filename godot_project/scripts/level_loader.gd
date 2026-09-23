@@ -1058,7 +1058,7 @@ static func _best_fit_wld(map: MapFile.MapFile) -> String:
 
 static func _enemy_frames_for(enemy_type: int, enms: BSAReader,
 		objs: BSAReader, frame_cache: Dictionary,
-		provider: Callable) -> Array:
+		_provider: Callable) -> Array:
 	if enemy_type < 0:
 		return []
 	var base: String = ""
@@ -1096,7 +1096,7 @@ static func _enemy_frames_for(enemy_type: int, enms: BSAReader,
 ## template — the destructible then vanishes when destroyed.
 static func _destruct_stage_meshes(mesh_name: String, transfrm: Dictionary,
 		objs: BSAReader, mesh_cache: Dictionary,
-		provider: Callable) -> Array:
+		_provider: Callable) -> Array:
 	var frames: PackedStringArray = transfrm.get(
 		mesh_name.to_lower(), PackedStringArray())
 	var out: Array = []
@@ -1181,7 +1181,7 @@ static func _attach_segments(parent: Node3D, enemy_type: int,
 ## "weapons flat" / "equipment" banks become collectible Pickup nodes;
 ## every other bank is a static decorative billboard (barrels, rubble,
 ## bushes, corpses, signs …).
-static func _build_sprites(level: Level, palette: PackedColorArray) -> void:
+static func _build_sprites(level: Level, _palette: PackedColorArray) -> void:
 	level.sprites = Node3D.new()
 	level.sprites.name = "Sprites"
 	if level.map == null:

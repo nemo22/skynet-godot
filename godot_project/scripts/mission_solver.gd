@@ -163,24 +163,24 @@ func level_ready() -> void:
 	if _drv == null:
 		_drv = PlayerDriver.new()
 		_drv.setup(main)
-	var name: String = main._level_name()
+	var nm: String = main._level_name()
 	if _t0 == 0:
 		_t0 = Time.get_ticks_msec()
-		_visited["%s#start" % name] = true
+		_visited["%s#start" % nm] = true
 		var lim_s: String = str(main._cli.get("solve", ""))
 		var lim: float = float(lim_s) if lim_s.is_valid_float() and float(lim_s) > 10.0 else 1500.0
 		get_tree().create_timer(lim).timeout.connect(func() -> void:
 			if not _finished:
 				print("[solve] RESULT FAIL — time limit %.0f s" % lim)
 				_quit(1))
-		print("[solve] solving from %s (time limit %.0f s)" % [name, lim])
+		print("[solve] solving from %s (time limit %.0f s)" % [nm, lim])
 	_solve_map()
 
 func _solve_map() -> void:
 	if _running:
 		return
 	_running = true
-	var name: String = main._level_name()
+	var nm: String = main._level_name()
 	for _i in 12:                       # colliders registered, spawn settled
 		await get_tree().physics_frame
 	var lvl = main._current_level
@@ -192,10 +192,10 @@ func _solve_map() -> void:
 	p.set("god_mode", true)
 	_setup(lvl)
 	var entry: Vector3 = p.global_position
-	var seeds: Array = _seeds.get(name, [])
+	var seeds: Array = _seeds.get(nm, [])
 	seeds.append(entry)
-	_seeds[name] = seeds
-	print("[solve] === %s  entry %s  water %s  cell %d  %s%s" % [name, entry.snapped(Vector3.ONE),
+	_seeds[nm] = seeds
+	print("[solve] === %s  entry %s  water %s  cell %d  %s%s" % [nm, entry.snapped(Vector3.ONE),
 		"-" if _water == INF else "%.0f" % _water, int(_cell),
 		"outdoor" if lvl.is_outdoor else "indoor", _where()])
 	var rounds: int = 0
@@ -208,43 +208,43 @@ func _solve_map() -> void:
 		print("[solve] round %d: %d cells reachable%s (%d ms)" % [rounds, _pos.size(),
 			" — NODE CAP HIT" if _capped else "", Time.get_ticks_msec() - t])
 		if main._mission_done:
-			_pass(name)
+			_pass(nm)
 			return
-		var acts: Array = _candidates(a, name, false)
+		var acts: Array = _candidates(a, nm, false)
 		if acts.is_empty() and not shot:
-			acts = _candidates(a, name, true)   # shooting is the last resort
+			acts = _candidates(a, nm, true)   # shooting is the last resort
 			shot = true
 		elif not acts.is_empty():
 			shot = false
 		if acts.is_empty():
 			break
 		for act in acts:
-			await _perform(a, name, act)
+			await _perform(a, nm, act)
 			seeds.append(act["at"])
 			if main._mission_done:
 				await get_tree().create_timer(0.5).timeout
-				_pass(name)
+				_pass(nm)
 				return
 		await _settle(a)
 	# --solve-stay: diagnose THIS map, never leave it (the report covers
 	# only the map the run fails on, and a run that backs out of a flooded
 	# deck never says why the deck ended).
 	if main._cli.has("solve-stay"):
-		print("[solve] --solve-stay: not leaving %s" % name)
-		_fail(name, a)
+		print("[solve] --solve-stay: not leaving %s" % nm)
+		_fail(nm, a)
 		return
 	# Nothing more fires here: leave by an exit this space reaches.
-	for x in _exits(a, name):
+	for x in _exits(a, nm):
 		_put(x["at"])
 		await _frames(3)
 		if a.behaviour.activate_teleport(p.global_position, main._eye_position()):
 			_visited[x["vkey"]] = true
 			_door_uses[x["dkey"]] = int(x["used"]) + 1
-			_route.append("%s: EXIT → %s set %d from %s%s" % [name, x["target"], x["set"],
+			_route.append("%s: EXIT → %s set %d from %s%s" % [nm, x["target"], x["set"],
 				x["at"].snapped(Vector3.ONE), "  (the way back)" if int(x["score"]) < 0 else ""])
 			print("[solve] exit @%05x → %s set %d (from %s)%s" % [x["off"], x["target"], x["set"],
 				x["at"].snapped(Vector3.ONE), "  (the way back)" if int(x["score"]) < 0 else ""])
-			_write_view(name, a)
+			_write_view(nm, a)
 			_running = false
 			return                      # main loads the map, level_ready() goes on
 		var ex = a.map.entities_by_off.get(x["off"])
@@ -262,7 +262,7 @@ func _solve_map() -> void:
 				by = " by %s at %s" % [_collider_name(h["collider"]), (h["position"] as Vector3).snapped(Vector3.ONE)]
 		print("[solve]   exit @%05x in reach from %s but did not fire: armed=%s, line to it %s%s" % [
 			x["off"], p.global_position.snapped(Vector3.ONE), armed, "clear" if line_ok else "BLOCKED", by])
-	_fail(name, a)
+	_fail(nm, a)
 
 ## Everything the flood needs about this level.
 func _setup(lvl) -> void:
@@ -802,12 +802,12 @@ func _reach_point(ep: Vector3, reach: float) -> Vector3:
 			return stop
 	return Vector3.INF
 
-func _candidates(a, name: String, shoot: bool) -> Array:
+func _candidates(a, nm: String, shoot: bool) -> Array:
 	var out: Array = []
 	if shoot:
 		for off in a.behaviour.damageable_offs():
 			var k: String = "s%05x" % off
-			if _done.has(name + ":" + k):
+			if _done.has(nm + ":" + k):
 				continue
 			var e = a.map.entities_by_off.get(off)
 			var n: int = _shooting_spot(a, off, _aim_point(a, off, e))
@@ -817,7 +817,7 @@ func _candidates(a, name: String, shoot: bool) -> Array:
 	for t in _prox_nodes(a):
 		var e = a.behaviour.record_of(int(t.id))
 		var k: String = "p%05x" % e.file_off
-		if _done.has(name + ":" + k) or a.triggers.spent(e.file_off):
+		if _done.has(nm + ":" + k) or a.triggers.spent(e.file_off):
 			continue
 		# The live bytes, which are the trigger runtime's (step 5a) — a
 		# lever spent earlier in this run is not the lever the MAP file has.
@@ -863,9 +863,9 @@ func _candidates(a, name: String, shoot: bool) -> Array:
 	# so the solver has none either.)
 	return out
 
-func _perform(a, name: String, act: Dictionary) -> void:
-	_done[name + ":" + String(act["key"])] = true
-	var line: String = "%s: %s %s @%05x from %s" % [name, act["kind"], act["what"], act["off"],
+func _perform(a, nm: String, act: Dictionary) -> void:
+	_done[nm + ":" + String(act["key"])] = true
+	var line: String = "%s: %s %s @%05x from %s" % [nm, act["kind"], act["what"], act["off"],
 		(act["at"] as Vector3).snapped(Vector3.ONE)]
 	_route.append(line)
 	print("[solve]   " + line)
@@ -882,7 +882,7 @@ func _perform(a, name: String, act: Dictionary) -> void:
 			a.behaviour.press_use()
 			await _frames(2)
 		"shoot":
-			for _k in 15:
+			for _try in 15:
 				if not a.behaviour.is_damageable(int(act["off"])):
 					break
 				a.behaviour.obj_hit(int(act["off"]), 400.0)
@@ -970,7 +970,7 @@ func _shooting_spot(a, off: int, aim: Vector3, reach: float = SHOOT_RANGE) -> in
 ## door is taken at most RETAKE times, so the walk cannot go on for ever;
 ## the least-used one goes first, so it spreads out instead of swinging
 ## between the same two rooms.
-func _exits(a, name: String) -> Array:
+func _exits(a, nm: String) -> Array:
 	# Where the use key reaches a doorway from: the sprite itself, and any
 	# 0xEF gate whose chain ends in it (activate_teleport takes either).
 	# MAP.210's cargo box is the second kind and only the second kind — the
@@ -992,7 +992,7 @@ func _exits(a, name: String) -> Array:
 	for e in _exit_recs(a):
 		var target: String = ("MAP.%03d" % e.exit_map) if e.exit_map > 0 else String(main._prev_map_name)
 		var vkey: String = "%s#%d" % [target, e.exit_marker_id]
-		var dkey: String = "%s:%05x" % [name, e.file_off]
+		var dkey: String = "%s:%05x" % [nm, e.file_off]
 		var used: int = int(_door_uses.get(dkey, 0))
 		var score: int = 0
 		if not _seen_map(target):
@@ -1025,29 +1025,29 @@ func _seen_map(target: String) -> bool:
 
 # --- Verdicts --------------------------------------------------------------
 
-func _pass(name: String) -> void:
+func _pass(nm: String) -> void:
 	_finished = true
 	print("[solve] route:")
 	for r in _route:
 		print("[solve]   " + r)
-	print("[solve] RESULT PASS — mission complete on %s after %.0f s%s" % [name,
+	print("[solve] RESULT PASS — mission complete on %s after %.0f s%s" % [nm,
 		(Time.get_ticks_msec() - _t0) / 1000.0, _where()])
-	_write_view(name, main._current_level)
+	_write_view(nm, main._current_level)
 	_quit(0)
 
-func _fail(name: String, a) -> void:
+func _fail(nm: String, a) -> void:
 	_finished = true
 	print("[solve] STUCK on %s%s: nothing left to fire and no exit to a new place"
-		% [name, _where()])
+		% [nm, _where()])
 	print("[solve] route so far:")
 	for r in _route:
 		print("[solve]   " + r)
-	_report_unreached(a, name)
+	_report_unreached(a, nm)
 	print("[solve] movers now:
 " + String(a.behaviour.mover_report()))
-	_write_view(name, a)
+	_write_view(nm, a)
 	print("[solve] RESULT FAIL — stuck on %s after %.0f s%s"
-		% [name, (Time.get_ticks_msec() - _t0) / 1000.0, _where()])
+		% [nm, (Time.get_ticks_msec() - _t0) / 1000.0, _where()])
 	_quit(1)
 
 func _quit(code: int) -> void:
@@ -1056,7 +1056,7 @@ func _quit(code: int) -> void:
 
 ## For everything that matters and was never reached: the nearest
 ## reachable cell, and what stops the capsule between the two.
-func _report_unreached(a, name: String) -> void:
+func _report_unreached(a, nm: String) -> void:
 	var targets: Array = []
 	for e in _exit_recs(a):
 		var tgt: String = ("MAP.%03d" % e.exit_map) if e.exit_map > 0 else "previous map"
@@ -1064,7 +1064,7 @@ func _report_unreached(a, name: String) -> void:
 			targets.append(["EXIT @%05x → %s set %d" % [e.file_off, tgt, e.exit_marker_id], _epos(e)])
 	for t in _prox_nodes(a):
 		var e = a.behaviour.record_of(int(t.id))
-		if not _done.has("%s:p%05x" % [name, e.file_off]):
+		if not _done.has("%s:p%05x" % [nm, e.file_off]):
 			targets.append(["trigger %s @%05x (act %02x)" % [_ename(a, e), e.file_off, e.link_act_type], _epos(e)])
 	for e in a.map.entities:
 		if e.link_act_type >= 0x26 and e.link_act_type <= 0x2A:
@@ -1126,8 +1126,8 @@ func _collider_name(o) -> String:
 	var par: Node = n.get_parent()
 	if par != null and par is MeshInstance3D:
 		var mi: MeshInstance3D = par
-		return "%s (%s, size %s)" % [String(mi.get_meta("mesh_name", mi.name)), mi.get_parent().name if mi.get_parent() else "-",
-			mi.mesh.get_aabb().size.snapped(Vector3.ONE) if mi.mesh != null else "-"]
+		return "%s (%s, size %s)" % [String(mi.get_meta("mesh_name", mi.name)), String(mi.get_parent().name) if mi.get_parent() else "-",
+			str(mi.mesh.get_aabb().size.snapped(Vector3.ONE)) if mi.mesh != null else "-"]
 	return String(n.name)
 
 # --- Output ----------------------------------------------------------------
@@ -1135,7 +1135,7 @@ func _collider_name(o) -> String:
 ## Top view of the reachable space (rows = z, columns = x): '.' standing,
 ## '~' swimming, 'E' exit, 'G' walk-in trigger, 'U' use button,
 ## 'O' objective, 'S' where the map was entered.
-func _write_view(name: String, a) -> void:
+func _write_view(nm: String, a) -> void:
 	var dir: String = String(main._cli.get("solve-out", ""))
 	if dir.is_empty() or _pos.is_empty():
 		return
@@ -1177,18 +1177,18 @@ func _write_view(name: String, a) -> void:
 			mark.call(_epos(e), "O")
 	for e in _exit_recs(a):
 		mark.call(_epos(e), "E")
-	for s in _seeds.get(name, []):
+	for s in _seeds.get(nm, []):
 		mark.call(s, "S")
-	var f := FileAccess.open("%s/solve_%s.txt" % [dir, name], FileAccess.WRITE)
+	var f := FileAccess.open("%s/solve_%s.txt" % [dir, nm], FileAccess.WRITE)
 	if f == null:
 		return
-	f.store_line("%s  cell %d u  x %d..%d  z %d..%d  (rows = z, columns = x)" % [name, int(_cell),
+	f.store_line("%s  cell %d u  x %d..%d  z %d..%d  (rows = z, columns = x)" % [nm, int(_cell),
 		lo.x * int(_cell), hi.x * int(_cell), lo.y * int(_cell), hi.y * int(_cell)])
 	f.store_line("'.' stand  '~' swim  E exit  G walk-in trigger  U use button  O objective  S entry")
 	for z in h:
 		f.store_line("%7d %s" % [(lo.y + z) * int(_cell), (rows[z] as PackedByteArray).get_string_from_ascii()])
 	f.close()
-	print("[solve] view written: %s/solve_%s.txt" % [dir, name])
+	print("[solve] view written: %s/solve_%s.txt" % [dir, nm])
 
 # --- Small helpers ---------------------------------------------------------
 

@@ -252,9 +252,9 @@ static func mover_params(act: int) -> Dictionary:
 		limit -= 0x10000                        # signed i16
 	# Slide/swing handlers step +p6 for odd act ids and -p6 for even
 	# ones; the other families flip on a negative limit instead.
-	var sign: float = 1.0 if (act & 1) != 0 else -1.0
+	var sgn: float = 1.0 if (act & 1) != 0 else -1.0
 	if fam != "rot" and fam != "slide" and limit < 0:
-		sign = -sign
+		sgn = -sgn
 	var span: float = absf(float(limit))
 	match fam:
 		"slide5f":
@@ -272,7 +272,7 @@ static func mover_params(act: int) -> Dictionary:
 		"rot":
 			speed = Rules.ROT_SPEED
 	return {"family": fam, "axis": clampi(p4, 0, 2), "p4": p4, "span": span,
-		"sign": sign, "speed": speed}
+		"sign": sgn, "speed": speed}
 
 ## The basis of a swung or spun mover at `progress` (signed 11-bit
 ## units) — Rules._apply_mover_transform, swing branch.
@@ -286,7 +286,7 @@ static func mover_animation(p: Dictionary, euler: Vector3, base: Basis) -> Anima
 	var anim := Animation.new()
 	var fam: String = p["family"]
 	var span: float = p["span"]
-	var sign: float = p["sign"]
+	var sgn: float = p["sign"]
 	var speed: float = p["speed"]
 	var dur: float = JUMP_DURATION if speed <= 0.0 else span / speed
 	anim.length = dur
@@ -297,10 +297,10 @@ static func mover_animation(p: Dictionary, euler: Vector3, base: Basis) -> Anima
 		var end: Vector3
 		if fam == "slide5f":
 			# DOS adds to entity+0xc (Y-down) → the entity's local -Y.
-			end = base * Vector3(0.0, -span * sign, 0.0)
+			end = base * Vector3(0.0, -span * sgn, 0.0)
 		else:
 			# Along the DOS world axis: the handlers add to the position.
-			end = MoverNode.dos_axis(int(p["axis"])) * (span * sign)
+			end = MoverNode.dos_axis(int(p["axis"])) * (span * sgn)
 		anim.position_track_insert_key(t, dur, end)
 	else:
 		var t: int = anim.add_track(Animation.TYPE_ROTATION_3D)
@@ -309,7 +309,7 @@ static func mover_animation(p: Dictionary, euler: Vector3, base: Basis) -> Anima
 		for k in steps + 1:
 			var f: float = float(k) / float(steps)
 			anim.rotation_track_insert_key(t, dur * f,
-				MoverNode.swing_basis(euler, int(p["axis"]), span * f * sign).get_rotation_quaternion())
+				MoverNode.swing_basis(euler, int(p["axis"]), span * f * sgn).get_rotation_quaternion())
 		if fam == "rot":
 			anim.loop_mode = Animation.LOOP_LINEAR
 	return anim
@@ -464,6 +464,7 @@ static func mission_node(level) -> Node:
 	var sfx: int = int(level.map_suffix)
 	if sfx < 200:
 		return null
+	@warning_ignore("integer_division")
 	var key: int = (sfx / 10) * 10
 	var bsa := BSAReader.new()
 	if not bsa.open(SkynetPaths.gamedata_path("MDMDBRIF.BSA"), SkynetPaths.variant):

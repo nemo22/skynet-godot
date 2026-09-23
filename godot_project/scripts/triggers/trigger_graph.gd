@@ -235,7 +235,7 @@ static func build(map, map_num: int, source_hash: int, game: String,
 		# SkyNET's campaign starts at 200 — anything below is a loose map or
 		# an arena and belongs to no mission; Future Shock numbers its own
 		# from 010 up.
-		"mission": (map_num / 10) * 10 if map_num >= 200 or (game == "shock" and map_num >= 0) else -1,
+		"mission": map_num - map_num % 10 if map_num >= 200 or (game == "shock" and map_num >= 0) else -1,
 		"counts": {"entities": map.entities.size(), "nodes": nodes.size(),
 			"chains": chains.size(), "warnings": warn.size(), "classes": classes},
 		"border": ctx["boxes"],
@@ -298,7 +298,7 @@ static func _staged(ctx: Dictionary, id: int) -> bool:
 ## Everything the per-node work shares: the records, who links to whom,
 ## which entities become nodes, the rule of each, the chain each starts
 ## and the map's border boxes.
-static func _context(map, rules, game: String) -> Dictionary:
+static func _context(map, rules, _game: String) -> Dictionary:
 	var ents: Dictionary = map.entities_by_off
 	var incoming: Dictionary = {}          # id → [ids that link here]
 	for e in map.entities:
@@ -939,7 +939,7 @@ static func _edge(ctx: Dictionary, id: int, st: Dictionary, fx: Array) -> void:
 		"spawn":
 			fx.append("spawn@%05x" % id)
 		"demolish":
-			# ObjHit with HP + 1 (handler 0x1378bf): the prop is GONE, and a
+			# ObjHit with HP + 1 (handler 0x1380bf): the prop is GONE, and a
 			# second enable of the same node finds nothing left to kill —
 			# Behaviour.demolish refuses a record it has already spent.
 			# The simulation carried the flag and never read it back, so
@@ -1129,7 +1129,7 @@ static func _node_warnings(ctx: Dictionary, id: int, modes: Array) -> Array:
 ## ordinary scenery, not a dead end.
 ##
 ## Nor is a DEMOLITION prop that carries hit points, for the same reason
-## and by the same routine. Act 0x1B (handler 0x1378bf) is only a chain's
+## and by the same routine. Act 0x1B (handler 0x1380bf) is only a chain's
 ## way of KILLING an object: hp = max(hp, 1), then ObjHit(hp + 1) — and
 ## ObjHit (0x139019) is the routine every bullet calls. A crate with 40
 ## points and act 0x1B breaks under fire whether or not anything ever

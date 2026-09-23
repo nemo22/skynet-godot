@@ -15,6 +15,8 @@ const SaveGame := preload("res://scripts/save_game.gd")
 const Enemy := preload("res://scripts/enemy.gd")
 const Projectile := preload("res://scripts/projectile.gd")
 const LevelScene := preload("res://scripts/level_scene.gd")
+const SettingsLib := preload("res://scripts/settings.gd")
+const PathsLib := preload("res://scripts/skynet_paths.gd")
 
 ## The map _check_scene_mod stands a mod scene over: an interior, so the
 ## copy is small, and one this suite has already loaded once.
@@ -205,6 +207,7 @@ func _run() -> void:
 			var secs: float = 0.0
 			var nev: int = 0
 			if not sg.is_empty():
+				@warning_ignore("integer_division")
 				nev = (sg["events"] as PackedInt32Array).size() / 5
 				secs = float(sg["length"]) / float(sg["rate"])
 			var sane: bool = nev > 50 and secs > 5.0 and secs < 900.0
@@ -492,7 +495,7 @@ func _run() -> void:
 		_check(crate != null and crate.hp == 50 and crate.uses_defaults,
 			"crates take 50 HP from the map's per-name defaults")
 		var drops: Array = []
-		lvl.behaviour.item_dropped.connect(func(at: Vector3, t: int) -> void: drops.append(t))
+		lvl.behaviour.item_dropped.connect(func(_at: Vector3, t: int) -> void: drops.append(t))
 		if crate != null:
 			lvl.behaviour.obj_hit(crate.file_off, 60.0)
 			_check(lvl.triggers.spent(crate.file_off), "a 60-damage hit destroys the crate")
@@ -615,8 +618,7 @@ func _run() -> void:
 	_check(ok, "MAP.215 loads for the silo check")
 	if ok:
 		lvl = _main.get("_current_level")
-		var cover = lvl.map.entities_by_off.get(0x3077)   # 210SDOR1 leaf
-		var cover_node: Node3D = lvl.behaviour.hit_node(0x3077)
+		var cover_node: Node3D = lvl.behaviour.hit_node(0x3077)   # 210SDOR1 leaf
 		var cbase: Vector3 = cover_node.global_position
 		var gate = lvl.map.entities_by_off.get(0x32cb)    # CORC3229, state 0x10
 		var gpos := Vector3(float(gate.x), -float(gate.y), -float(gate.z))
@@ -788,8 +790,8 @@ const THROW_KEYS: Dictionary = {
 func _tap(code: int) -> void:
 	for down in [true, false]:
 		var k := InputEventKey.new()
-		k.keycode = code
-		k.physical_keycode = code
+		k.keycode = code as Key
+		k.physical_keycode = code as Key
 		k.pressed = down
 		k.echo = false
 		Input.parse_input_event(k)
@@ -902,7 +904,7 @@ func _check_mouse_settings(player: CharacterBody3D) -> void:
 	var slowest: float = Settings.mouse_rate_x()
 	_check(Settings.mouse_h == 11 and is_equal_approx(fastest / slowest, 11.0),
 		"the sensitivity spans 11 : 1, as the DOS bar does (%.4f .. %.4f rad/px)" % [slowest, fastest])
-	Settings.set_mouse_h(Settings.mouse_lit(h0))
+	Settings.set_mouse_h(SettingsLib.mouse_lit(h0))
 	# It is written where _ready reads it: a restart of the game finds it.
 	Settings.set_mouse_v(4)
 	Settings.set_mouse_invert_y(true)
@@ -938,8 +940,8 @@ func _check_mouse_settings(player: CharacterBody3D) -> void:
 	player.global_position = at
 	# Put the player's own settings back exactly as they were: save()
 	# rewrites the whole file, so nothing of it is left changed.
-	Settings.set_mouse_h(Settings.mouse_lit(h0))
-	Settings.set_mouse_v(Settings.mouse_lit(v0))
+	Settings.set_mouse_h(SettingsLib.mouse_lit(h0))
+	Settings.set_mouse_v(SettingsLib.mouse_lit(v0))
 	Settings.set_mouse_invert_y(inv0)
 	player.set("_captured", was_captured)
 	player.call("set_view", 0.0, 0.0)
@@ -1390,7 +1392,7 @@ func _check_water() -> void:
 ## them every trigger, still come from the DOS MAP.
 func _check_scene_mod() -> void:
 	var src: String = LevelScene.scene_path(MOD_MAP)
-	var dir: String = SkynetPaths.mods_dir() + "/maps"
+	var dir: String = PathsLib.mods_dir() + "/maps"
 	var dst: String = "%s/%s.level.scn" % [dir, MOD_MAP]
 	if src.is_empty() or not FileAccess.file_exists(src):
 		_check(false, "%s has a baked level scene to copy" % MOD_MAP)
@@ -1423,7 +1425,7 @@ func _check_scene_mod() -> void:
 	# Both folders go too — but only when the test made them and nothing
 	# else is in them; remove_absolute refuses a folder that is not empty.
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir))
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(SkynetPaths.mods_dir()))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(PathsLib.mods_dir()))
 
 ## Gate geometry dump: leaf node/body transforms and a capsule sweep
 ## along the gate line (x - 400 .. x + 400) — '#' blocked, '.' free.

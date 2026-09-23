@@ -93,22 +93,22 @@ func _load_one(filename: String) -> void:
 		flow.add_child(_make_tile(archive_id, r, tex.name, rec.width, rec.height, img_tex))
 		_records_total += 1
 
-func _make_tile(arch: int, rec: int, name: String, w: int, h: int,
+func _make_tile(arch: int, rec: int, nm: String, w: int, h: int,
 		t: ImageTexture) -> Control:
 	var box := VBoxContainer.new()
 	box.custom_minimum_size = Vector2(TILE_SIZE + 8, TILE_SIZE + 32)
 	box.add_theme_constant_override("separation", 2)
 
-	var tr := TextureRect.new()
-	tr.texture = t
-	tr.custom_minimum_size = Vector2(TILE_SIZE, TILE_SIZE)
-	tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	tr.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	box.add_child(tr)
+	var rect := TextureRect.new()
+	rect.texture = t
+	rect.custom_minimum_size = Vector2(TILE_SIZE, TILE_SIZE)
+	rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	box.add_child(rect)
 
 	var lbl := Label.new()
-	lbl.text = "%03d/%d  %s\n%dx%d" % [arch, rec, name, w, h]
+	lbl.text = "%03d/%d  %s\n%dx%d" % [arch, rec, nm, w, h]
 	lbl.add_theme_font_size_override("font_size", 10)
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(lbl)

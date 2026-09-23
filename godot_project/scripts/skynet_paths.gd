@@ -84,16 +84,16 @@ static func _names_in(dir: String) -> Dictionary:
 	_disk_names[dir] = names
 	return names
 
-## `dir`/`name` spelt as the file is on disk, whatever its letter case;
+## `dir`/`nm` spelt as the file is on disk, whatever its letter case;
 ## "" when there is no such file.
-static func find_file(dir: String, name: String) -> String:
+static func find_file(dir: String, nm: String) -> String:
 	if dir.is_empty():
 		return ""
-	var real: String = String(_names_in(dir).get(name.to_upper(), ""))
+	var real: String = String(_names_in(dir).get(nm.to_upper(), ""))
 	if not real.is_empty():
 		return "%s/%s" % [dir, real]
 	# A folder that cannot be listed may still open files by name.
-	var exact: String = "%s/%s" % [dir, name]
+	var exact: String = "%s/%s" % [dir, nm]
 	return exact if FileAccess.file_exists(exact) else ""
 
 static func _has_data(dir: String) -> bool:
@@ -213,21 +213,21 @@ func _read_palette() -> PackedByteArray:
 
 ## Any .COL palette by name: the image archive first (SkyNET keeps them
 ## there), then loose in GAMEDATA (Future Shock). Empty when absent.
-func col_bytes(name: String) -> PackedByteArray:
-	var key: String = "%s|%s" % [gamedata_dir, name]
+func col_bytes(nm: String) -> PackedByteArray:
+	var key: String = "%s|%s" % [gamedata_dir, nm]
 	if not _col_memo.has(key):
-		_col_memo[key] = _read_col(name)
+		_col_memo[key] = _read_col(nm)
 	return _col_memo[key]
 
-func _read_col(name: String) -> PackedByteArray:
+func _read_col(nm: String) -> PackedByteArray:
 	var BSAReader = load("res://scripts/loaders/bsa_reader.gd")
 	var imgs = BSAReader.new()
 	if imgs.open(gamedata_path("MDMDIMGS.BSA"), variant):
-		var b: PackedByteArray = imgs.read(name)
+		var b: PackedByteArray = imgs.read(nm)
 		imgs.close()
 		if not b.is_empty():
 			return b
-	var p: String = gamedata_path(name)
+	var p: String = gamedata_path(nm)
 	if FileAccess.file_exists(p):
 		return FileAccess.get_file_as_bytes(p)
 	return PackedByteArray()

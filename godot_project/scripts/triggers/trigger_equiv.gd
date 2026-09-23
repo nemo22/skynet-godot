@@ -125,10 +125,10 @@ static func _counts(list) -> Dictionary:
 ## `slideX-0` then `slideX+0`, while the mover node flips its own the
 ## other way round — two ways of writing the same nothing, which the
 ## comparison read as a missing token and an extra one.
-static func canon(token: String) -> String:
-	if token.ends_with("-0") or token.ends_with("+0"):
-		return token.substr(0, token.length() - 2) + "0"
-	return token
+static func canon(tok: String) -> String:
+	if tok.ends_with("-0") or tok.ends_with("+0"):
+		return tok.substr(0, tok.length() - 2) + "0"
+	return tok
 
 # ---------------------------------------------------------------------
 # Setting a node off in the running game

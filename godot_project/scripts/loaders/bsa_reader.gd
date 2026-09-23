@@ -120,12 +120,12 @@ func _parse_toc(path: String, file_size: int) -> bool:
 		return false
 
 	_file.seek(0)
-	var count: int = _file.get_16()
-	if count <= 0 or count > 50000:
-		push_error("BSA bad entry count: %d in %s" % [count, path])
+	var n_entries: int = _file.get_16()
+	if n_entries <= 0 or n_entries > 50000:
+		push_error("BSA bad entry count: %d in %s" % [n_entries, path])
 		return false
 
-	var toc_bytes: int = count * ENTRY_SIZE
+	var toc_bytes: int = n_entries * ENTRY_SIZE
 	if toc_bytes + 2 > file_size:
 		push_error("BSA TOC overflow in %s" % path)
 		return false
@@ -141,7 +141,7 @@ func _parse_toc(path: String, file_size: int) -> bool:
 	var list: Array[Entry] = []
 	var by_name: Dictionary = {}
 	var dropped: int = 0
-	for i in count:
+	for i in n_entries:
 		var base := i * ENTRY_SIZE
 		var size: int = toc.decode_u32(base + NAME_LEN + 1)
 		var offset: int = cursor
@@ -168,7 +168,7 @@ func _parse_toc(path: String, file_size: int) -> bool:
 			by_name[lname] = e       # find() returns the first of a name
 	if dropped > 0:
 		push_warning("BSA %s: %d of %d entries ignored (bad name, or data past the end of the file)"
-			% [path, dropped, count])
+			% [path, dropped, n_entries])
 	_entries = list
 	_by_name = by_name
 	return true

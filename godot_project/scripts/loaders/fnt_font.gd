@@ -65,6 +65,7 @@ static func build(bytes: PackedByteArray, scale: int = 1) -> FontFile:
 		var gw: int = widths[i]
 		var src: int = offsets[i]
 		var cx := (i % ATLAS_COLS) * cell_w
+		@warning_ignore("integer_division")
 		var cy := (i / ATLAS_COLS) * cell_h
 		for ry in line_h:
 			var word_off := src + ry * 2

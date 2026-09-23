@@ -239,6 +239,7 @@ static func _mission(start: int, bsa: BSAReader, cache: Dictionary) -> Dictionar
 ## shared interiors from MAP.340 up, mission 4's MAP.292/293) is a side
 ## area of whoever walks in.
 static func _mission_decade(num: int) -> int:
+	@warning_ignore("integer_division")
 	return (num / 10) * 10
 
 static func _is_mission_map(num: int) -> bool:
@@ -316,6 +317,7 @@ static func _diff(a: Dictionary, b: Dictionary) -> Dictionary:
 			var rect := Rect2i()
 			for i in mini(la.size(), lb.size()):
 				if la[i] != lb[i]:
+					@warning_ignore("integer_division")
 					var c := Vector2i(i % 256, i / 256)
 					if n == 0:
 						rect = Rect2i(c, Vector2i.ONE)

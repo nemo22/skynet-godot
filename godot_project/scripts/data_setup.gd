@@ -15,6 +15,8 @@
 ## are remembered in user://gamedata.cfg, so this is asked once.
 extends CanvasLayer
 
+const PathsLib := preload("res://scripts/skynet_paths.gd")
+
 ## dir = the SkyNET data directory that was accepted ("" if the player
 ## quit), shock_dir = the Future Shock one ("" when skipped).
 signal finished(dir: String, shock_dir: String)
@@ -96,8 +98,8 @@ func _on_pick_shock() -> void:
 	_dialog.popup_centered_ratio(0.7)
 
 func _on_dir_selected(dir: String) -> void:
-	var found: String = SkynetPaths.resolve_data_dir(dir)
-	var game: String = SkynetPaths.game_of(found) if not found.is_empty() else ""
+	var found: String = PathsLib.resolve_data_dir(dir)
+	var game: String = PathsLib.game_of(found) if not found.is_empty() else ""
 	if _picking_shock:
 		if game == "shock":
 			_shock = found

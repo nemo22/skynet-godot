@@ -147,7 +147,10 @@ static func parse(bytes: PackedByteArray, palette: PackedColorArray,
 					dst += 1
 		var img := Image.create_from_data(w, h, false,
 			Image.FORMAT_RGBA8, rgba.to_byte_array())
-		frames.append(img if as_images else ImageTexture.create_from_image(img))
+		if as_images:
+			frames.append(img)
+		else:
+			frames.append(ImageTexture.create_from_image(img))
 	return frames
 
 ## Decode the 640x480 layout (see the note above HIRES_HEADER).
@@ -184,5 +187,8 @@ static func _parse_hires(bytes: PackedByteArray, palette: PackedColorArray,
 					src += 1
 					x += 1
 		var img := Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba.to_byte_array())
-		frames.append(img if as_images else ImageTexture.create_from_image(img))
+		if as_images:
+			frames.append(img)
+		else:
+			frames.append(ImageTexture.create_from_image(img))
 	return frames

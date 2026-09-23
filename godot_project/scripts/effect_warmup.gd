@@ -97,10 +97,10 @@ static func warm(parent: Node3D) -> void:
 	sm.setup(at - side * 60.0, 160.0)
 	sm.set_process(false)
 
-	var tr := Tracer.new()
-	holder.add_child(tr)
-	tr.setup(at - side * 120.0, at + side * 120.0, Color(1.0, 0.86, 0.55, 0.5), 2.0)
-	tr.set_process(false)
+	var rect := Tracer.new()
+	holder.add_child(rect)
+	rect.setup(at - side * 120.0, at + side * 120.0, Color(1.0, 0.86, 0.55, 0.5), 2.0)
+	rect.set_process(false)
 
 	# A bolt (model + halo), a rocket (model + motor) and a model-less
 	# round (the fallback sphere), none of them flying.

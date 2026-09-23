@@ -73,8 +73,8 @@ func _audit_map(nm: String, settle: float, player: CharacterBody3D) -> void:
 	_main.set("_pending_marker_set", -1)
 	_main.call("_load_current")
 	var ok: bool = await _wait(func() -> bool:
-		var lvl = _main.get("_current_level")
-		return lvl != null and "MAP." + String(lvl.map_suffix) == nm and int(_main.get("_pending_marker_set")) == -1, 120.0)
+		var cur = _main.get("_current_level")
+		return cur != null and "MAP." + String(cur.map_suffix) == nm and int(_main.get("_pending_marker_set")) == -1, 120.0)
 	if not ok:
 		_row(nm, "LOAD", "map did not come up")
 		return

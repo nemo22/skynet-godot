@@ -74,7 +74,7 @@ func _reset_channels() -> void:
 		_chan.append({"prog": 0, "vol": 100, "expr": 127, "bend": 1.0})
 
 ## Start a parsed song (HmiFile.parse output).
-func play(song: Dictionary, name: String = "") -> void:
+func play(song: Dictionary, nm: String = "") -> void:
 	stop()
 	_events = song.get("events", PackedInt32Array())
 	_length = int(song.get("length", 0))
@@ -83,7 +83,7 @@ func play(song: Dictionary, name: String = "") -> void:
 	_pos = 0
 	_tick = 0.0
 	_reset_channels()
-	song_name = name
+	song_name = nm
 	playing = _events.size() >= REC and _length > 0
 	if playing:
 		_warm_up()
@@ -255,6 +255,7 @@ func _release_voices(delta: float) -> void:
 ## Family specs: harmonics [[n, amp] …], attack s, decay s, sustain
 ## level (0 = one-shot), release s, gain dB, clip (distortion).
 static func _family(prog: int) -> Dictionary:
+	@warning_ignore("integer_division")
 	var f: int = prog / 8
 	match f:
 		0:  return {"h": [[1, 1.0], [2, 0.55], [3, 0.3], [4, 0.15], [5, 0.08], [6, 0.05]], "a": 0.004, "d": 1.4, "s": 0.0, "rel": 0.25, "gain": 0.0}

@@ -200,13 +200,13 @@ func _icon(rec: int) -> Texture2D:
 
 ## An .IMG from the set in force (MDMDHRES.BSA first with HI-RES ART, the
 ## 320x200 art otherwise), or null.
-func _img(name: String, transparent0: bool) -> ImageTexture:
+func _img(nm: String, transparent0: bool) -> ImageTexture:
 	var bytes := PackedByteArray()
 	for arc in (["MDMDHRES.BSA", "MDMDIMGS.BSA"] if _hires else ["MDMDIMGS.BSA"]):
 		var bsa := BSAReader.new()
 		if not bsa.open(SkynetPaths.gamedata_path(arc), SkynetPaths.variant):
 			continue
-		bytes = bsa.read(name)
+		bytes = bsa.read(nm)
 		bsa.close()
 		if not bytes.is_empty():
 			break

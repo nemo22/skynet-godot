@@ -77,26 +77,15 @@ class Mesh3D:
 	var name: String = ""
 	var frame_count: int = 1
 
-## UV unpack — port of Daggerfall Arch3dFile.UVunpack (line 770).
-## Values outside ±14336 (with -7168 reserved) are wrapped by some
-## multiple of 8192; this undoes that.
+## UV unpack. Daggerfall's Arch3dFile.UVunpack (line 770) folds values
+## outside ±14336 (with -7168 reserved) back by a multiple of 8192; that
+## wrap is deliberately NOT done here. SkyNET stores plain s16 deltas: a
+## 1024 u edge carries 16384 (= 1024 px / 16), which the Daggerfall wrap
+## folded to 0 and smeared one texel along the whole overpass (OVRPASS1 on
+## MAP.230, 2026-09-02 report). No SkyNET face has been found that needs
+## the wrap, so the raw value is kept.
 static func uv_unpack(v: int) -> int:
-	# SkyNET stores plain s16 deltas: a 1024 u edge carries 16384 (= 1024
-	# px / 16), which the Daggerfall wrap heuristic below folded to 0 and
-	# smeared one texel along the whole overpass (OVRPASS1 on MAP.230,
-	# 2026-09-02 report). No SkyNET face has been found that needs the
-	# wrap, so the raw value is kept.
 	return v
-	# v comes in as signed s16. Range check.
-	if v > -14336 and v < 14336 and v != -7168:
-		return v
-	var next_mult: int = v - 1
-	next_mult = next_mult >> 13
-	next_mult += 1
-	next_mult = next_mult << 13
-	var prev_mult: int = next_mult - 8192
-	var mult: int = prev_mult if (v - prev_mult) < (next_mult - v) else next_mult
-	return v - mult
 
 static func _u16(bytes: PackedByteArray, off: int) -> int:
 	return bytes[off] | (bytes[off + 1] << 8)
@@ -180,6 +169,7 @@ static func parse(bytes: PackedByteArray, mesh_name: String = "") -> Mesh3D:
 		if faces_off <= vertex_off0: return null
 		var vbytes: int = faces_off - vertex_off0
 		if vbytes < frame_stride or vbytes % frame_stride != 0: return null
+		@warning_ignore("integer_division")
 		for fi in mini(vbytes / frame_stride, MAX_FRAMES):
 			frame_offsets.append(vertex_off0 + fi * frame_stride)
 
@@ -201,10 +191,10 @@ static func parse(bytes: PackedByteArray, mesh_name: String = "") -> Mesh3D:
 		var verts := PackedVector3Array()
 		verts.resize(vert_count)
 		for i in vert_count:
-			var off := base + i * 12
-			var x: float = bytes.decode_s32(off) * MESH_VERT_SCALE
-			var y: float = bytes.decode_s32(off + 4) * MESH_VERT_SCALE
-			var z: float = bytes.decode_s32(off + 8) * MESH_VERT_SCALE
+			var voff := base + i * 12
+			var x: float = bytes.decode_s32(voff) * MESH_VERT_SCALE
+			var y: float = bytes.decode_s32(voff + 4) * MESH_VERT_SCALE
+			var z: float = bytes.decode_s32(voff + 8) * MESH_VERT_SCALE
 			# DOS world is Y-down right-handed; Godot is Y-up right-handed.
 			# Negate Y and Z (= Rx 180°, det +1). Entity placement negates
 			# Y and Z identically, so mesh and world share one consistent
@@ -251,6 +241,7 @@ static func parse(bytes: PackedByteArray, mesh_name: String = "") -> Mesh3D:
 			var ok := true
 			for vi in vc:
 				var vb: int = _u32(bytes, off + 8 + vi * 8)
+				@warning_ignore("integer_division")
 				var idx: int = int(vb / vert_div)
 				if idx < 0 or idx >= vert_count:
 					ok = false
@@ -274,6 +265,7 @@ static func parse(bytes: PackedByteArray, mesh_name: String = "") -> Mesh3D:
 	for f in m.faces:
 		corners += (f.vert_count - 2) * 3
 	if corners > 0 and m.frames.size() * corners > MAX_FRAME_CORNERS:
+		@warning_ignore("integer_division")
 		var keep: int = maxi(1, MAX_FRAME_CORNERS / corners)
 		if keep < m.frames.size():
 			m.frames.resize(keep)

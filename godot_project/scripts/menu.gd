@@ -333,7 +333,7 @@ func _maybe_import() -> void:
 		return
 	# No original data found (exported build without a bundled copy):
 	# ask for the game's directory and remember it.
-	if not SkynetPaths._has_data(SkynetPaths.gamedata_dir):
+	if not PathsLib._has_data(SkynetPaths.gamedata_dir):
 		if DisplayServer.get_name() == "headless":
 			push_error("[menu] original game data not found — pass --gamedata=<dir>")
 			if forced:
@@ -710,7 +710,7 @@ func _on_other_game() -> void:
 
 ## A dimmed screen with a centred fixed-size panel hosting DOS .IMG art.
 ## Returns [root, panel]; absolute-positioned hotspots go on `panel`.
-func _img_panel(tex: Variant, iw: float, ih: float, scale: float) -> Array:
+func _img_panel(tex: Variant, iw: float, ih: float, factor: float) -> Array:
 	var root := Control.new()
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var dim := ColorRect.new()
@@ -723,7 +723,7 @@ func _img_panel(tex: Variant, iw: float, ih: float, scale: float) -> Array:
 	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(center)
 	var panel := Control.new()
-	panel.custom_minimum_size = Vector2(iw * scale, ih * scale)
+	panel.custom_minimum_size = Vector2(iw * factor, ih * factor)
 	center.add_child(panel)
 	if tex != null:
 		var pic := TextureRect.new()
@@ -789,6 +789,9 @@ var _join_status: Label = null
 var _discovery = null                     # net_discovery.gd, live on the JOIN screen
 const NetDiscovery := preload("res://scripts/net/net_discovery.gd")
 const NetLevels := preload("res://scripts/net/net_levels.gd")
+const ControlsLib := preload("res://scripts/controls.gd")
+const SettingsLib := preload("res://scripts/settings.gd")
+const PathsLib := preload("res://scripts/skynet_paths.gd")
 
 ## A transparent entry box over a baked NETMENU field.
 func _nm_field(panel: Control, rect: Rect2, s: float, text: String, key: String,
@@ -825,16 +828,16 @@ func _nm_field(panel: Control, rect: Rect2, s: float, text: String, key: String,
 
 ## The FONT0003 bitmap font (16 px) on a Control, or a same-sized
 ## fallback when the game data lacks it.
-func _dos_font(c: Control, size: int = 16) -> void:
+func _dos_font(c: Control, sz: int = 16) -> void:
 	if _net_font != null:
 		c.add_theme_font_override("font", _net_font)
 		# A bitmap font only stays sharp at whole multiples of its own
 		# cell (FONT0003 is 8x8, built at x2 = 16 px): round the request
 		# to the nearest multiple instead of resampling it at 1.5x.
 		var unit: int = maxi(_net_font.fixed_size, 1)
-		c.add_theme_font_size_override("font_size", maxi(int(round(float(size) / float(unit))), 1) * unit)
+		c.add_theme_font_size_override("font_size", maxi(int(round(float(sz) / float(unit))), 1) * unit)
 	else:
-		c.add_theme_font_size_override("font_size", size)
+		c.add_theme_font_size_override("font_size", sz)
 
 func _nm_static(panel: Control, rect: Rect2, s: float, text: String) -> Label:
 	var l := Label.new()
@@ -1684,7 +1687,7 @@ func _mouse_bar(cell: VBoxContainer, horizontal: bool) -> void:
 	sl.minv = 1.0
 	sl.maxv = float(Settings.MOUSE_STEPS)
 	sl.step = 1.0
-	sl.value = float(Settings.mouse_lit(Settings.mouse_h if horizontal else Settings.mouse_v))
+	sl.value = float(SettingsLib.mouse_lit(Settings.mouse_h if horizontal else Settings.mouse_v))
 	sl.trough = _art_track_sb if _art_track_sb != null else _dos_bevel(true)
 	sl.fill = _art_track_fill_sb if _art_track_fill_sb != null \
 		else _dos_bevel(true, DOS_ON_FILL)
@@ -2285,9 +2288,9 @@ var _art_track_fill_sb: StyleBoxTexture = null
 
 ## Compose a nine-patch from `src`: `box`'s own four edges and corners for
 ## the frame, `field` tiled for the middle, the whole magnified by
-## `scale`. `fill` multiplies the FIELD only, so a green option keeps the
+## `factor`. `fill` multiplies the FIELD only, so a green option keeps the
 ## original's frame.
-func _art_nine(src: Image, box: Rect2i, field: Rect2i, bw: int, scale: int,
+func _art_nine(src: Image, box: Rect2i, field: Rect2i, bw: int, factor: int,
 		fill: Color = Color.WHITE) -> StyleBoxTexture:
 	var tile: int = maxi(field.size.x, 8)
 	var w: int = bw * 2 + tile
@@ -2318,10 +2321,10 @@ func _art_nine(src: Image, box: Rect2i, field: Rect2i, bw: int, scale: int,
 				c = src.get_pixel(field.position.x + (x - bw) % field.size.x,
 					field.position.y + (y - bw) % field.size.y) * fill
 			out.set_pixel(x, y, c)
-	out.resize(w * scale, h * scale, Image.INTERPOLATE_NEAREST)
+	out.resize(w * factor, h * factor, Image.INTERPOLATE_NEAREST)
 	var sb := StyleBoxTexture.new()
 	sb.texture = ImageTexture.create_from_image(out)
-	sb.set_texture_margin_all(bw * scale)
+	sb.set_texture_margin_all(bw * factor)
 	sb.axis_stretch_horizontal = StyleBoxTexture.AXIS_STRETCH_MODE_TILE
 	sb.axis_stretch_vertical = StyleBoxTexture.AXIS_STRETCH_MODE_TILE
 	sb.content_margin_left = 12.0
@@ -2557,7 +2560,7 @@ func _input(event: InputEvent) -> void:
 	var esc: bool = event is InputEventKey \
 		and (event as InputEventKey).keycode == KEY_ESCAPE
 	if not esc:
-		var code: int = Controls.code_for(event)
+		var code: int = ControlsLib.code_for(event)
 		if code != 0:
 			Controls.set_bind(_rebinding_action, code)
 	var rl: Label = _rebind_labels.get(_rebinding_action)

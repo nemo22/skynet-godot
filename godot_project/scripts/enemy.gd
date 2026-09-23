@@ -944,8 +944,8 @@ func _tick_machine(m: Dictionary, delta: float, sense: Dictionary) -> void:
 	brain.tick(delta, sense)
 	var frames: Array = m["frames"]
 	if brain.frame_changed and not frames.is_empty():
-		var fi: int = clampi(brain.frame, 0, frames.size() - 1)
-		(node as MeshInstance3D).mesh = frames[fi]
+		var fr: int = clampi(brain.frame, 0, frames.size() - 1)
+		(node as MeshInstance3D).mesh = frames[fr]
 	for sid in brain.sounds:
 		Audio.play_id_3d(int(sid), node.global_position, -8.0)
 	m["cd"] = maxf(float(m["cd"]) - delta, 0.0)
@@ -1267,6 +1267,7 @@ func _death_frame_count() -> int:
 		return 0
 	if death_anim_frames > 0:
 		return mini(death_anim_frames, fc - 1)
+	@warning_ignore("integer_division")
 	return mini(DEATH_FRAME_BUDGET, maxi(1, fc / 3))
 
 func _walk_frame_end() -> int:
@@ -1387,7 +1388,7 @@ func _detonate_trap() -> void:
 	Audio.play_id_3d(DEATH_SOUND_ID, centre, -2.0)
 	Audio.play_sfx_3d("EXPLO1.RAW", centre, -2.0)
 	_spawn_explosion(centre, _body_size * 0.55)
-	_fling_parts(centre)
+	_fling_parts()
 	if not Net.active and is_inside_tree():
 		get_tree().create_timer(DEATH_BLAST_DELAY, false).timeout.connect(
 			Callable(get_script(), "_death_blast").bind(get_tree(), global_position))
@@ -1406,7 +1407,7 @@ func _die() -> void:
 	var centre := global_position + Vector3(0.0, _body_height * 0.5, 0.0)
 	Audio.play_sfx_3d("EXPLO1.RAW", centre, -2.0)
 	_spawn_explosion(centre, _body_size * 0.55)
-	if not _fling_parts(centre) and _body_size >= big_model_size:
+	if not _fling_parts() and _body_size >= big_model_size:
 		for _i in 4 + (randi() % 4):
 			_spawn_debris(centre, null)
 	if not Net.active and is_inside_tree():
@@ -1467,7 +1468,7 @@ static func _blast_clear(space: PhysicsDirectSpaceState3D, from: Vector3, to: Ve
 	return space.intersect_ray(q).is_empty()
 
 ## Fling the DOS wreck parts. Returns false when the type has none.
-func _fling_parts(centre: Vector3) -> bool:
+func _fling_parts() -> bool:
 	if death_parts.is_empty():
 		return false
 	var scene := get_tree().current_scene

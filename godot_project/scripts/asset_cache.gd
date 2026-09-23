@@ -51,11 +51,14 @@ const FramePack  := preload("res://scripts/loaders/frame_pack.gd")
 const LevelScene := preload("res://scripts/level_scene.gd")
 const MissionScene := preload("res://scripts/mission_scene.gd")
 const TriggerGraph := preload("res://scripts/triggers/trigger_graph.gd")
+const PathsLib := preload("res://scripts/skynet_paths.gd")
 
 ## Bump whenever a loader changes its output.
 ## 10 (2026-09-14): animation frames share their materials, materials
 ## carry their Render kind, and VERSION gained the data fingerprint.
-const CACHE_VERSION: int = 10
+## 11 (2026-09-23): terrain cells in their own 0..1 UVs, clamped (the
+## SMOOTH TEXTURES seams).
+const CACHE_VERSION: int = 11
 ## Dependencies are saved by their absolute path outside res://.
 ## FLAG_RELATIVE_PATHS would let a moved folder still resolve, but a moved
 ## folder is rebuilt anyway (the trust manifest is keyed by the absolute
@@ -617,7 +620,7 @@ func _dep_ok(dp: String, depth: int) -> bool:
 	if not dp.begins_with("res://"):
 		return false
 	if _mods_norm.is_empty():
-		_mods_norm = _norm(SkynetPaths.mods_dir())
+		_mods_norm = _norm(PathsLib.mods_dir())
 	return not dp.contains("..") and not _under(n, _mods_norm)
 
 ## A path in one comparable spelling: absolute, forward slashes, no "..",
@@ -807,19 +810,19 @@ func fetch(kind: String, key: String, builder: Callable) -> Resource:
 	_used[p] = _gen
 	return built
 
-## Bytes of `name` in archive `arc` — through the reader import_all keeps
+## Bytes of `nm` in archive `arc` — through the reader import_all keeps
 ## open, or one opened for this read. Empty when either is missing.
-func _read_from(arc: String, name: String) -> PackedByteArray:
+func _read_from(arc: String, nm: String) -> PackedByteArray:
 	var shared: BSAReader = _readers.get(arc)
 	if shared != null:
-		return shared.read(name)
+		return shared.read(nm)
 	var path := SkynetPaths.gamedata_path(arc)
 	if not FileAccess.file_exists(path):
 		return PackedByteArray()
 	var b := BSAReader.new()
 	if not b.open(path, SkynetPaths.variant):
 		return PackedByteArray()
-	var bytes := b.read(name)
+	var bytes := b.read(nm)
 	b.close()
 	return bytes
 
@@ -849,7 +852,10 @@ func _tex_file(bank: int) -> TextureNNN.TexFile:
 		return v if v is TextureNNN.TexFile else null
 	var bytes := SkynetPaths.read_bytes(SkynetPaths.gamedata_path("TEXTURE.%03d" % bank))
 	var t: TextureNNN.TexFile = TextureNNN.parse(bytes) if not bytes.is_empty() else null
-	_tex_files[bank] = t if t != null else false
+	if t != null:
+		_tex_files[bank] = t
+	else:
+		_tex_files[bank] = false       # remembered as missing
 	return t
 
 ## Width, height and frame count of every record of TEXTURE.<bank>, as a
@@ -976,11 +982,13 @@ func sprite_pixel_size(bank: int, rec: int, tex: Texture2D, dos_pixel: float) ->
 
 ## Number of records in TEXTURE.<bank> (0 when the file is missing).
 func record_count(bank: int) -> int:
+	@warning_ignore("integer_division")
 	return _tex_header(bank).size() / 4
 
 ## Native DOS pixel size of a record (the UV divisor).
 func record_size(bank: int, rec: int) -> Vector2i:
 	var h := _tex_header(bank)
+	@warning_ignore("integer_division")
 	var n: int = h.size() / 4
 	if n == 0:
 		return Vector2i(64, 64)
@@ -1008,19 +1016,19 @@ func provide(bank: int, rec: int) -> Dictionary:
 # Meshes
 # ---------------------------------------------------------------------
 ## Read a .3D by name from MDMDOBJS.BSA, then MDMDENMS.BSA.
-func read_3d(name: String) -> PackedByteArray:
+func read_3d(nm: String) -> PackedByteArray:
 	for arc in ["MDMDOBJS.BSA", "MDMDENMS.BSA"]:
-		var bytes := _read_from(arc, name)
+		var bytes := _read_from(arc, nm)
 		if not bytes.is_empty():
 			return bytes
 	return PackedByteArray()
 
-## Static textured ArrayMesh for `name` ("BIGDOOR.3D"). `bytes` may be
+## Static textured ArrayMesh for `nm` ("BIGDOOR.3D"). `bytes` may be
 ## supplied by a caller that already has the archive open.
-func mesh(name: String, bytes: PackedByteArray = PackedByteArray()) -> ArrayMesh:
-	var key := name.get_basename()
+func mesh(nm: String, bytes: PackedByteArray = PackedByteArray()) -> ArrayMesh:
+	var key := nm.get_basename()
 	var am := fetch("mesh", key, func() -> Resource:
-		var data := bytes if not bytes.is_empty() else read_3d(name)
+		var data := bytes if not bytes.is_empty() else read_3d(nm)
 		if data.is_empty():
 			return null
 		var parsed: Mesh3D.Mesh3D = Mesh3D.parse(data, key)
@@ -1031,11 +1039,11 @@ func mesh(name: String, bytes: PackedByteArray = PackedByteArray()) -> ArrayMesh
 	Render.restyle_mesh(am)
 	return am
 
-## Every animation frame of `name` as an Array of ArrayMesh.
-func mesh_frames(name: String, bytes: PackedByteArray = PackedByteArray()) -> Array:
-	var key := name.get_basename()
+## Every animation frame of `nm` as an Array of ArrayMesh.
+func mesh_frames(nm: String, bytes: PackedByteArray = PackedByteArray()) -> Array:
+	var key := nm.get_basename()
 	var pack: Resource = fetch("frames", key, func() -> Resource:
-		var data := bytes if not bytes.is_empty() else read_3d(name)
+		var data := bytes if not bytes.is_empty() else read_3d(nm)
 		if data.is_empty():
 			return null
 		var parsed: Mesh3D.Mesh3D = Mesh3D.parse(data, key)
@@ -1082,11 +1090,11 @@ func terrain(suffix: String, wld: WldTerrain.WLD) -> ArrayMesh:
 ## backface_collision is on for all of them: DOS meshes are drawn
 ## double-sided and their winding is arbitrary (the 210TOWER deck floor
 ## faces down), so a one-sided shape lets rays and bodies through.
-func shape(key: String, mesh: Mesh) -> ConcavePolygonShape3D:
+func shape(key: String, src_mesh: Mesh) -> ConcavePolygonShape3D:
 	return fetch("shape", key, func() -> Resource:
-		if mesh == null:
+		if src_mesh == null:
 			return null
-		var sh: ConcavePolygonShape3D = mesh.create_trimesh_shape()
+		var sh: ConcavePolygonShape3D = src_mesh.create_trimesh_shape()
 		if sh == null:
 			return null
 		sh.backface_collision = true
@@ -1097,8 +1105,8 @@ func shape(key: String, mesh: Mesh) -> ConcavePolygonShape3D:
 # ---------------------------------------------------------------------
 ## Decoded clip from MDMDSFXS.BSA (`builder` does the decoding — Audio
 ## owns the parsers).
-func sound(name: String, loop: bool, builder: Callable) -> AudioStreamWAV:
-	return fetch("sfx", name + ("_L" if loop else ""), builder) as AudioStreamWAV
+func sound(nm: String, loop: bool, builder: Callable) -> AudioStreamWAV:
+	return fetch("sfx", nm + ("_L" if loop else ""), builder) as AudioStreamWAV
 
 ## Is the optional 640x480 archive there? Asked once per data directory,
 ## so a missing one is not tried (and logged) for every weapon.
@@ -1114,8 +1122,8 @@ func _hires_available() -> bool:
 ## has one (the weapon viewmodels do), falling back to the 320x200 art.
 ## The two sets are cached apart — same key, different kind — or the
 ## first one built would answer for both.
-func cfa_frames(name: String, hires: bool = false) -> Array:
-	var pack: Resource = fetch("cfa_hi" if hires else "cfa", name, func() -> Resource:
+func cfa_frames(nm: String, hires: bool = false) -> Array:
+	var pack: Resource = fetch("cfa_hi" if hires else "cfa", nm, func() -> Resource:
 		var arcs: Array = [HIRES_ARCHIVE, "MDMDIMGS.BSA"] \
 			if hires and _hires_available() else ["MDMDIMGS.BSA"]
 		# Take the first archive whose copy actually PARSES, not merely the
@@ -1124,13 +1132,13 @@ func cfa_frames(name: String, hires: bool = false) -> Array:
 		# WEAPON*.CFA parsed to nothing and the player was left holding an
 		# invisible gun, with no warning anywhere.
 		for arc in arcs:
-			var bytes: PackedByteArray = _read_from(String(arc), name)
+			var bytes: PackedByteArray = _read_from(String(arc), nm)
 			if bytes.is_empty():
 				continue
 			var frames: Array = CFAFile.parse(bytes, palette(), true)
 			if frames.is_empty():
 				push_warning("[cfa] %s in %s did not parse — trying the next set"
-					% [name, arc])
+					% [nm, arc])
 				continue
 			var fp := FramePack.new()
 			for f in frames:
@@ -1151,11 +1159,11 @@ func cfa_frames(name: String, hires: bool = false) -> Array:
 ## per session.
 static var _cfa_hires_memo: Dictionary = {}
 static var _cfa_offset_memo: Dictionary = {}
-func cfa_is_hires(name: String) -> bool:
-	if _cfa_hires_memo.has(name):
-		return bool(_cfa_hires_memo[name])
-	_read_hires_header(name)
-	return bool(_cfa_hires_memo.get(name, false))
+func cfa_is_hires(nm: String) -> bool:
+	if _cfa_hires_memo.has(nm):
+		return bool(_cfa_hires_memo[nm])
+	_read_hires_header(nm)
+	return bool(_cfa_hires_memo.get(nm, false))
 
 ## The 320x200 art's frame size, which is where the hi-res art has to be
 ## DRAWN: that placement (weapon record x, bottom on the HUD bar) is the
@@ -1163,32 +1171,32 @@ func cfa_is_hires(name: String) -> bool:
 ## the same rectangle rather than positioned from its own header. Reads
 ## the 16-bit header only; memoised.
 static var _cfa_lo_memo: Dictionary = {}
-func cfa_lo_size(name: String) -> Vector2i:
-	if _cfa_lo_memo.has(name):
-		return _cfa_lo_memo[name]
+func cfa_lo_size(nm: String) -> Vector2i:
+	if _cfa_lo_memo.has(nm):
+		return _cfa_lo_memo[nm]
 	var out := Vector2i.ZERO
-	var bytes: PackedByteArray = _read_from("MDMDIMGS.BSA", name)
+	var bytes: PackedByteArray = _read_from("MDMDIMGS.BSA", nm)
 	if bytes.size() >= 14 and not CFAFile.is_hires(bytes):
 		out = Vector2i(bytes.decode_u16(0), bytes.decode_u16(2))
-	_cfa_lo_memo[name] = out
+	_cfa_lo_memo[nm] = out
 	return out
 
 ## The 640x480 art's own x/y placement, (0, 0) when it has none.
-func cfa_offset(name: String) -> Vector2i:
-	if not _cfa_offset_memo.has(name):
-		_read_hires_header(name)
-	return _cfa_offset_memo.get(name, Vector2i.ZERO)
+func cfa_offset(nm: String) -> Vector2i:
+	if not _cfa_offset_memo.has(nm):
+		_read_hires_header(nm)
+	return _cfa_offset_memo.get(nm, Vector2i.ZERO)
 
-func _read_hires_header(name: String) -> void:
+func _read_hires_header(nm: String) -> void:
 	var hires: bool = false
 	var off := Vector2i.ZERO
 	if _hires_available():
-		var bytes: PackedByteArray = _read_from(HIRES_ARCHIVE, name)
+		var bytes: PackedByteArray = _read_from(HIRES_ARCHIVE, nm)
 		hires = CFAFile.is_hires(bytes)
 		if hires:
 			off = CFAFile.hires_offset(bytes)
-	_cfa_hires_memo[name] = hires
-	_cfa_offset_memo[name] = off
+	_cfa_hires_memo[nm] = hires
+	_cfa_offset_memo[nm] = off
 
 ## The MAP file the level loader would read — the archive entry. The DOS
 ## data is the SOURCE and nobody edits it: a mod is a Godot scene that
@@ -1293,6 +1301,7 @@ func mission_start_of(key: int) -> int:
 	if key < 0:
 		return -1
 	for s in mission_starts():
+		@warning_ignore("integer_division")
 		if (int(s) / 10) * 10 == (key / 10) * 10:
 			return int(s)
 	return -1
@@ -1565,6 +1574,7 @@ func _import_animations(bank: int) -> void:
 		return
 	if bank in EFFECT_BANKS and h[2] > 0:
 		ex.call("bank_frames", bank, 0)
+	@warning_ignore("integer_division")
 	for r in h.size() / 4:
 		if h[r * 4 + 2] > 1:
 			ex.call("bank_frames", bank, r, 2)

@@ -687,7 +687,7 @@ func prox_forget() -> void:
 ## Being registered IS being on the sweep, exactly as it was when the same
 ## call built a dictionary entry in the long loop — a mover whose .3D is
 ## missing from the archives never reaches this and has never moved.
-func register_mover(e, node: Node3D) -> void:
+func register_mover(e, nd: Node3D) -> void:
 	_ensure_index()
 	var n: Node = _by_id.get(e.file_off)
 	if n == null or not n.has_method("mover_watch"):
@@ -695,7 +695,7 @@ func register_mover(e, node: Node3D) -> void:
 		return
 	# The entity's raw 11-bit Euler triple: a swing advances one component
 	# of it and the basis is rebuilt from all three.
-	n.adopt(node, Vector3(float(e.off_x & 0x7FF), float(e.off_y & 0x7FF),
+	n.adopt(nd, Vector3(float(e.off_x & 0x7FF), float(e.off_y & 0x7FF),
 		float(e.off_z & 0x7FF)))
 	_movers[e.file_off] = n
 
@@ -852,14 +852,14 @@ func path_forget() -> void:
 ## target comes through here, movers included — a door with hit points
 ## can be shot to pieces like anything else, and what leaves the world
 ## then is this mesh.
-func register_hittable(e, node: Node3D) -> void:
+func register_hittable(e, nd: Node3D) -> void:
 	_ensure_index()
-	_hittable[e.file_off] = node
+	_hittable[e.file_off] = nd
 	var n: Node = _by_id.get(e.file_off)
 	if n != null and n.has_method("adopt") and not n.has_method("mover_watch"):
 		if n.has_method("break_down"):
 			return                               # its stages arrive with it
-		n.call("adopt", node)
+		n.call("adopt", nd)
 
 ## …and the damage stages the loader read out of TRANSFRM.PRS for it.
 ## Being registered IS being a wreck: a name with no template never
@@ -1015,14 +1015,14 @@ func destroy(id: int) -> void:
 	var e = record_of(id)
 	if e == null:
 		return
-	var node: Node3D = _hittable.get(id)
+	var nd: Node3D = _hittable.get(id)
 	var origin := Vector3(float(e.x), -float(e.y), -float(e.z)) + zone_origin
 	var centre: Vector3 = origin
 	var radius: float = 120.0
-	var alive: bool = node != null and is_instance_valid(node)
-	if alive and node is MeshInstance3D:
-		var aabb: AABB = (node as MeshInstance3D).get_aabb()
-		centre = node.global_transform * (aabb.position + aabb.size * 0.5)
+	var alive: bool = nd != null and is_instance_valid(nd)
+	if alive and nd is MeshInstance3D:
+		var aabb: AABB = (nd as MeshInstance3D).get_aabb()
+		centre = nd.global_transform * (aabb.position + aabb.size * 0.5)
 		radius = maxf(aabb.size.length() * 0.35, 120.0)
 	var fx: Array = [0xB300]
 	var spread: int = maxi(absi(e.destroy_param), 128)
@@ -1042,8 +1042,8 @@ func destroy(id: int) -> void:
 		Audio.play_id_3d(snd, centre, -3.0)
 	else:
 		Audio.play_sfx_3d("EXPLO3.RAW", centre, -3.0)
-	if alive and node.is_inside_tree():
-		var scene := node.get_tree().current_scene
+	if alive and nd.is_inside_tree():
+		var scene := nd.get_tree().current_scene
 		if scene != null:
 			var k: int = 0
 			for s in fx:
@@ -1053,11 +1053,11 @@ func destroy(id: int) -> void:
 						randf_range(-0.5, 0.5) * spread)
 				Explosion.spawn(scene, at, radius * 1.6, int(s) >> 7)
 				k += 1
-		radial_blast(node, centre, absi(e.destroy_param))
+		radial_blast(nd, centre, absi(e.destroy_param))
 	# Gone from the world, whether or not it was in a tree to blow up in.
 	if alive and not _wrecks.has(id):
-		node.visible = false
-		disable_collision(node)
+		nd.visible = false
+		disable_collision(nd)
 	# What a broken crate leaves behind is the server's to place — a
 	# client that dropped its own would hold an item nobody else can see
 	# (net_game.gd's header: the drops are not on the wire).
@@ -1067,20 +1067,20 @@ func destroy(id: int) -> void:
 ## Explosion at a wreck's centre; the final stage also throws the object's
 ## own blast (the i16 at its link record +1 — the cars of MAP.210 carry
 ## 200-300, the gas tanker 600, a crate nothing).
-func blast(id: int, node: Node3D, final: bool) -> void:
+func blast(id: int, nd: Node3D, final: bool) -> void:
 	var e = record_of(id)
 	var strength: int = absi(e.destroy_param) if e != null else 0
-	var aabb: AABB = (node as MeshInstance3D).get_aabb() if node is MeshInstance3D else AABB()
-	var centre: Vector3 = node.global_transform * (aabb.position + aabb.size * 0.5)
+	var aabb: AABB = (nd as MeshInstance3D).get_aabb() if nd is MeshInstance3D else AABB()
+	var centre: Vector3 = nd.global_transform * (aabb.position + aabb.size * 0.5)
 	var radius: float = maxf(aabb.size.length() * 0.35, 120.0)
 	Audio.play_sfx_3d("EXPLO3.RAW" if final else "EXPLO1.RAW", centre, -3.0)
-	if not node.is_inside_tree():
+	if not nd.is_inside_tree():
 		return
-	var scene := node.get_tree().current_scene
+	var scene := nd.get_tree().current_scene
 	if scene != null:
 		Explosion.spawn(scene, centre, radius * (1.6 if final else 1.0))
 	if final:
-		radial_blast(node, centre, strength)
+		radial_blast(nd, centre, strength)
 
 ## A dying object's blast, the DOS radial one (FUN_00124386 through
 ## Projectile.dos_blast): `s` points at the centre + 40, nothing past half
@@ -1107,8 +1107,8 @@ func radial_blast(source: Node3D, centre: Vector3, s: int) -> void:
 			if bh > 0.0:
 				h.call_deferred("take_damage", bh)
 
-static func disable_collision(node: Node3D) -> void:
-	for c in node.get_children():
+static func disable_collision(nd: Node3D) -> void:
+	for c in nd.get_children():
 		if c is CollisionObject3D:
 			for s in c.get_children():
 				if s is CollisionShape3D:
@@ -1163,12 +1163,12 @@ func light_tick(delta: float) -> void:
 	for n in _lights:
 		n.light_watch(fx_tick)
 
-## The countdown relays. `objectives_left` is the mission counter main.gd
+## The countdown relays. `left` is the mission counter main.gd
 ## keeps (DOS [0x1e6c2]) — the one thing a relay watches.
-func relay_tick(objectives_left: int) -> void:
+func relay_tick(left: int) -> void:
 	_ensure_index()
 	for n in _relays:
-		n.relay_watch(objectives_left)
+		n.relay_watch(left)
 
 ## The spawn sprites a chain has switched on.
 func spawn_tick() -> void:
@@ -1591,11 +1591,11 @@ func reachable(from_local: Vector3, target_local: Vector3) -> bool:
 ## the transform already final. Every one of them is also a HITTABLE: what
 ## a blast goes off at, and what leaves the world when a pool of hit
 ## points runs out.
-func register_node(e, node: Node3D) -> void:
+func register_node(e, nd: Node3D) -> void:
 	_ensure_index()
 	if Rules.is_mover(int(e.link_act_type)):
-		register_mover(e, node)
-	register_hittable(e, node)
+		register_mover(e, nd)
+	register_hittable(e, nd)
 
 ## The mesh the loader built for record `id`, or null.
 func hit_node(id: int) -> Node3D:
@@ -1610,20 +1610,20 @@ func hit_node(id: int) -> Node3D:
 ## side. The two faces swap materials instead, so the front shows the lit
 ## art where it stands.
 func present_flip(id: int) -> void:
-	var node: Node3D = _hittable.get(id)
-	if node == null or not is_instance_valid(node):
+	var nd: Node3D = _hittable.get(id)
+	if nd == null or not is_instance_valid(nd):
 		return
-	if not String(node.get_meta("mesh_name", node.name)).begins_with("BUTTON"):
+	if not String(nd.get_meta("mesh_name", nd.name)).begins_with("BUTTON"):
 		return
-	var mi: MeshInstance3D = node as MeshInstance3D
+	var mi: MeshInstance3D = nd as MeshInstance3D
 	if mi == null:
-		var found: Array = node.find_children("*", "MeshInstance3D", true, false)
+		var found: Array = nd.find_children("*", "MeshInstance3D", true, false)
 		if not found.is_empty():
 			mi = found[0]
 	if mi == null or mi.mesh == null or mi.mesh.get_surface_count() != 2:
 		return
 	var lit: bool = runtime != null and runtime.enabled(id)
-	node.set_meta("switch_lit", lit)
+	nd.set_meta("switch_lit", lit)
 	mi.set_surface_override_material(0, mi.mesh.surface_get_material(1) if lit else null)
 	mi.set_surface_override_material(1, mi.mesh.surface_get_material(0) if lit else null)
 

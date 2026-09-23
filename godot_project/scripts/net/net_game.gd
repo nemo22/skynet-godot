@@ -356,9 +356,9 @@ func host(cfg: Dictionary) -> bool:
 
 ## Connect to a host. `welcome_received` fires once the roster arrived
 ## (then load `settings.map`); `connection_failed` on error.
-func join(ip: String, port: int, name: String) -> bool:
+func join(ip: String, port: int, nm: String) -> bool:
 	leave()
-	save_name(name)
+	save_name(nm)
 	_peer = ENetMultiplayerPeer.new()
 	var err := _peer.create_client(ip, port)
 	if err != OK:
@@ -408,8 +408,8 @@ func leave() -> void:
 	trigger_world = null
 	trigger_snapshot.clear()
 
-func _new_player(name: String, bot: bool, cls: int = CLASS_HUMAN) -> Dictionary:
-	return {"name": name, "kills": 0, "deaths": 0, "hp": MAX_HEALTH, "armor": 0.0,
+func _new_player(nm: String, bot: bool, cls: int = CLASS_HUMAN) -> Dictionary:
+	return {"name": nm, "kills": 0, "deaths": 0, "hp": MAX_HEALTH, "armor": 0.0,
 		"alive": false, "bot": bot, "pos": Vector3.ZERO, "weapon": 1, "cls": cls}
 
 # --- peer events -------------------------------------------------------
@@ -553,7 +553,7 @@ func _srv_drop_stale_peers(now: int) -> void:
 		else:
 			_kick_at.erase(id)
 
-func _srv_admit(id: int, name: String, cls: int = CLASS_HUMAN) -> void:
+func _srv_admit(id: int, map_name: String, cls: int = CLASS_HUMAN) -> void:
 	# Already in, or gone while the host was still loading.
 	if players.has(id) or not multiplayer.get_peers().has(id):
 		return
@@ -566,7 +566,7 @@ func _srv_admit(id: int, name: String, cls: int = CLASS_HUMAN) -> void:
 		_srv_kick(id, "Server is full.")
 		return
 	# Unique display name.
-	var base := _clean_text(name, MAX_NAME_LEN)
+	var base := _clean_text(map_name, MAX_NAME_LEN)
 	if base.is_empty():
 		base = "PLAYER"
 	var nm := base

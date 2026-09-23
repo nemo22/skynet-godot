@@ -446,11 +446,11 @@ func _adopt(off: int) -> bool:
 		return true
 	if presenter == null:
 		return false
-	var seed: Dictionary = presenter.node_bytes(off)
-	if seed.is_empty():
+	var seed_val: Dictionary = presenter.node_bytes(off)
+	if seed_val.is_empty():
 		return false
-	_state[off] = int(seed.get("state", 0))
-	_act[off] = int(seed.get("act", 0))
+	_state[off] = int(seed_val.get("state", 0))
+	_act[off] = int(seed_val.get("act", 0))
 	return true
 
 # ---------------------------------------------------------------------
@@ -709,7 +709,7 @@ func net_delta() -> Dictionary:
 	var st: Dictionary = {}
 	var ac: Dictionary = {}
 	var lk: Dictionary = {}
-	var hp: Dictionary = {}
+	var hps: Dictionary = {}
 	var sp: Array = []
 	for off in _dirty:
 		var id: int = int(off)
@@ -719,7 +719,7 @@ func net_delta() -> Dictionary:
 		if link(id) != link0(id):
 			lk[id] = link(id)
 		if _hp.has(id):
-			hp[id] = float(_hp[id])
+			hps[id] = float(_hp[id])
 		if _spent.has(id):
 			sp.append(id)
 	out["st"] = st
@@ -727,8 +727,8 @@ func net_delta() -> Dictionary:
 		out["ac"] = ac
 	if not lk.is_empty():
 		out["lk"] = lk
-	if not hp.is_empty():
-		out["hp"] = hp
+	if not hps.is_empty():
+		out["hp"] = hps
 	if not sp.is_empty():
 		out["sp"] = sp
 	if presenter != null:

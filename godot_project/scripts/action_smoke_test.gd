@@ -151,19 +151,19 @@ func _run_map210_checks(level: LevelLoader.Level) -> void:
 		_check(btn != null, "MAP.216 has a BUTTON01 with the 0xEF act")
 		if btn != null:
 			var near := Vector3(float(btn.x), -float(btn.y), -float(btn.z)) + Vector3(60.0, 0.0, 40.0)
-			var gate = null
+			var tower_gate = null
 			var cur = btn
 			for hop in 8:
 				if cur == null or cur.link_next < 1:
 					break
 				cur = l216.map.entities_by_off.get(cur.link_next)
 				if cur != null and Rules.is_mover(cur.link_act_type):
-					gate = cur
+					tower_gate = cur
 					break
-			_check(gate != null and not l216.triggers.enabled(gate.file_off),
+			_check(tower_gate != null and not l216.triggers.enabled(tower_gate.file_off),
 				"the tower button's gate starts disabled")
 			_check(l216.behaviour.use_nearby(near), "use beside the button operates it without aiming")
-			_check(gate != null and l216.triggers.enabled(gate.file_off),
+			_check(tower_gate != null and l216.triggers.enabled(tower_gate.file_off),
 				"the button's chain enabled the gate")
 			_check(not l216.behaviour.use_nearby(near + Vector3(600.0, 0.0, 0.0)), "use 600 u away does nothing")
 
@@ -683,23 +683,23 @@ func _run_transition_checks(level210: LevelLoader.Level) -> void:
 		# of the data): a file offset is no longer a promise, so only the
 		# records whose recorded signature still stands are laid back and
 		# the rest keep what the map has (plan §4, migration step 5i).
-		var l210d: LevelLoader.Level = LevelLoader.new().load_level("MAP.210")
-		if l210d != null:
+		var l210r: LevelLoader.Level = LevelLoader.new().load_level("MAP.210")
+		if l210r != null:
 			var foreign: Dictionary = snap.duplicate(true)
 			foreign["graph_sha"] = "another map file"
 			(foreign["sigs"] as Dictionary)[off] = "a record that moved"
 			var other_off: int = -1
 			for o in (foreign["sigs"] as Dictionary):
 				var id: int = int(o)
-				var rec = l210d.triggers.record(id)
+				var rec = l210r.triggers.record(id)
 				if id != off and rec != null and (foreign["states"] as Dictionary).has(id) \
 						and int(foreign["states"][id]) != int(rec.state_byte):
 					other_off = id
 					break
-			l210d.triggers.restore(foreign)
-			_check(not l210d.triggers.spent(off),
+			l210r.triggers.restore(foreign)
+			_check(not l210r.triggers.spent(off),
 				"an overlay from another map file leaves the record whose signature moved as the file has it")
-			_check(other_off < 0 or l210d.triggers.state(other_off) == int(foreign["states"][other_off]),
+			_check(other_off < 0 or l210r.triggers.state(other_off) == int(foreign["states"][other_off]),
 				"…and still lays back the records that are the same (@%05x)" % other_off)
 
 	# Doorway touch: standing on a 0xF0 exit sprite arms it directly.
@@ -1309,7 +1309,7 @@ func _run_trigger_bus_checks() -> void:
 	var other: Array = []
 	var cb: Callable = func(ev: StringName, data: Dictionary) -> void: heard.append([ev, data])
 	bus.watch(0x1234, cb)
-	bus.watch(0x9999, func(ev: StringName, data: Dictionary) -> void: other.append(ev))
+	bus.watch(0x9999, func(ev: StringName, _data: Dictionary) -> void: other.append(ev))
 	bus.record(true)
 	bus.announce_flip(0x1234, 0xEF, 0x01)
 	bus.announce_fire(0x1234, "prox_gate")

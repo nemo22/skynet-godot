@@ -38,11 +38,16 @@ func style(mat: BaseMaterial3D, kind: String) -> void:
 	# Only what differs is written: every BaseMaterial3D setter queues a
 	# shader update, and restyle_mesh() passes shared cached materials
 	# through here that are usually styled right already.
-	var filter: int = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS \
+	var filter: BaseMaterial3D.TextureFilter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS \
 		if smooth else BaseMaterial3D.TEXTURE_FILTER_NEAREST
 	if mat.texture_filter != filter:
 		mat.texture_filter = filter
-	var shading: int = BaseMaterial3D.SHADING_MODE_UNSHADED
+	# A terrain cell holds exactly one tile in 0..1 UVs (wld_terrain.gd):
+	# clamped, so a linear filter or a mipmap never reaches across to the
+	# tile's opposite edge — that was a line on every cell border.
+	if kind == "terrain" and mat.texture_repeat:
+		mat.texture_repeat = false
+	var shading: BaseMaterial3D.ShadingMode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	if kind != "sky" and kind != "sprite" and dynamic:
 		# DYNAMIC LIGHTS: a muzzle flash or an explosion can only show on
 		# a surface that takes light, and DOS drew the world unshaded, so

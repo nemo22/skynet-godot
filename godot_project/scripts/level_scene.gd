@@ -68,6 +68,7 @@ const LevelRoot    := preload("res://scripts/level_scene_root.gd")
 const WldTerrain   := preload("res://scripts/loaders/wld_terrain.gd")
 const LevelLoaderRef := preload("res://scripts/level_loader.gd")
 const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
+const PathsLib := preload("res://scripts/skynet_paths.gd")
 
 ## Bump when the bake changes shape (invalidates every saved scene).
 ## 8 = the Behaviour branch (2026-09-05); 9 = its root script and the
@@ -98,7 +99,7 @@ static func mod_path(map_name: String) -> String:
 	var m: String = _map_file_name(map_name)
 	if m.is_empty():
 		return ""
-	var p: String = "%s/maps/%s.level.scn" % [SkynetPaths.mods_dir(), m]
+	var p: String = "%s/maps/%s.level.scn" % [PathsLib.mods_dir(), m]
 	return p if FileAccess.file_exists(p) else ""
 
 ## Is this map presented by a mod scene rather than by the derived one?
@@ -116,7 +117,7 @@ static func resolved_scene_path(map_name: String) -> String:
 ## level and never touched by the conversion.
 static func overlay_path(map_name: String) -> String:
 	var m: String = _map_file_name(map_name)
-	return "" if m.is_empty() else "%s/maps/%s.detail.tscn" % [SkynetPaths.mods_dir(), m]
+	return "" if m.is_empty() else "%s/maps/%s.detail.tscn" % [PathsLib.mods_dir(), m]
 
 ## The provenance sidecar of a baked scene: plain "key=value" lines
 ## (bake_version, source_hash, map), read without the resource loader.
@@ -429,7 +430,7 @@ static func _overlay_ext_problem(f: Dictionary, owner_path: String, depth: int) 
 		if Assets.is_cache_path(t):
 			if ext != "res" or not Assets.is_trusted(t):
 				return "%s is not a cache file this installation wrote" % t
-		elif _inside(t, SkynetPaths.mods_dir()):
+		elif _inside(t, PathsLib.mods_dir()):
 			if ext != "tres":
 				return "%s is not a .tres resource" % t
 			var why := overlay_problem(t, depth + 1)
@@ -1004,11 +1005,14 @@ static func build_occluders(level) -> Node3D:
 	var root := Node3D.new()
 	root.name = "Occluders"
 	root.add_child(oi)
+	@warning_ignore("integer_division")
 	print("[level] occluders: %d triangles" % (idx.size() / 3))
 	return root
 
 static func _terrain_occluder(w, verts: PackedVector3Array, idx: PackedInt32Array) -> void:
+	@warning_ignore("integer_division")
 	var cols: int = (WldTerrain.GRID_W - 1) / OCC_STEP
+	@warning_ignore("integer_division")
 	var rows: int = (WldTerrain.GRID_H - 1) / OCC_STEP
 	var stride: int = cols + 1
 	var base: int = verts.size()
@@ -1039,6 +1043,7 @@ static func _quad(idx: PackedInt32Array, a: int, b: int, c: int, d: int) -> void
 	idx.append_array(PackedInt32Array([a, b, c, a, c, d, a, c, b, a, d, c]))
 
 static func _mesh_occluders(level, verts: PackedVector3Array, idx: PackedInt32Array) -> void:
+	@warning_ignore("integer_division")
 	var budget: int = OCC_BUDGET_TRIS - idx.size() / 3
 	if budget <= 0:
 		return
@@ -1057,6 +1062,7 @@ static func _mesh_occluders(level, verts: PackedVector3Array, idx: PackedInt32Ar
 	for item in big:
 		var mi: MeshInstance3D = item[1]
 		var faces: PackedVector3Array = mi.mesh.get_faces()
+		@warning_ignore("integer_division")
 		var tris: int = faces.size() / 3
 		if tris <= 0 or tris > OCC_MESH_MAX_TRIS or tris * 2 > budget:
 			continue

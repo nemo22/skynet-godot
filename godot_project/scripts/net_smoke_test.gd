@@ -75,8 +75,8 @@ func _run() -> void:
 	var player: CharacterBody3D = _main.get("player")
 	player.set("god_mode", true)
 	var ok: bool = await _wait(func() -> bool:
-		var lvl = _main.get("_current_level")
-		return lvl != null and String(lvl.map_suffix) == "605" and Net.level_ready, 240.0)
+		var cur = _main.get("_current_level")
+		return cur != null and String(cur.map_suffix) == "605" and Net.level_ready, 240.0)
 	_check(ok, "MAP.605 loads in DM mode (no briefing) and the server is level-ready")
 	if not ok:
 		return _finish()
@@ -97,7 +97,6 @@ func _run() -> void:
 	_check(dm != null, "DM controller attached")
 	ok = await _wait(func() -> bool: return Net.is_alive(1), 10.0)
 	_check(ok, "host player spawned by the server")
-	var lvl = _main.get("_current_level")
 	var near_spawn := false
 	for sp in Net.spawn_points:
 		if (sp["pos"] as Vector3).distance_to(player.global_position) < 300.0:

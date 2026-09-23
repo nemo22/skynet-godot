@@ -105,14 +105,14 @@ func _archive():
 
 ## Decode a .RAW / .WAV clip into an AudioStreamWAV (cached in memory
 ## and, through the asset cache, on disk).
-func _load(name: String, loop: bool) -> AudioStreamWAV:
-	var key := name.to_upper() + ("#L" if loop else "")
+func _load(nm: String, loop: bool) -> AudioStreamWAV:
+	var key := nm.to_upper() + ("#L" if loop else "")
 	if _cache.has(key):
 		return _cache[key]
 	if _archive() == null:
 		return null
-	var s: AudioStreamWAV = Assets.sound(name, loop,
-		func() -> Resource: return _decode(name, loop))
+	var s: AudioStreamWAV = Assets.sound(nm, loop,
+		func() -> Resource: return _decode(nm, loop))
 	if s != null:
 		_cache[key] = s
 	return s
@@ -128,14 +128,14 @@ const WAV_DECODE: Dictionary = {
 	"edit/loop_mode": 1,                   # disabled (no smpl-chunk loops)
 }
 
-func _decode(name: String, loop: bool) -> AudioStreamWAV:
+func _decode(nm: String, loop: bool) -> AudioStreamWAV:
 	if _bsa == null:
 		return null
-	var bytes: PackedByteArray = _bsa.read(name)
+	var bytes: PackedByteArray = _bsa.read(nm)
 	if bytes.is_empty():
 		return null
 	var s: AudioStreamWAV
-	if name.to_upper().ends_with(".WAV"):
+	if nm.to_upper().ends_with(".WAV"):
 		# A .WAV never loops here (the loop flag only ever applied to .RAW).
 		s = AudioStreamWAV.load_from_buffer(bytes, WAV_DECODE)
 		if s == null:
@@ -215,12 +215,12 @@ func _parse_wav(b: PackedByteArray) -> AudioStreamWAV:
 	return null
 
 ## Public: a decoded one-shot stream (for positional enemy players).
-func stream(name: String) -> AudioStreamWAV:
-	return _load(name, false)
+func stream(nm: String) -> AudioStreamWAV:
+	return _load(nm, false)
 
 ## Play a one-shot sound effect through a free voice (2D, non-positional).
-func play_sfx(name: String, volume_db: float = 0.0) -> void:
-	var s := _load(name, false)
+func play_sfx(nm: String, volume_db: float = 0.0) -> void:
+	var s := _load(nm, false)
 	if s == null:
 		return
 	for p in _voices:
@@ -243,12 +243,12 @@ func play_sfx(name: String, volume_db: float = 0.0) -> void:
 ## that is quietest where the listener stands — or is dropped when it
 ## would be quieter still — so a footstep cannot cut off the player's
 ## own explosion.
-func play_sfx_3d(name: String, world_pos: Vector3, volume_db: float = -6.0) -> void:
+func play_sfx_3d(nm: String, world_pos: Vector3, volume_db: float = -6.0) -> void:
 	var cam: Camera3D = _listener()
 	var dist: float = cam.global_position.distance_to(world_pos) if cam != null else 0.0
 	if dist > SFX_MAX_DISTANCE:
 		return
-	var s := _load(name, false)
+	var s := _load(nm, false)
 	if s == null:
 		return
 	var pick: AudioStreamPlayer3D = null
@@ -325,8 +325,8 @@ func occlusion_db(world_pos: Vector3) -> float:
 	return OCCLUDED_DB
 
 ## Start a looping ambient bed (replaces any current one).
-func play_ambient(name: String, volume_db: float = -13.0) -> void:
-	var s := _load(name, true)
+func play_ambient(nm: String, volume_db: float = -13.0) -> void:
+	var s := _load(nm, true)
 	if s == null:
 		return
 	if _ambient.stream == s and _ambient.playing:
@@ -372,30 +372,30 @@ func set_music_volume(v: float) -> void:
 	_save_cfg()
 
 ## Parsed HMI song (memory-cached; a 30 KB file parses in milliseconds).
-func song(name: String) -> Dictionary:
-	name = name.to_upper()
-	if _songs.has(name):
-		return _songs[name]
-	var bytes := SkynetPaths.read_bytes(SkynetPaths.gamedata_path(name))
+func song(nm: String) -> Dictionary:
+	nm = nm.to_upper()
+	if _songs.has(nm):
+		return _songs[nm]
+	var bytes := SkynetPaths.read_bytes(SkynetPaths.gamedata_path(nm))
 	var s: Dictionary = HmiFile.parse(bytes) if not bytes.is_empty() else {}
 	if s.is_empty():
-		push_warning("[audio] cannot play %s" % name)
-	_songs[name] = s
+		push_warning("[audio] cannot play %s" % nm)
+	_songs[nm] = s
 	return s
 
 ## Start a track ("T200.HMI"); a no-op when it is already playing.
-func play_music(name: String) -> void:
-	name = name.to_upper()
+func play_music(nm: String) -> void:
+	nm = nm.to_upper()
 	if _synth == null:
 		return
-	if _synth.playing and _synth.song_name == name:
+	if _synth.playing and _synth.song_name == nm:
 		return
-	var s := song(name)
+	var s := song(nm)
 	if s.is_empty():
 		_synth.stop()
 		return
-	_synth.play(s, name)
-	print("[audio] music %s (%d events, %.0f s)" % [name, s["events"].size() / HmiFile.REC,
+	_synth.play(s, nm)
+	print("[audio] music %s (%d events, %.0f s)" % [nm, s["events"].size() / HmiFile.REC,
 		float(s["length"]) / float(s["rate"])])
 
 func stop_music() -> void:

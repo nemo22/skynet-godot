@@ -77,6 +77,7 @@ func _show_info(idx: int) -> void:
 			var ch: int = bytes[22] | (bytes[23] << 8)
 			var bits: int = bytes[34] | (bytes[35] << 8)
 			var data_size: int = bytes[40] | (bytes[41] << 8) | (bytes[42] << 16) | (bytes[43] << 24)
+			@warning_ignore("integer_division")
 			var byte_per_sample: int = max(1, ch * bits / 8)
 			dur = float(data_size) / float(sr * byte_per_sample) if sr > 0 else 0.0
 			info.text = "%s\n%d bytes   %d-bit %s @ %d Hz\nduration ≈ %.2f s" % [

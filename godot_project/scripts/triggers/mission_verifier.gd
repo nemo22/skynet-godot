@@ -265,7 +265,7 @@ func _run_missions() -> void:
 func _run_mission(spec: Dictionary) -> void:
 	var key: int = int(spec["key"])
 	var t0: int = Time.get_ticks_msec()
-	var name: String = "MAP.%03d" % key
+	var nm: String = "MAP.%03d" % key
 	# A mission begins the way RESTART MISSION begins one: the level
 	# change is handed a session holding nothing but the map, which empties
 	# every map's overlay, the previous-map register and the pending marker
@@ -273,8 +273,8 @@ func _run_mission(spec: Dictionary) -> void:
 	# its objective counter are read again (main._install_save). The
 	# briefing screen itself is skipped — this is not a player starting a
 	# game, it is the mission being measured.
-	if not await main._change_level(name, false, false,
-			{"map": name, "mission_start_map": name, "restart": true}):
+	if not await main._change_level(nm, false, false,
+			{"map": nm, "mission_start_map": nm, "restart": true}):
 		_step_row(key, 0, "mission", key, 0, FAIL, "the start map would not load", "")
 		return
 	await _drv.frames(8)
@@ -621,12 +621,12 @@ func _take_exit(tokens: PackedStringArray) -> void:
 ## Put the run on `map` (a level change of the runner's own, after a step
 ## left it somewhere the spec does not expect).
 func _go_to(map: int) -> bool:
-	var name: String = "MAP.%03d" % map
-	if not await main._change_level(name, false, false):
+	var nm: String = "MAP.%03d" % map
+	if not await main._change_level(nm, false, false):
 		return false
 	await _drv.frames(8)
 	_cur = main._level_name()
-	if _cur != name:
+	if _cur != nm:
 		return false
 	_ready_map()
 	return true

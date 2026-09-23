@@ -252,7 +252,7 @@ static func _gauge_gradient(c0: Color, c1: Color) -> GradientTexture2D:
 	t.fill_to = Vector2(1.0, 0.0)
 	return t
 
-func _label(parent: Control, align: int, size: int, dim: float) -> Label:
+func _label(parent: Control, align: HorizontalAlignment, sz: int, dim: float) -> Label:
 	var l := Label.new()
 	l.horizontal_alignment = align
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -260,7 +260,7 @@ func _label(parent: Control, align: int, size: int, dim: float) -> Label:
 	l.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.85))
 	l.add_theme_constant_override("shadow_offset_x", 1)
 	l.add_theme_constant_override("shadow_offset_y", 2)
-	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_font_size_override("font_size", sz)
 	parent.add_child(l)
 	return l
 
@@ -289,6 +289,7 @@ func _draw_strip() -> void:
 		_strip.draw_line(Vector2(x, h - 2.0), Vector2(x, h - 2.0 - tick),
 			Color(tint.r, tint.g, tint.b, 0.85 if cardinal else 0.45), 1.0)
 		if cardinal and font != null:
+			@warning_ignore("integer_division")
 			var letter: String = ["N", "E", "S", "W"][int(posmod(deg - 15, 360) / 90)]
 			_strip.draw_string(font, Vector2(x - 5.0, h * 0.52), letter,
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 13, tint)
