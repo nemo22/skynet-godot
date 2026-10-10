@@ -1066,13 +1066,16 @@ func demolish(id: int) -> void:
 ## picks the destruction type (Skynet.exe 0x423d6): effect sprites
 ## scattered within `spread`, a random drop from the type's list (crates →
 ## ammo, lockers → medkits) and a sound (-2 = one of 33..36); type 0 is a
-## plain blast (effect 358) sized by the i16 parameter, no drop. Staged
-## wrecks keep their final mesh; everything else leaves the world.
+## plain blast (effect 358) sized by the i16 parameter, no drop. With
+## `removed` the record leaves the world — every object whose hit points
+## ran out, staged wrecks too (v1.01 0x139778 unlinks it from its cell:
+## CARHIP and COPCAR cars vanish in their blast); a wreck a chain broke
+## down (MAP.248's wall) passes false and keeps its last mesh standing.
 ##
 ## zone-local ↔ world: the record's own position is zone-local and the
 ## mesh's global transform is already world; both are carried as WORLD
 ## here, because the audio, the effects and the blast all live there.
-func destroy(id: int) -> void:
+func destroy(id: int, removed: bool = true) -> void:
 	var e = record_of(id)
 	if e == null:
 		return
@@ -1116,7 +1119,9 @@ func destroy(id: int) -> void:
 				k += 1
 		radial_blast(nd, centre, absi(e.destroy_param))
 	# Gone from the world, whether or not it was in a tree to blow up in.
-	if alive and not _wrecks.has(id):
+	if removed and _wrecks.has(id):
+		_wrecks[id].set("gone", true)
+	if alive and removed:
 		nd.visible = false
 		disable_collision(nd)
 	# What a broken crate leaves behind is the server's to place — a
@@ -1125,23 +1130,21 @@ func destroy(id: int) -> void:
 	if drop >= 0 and net_role != ROLE_CLIENT:
 		item_dropped.emit(Vector3(centre.x, origin.y, centre.z) - zone_origin, drop)
 
-## Explosion at a wreck's centre; the final stage also throws the object's
-## own blast (the i16 at its link record +1 — the cars of MAP.210 carry
-## 200-300, the gas tanker 600, a crate nothing).
-func blast(id: int, nd: Node3D, final: bool) -> void:
-	var e = record_of(id)
-	var strength: int = absi(e.destroy_param) if e != null else 0
+## A wreck stepped a stage while it still had hit points (handler
+## 0x120833, v1.01): one blast of bank 358 (0xB300) at its centre and one
+## of the explosions 33..36. The radial blast is the destruction's own
+## (destroy), not a stage's.
+func blast(_id: int, nd: Node3D) -> void:
 	var aabb: AABB = (nd as MeshInstance3D).get_aabb() if nd is MeshInstance3D else AABB()
 	var centre: Vector3 = nd.global_transform * (aabb.position + aabb.size * 0.5)
 	var radius: float = maxf(aabb.size.length() * 0.35, 120.0)
-	Audio.play_sfx_3d("EXPLO3.RAW" if final else "EXPLO1.RAW", centre, -3.0)
+	var pool: Array = PickupData.DESTRUCT_RANDOM_SOUNDS
+	Audio.play_id_3d(int(pool[randi() % pool.size()]), centre, -3.0)
 	if not nd.is_inside_tree():
 		return
 	var scene := nd.get_tree().current_scene
 	if scene != null:
-		Explosion.spawn(scene, centre, radius * (1.6 if final else 1.0))
-	if final:
-		radial_blast(nd, centre, strength)
+		Explosion.spawn(scene, centre, radius, 0xB300 >> 7)
 
 ## A dying object's blast, the DOS radial one (FUN_00124386 through
 ## Projectile.dos_blast): `s` points at the centre + 40, nothing past half
@@ -1188,7 +1191,7 @@ func destruct_snapshot() -> Dictionary:
 
 ## …and the way back: every wreck to the stage the overlay left it at, and
 ## the plain props the overlay says are spent out of the world again (a
-## staged wreck keeps its last mesh instead, which restore() puts back).
+## wreck's restore() puts its mesh back, or takes it out if it burnt out).
 func destruct_restore(snap: Dictionary) -> void:
 	_ensure_index()
 	for off in _hittable:

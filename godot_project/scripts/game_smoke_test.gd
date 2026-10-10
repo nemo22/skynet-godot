@@ -32,6 +32,16 @@ func _check(cond: bool, what: String) -> void:
 		_fails += 1
 		print("[e2e] FAIL  %s" % what)
 
+## Explosions that went off this very frame within 600 u of `at`.
+func _fresh_explosions(at: Vector3) -> int:
+	var n: int = 0
+	for c in get_tree().current_scene.get_children():
+		if c is Node3D and c.get("_t") == 0.0 and c.has_method("setup") \
+				and String(c.get_script().resource_path).ends_with("explosion.gd") \
+				and (c as Node3D).global_position.distance_to(at) < 600.0:
+			n += 1
+	return n
+
 ## Poll `pred` every frame for up to `secs` seconds of wall-clock time.
 func _wait(pred: Callable, secs: float) -> bool:
 	var t0: int = Time.get_ticks_msec()
@@ -284,6 +294,38 @@ func _run() -> void:
 			await get_tree().physics_frame
 		var stage1: int = int(branch.wreck_node(off).get("stage")) if branch.wreck_node(off) != null else -1
 		_check(stage1 > stage0, "rocket blast advanced the car's damage stage (%d → %d)" % [stage0, stage1])
+
+	# --- 2c. A staged car blasts at each stage, then burns out (v1.01 ObjHit
+	# 0x139819, stage handler 0x120833): the last stage keeps taking damage
+	# and the car leaves the world when its points run out ---
+	var car2: Node3D = null
+	for h in get_tree().get_nodes_in_group("hittable"):
+		var hoff: int = int(h.call("file_off"))
+		var w: Node = branch.wreck_node(hoff)
+		if h != car and w != null and int(w.get("stage")) == 0 and not rt.spent(hoff) \
+				and rt.has_hp(hoff) and (w.get("meshes") as Array).size() > 1 \
+				and (String(h.name).begins_with("CARHIP") or String(h.name).begins_with("COPCAR")):
+			car2 = h
+			break
+	_check(car2 != null, "a fresh staged car with hit points is on MAP.210")
+	if car2 != null:
+		var off: int = car2.call("file_off")
+		var w: Node = branch.wreck_node(off)
+		var last: int = (w.get("meshes") as Array).size() - 1
+		var blasts_ok: bool = true
+		for i in last:
+			var before: int = _fresh_explosions(car2.global_position)
+			branch.obj_hit(off, 1.0)
+			blasts_ok = blasts_ok and _fresh_explosions(car2.global_position) > before
+		_check(int(w.get("stage")) == last and blasts_ok,
+			"car stepped to its last stage (%d) with a blast at each" % last)
+		var hp_before: float = rt.hp(off)
+		branch.obj_hit(off, 1.0)
+		_check(rt.hp(off) < hp_before and branch.is_damageable(off) and car2.visible,
+			"the last stage still takes damage and stands (hp %.0f → %.0f)" % [hp_before, rt.hp(off)])
+		branch.obj_hit(off, rt.hp(off) + 1.0)
+		_check(rt.spent(off) and not car2.visible and not branch.is_damageable(off),
+			"the car burns out when its points run out")
 
 	# --- 3. Enemy bolt at the player ---
 	var en = get_tree().get_first_node_in_group("enemy")

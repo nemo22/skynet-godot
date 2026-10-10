@@ -15,9 +15,9 @@
 ## when the name has no template) and RETURN on `jb` when there is none.
 ## A car placed already wrecked — the map is full of CARHIP*C, which are
 ## other cars' last stage — therefore does nothing at all when shot, and
-## neither does this. Past the last stage the object is a spent wreck; an
-## object whose name has no template at all vanishes instead when its hit
-## points run out, which is the ordinary destruction path and not this.
+## neither does this. The last stage stays and goes on taking damage;
+## when the hit points run out the object vanishes in the ordinary
+## destruction path (Behaviour.destroy), staged or not.
 ##
 ## A chain can break one outright: on MAP.248 a START BOX runs a sound
 ## node into the IBEM64 girder and on into 248WALL — the ram that punches
@@ -76,6 +76,9 @@ var meshes: Array = []
 ## its name says).
 var stage: int = 0
 var accum: float = 0.0
+## The hit points ran out and the record left the world (Behaviour.destroy):
+## a burnt-out car is gone, whatever stage it had reached.
+var gone: bool = false
 
 ## The level loader has built this record's mesh and read its damage
 ## stages: from here on they are this node's.
@@ -91,36 +94,31 @@ func has_stages() -> bool:
 	return not meshes.is_empty()
 
 ## One qualifying hit: the counter goes up by one stage's worth and the
-## mesh follows it. Returns false for a wreck that has nothing left to
-## give — the final stage, or a thing already gone.
+## mesh follows it, up to the last TRANSFRM.PRS frame, where it stays.
+## Reaching that frame does not spend the record (v1.01 ObjHit 0x139819):
+## its hit points go on draining, and when they run out it leaves the
+## world through the ordinary destruction path (Behaviour.destroy). While
+## the record still has points each stage goes off with a bank-358 blast
+## and one of the explosions 33..36 (handler 0x120833); a wreck with none
+## left (a chain breaking MAP.248's wall) only changes its mesh. Returns
+## false for a wreck that has nothing left to give — the last stage, or a
+## thing already gone.
 func advance() -> bool:
 	var last: int = meshes.size() - 1
-	if stage >= last and (meshes.size() > 1 or _spent()):
-		return false                          # final wreck / already gone
+	if stage >= last or gone:
+		return false
 	accum += Rules.DESTRUCT_DAMAGE_PER_STAGE
-	var want: int = int(accum / Rules.DESTRUCT_DAMAGE_PER_STAGE)
-	var alive: bool = body != null and is_instance_valid(body)
-	if meshes.size() > 1:
-		var new_stage: int = mini(want, last)
-		if new_stage != stage:
-			stage = new_stage
-			# One announcement per stage that actually happens, wherever the
-			# damage came from — gunfire as well as a chain (M3 step 3).
-			branch.say(id, "destructible", "destruct",
-				{"stage": stage, "stages": meshes.size()})
-			if alive and body is MeshInstance3D and meshes[stage] != null:
-				(body as MeshInstance3D).mesh = meshes[stage]
-				branch.blast(id, body, stage == last)
-			if stage == last:
-				branch.runtime.set_spent(id)
-	elif want >= 1:
-		# No stage meshes — vanish (rubble piles etc.).
-		branch.runtime.set_spent(id)
-		branch.say(id, "destructible", "destruct", {"stage": 1, "stages": 1})
-		if alive:
-			branch.blast(id, body, true)
-			body.visible = false
-			branch.disable_collision(body)
+	var new_stage: int = mini(int(accum / Rules.DESTRUCT_DAMAGE_PER_STAGE), last)
+	if new_stage != stage:
+		stage = new_stage
+		# One announcement per stage that actually happens, wherever the
+		# damage came from — gunfire as well as a chain (M3 step 3).
+		branch.say(id, "destructible", "destruct",
+			{"stage": stage, "stages": meshes.size()})
+		if body != null and is_instance_valid(body) and body is MeshInstance3D 				and meshes[stage] != null:
+			(body as MeshInstance3D).mesh = meshes[stage]
+			if branch.runtime.has_hp(id) and float(branch.runtime.hp(id)) > 0.0:
+				branch.blast(id, body)
 	return true
 
 ## A CHAIN switched this on (0x18/0x19): a machine breaks it for you.
@@ -130,17 +128,18 @@ func advance() -> bool:
 ## hit is. Until 2026-09-16 the port ran every stage at the first enable
 ## and the wall fell at the first touch.
 func break_down() -> void:
-	if not has_stages():
+	if not has_stages() or _spent():
 		return
 	print("[action] destructible @%05x struck by a chain" % id)
-	var was_spent: bool = _spent()
 	# (The stage itself is announced by advance(), which every way of
 	# damaging the thing goes through — one stage a call.)
-	advance()
-	if was_spent or not _spent():
-		return                                   # still standing, or long gone
+	if not advance() or stage < meshes.size() - 1:
+		return                                   # still standing
+	# The last stage stands (MAP.248's wall keeps its hole): spent, but
+	# not removed.
+	branch.runtime.set_spent(id)
 	branch.runtime.set_hp(id, 0.0)
-	branch.destroy(id)
+	branch.destroy(id, false)
 	if body != null and is_instance_valid(body):
 		branch.disable_collision(body)
 
@@ -154,7 +153,7 @@ func _spent() -> bool:
 ## a snapshot (Behaviour.present_snapshot). The shape is the one the
 ## save has always had, so an older save still reads.
 func snapshot() -> Array:
-	return [stage, accum]
+	return [stage, accum, gone]
 
 ## …and the way back, mesh and all. A wreck with no stage meshes that the
 ## overlay says is spent left the world instead.
@@ -163,11 +162,11 @@ func restore(snap: Array) -> void:
 		return
 	stage = int(snap[0])
 	accum = float(snap[1])
+	gone = snap.size() > 2 and bool(snap[2])
 	if body == null or not is_instance_valid(body):
 		return
-	if meshes.size() > 1:
-		if body is MeshInstance3D and stage < meshes.size() and meshes[stage] != null:
-			(body as MeshInstance3D).mesh = meshes[stage]
-	elif _spent():
+	if body is MeshInstance3D and stage < meshes.size() and meshes[stage] != null:
+		(body as MeshInstance3D).mesh = meshes[stage]
+	if gone or (meshes.size() <= 1 and _spent()):
 		body.visible = false
 		branch.disable_collision(body)
