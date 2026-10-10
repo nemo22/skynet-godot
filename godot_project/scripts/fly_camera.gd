@@ -406,16 +406,9 @@ const HK_CLIMB: float = 200.0
 const HK_CLIMB_ACCEL: float = 700.0
 ## Keyboard turning in the gunship: a flat 90 °/s, not the soldier's ramp.
 const HK_TURN_RATE: float = 1.571
-const HK_MIN_ALTITUDE: float = 150.0
-## …and a ceiling over it. DOS caps how high the gunship may climb
-## ("v DOS hre bolo limitované, ako vysoko môže hráč vyletieť
-## s hkčkom"); without it mission 7 is won by climbing over the
-## canyon and crossing the map, instead of shooting through it.
-## The band is the enemy fighter's own: hk_ftr flies at `alt` 384
-## (284 over the ground), the player gets roughly twice that.
-const HK_MAX_ALTITUDE: float = 700.0
-const HK_CEILING_PROBE: float = 20000.0
-const HK_ROOF_PROBE: float = 4000.0
+## No altitude band: DOS (FUN_00131be0) keeps the gunship only under the
+## map's marker-3 ceiling (hk_ceiling) and out of what it hits; there is
+## no minimum height over the ground and no cap measured from it.
 ## The vehicle this player is in (VEH_*). Set by the level (mission
 ## table: MAP.220/260 jeep, MAP.270 HK) or, in a deathmatch, by
 ## climbing into a parked one.
@@ -930,7 +923,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			dpitch *= SUBMERGED_MOUSE_SCALE
 		if vehicle == VEH_JEEP:
 			# In the jeep the mouse moves the gun crosshair; the keys drive.
-			_aim_yaw = clampf(_aim_yaw - dyaw, -JEEP_AIM_YAW, JEEP_AIM_YAW)
+			_aim_yaw -= dyaw
 			_aim_pitch = clampf(_aim_pitch - dpitch, JEEP_AIM_PITCH_DOWN, JEEP_AIM_PITCH_UP)
 			_pitch = 0.0
 		else:
@@ -971,7 +964,7 @@ func _physics_process(delta: float) -> void:
 		if vehicle == VEH_JEEP:
 			# The touch look-stick lays on the turret, as the mouse does:
 			# in the jeep the view is the gun (see LOOK UP / LOOK DOWN).
-			_aim_yaw = clampf(_aim_yaw - dyaw, -JEEP_AIM_YAW, JEEP_AIM_YAW)
+			_aim_yaw -= dyaw
 			_aim_pitch = clampf(_aim_pitch - dpitch, JEEP_AIM_PITCH_DOWN, JEEP_AIM_PITCH_UP)
 		else:
 			_yaw -= dyaw
@@ -1152,7 +1145,9 @@ var _skid_cd: float = 0.0
 const JEEP_TILT_RATE: float = 6.0
 
 ## Jeep turret aim (DOS: the keys drive, the mouse turns the view - the
-## camera is the turret). Relative to the car's heading.
+## camera is the turret). Relative to the car's heading, and DOS clamps
+## the yaw nowhere (DAT_00069911): the turret turns the full circle while
+## the cockpit stays with the car.
 ## The pitch limits are DOS's: the jeep's look (GAME.EXE v1.01 0x135b04,
 ## the first call of the jeep's input routine 0x1356ec) turns
 ## DAT_0006990d with the same mouse and look keys the soldier's pitch
@@ -1160,7 +1155,6 @@ const JEEP_TILT_RATE: float = 6.0
 ## gets +-0x180). It was a hand-set -26/+34.
 var _aim_yaw: float = 0.0
 var _aim_pitch: float = 0.0
-const JEEP_AIM_YAW: float = 1.1
 const JEEP_AIM_PITCH_DOWN: float = -PI / 4.0
 const JEEP_AIM_PITCH_UP: float = PI / 4.0
 ## Ramming (DOS v1.00 0x135a7e, run once per move from 0x135588). The
@@ -1396,8 +1390,8 @@ func _drive(delta: float, fwd_in: float, str_in: float) -> void:
 	_update_engine()
 
 ## HK (DOS mode 8): a hovering gunship — thrust along the view with W/S,
-## strafe with A/D, climb / dive with E-Space / Q, no gravity, never
-## below HK_MIN_ALTITUDE over whatever is under the hull.
+## strafe with A/D, climb / dive with E-Space / Q, no gravity; only the
+## ground and the map's ceiling bound it.
 func _hover(delta: float, fwd_in: float, str_in: float) -> void:
 	var look := global_transform.basis
 	if _cam != null:
@@ -1422,24 +1416,6 @@ func _hover(delta: float, fwd_in: float, str_in: float) -> void:
 		accel = (HK_ACCEL * absf(fwd_in) + HK_STRAFE_ACCEL * absf(str_in)
 			+ HK_CLIMB_ACCEL * absf(vert)) / demand
 	velocity = velocity.move_toward(want, accel * delta)
-	# Ground clearance: push up when the surface below comes too close.
-	var space := get_world_3d().direct_space_state
-	if space != null:
-		# Long enough to find the ground from the top of the band, not
-		# just from just above the floor — the ceiling needs the same
-		# measurement the floor push does.
-		var q := _hk_ray_query(global_position + Vector3(0.0, 20.0, 0.0),
-			global_position - Vector3(0.0, HK_CEILING_PROBE, 0.0))
-		var hit := space.intersect_ray(q)
-		if hit.has("position"):
-			var clearance: float = global_position.y - (hit["position"] as Vector3).y
-			if clearance < HK_MIN_ALTITUDE and velocity.y < HK_CLIMB * 0.5:
-				velocity.y = maxf(velocity.y, (HK_MIN_ALTITUDE - clearance) * 4.0)
-			elif clearance > HK_MAX_ALTITUDE and not _roofed(space):
-				# Firm, but not a wall: the higher the gunship gets, the
-				# harder it sinks back into its band.
-				velocity.y = minf(velocity.y, -minf(
-					(clearance - HK_MAX_ALTITUDE) * 2.0, HK_CLIMB))
 	var cap_y: float = hk_ceiling - _eye
 	if global_position.y >= cap_y and velocity.y > 0.0:
 		velocity.y = 0.0               # the stick cannot climb past it
@@ -1462,7 +1438,7 @@ func _hover(delta: float, fwd_in: float, str_in: float) -> void:
 var hk_ceiling: float = INF
 
 ## After the move: the eye never ends above the ceiling. Whatever lifted
-## the hull there - the floor push, a slide up a hillside, the
+## the hull there - a slide up a hillside, the
 ## depenetration out of a slope - is taken back; when the hull would then
 ## sit inside what it hit, the move is undone the DOS way (old position,
 ## speed -1/4), so a hill at the ceiling is a wall, not a ramp.
@@ -1494,33 +1470,6 @@ func _hk_hull_blocked() -> bool:
 	_hk_shape_q.transform = global_transform * cs.transform
 	_hk_shape_q.collision_mask = ZoneLayers.world_mask()
 	return not space.intersect_shape(_hk_shape_q, 1).is_empty()
-
-## True when something is directly overhead: the gunship is inside a
-## tunnel, a shaft or a hangar, and the altitude cap does not apply
-## there. MAP.271's tunnel is flown at y ~4950 and its exit teleport
-## sits at 7676 — 2 700 units up a shaft — so a cap measured against the
-## floor below would seal the mission in ("exit z tunelov je vyssie ako
-## ten limit"). Out under open sky the cap holds.
-func _roofed(space: PhysicsDirectSpaceState3D) -> bool:
-	var q := _hk_ray_query(
-		global_position + Vector3(0.0, 40.0, 0.0),
-		global_position + Vector3(0.0, HK_ROOF_PROBE, 0.0))
-	return not space.intersect_ray(q).is_empty()
-
-## The HK's ground and roof probes share one ray query, built on first use:
-## a new query (and exclude array) every physics tick while flying was
-## garbage for nothing. Bodies only, never the player's own.
-var _hk_ray: PhysicsRayQueryParameters3D = null
-
-func _hk_ray_query(from: Vector3, to: Vector3) -> PhysicsRayQueryParameters3D:
-	if _hk_ray == null:
-		_hk_ray = PhysicsRayQueryParameters3D.new()
-		_hk_ray.collide_with_areas = false
-		_hk_ray.exclude = [get_rid()]
-	_hk_ray.from = from
-	_hk_ray.to = to
-	_hk_ray.collision_mask = ZoneLayers.world_mask()
-	return _hk_ray
 
 ## RUN: the Shift key, or the on-screen / automation button.
 func _sprinting() -> bool:
