@@ -184,9 +184,15 @@ static func locate_gamedata() -> String:
 ## and parsed its directory again. Other data reads afresh.
 var _col_memo: Dictionary = {}
 
-## The game palette: SkyNET keeps SKYNET.COL (or BRIEF.COL) inside
-## MDMDIMGS.BSA; Future Shock ships SHOCK.COL / BRIEF.COL loose in
-## GAMEDATA. Every palette reader goes through here.
+## The game palette: SKYNET.COL (or BRIEF.COL) inside MDMDIMGS.BSA, for
+## Future Shock too. GAME.EXE v1.01 loads "skynet.col" unconditionally
+## (0x1175fe; the exe has no "shock.col" string) from the first image
+## archive its search (FUN_0013e9c5) finds — SkyNET's own — so FS takes
+## SkyNET's archive when its folder is known (front_archive). FS's loose
+## SHOCK.COL is only the fallback without SkyNET's data: it differs from
+## SKYNET.COL only at 0x11-0x1B, and 0x11 — the night sky's fill
+## (FUN_0013404b) — is grey (55,51,55) there instead of black.
+## Every palette reader goes through here.
 func palette_bytes() -> PackedByteArray:
 	var key: String = "%s|*game" % gamedata_dir
 	if not _col_memo.has(key):
@@ -196,7 +202,8 @@ func palette_bytes() -> PackedByteArray:
 func _read_palette() -> PackedByteArray:
 	var BSAReader = load("res://scripts/loaders/bsa_reader.gd")
 	var imgs = BSAReader.new()
-	if imgs.open(gamedata_path("MDMDIMGS.BSA"), variant):
+	var arc: Array = front_archive("MDMDIMGS.BSA")
+	if imgs.open(String(arc[0]), int(arc[1])):
 		for nm in ["SKYNET.COL", "BRIEF.COL"]:
 			var b: PackedByteArray = imgs.read(nm)
 			if not b.is_empty():

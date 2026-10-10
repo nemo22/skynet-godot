@@ -60,7 +60,9 @@ const PathsLib := preload("res://scripts/skynet_paths.gd")
 ## SMOOTH TEXTURES seams).
 ## 12 (2026-10-09): solid-colour records (TEXTURE.000/001) read their own
 ## palette index, not the next record's.
-const CACHE_VERSION: int = 12
+## 13 (2026-10-10): Future Shock's textures take SKYNET.COL, as GAME.EXE
+## does (0x1175fe), not SHOCK.COL.
+const CACHE_VERSION: int = 13
 ## Dependencies are saved by their absolute path outside res://.
 ## FLAG_RELATIVE_PATHS would let a moved folder still resolve, but a moved
 ## folder is rebuilt anyway (the trust manifest is keyed by the absolute

@@ -1769,21 +1769,30 @@ const DOS_SATURATION: float = 1.10
 ## list at DAT_00052d51 = {250, 260, 270, 280} (missions 5-8, sub-maps
 ## included here); every other outdoor map — missions 1-4 and the NETLEVEL
 ## arenas — is NIGHT: a flat sky of palette index 0x11 and a MOON sprite
-## (TEXTURE.359 record 2, FUN_00139932) at a fixed bearing, drawn only
+## (TEXTURE.359 record 2, FUN_0013a132) at a fixed direction, drawn only
 ## when the dome is not.
 const DUSK_MISSIONS: Array = [250, 260, 270, 280]
 const NIGHT_SKY_INDEX: int = 0x11
 const MOON_BANK: int = 359
 const MOON_REC: int = 2
-## FUN_00139932 aims the moon along atan2(-6400, 4000) (DOS x, z) — Godot
-## flips z — and a fixed elevation; 32° reads like the original screen
-## position. Distance keeps it inside the far plane behind everything.
-const MOON_ELEVATION_DEG: float = 32.0
+## GAME.EXE v1.01 FUN_0013a132 turns the fixed vector (0x64000, -0x3e800,
+## 0x32000) — DOS (8, -5, 4), DOS y down — by the camera matrix alone and
+## blits the sprite at its projection: 29.2° up, in the east (Godot flips
+## y and z). The (-6400, 4000, -3200) once used here is the moon LIGHT's
+## vector (FUN_0011b933), not the sprite's. Distance keeps it inside the
+## far plane behind everything.
+const MOON_DOS_DIR: Vector3 = Vector3(0x64000, -0x3e800, 0x32000)
 const MOON_DIST: float = 100000.0
-## DOS blits the 57 px sprite on a 320 px frame (~18 % of the width).
-const MOON_SCREEN_FRAC: float = 0.17
+## DOS blits the sprite 1:1 on its 320×200 view, focal length 200 px
+## (FUN_0014fb74 <- 0x14fa22), so one texel spans 1/200 radian: the
+## 57-px SkyNET moon (59 in Future Shock) is 16.2° wide whatever the
+## port's field of view.
+const MOON_DOS_FOCAL: float = 200.0
+## A 320×200 pixel shows 1.2 times as tall as wide on a 4:3 screen; the
+## 57×47 texels look round only so.
+const MOON_PIXEL_ASPECT: float = 1.2
 ## The joke (FUN_00125caf): a shot with the crosshair within 15 px of the
-## moon prints "OW!"; the 25th such hit gives it a fall velocity
+## moon (15/200 rad, about 4.3°) prints "OW!"; the 25th such hit gives it a fall velocity
 ## (DAT_0005ba10 = 0x18800) and it drops below the horizon for the rest
 ## of the map (FUN_00139a10 integrates, FUN_001399e7 resets on load).
 const MOON_AIM_DEG: float = 4.5
@@ -1829,11 +1838,20 @@ static func _is_dusk_map(map_name: String) -> bool:
 static func _is_night_map(map_name: String) -> bool:
 	return not _is_dusk_map(map_name)
 
-## Unit vector toward the moon (horizontal bearing from DOS, elevation
-## minus whatever it has fallen).
+## The moon's direction in Godot axes: DOS (x, y, z) -> (x, -y, -z).
+static func _moon_rest_dir() -> Vector3:
+	return Vector3(MOON_DOS_DIR.x, -MOON_DOS_DIR.y, -MOON_DOS_DIR.z).normalized()
+
+## Its elevation (radians) before any fall: 29.2°.
+static func _moon_elevation() -> float:
+	return asin(_moon_rest_dir().y)
+
+## Unit vector toward the moon (DOS bearing, its elevation minus whatever
+## it has fallen).
 func _moon_dir() -> Vector3:
-	var flat := Vector3(-6400.0, 0.0, -4000.0).normalized()
-	var el: float = deg_to_rad(MOON_ELEVATION_DEG) - _moon_fall
+	var d: Vector3 = _moon_rest_dir()
+	var flat := Vector3(d.x, 0.0, d.z).normalized()
+	var el: float = _moon_elevation() - _moon_fall
 	return (flat * cos(el) + Vector3.UP * sin(el)).normalized()
 
 ## Is `fwd` (a shot direction) on the moon?
@@ -1871,9 +1889,9 @@ func _make_moon() -> void:
 	_moon = MeshInstance3D.new()
 	_moon.name = "Moon"
 	var qm := QuadMesh.new()
-	var fov_w: float = 2.0 * MOON_DIST * tan(deg_to_rad(camera.fov * 0.5)) * (16.0 / 9.0)
-	var w: float = fov_w * MOON_SCREEN_FRAC
-	qm.size = Vector2(w, w * float(tex.get_height()) / float(tex.get_width()))
+	# DOS's angular size: a texel per 1/200 rad, rows 1.2 times as tall.
+	qm.size = Vector2(MOON_DIST * float(tex.get_width()) / MOON_DOS_FOCAL,
+		MOON_DIST * float(tex.get_height()) * MOON_PIXEL_ASPECT / MOON_DOS_FOCAL)
 	_moon.mesh = qm
 	var mat := StandardMaterial3D.new()
 	mat.albedo_texture = tex
@@ -2245,7 +2263,7 @@ func _process(delta: float) -> void:
 			# offset — a quadratic drop.
 			_moon_fall_v += 0.28 * delta
 			_moon_fall += _moon_fall_v * delta
-			if _moon_fall > deg_to_rad(MOON_ELEVATION_DEG + 12.0):
+			if _moon_fall > _moon_elevation() + deg_to_rad(12.0):
 				_moon.visible = false
 				print("[skynet] the moon is gone")
 		_update_moon()
