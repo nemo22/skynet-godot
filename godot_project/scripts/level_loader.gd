@@ -27,6 +27,7 @@ const Pickup       := preload("res://scripts/pickup.gd")
 const PickupData   := preload("res://scripts/pickup_data.gd")
 const LevelScene   := preload("res://scripts/level_scene.gd")
 const LevelBehaviour := preload("res://scripts/level_behaviour.gd")
+const RobotStand   := preload("res://scripts/robot_stand.gd")
 const TriggerBus   := preload("res://scripts/triggers/trigger_bus.gd")
 const TriggerRuntime := preload("res://scripts/triggers/trigger_runtime.gd")
 const Explosion    := preload("res://scripts/explosion.gd")
@@ -693,6 +694,8 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 		# console is done).
 		var starts: Array = []
 		var n_spawn: int = 0
+		var stand: RobotStand = null
+		var stand_meshes: Dictionary = {}
 		for e in level.map.entities:
 			if (e.flags & 3) != 3: continue
 			if e.marker_type == 2:                 # 2 = enemy start marker
@@ -758,6 +761,28 @@ func load_zone(map_name: String, origin: Vector3, baked_root: Node = null,
 			# +Z: 0x12a4f0 takes no angle.)
 			emi.position = Vector3(
 				float(e.x), -float(e.y if spawn else e.y + 0x10), -float(e.z))
+			# …and FUN_0012a4f0 then stands it (FUN_0012a52c): h + 2 off the
+			# surface near it, for every type with a stand height — turrets
+			# and walkers, hung guns and path machines alike.
+			if RobotStand.stand_height(et) != 0:
+				if stand == null:
+					stand = RobotStand.new(level.map, level.wld,
+						func(nm: String) -> Mesh:
+							var lk: String = nm + ".3D"
+							if stand_meshes.has(lk):
+								return stand_meshes[lk]
+							var bytes: PackedByteArray = objs.read(lk)
+							if bytes.is_empty():
+								bytes = enms.read(lk)
+							var am: ArrayMesh = null if bytes.is_empty() else Assets.mesh(lk, bytes)
+							stand_meshes[lk] = am
+							return am)
+				var at: Vector3 = stand.stand(et, emi.position)
+				if at != emi.position:
+					if _trace_on:
+						print("[stand] %s @%05x Y %.0f → %.0f" % [emi.name, e.file_off,
+							emi.position.y, at.y])
+					emi.position = at
 			# Face the marker's yaw (sub+4, 11-bit angle) like variant-1.
 			# Godot yaw = +yaw (DOS Ry(-yaw) conjugated by diag(1,-1,-1)).
 			var eyaw: float = 0.0 if spawn else (e.off_y & 0x7FF) * TAU / 2048.0

@@ -535,13 +535,12 @@ func _physics_process(delta: float) -> void:
 		return                                 # colliders settle into the space first
 	if _on_path:
 		return                                 # the action system drives it
+	# The loader stood the robot where FUN_0012a52c does
+	# (scripts/robot_stand.gd); a walker then gets one ground snap, as the
+	# C# port's SnapToGround(true) — a marker whose floor is out of the
+	# stand window (MAP.254's flencers, 168 u up) would hover otherwise.
 	if not _init_done:
-		if _flying:
-			_init_done = true
-		elif _stationary:
-			_unbury()
-			_init_done = true
-		elif _snap_to_ground(true):
+		if _flying or _stationary or _snap_to_ground(true):
 			_init_done = true
 	if _player == null or not is_instance_valid(_player):
 		_player = get_tree().get_first_node_in_group("player")
@@ -1563,37 +1562,15 @@ func _spawn_debris(at: Vector3, part: Mesh) -> void:
 		randf_range(-1.0, 1.0)).normalized()
 	d.setup(at, dir * randf_range(380.0, 780.0), part)
 
-## A stationary actor keeps its marker Y — DOS never samples the ground
-## for it, and that is what keeps the turrets on the gate pillars. But a
-## marker whose Y buries the base in a hill or in a roof slab leaves only
-## the gun above the surface ("na tej budove by mala byť otočná veža, ale
-## je prepadnutá do budovy" — MAP.280 has four guntwr3 sunk 134 u into
-## the rock). Lift such an actor until its feet rest on the surface it is
-## stuck in, and never past its own origin: the lift is bounded by how
-## far the model hangs below the marker, so a turret hanging under a
-## ceiling or already standing on a pillar cannot be moved at all.
-func _unbury() -> void:
-	var space := get_world_3d().direct_space_state
-	if space == null or _foot_offset >= -1.0:
-		return
-	var feet_y: float = global_position.y + _foot_offset
-	if not _floor_ray(space, global_position, feet_y + 8.0, feet_y - 24.0).is_empty():
-		return                                 # already standing on something
-	var hit := _floor_ray(space, global_position, global_position.y,
-		feet_y + 8.0, true)
-	if hit.is_empty():
-		return
-	var lift: float = (hit["position"] as Vector3).y - feet_y
-	global_position.y += lift
-	print("[enemy] %s un-buried: lifted %.0f u onto the surface it sat in"
-		% [name, lift])
-
 ## Put the feet on the floor directly below. The ray starts one step
 ## above the FEET (not the model origin — inside the tower deck a ray
 ## from 120 u up started above the 130 u ceiling and "found" the roof)
 ## and reaches down at most one ledge; with nothing in reach the actor
-## keeps its height, as DOS keeps a marker's Y. Returns true when the
-## actor is settled.
+## keeps its height. `init` is the one snap a walker gets once it is
+## built, after the loader stood it (scripts/robot_stand.gd), as the C#
+## port's SnapToGround(true): it reaches 60 up and 400 down, tries the
+## floor plates round a seam and pops out from under a plate. Returns
+## true when the actor is settled.
 func _snap_to_ground(init: bool = false) -> bool:
 	var space := get_world_3d().direct_space_state
 	if space == null:

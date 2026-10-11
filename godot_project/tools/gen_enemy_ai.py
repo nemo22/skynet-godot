@@ -2,7 +2,8 @@
 
 Sources (all verified by disassembly, see docs/implementation_plan.md section G):
   enemy type table  VA 0x44d00, 100 x 0x1C: +0x08 state id, +0x10 death spec,
-                    +0x14 -> parameter block (36 dwords copied to the AI instance)
+                    +0x14 -> parameter block (36 dwords copied to the AI instance),
+                    +0x18 stand height
   AIS scripts       16-byte ops {fn, a, b, c}; opcode fns at 0x12a572..0x12a7d0
   anim blocks       {u32 type, u32 nframes, u32 fps, u16 flags, (u16 frame,u16 fl)*}
   ammo table        VA 0x40728 stride 0x32
@@ -112,6 +113,10 @@ for i in range(256):
     p = [i32(prm + BASE + 4 * k) for k in range(36)] if prm else [0] * 36
     lay = LAYOUT.get(st, {})
     t = {'n': name, 'st': st, 'hp': max(0, min(p[0], 0x7fff))}
+    # +0x18: stand height, how far the model reaches below its origin
+    # (FUN_0012a52c, scripts/robot_stand.gd); negative for hung guns.
+    if i32(b + 0x18):
+        t['stand'] = i32(b + 0x18)
     for key in ('speed', 'near', 'turn', 'axis', 'amin', 'amax', 'range', 'alt', 'vaccel', 'avoid', 'fspeed'):
         if key in lay:
             t[key] = p[lay[key]]
@@ -182,7 +187,8 @@ out.append('## scripts (16-byte ops), animation blocks and the ammo table (0x407
 out.append('## See docs/implementation_plan.md section G for the field semantics.')
 out.append('extends RefCounted')
 out.append('')
-out.append('## Per enemy type: n name, st AI state id, hp, speed (u/s), near (stop')
+out.append('## Per enemy type: n name, st AI state id, hp, stand (+0x18 stand height,')
+out.append('## when not 0), speed (u/s), near (stop')
 out.append('## distance), turn (2048 = 360 deg/s), axis/amin/amax (turret segment),')
 out.append('## range (engage), fire [mx,my,mz, ammo, speed, rate, range, aim gate], script VA,')
 out.append('## events [frame, sound, ...], engine (loop sound id), death parts')
