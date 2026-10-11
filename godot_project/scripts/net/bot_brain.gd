@@ -19,6 +19,7 @@ const THINK_INTERVAL: float = 0.2
 const POSE_INTERVAL: float = 0.05
 const GRAB_RANGE_H: float = 80.0
 const GRAB_RANGE_V: float = 160.0
+const LOSE_AFTER: float = 3.0          # a target out of sight this long is given up
 
 ## Hitscan weapon slots bots pick from (fly_camera.gd table indices).
 const WEAPON_CHOICES: Array = [1, 2, 3, 4, 7]
@@ -36,7 +37,10 @@ var game: Node = null                 # dm_game.gd — weapon table, world
 var skill: int = 1
 
 var _target: Node3D = null
-var _target_seen_t: float = 0.0
+var _target_seen_t: float = 0.0       # < 0 while reacting to a new target
+var _target_visible: bool = false
+var _last_seen: Vector3 = Vector3.ZERO  # target's feet at the last sighting
+var _lost_t: float = 0.0               # out of sight this long
 var _think_t: float = 0.0
 var _pose_t: float = 0.0
 var _fire_cd: float = 0.0
@@ -79,6 +83,7 @@ func _pick_weapon() -> void:
 ## New life: fresh weapon, no target, no goal.
 func on_respawn() -> void:
 	_target = null
+	_target_visible = false
 	_has_goal = false
 	_burst_left = 0
 	_fire_cd = 0.5
@@ -120,17 +125,30 @@ func _think() -> void:
 			best = c
 			best_d = d
 	if best != null:
+		# Only a new face costs the reaction time before the first shot (the
+		# same target's clock was clamped up to 0 on every think, which cut
+		# any reaction to one think).
 		if best != _target:
-			_target_seen_t = -SKILL[skill][1]      # reaction time before the first shot
-		else:
-			_target_seen_t = maxf(_target_seen_t, 0.0)
+			_target_seen_t = -SKILL[skill][1]
 		_target = best
+		_target_visible = true
+		_last_seen = best.global_position
+		_lost_t = 0.0
 	elif _target != null:
-		# Lost sight: chase the last known place for a bit, then give up.
-		_target_seen_t -= THINK_INTERVAL
-		if _target_seen_t < -3.0 or not is_instance_valid(_target):
+		# Lost sight: chase the last seen place, give up after LOSE_AFTER or
+		# when the target dies (its live position is not tracked through walls).
+		_target_visible = false
+		_lost_t += THINK_INTERVAL
+		if _lost_t > LOSE_AFTER or not _target_alive():
 			_target = null
 	_check_pickups()
+
+func _target_alive() -> bool:
+	if not is_instance_valid(_target):
+		return false
+	if _target.is_in_group("player"):
+		return Net.is_alive(Net.local_id)
+	return bool(_target.get("alive"))
 
 ## Everyone alive but me: avatars and the host's own player body.
 func _candidates() -> Array:
@@ -176,7 +194,7 @@ func _check_pickups() -> void:
 func _move(delta: float) -> void:
 	var want: Vector3 = Vector3.ZERO           # horizontal intent, unit
 	var p: Vector3 = avatar.global_position
-	if _target != null and is_instance_valid(_target):
+	if _target != null and _target_visible and is_instance_valid(_target):
 		var to: Vector3 = _target.global_position - p
 		to.y = 0.0
 		var dist: float = to.length()
@@ -193,6 +211,14 @@ func _move(delta: float) -> void:
 			want = -fwd + side * _strafe_dir * 0.6
 		else:
 			want = side * _strafe_dir
+	elif _target != null:
+		# Out of sight: to where it was last seen; there and still nobody → give up.
+		var to: Vector3 = _last_seen - p
+		to.y = 0.0
+		if to.length() > 120.0:
+			want = to.normalized()
+		else:
+			_target = null
 	else:
 		_goal_t -= delta
 		if not _has_goal or _goal_t <= 0.0 or Vector2(_goal.x - p.x, _goal.z - p.z).length() < 120.0:
@@ -224,7 +250,7 @@ func _move(delta: float) -> void:
 	else:
 		avatar.velocity.y -= GRAVITY * delta
 	# Facing: the target when we have one, else the way we walk.
-	if _target != null and is_instance_valid(_target):
+	if _target != null and _target_visible and is_instance_valid(_target):
 		var d: Vector3 = _actor_eye(_target) - avatar.eye()
 		_aim_yaw = atan2(-d.x, -d.z)
 		_aim_pitch = atan2(d.y, Vector2(d.x, d.z).length())
@@ -296,6 +322,8 @@ func _aim_and_fire(delta: float) -> void:
 		_burst_left = 0
 		return
 	_target_seen_t += delta
+	if not _target_visible:
+		return
 	if _target_seen_t < 0.0:
 		return                                   # still reacting
 	if _burst_pause > 0.0:
