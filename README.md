@@ -1,5 +1,7 @@
 # skynet-godot
 
+> **Frozen.** As of 2026-10-13 this Godot port is no longer developed. Development continues in a new C# + SDL3 port, to be published later.
+
 A Godot 4 port of the two 1996 XnGine shooters by Bethesda Softworks —
 *SkyNET* and *Future Shock*. The engine is rewritten in Godot; the game
 itself is read from **your own copy** of the original data: the BSA
