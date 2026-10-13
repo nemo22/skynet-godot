@@ -23,9 +23,18 @@ const BASE_DB: float = -4.0
 @export var state: int = 0
 @export var targets: Array[NodePath] = []
 
-## What a chain flip does to this node.
+## One of DOS's six placed one-shot voices (Audio.claim_oneshot).
+func _enter_tree() -> void:
+	Audio.register_cue(self)
+
+## What a chain flip does to this node: it plays when one of the six
+## voices is free or the farthest of them is farther than this node.
 func fire() -> void:
 	if stream == null or not is_inside_tree():
+		return
+	var cam: Camera3D = get_viewport().get_camera_3d()
+	var dist: float = cam.global_position.distance_to(global_position) if cam != null else 0.0
+	if not playing and not Audio.claim_oneshot(dist):
 		return
 	volume_db = BASE_DB + Audio.occlusion_db(global_position)
 	play()

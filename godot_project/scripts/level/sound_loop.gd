@@ -20,6 +20,10 @@
 
 extends AudioStreamPlayer3D
 
+## One of the loops Audio._limit_loops keeps to DOS's six nearest.
+func _enter_tree() -> void:
+	Audio.register_loop(self)
+
 ## What a chain flip does to this node: the loop starts, and keeps
 ## running — unlike a cue, it does not clear its own enable bit.
 ##

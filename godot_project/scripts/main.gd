@@ -1013,6 +1013,9 @@ func _begin_level(nm: String) -> void:
 		Audio.stop_ambient()
 	# Score: the maptype marker (type 6, sub+2) picks the HMI track.
 	Audio.play_music_for_maptype(_maptype(level))
+	# ...and the soldier's footstep surface (FUN_0012c133).
+	if player != null:
+		player.call("enter_map_surface", _maptype(level))
 	_set_status("")
 	print("[skynet] %s ready (%d/%d, %s, %d meshes, %d enemies)"
 		% [nm, _map_idx + 1, _maps.size(),
@@ -2293,7 +2296,7 @@ func _process(delta: float) -> void:
 		if not _rad_sources.is_empty() and _game_over == null:
 			_rad_dose = _radiation_dose(player.global_position + Vector3(0.0, 37.5, 0.0))
 			if _rad_dose > 0.0:
-				player.take_dos_damage(_rad_dose * delta, false)   # DOS points x dt (0x13b2c7)
+				player.take_dos_damage(_rad_dose * delta, false, true)   # DOS points x dt (0x13b2c7), no grunt
 		else:
 			_rad_dose = 0.0
 		_update_radiation_feedback(delta)
@@ -3743,6 +3746,8 @@ func _activate_zone(zname: String, from: String, gen: int, carry: Dictionary = {
 	# when the track does not change, so crossing a doorway inside one
 	# maptype does not restart the score.
 	Audio.play_music_for_maptype(_maptype(level))
+	if player != null:
+		player.call("enter_map_surface", _maptype(level))
 	_set_status("")
 	_level_ready_tail(level, zname)
 	return true
@@ -5277,11 +5282,11 @@ func _briefing_step(dir: int) -> void:
 				_briefing_scroll.scroll_vertical - step, 0)
 		elif _briefing_page > 0:
 			_briefing_show_page(_briefing_page - 1)
-	Audio.play_sfx("BUTTON1.RAW")
+	Audio.play_ui("BUTTON1.RAW")
 
 ## BEGIN — dismiss the briefing and load the mission level.
 func _briefing_begin() -> void:
-	Audio.play_sfx("BUTTON1.RAW")
+	Audio.play_ui("BUTTON1.RAW")
 	var m: String = _briefing_pending_map
 	_briefing_teardown()
 	if m != "":
@@ -5289,13 +5294,13 @@ func _briefing_begin() -> void:
 
 ## Esc — abort the mission and return to the main menu.
 func _briefing_exit() -> void:
-	Audio.play_sfx("BUTTON1.RAW")
+	Audio.play_ui("BUTTON1.RAW")
 	_briefing_teardown()
 	_return_to_menu()
 
 ## Switch the mission screen between BRIEFING, TACTICAL and STATISTICS.
 func _briefing_set_tab(tab_name: String) -> void:
-	Audio.play_sfx("BUTTON1.RAW")
+	Audio.play_ui("BUTTON1.RAW")
 	_briefing_mode = tab_name
 	for nm in _briefing_tabs:
 		_br_tab_active(_briefing_tabs[nm], nm == tab_name)

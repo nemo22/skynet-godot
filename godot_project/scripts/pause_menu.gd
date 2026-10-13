@@ -97,7 +97,7 @@ func _refresh_game_input() -> void:
 ## match (main.run_command refuses them there too).
 func _on_cheats_requested() -> void:
 	if Net.active:
-		Audio.play_sfx("BUTTON1.RAW")
+		Audio.play_ui("BUTTON1.RAW")
 		if _menu.has_method("_show_toast"):
 			_menu.call("_show_toast", "No cheats in a network game.")
 		return
@@ -123,7 +123,7 @@ func _show(page: String) -> void:
 	_menu.visible = page != "cheats"
 	if page == "cheats":
 		_refresh_cheats()
-		Audio.play_sfx("BUTTON1.RAW")
+		Audio.play_ui("BUTTON1.RAW")
 	else:
 		_menu.call("show_page", page)
 

@@ -274,6 +274,13 @@ var _seen: bool = false
 ## for that one tick whatever the distance and the line of sight say.
 ## So a hit buys exactly one free "I see you" — no more.
 var _alert: bool = false
+## DOS perception counter (actor +0x24): dealt round-robin 1, 2, 3, 0, …
+## to each new actor (0x12a57e) and counted down every tick (0x12a598);
+## the robot looks only when it is 0 and keeps that answer (flag 0x100)
+## in between.
+var _sense_count: int = _next_sense_phase()
+var _perceived: bool = false
+static var _sense_phase: int = 0
 var _dormant_dist: float = 0.0                 # > 0: trap, explode when near
 var _ticks: int = 0
 ## This actor's phase in the staggered checks (a multiple of 3 and 4).
@@ -661,13 +668,51 @@ func _tick_data(delta: float) -> void:
 	if not fp.is_empty() and not _has_segment_node(self):
 		var gate: bool = _brain.firing_pose() if (st == 7 and _brain.has_script()) else true
 		if gate:
-			_try_fire(self, fp, delta, _t)
+			_try_fire(self, fp, delta, _t, false)
+
+static func _next_sense_phase() -> int:
+	_sense_phase = (_sense_phase + 1) & 3
+	return _sense_phase
+
+## FUN_0014d794: the largest axis plus a quarter of each of the other two.
+static func dos_distance(d: Vector3) -> float:
+	var x: float = absf(d.x)
+	var y: float = absf(d.y)
+	var z: float = absf(d.z)
+	var m: float = maxf(x, maxf(y, z))
+	return m + (x + y + z - m) / 4.0
+
+## FUN_0013c4da on a looking tick: a pending alert bit (a hit) is spent
+## and counts as seen with no range or sight test; otherwise DOS distance
+## within 2000 and a clear line. Between looks the last answer holds.
+func _perceive() -> bool:
+	if _sense_count != 0:
+		return _perceived
+	if _alert:
+		_alert = false
+		_perceived = true
+		return true
+	_perceived = dos_distance(_player.global_position - global_position) <= PERCEPTION_RANGE 		and _has_los()
+	return _perceived
+
+## FUN_00137965: some head has the player within its engage range (dw8).
+## A turret looks only then; beyond it the alert bit stays pending.
+func _in_engage_range() -> bool:
+	if _segs.is_empty():
+		return true
+	var aim: Vector3 = _player.global_position + Vector3(0.0, 60.0, 0.0)
+	for seg in _segs:
+		var node: Node3D = seg["node"]
+		if is_instance_valid(node) and aim.distance_to(node.global_position) <= float(seg["range"]):
+			return true
+	return false
 
 ## What the DOS handler perceives this tick. One dictionary per actor,
 ## refilled every tick (the brain reads it and keeps nothing).
 func _sense() -> Dictionary:
 	var s: Dictionary = _sense_d
 	s["blocked"] = _blocked
+	_sense_count = 3 if _sense_count == 0 else _sense_count - 1
 	if _player == null:
 		s["see"] = false
 		s["dist"] = 1.0e9
@@ -679,11 +724,9 @@ func _sense() -> Dictionary:
 	var dist: float = flat.length()
 	var angle: int = _dos_angle(flat)
 	var facing: int = int(round(global_rotation.y / TAU * 2048.0)) & 0x7FF
-	# FUN_0013c4da: the alert bit 0x8000 short-circuits the whole test and
-	# is cleared here, so a machine that was just shot perceives the player
-	# for one tick and then goes back to measuring for itself.
-	s["see"] = _alert or (dist < PERCEPTION_RANGE and _has_los())
-	_alert = false
+	# FUN_0013c4da every 4th tick (_perceive); a turret (state 2) looks
+	# only while a head can engage the player.
+	s["see"] = false if (_brain != null and _brain.state == 2 and not _in_engage_range()) 		else _perceive()
 	s["dist"] = dist
 	s["bearing"] = (angle - facing) & 0x7FF
 	s["angle"] = angle
@@ -1085,13 +1128,14 @@ func _aim_segment(seg: Dictionary, delta: float, see: bool) -> void:
 		return                                  # resting: the handler does not fire
 	var fp: Array = seg["t"].get("fire", [])
 	if not fp.is_empty():
-		_try_fire(node, fp, delta, seg["t"])
+		_try_fire(node, fp, delta, seg["t"], true)
 
 # --- firing ----------------------------------------------------------
 ## Fire from `node` with the DOS fire params [mx,my,mz, ammo, speed,
 ## rate, range] when the player is in range, visible and inside the
-## aim cone. Rate-limited per shooter.
-func _try_fire(node: Node3D, fp: Array, delta: float, _td: Dictionary) -> void:
+## aim cone. Rate-limited per shooter. A turret head fires on range, aim
+## cone and rate only (DOS 0x137d10): no sight check; walkers keep it.
+func _try_fire(node: Node3D, fp: Array, delta: float, _td: Dictionary, turret: bool) -> void:
 	var cd: float = float(_cds.get(node, 0.0)) - delta
 	_cds[node] = cd
 	if cd > 0.0 or _player == null or hold_fire:
@@ -1114,7 +1158,7 @@ func _try_fire(node: Node3D, fp: Array, delta: float, _td: Dictionary) -> void:
 			cone = float(gate) / 2048.0 * TAU
 	if fwd.angle_to(to) > cone:
 		return
-	if not _has_los():
+	if not turret and not _has_los():
 		return
 	var rate: float = maxf(float(fp[5]), 1.0)
 	# DIFFICULTY scales the rate of fire. DOS rolls `rand() & 1023 <

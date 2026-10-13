@@ -23,6 +23,8 @@ var _cache: Dictionary = {}           # key -> AudioStreamWAV
 var _voices: Array[AudioStreamPlayer] = []
 var _voices3d: Array[AudioStreamPlayer3D] = []
 var _ambient: AudioStreamPlayer = null
+## The menus' voices: they play on while the game is paused (play_ui).
+var _ui_voices: Array[AudioStreamPlayer] = []
 ## Master volume, 0..1 — set from the OPTIONS menu, persisted.
 var master_volume: float = 0.7
 ## Music volume, 0..1 (console `music <0-100>`), persisted.
@@ -59,10 +61,18 @@ func _ready() -> void:
 	_synth.bus = "Music"
 	add_child(_synth)
 	_archive()
+	# The music and the menus' sounds play on in a paused game (the Esc
+	# menu, the console, the automap); every game sound holds where it is
+	# and goes on when the game does (the C# port's paused effects bus).
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	for i in SFX_VOICES:
 		var p := AudioStreamPlayer.new()
+		p.process_mode = Node.PROCESS_MODE_PAUSABLE
 		add_child(p)
 		_voices.append(p)
+		var u := AudioStreamPlayer.new()
+		add_child(u)
+		_ui_voices.append(u)
 		# Positional voice pool — panned/attenuated by source location.
 		# Inverse-square from 400 u: a robot two streets away is a murmur,
 		# not a neighbour (a 2026-09-02 report: "every robot audible from
@@ -72,9 +82,11 @@ func _ready() -> void:
 		p3.unit_size = SFX_UNIT_SIZE
 		p3.max_distance = SFX_MAX_DISTANCE
 		p3.max_db = 0.0
+		p3.process_mode = Node.PROCESS_MODE_PAUSABLE
 		add_child(p3)
 		_voices3d.append(p3)
 	_ambient = AudioStreamPlayer.new()
+	_ambient.process_mode = Node.PROCESS_MODE_PAUSABLE
 	add_child(_ambient)
 
 ## The data directory the open sound archive came from.
@@ -234,6 +246,111 @@ func play_sfx(nm: String, volume_db: float = 0.0) -> void:
 	_voices[0].volume_db = volume_db
 	_voices[0].play()
 
+## A menu's sound (a button): on the interface voices, which a paused game
+## does not hold.
+func play_ui(nm: String, volume_db: float = 0.0) -> void:
+	var s := _load(nm, false)
+	if s == null:
+		return
+	var pick: AudioStreamPlayer = _ui_voices[0]
+	for p in _ui_voices:
+		if not p.playing:
+			pick = p
+			break
+	pick.stream = s
+	pick.volume_db = volume_db
+	pick.play()
+
+## How a DOS 2D sound treats a copy of itself already playing (the play
+## flags of FUN_0012ef06): start another, skip (2: not over itself) or
+## restart that one (6: the footsteps).
+enum Overlap { STACK, SKIP, RESTART }
+
+## A DOS sound id on the player's 2D voices at the id's own volume and
+## pitch (v1.01 table 0x50100 +4/+8): the soldier's steps, landings and
+## grunts.
+func play_id_dos(id: int, overlap: int = Overlap.STACK) -> void:
+	var n := sound_name(id)
+	if n.is_empty():
+		return
+	var s := _load(n, false)
+	if s == null:
+		return
+	var pick: AudioStreamPlayer = null
+	for p in _voices:
+		if p.playing and p.stream == s:
+			if overlap == Overlap.SKIP:
+				return
+			if overlap == Overlap.RESTART:
+				pick = p
+				break
+	if pick == null:
+		for p in _voices:
+			if not p.playing:
+				pick = p
+				break
+	if pick == null:
+		pick = _voices[0]
+	pick.stream = s
+	pick.volume_db = linear_to_db(maxf(float(DOS_VOLUME[id]) / 128.0, 0.001))
+	pick.pitch_scale = float(DOS_PITCH.get(id, 128)) / 128.0
+	pick.play()
+
+## Each DOS sound id's volume of 128 (v1.01 0x50100 +4).
+const DOS_VOLUME: PackedByteArray = [
+	100, 100, 100, 128, 128, 100, 100, 128, 100, 100, 100, 105, 100, 100, 100,
+	100, 100, 100, 80, 80, 80, 60, 60, 100, 100, 100, 100, 100, 100, 100,
+	100, 100, 100, 128, 128, 128, 128, 128, 128, 60, 100, 100, 100, 100, 100,
+	100, 100, 100, 128, 128, 80, 60, 60, 40, 50, 128, 100, 70, 100, 50,
+	50, 100, 100, 60, 50, 50, 100, 100, 30, 90, 40, 40, 40, 40, 40,
+	40, 128, 100, 128, 128, 40, 100, 100, 40, 100, 100, 128, 100, 100, 100,
+	100, 100, 100, 100, 100, 100, 70, 70, 128, 100, 128, 128, 128, 128, 128,
+	128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128,
+	128, 128, 128, 128, 128, 128,
+]
+## The ids whose pitch (0x50100 +8) is not 128: the clip plays at
+## 11025 x pitch / 128 Hz (the HK's hk2.raw variants, the left gravel step).
+const DOS_PITCH: Dictionary = {49: 77, 50: 134, 51: 115, 52: 173, 53: 154,
+	54: 102, 55: 102, 57: 154, 70: 80}
+
+## DOS mixes at most six placed one-shots at once (and six loops, see
+## _limit_loops); a new one takes the farthest one's voice only when it is
+## nearer, so the robots and machinery of a big building cannot drown out
+## what stands next to the player. The level's one-shot cue nodes
+## (scripts/level/sound_cue.gd) share the count.
+var _cues: Array = []
+
+func register_cue(p: AudioStreamPlayer3D) -> void:
+	if not _cues.has(p):
+		_cues.append(p)
+
+## Room for a placed one-shot `dist` from the listener: true when fewer
+## than six play, or when the farthest of them is farther (it is stopped).
+func claim_oneshot(dist: float) -> bool:
+	var cam: Camera3D = _listener()
+	var from: Vector3 = cam.global_position if cam != null else Vector3.ZERO
+	var count: int = 0
+	var far_p: AudioStreamPlayer3D = null
+	var far_d: float = -1.0
+	for i in range(_cues.size() - 1, -1, -1):
+		if not is_instance_valid(_cues[i]):
+			_cues.remove_at(i)
+	for p in _voices3d + _cues:
+		var a := p as AudioStreamPlayer3D
+		if not a.playing or a.stream_paused or not a.is_inside_tree():
+			continue
+		count += 1
+		var d: float = from.distance_to(a.global_position)
+		if d > far_d:
+			far_d = d
+			far_p = a
+	if count < SFX_VOICES:
+		return true
+	if far_p == null or far_d <= dist:
+		return false
+	far_p.stop()
+	return true
+
 ## Play a one-shot sound at a world position — panned and attenuated by
 ## its location relative to the camera/listener. Use for doors, weapons,
 ## explosions, impacts and any other sound that has a place in the world.
@@ -252,33 +369,25 @@ func play_sfx_3d(nm: String, world_pos: Vector3, volume_db: float = -6.0) -> voi
 	var s := _load(nm, false)
 	if s == null:
 		return
+	if not claim_oneshot(dist):
+		return
 	var pick: AudioStreamPlayer3D = null
+	var far_d: float = -1.0
 	for p in _voices3d:
 		if not p.playing:
 			pick = p
 			break
+		# Every pool voice busy (the room was made on a cue node): the
+		# farthest pool voice gives way.
+		var d: float = cam.global_position.distance_to(p.global_position) if cam != null else 0.0
+		if d > far_d:
+			far_d = d
+			pick = p
 	var db: float = volume_db + occlusion_db(world_pos)
-	if pick == null:
-		var quietest: float = INF
-		for p in _voices3d:
-			var d: float = cam.global_position.distance_to(p.global_position) if cam != null else 0.0
-			var heard: float = _heard_db(p.volume_db, d, p.max_db)
-			if heard < quietest:
-				quietest = heard
-				pick = p
-		if pick == null or _heard_db(db, dist, 0.0) < quietest:
-			return
 	pick.stream = s
 	pick.global_position = world_pos
 	pick.volume_db = db
 	pick.play()
-
-## The level a 3D voice reaches the listener at: its volume less the
-## inverse-square roll-off from SFX_UNIT_SIZE (the model every voice here
-## uses), capped at its max_db. Only compared, never applied.
-static func _heard_db(volume_db: float, dist: float, max_db: float) -> float:
-	var falloff: float = 40.0 * log(maxf(dist, 1.0) / SFX_UNIT_SIZE) / log(10.0)
-	return minf(volume_db - falloff, max_db)
 
 ## The camera the 3D voices are heard from, or null.
 func _listener() -> Camera3D:
@@ -515,11 +624,16 @@ const LOOP_GATE_INTERVAL: float = 0.3
 const LOOP_GATE_MARGIN: float = 500.0
 
 func _process(delta: float) -> void:
+	# A paused game holds its loops where they are (the Audio node itself
+	# runs always, for the menus).
+	if get_tree().paused:
+		return
 	_loop_t -= delta
-	if _loop_t > 0.0 or _loops.is_empty():
+	if _loop_t > 0.0 or (_loops.is_empty() and _scene_loops.is_empty()):
 		return
 	_loop_t = LOOP_GATE_INTERVAL
 	var cam: Camera3D = _listener()
+	_limit_loops(cam)
 	var i: int = _loops.size() - 1
 	while i >= 0:
 		var p = _loops[i]
@@ -536,6 +650,50 @@ func _process(delta: float) -> void:
 		for k in _gated.keys():
 			if not live.has(k):
 				_gated.erase(k)
+
+## The level's ambient loop nodes (scripts/level/sound_loop.gd): counted
+## by _limit_loops with the attach_loop_3d ones, never started by the gate.
+var _scene_loops: Array = []
+
+func register_loop(p: AudioStreamPlayer3D) -> void:
+	if not _scene_loops.has(p):
+		_scene_loops.append(p)
+
+## Only the six nearest loops in earshot are heard (DOS's six loop
+## voices); the rest hold paused until they are among the nearest again.
+func _limit_loops(cam: Camera3D) -> void:
+	for i in range(_scene_loops.size() - 1, -1, -1):
+		if not is_instance_valid(_scene_loops[i]):
+			_scene_loops.remove_at(i)
+	var from: Vector3 = cam.global_position if cam != null else Vector3.ZERO
+	var heard: Array = []
+	for p in _loops + _scene_loops:
+		if not is_instance_valid(p):
+			continue
+		var a := p as AudioStreamPlayer3D
+		if not a.is_inside_tree() or not a.playing:
+			if a.has_meta(&"voice_limited"):
+				a.remove_meta(&"voice_limited")
+				a.stream_paused = false
+			continue
+		if a.has_meta(&"zone_hushed") or ZoneLayers.asleep(a):
+			continue
+		var d: float = from.distance_to(a.global_position)
+		if a.max_distance <= 0.0 or d <= a.max_distance:
+			heard.append([d, a])
+		elif a.has_meta(&"voice_limited"):
+			a.remove_meta(&"voice_limited")
+			a.stream_paused = false
+	heard.sort_custom(func(x: Array, y: Array) -> bool: return float(x[0]) < float(y[0]))
+	for i in heard.size():
+		var a: AudioStreamPlayer3D = heard[i][1]
+		if i < SFX_VOICES:
+			if a.has_meta(&"voice_limited"):
+				a.remove_meta(&"voice_limited")
+				a.stream_paused = false
+		elif not a.stream_paused:
+			a.stream_paused = true
+			a.set_meta(&"voice_limited", true)
 
 ## Start `p` inside its max_distance of `listener`, stop it past it (plus
 ## LOOP_GATE_MARGIN), and only ever restart what the gate itself stopped.

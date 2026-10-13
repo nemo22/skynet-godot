@@ -770,7 +770,7 @@ func _on_other_game() -> void:
 ## header x,y) closes it and leaves the player in the menu.
 ## (POPUPFS2.CFA, 35x18 x2, is that button's pressed frames.)
 func _show_popupfs() -> void:
-	Audio.play_sfx("BUTTON1.RAW")
+	Audio.play_ui("BUTTON1.RAW")
 	var tex: Variant = ImgFile.parse(_popupfs_raw, _menu_pal)
 	if tex == null:
 		_status_line("Future Shock data not found — expected <game>/shock/GAMEDATA")
@@ -1374,7 +1374,7 @@ func _on_join_typed() -> void:
 	_connect_to(host, port)
 
 func _connect_to(host: String, port: int) -> void:
-	Audio.play_sfx("BUTTON1.RAW")
+	Audio.play_ui("BUTTON1.RAW")
 	if not Net.join(host, port, _join_name.text):
 		_show_toast("Cannot connect to %s:%d." % [host, port])
 		return
@@ -1526,7 +1526,7 @@ func _on_load_slot(idx: int) -> void:
 		_show_toast("Slot %d cannot be loaded: %s." % [idx + 1,
 			SaveGame.last_error if not SaveGame.last_error.is_empty() else "the file is gone"])
 		return
-	Audio.play_sfx("BUTTON1.RAW")
+	Audio.play_ui("BUTTON1.RAW")
 	if in_game:
 		load_requested.emit(idx)          # pause_menu.gd closes, main loads
 		return
@@ -1798,7 +1798,7 @@ func _img_hotspot(rect: Rect2, s: float, cb: Callable) -> Button:
 	b.position = rect.position * s
 	b.size = rect.size * s
 	b.pressed.connect(cb)
-	b.pressed.connect(func() -> void: Audio.play_sfx("BUTTON1.RAW"))
+	b.pressed.connect(func() -> void: Audio.play_ui("BUTTON1.RAW"))
 	return b
 
 ## RENDER DETAIL — the original DETAIL.IMG screen (OPTIONS → DETAIL),
@@ -2548,7 +2548,7 @@ func _style_button(b: Button) -> void:
 	b.add_theme_color_override("font_hover_color", Color(1, 1, 1))
 	b.add_theme_color_override("font_pressed_color", Color8(150, 175, 175))
 	b.add_theme_color_override("font_disabled_color", Color8(108, 124, 124))
-	b.pressed.connect(func() -> void: Audio.play_sfx("BUTTON1.RAW"))
+	b.pressed.connect(func() -> void: Audio.play_ui("BUTTON1.RAW"))
 
 ## Transparent hotspot button — invisible until hovered/pressed, so the
 ## START.IMG bar text shows through.

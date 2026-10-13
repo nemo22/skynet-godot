@@ -1613,6 +1613,69 @@ func _water_check() -> void:
 	if not head_under:
 		air = AIR_SECONDS
 
+## The soldier's footsteps and landings as SKYNET.EXE v1.01 plays them
+## (FUN_0012b18c, the walk). The ground's sound is the MAP's, not the
+## face's: the maptype (marker type 6) picks a row of the music table
+## (VA 0x4fbf9, 0x24 bytes a row) whose first word is the surface, and
+## FUN_0012c133 copies that surface's three sounds out of 0x4d150 (landing),
+## 0x4d160 (left foot) and 0x4d170 (right foot): 0 ground, 1 metal, 2 wood,
+## 3 sewer. A stride is a phase of 2048 that the forward speed x 10 a
+## second advances (sideways speed does not count) while the feet are on
+## the ground (vertical speed within 5 u/s); the left foot sounds as it
+## passes 0, the right as it passes 1024, each restarting itself. Wading
+## the feet sound leftwatr/rightwtr; under water there are none. A landing
+## faster than 100 u/s plays the surface's landing sound, not over itself;
+## a jump makes no sound when it starts (FUN_0012be58). Cosmetic: no state
+## of the game depends on it.
+const SURFACE_BY_MAPTYPE: PackedInt32Array = [0, 1, 3, 2, 1, 1, 1, 0, 0, 1, 0, 2]
+const SND_LANDING: PackedInt32Array = [23, 24, 25, 86]
+const SND_LEFT_FOOT: PackedInt32Array = [70, 74, 72, 84]
+const SND_RIGHT_FOOT: PackedInt32Array = [71, 75, 73, 85]
+const SND_LEFT_WADE: int = 0x7b
+const SND_RIGHT_WADE: int = 0x7c
+const LANDING_MIN_SPEED: float = 100.0         # 0x6400 in DOS's 8.8 speed
+const STEP_GROUNDED_SPEED: float = 5.0         # 0x500 in 8.8
+const STRIDE_PHASE: float = 2048.0
+const STRIDE_PER_UNIT: float = 10.0
+## A survived hit grunts one of these (list 0x39187, FUN_00122b52), not
+## over itself; the death is grunt9.
+const SND_PAIN_GRUNTS: PackedInt32Array = [18, 101, 104, 105]
+const SND_DEATH_GRUNT: int = 108
+var foot_surface: int = 0
+var _stride: float = 0.0
+
+## A new map: its surface, the stride from its start.
+func enter_map_surface(maptype: int) -> void:
+	foot_surface = SURFACE_BY_MAPTYPE[maptype if maptype >= 0 and maptype < SURFACE_BY_MAPTYPE.size() else 0]
+	_stride = 0.0
+
+## One walk tick's body sounds (after the move): `landed` is the fall speed
+## of a landing this tick (0: none).
+func _body_sounds(delta: float, landed: float) -> void:
+	if noclip:
+		return
+	if landed > LANDING_MIN_SPEED:
+		Audio.play_id_dos(SND_LANDING[foot_surface], Audio.Overlap.SKIP)
+	var ahead: Vector3 = -Basis(Vector3.UP, _yaw).z
+	var fwd: float = Vector3(velocity.x, 0.0, velocity.z).dot(ahead)
+	var vy: float = 0.0 if is_on_floor() else velocity.y
+	if fwd == 0.0 or not is_on_floor() or absf(vy) > STEP_GROUNDED_SPEED:
+		return
+	var before: float = _stride
+	var after: float = before + fwd * STRIDE_PER_UNIT * delta
+	var half: float = STRIDE_PHASE * 0.5
+	var left: bool = floorf(before / STRIDE_PHASE) != floorf(after / STRIDE_PHASE)
+	var right: bool = floorf((before - half) / STRIDE_PHASE) != floorf((after - half) / STRIDE_PHASE)
+	_stride = after - floorf(after / STRIDE_PHASE) * STRIDE_PHASE
+	if submerged or not (left or right):
+		return
+	var id: int
+	if in_water:
+		id = SND_LEFT_WADE if left else SND_RIGHT_WADE
+	else:
+		id = SND_LEFT_FOOT[foot_surface] if left else SND_RIGHT_FOOT[foot_surface]
+	Audio.play_id_dos(id, Audio.Overlap.RESTART)
+
 ## Breath and drowning, run every frame the player is alive.
 func _breathe(delta: float) -> void:
 	if not head_under:
@@ -1624,7 +1687,7 @@ func _breathe(delta: float) -> void:
 		Audio.play_id(SND_BUBBLES, -12.0)
 	if air > 0.0:
 		return
-	take_dos_damage(DROWN_DPS * delta, false)
+	take_dos_damage(DROWN_DPS * delta, false, true)
 	if _bubble_t < 1.0:
 		Audio.play_id(SND_DROWN, -3.0)
 
@@ -1667,8 +1730,11 @@ func _walk(delta: float, fwd_in: float, str_in: float) -> void:
 	var on_floor_before: bool = is_on_floor()
 	var fall_v: float = -velocity.y                # how fast he comes down
 	move_and_slide()
+	var landed: float = 0.0
 	if not on_floor_before and is_on_floor():
+		landed = maxf(fall_v, 0.0)
 		_land(fall_v)
+	_body_sounds(delta, landed)
 	if is_on_floor():
 		_walk_on_floor()
 	var moving: float = h.length()
@@ -2347,8 +2413,9 @@ static func hull_points(v: int) -> float:
 ## Damage in DOS points (see DOS_HEALTH_POINTS): what the DOS tables and
 ## formulas say, straight. `scaled` = a direct weapon hit (DIFFICULTY
 ## applies, 0x1230d6); blasts, contact, falls, drowning pass false.
-func take_dos_damage(points: float, scaled: bool = true) -> void:
-	take_damage(points * max_health / DOS_HEALTH_POINTS, scaled)
+## `silent`: no pain grunt (the water's and the radiation's hurt).
+func take_dos_damage(points: float, scaled: bool = true, silent: bool = false) -> void:
+	take_damage(points * max_health / DOS_HEALTH_POINTS, scaled, silent)
 
 ## Take `amount` of the port's own bar (max_health). On death the player
 ## just dies — no animation, no fade: the level controller puts up
@@ -2358,7 +2425,9 @@ func take_dos_damage(points: float, scaled: bool = true) -> void:
 ## (Settings.dmg_to_player); DOS scales weapon damage in the
 ## projectile-impact path only, so radiation and other environmental
 ## damage pass false.
-func take_damage(amount: float, scaled: bool = true) -> void:
+## On foot a hit he lives through grunts (FUN_00122b52) unless `silent`
+## (drowning, radiation); his death is grunt9.
+func take_damage(amount: float, scaled: bool = true, silent: bool = false) -> void:
 	if health <= 0.0:
 		return
 	if god_mode:
@@ -2393,11 +2462,16 @@ func take_damage(amount: float, scaled: bool = true) -> void:
 	# DOS takes at least 1/256 of a point; the port's bar is float.
 	health -= amount
 	hurt.emit(amount)
-	Audio.play_sfx("HIT2.RAW", -3.0)
 	if health <= 0.0:
 		health = 0.0
-		Audio.play_sfx("EXPLO2.RAW", -2.0)
+		Audio.play_id_dos(SND_DEATH_GRUNT)
 		_capture(false)                          # release the mouse
+	elif not silent:
+		# DOS's `rand & 0xf` folded into the four-entry list.
+		var i: int = randi() & 0xf
+		while i > SND_PAIN_GRUNTS.size() - 1:
+			i -= SND_PAIN_GRUNTS.size() - 1
+		Audio.play_id_dos(SND_PAIN_GRUNTS[i], Audio.Overlap.SKIP)
 
 ## What the HUD's ARMOR bar shows: the armour on foot, the hull in a
 ## vehicle (DOS 0x13231d), both 0..1.
